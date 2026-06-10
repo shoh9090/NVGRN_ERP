@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Справочники — <%= settings.company_name %></title>
+  <link rel="stylesheet" href="/static/style.css">
+  <style>:root { --brand: <%= settings.brand_color || '#2E7D32' %>; }</style>
+</head>
+<body class="admin-body">
+  <header class="topbar admin-topbar">
+    <div class="topbar-left">
+      <a class="btn-ghost" href="/">← На главную</a>
+      <span class="company">Справочники</span>
+    </div>
+    <div class="topbar-right">
+      <span class="muted" style="color:#fff"><%= user.name %></span>
+    </div>
+  </header>
+  <main class="admin-main">
+
+  <p class="muted">Общие данные для всех блоков: контрагенты, номенклатура, единицы. Можно вносить вручную или загружать из Excel.</p>
+
+  <% if (importResult) { %>
+    <div class="card" style="border-color: var(--brand)">
+      Импорт завершён: добавлено <b><%= importResult.added %></b>, пропущено (дубли/ошибки): <b><%= importResult.skipped %></b>.
+    </div>
+  <% } %>
+
+  <section class="card">
+    <h3>Контрагенты</h3>
+    <form method="POST" action="/dictionaries/counterparty" class="form-row">
+      <input name="name" placeholder="Название (ООО «Рассвет»)" required>
+      <input name="inn" placeholder="ИНН (необязательно)">
+      <button type="submit" class="btn-primary">Добавить</button>
+    </form>
+    <details>
+      <summary>Импорт из Excel</summary>
+      <p class="muted">Файл .xlsx или .csv. Колонка A — название, колонка B — ИНН. Дубли пропускаются.</p>
+      <form method="POST" action="/dictionaries/import/counterparties" enctype="multipart/form-data" class="form-row">
+        <input type="file" name="file" accept=".xlsx,.xls,.csv" required>
+        <button type="submit">Загрузить</button>
+      </form>
+    </details>
+    <table>
+      <thead><tr><th>Название</th><th>ИНН</th></tr></thead>
+      <tbody>
+        <% counterparties.forEach(function(c) { %>
+          <tr><td><%= c.name %></td><td><%= c.inn || '—' %></td></tr>
+        <% }) %>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <h3>Номенклатура (товары)</h3>
+    <form method="POST" action="/dictionaries/product" class="form-row">
+      <input name="name" placeholder="Например: Рукола 125 г" required>
+      <select name="unit_id">
+        <option value="">— единица —</option>
+        <% units.forEach(function(u) { %>
+          <option value="<%= u.id %>"><%= u.short_name %></option>
+        <% }) %>
+      </select>
+      <button type="submit" class="btn-primary">Добавить</button>
+    </form>
+    <details>
+      <summary>Импорт из Excel</summary>
+      <p class="muted">Файл .xlsx или .csv. Колонка A — название, колонка B — единица (кг, шт...). Дубли пропускаются.</p>
+      <form method="POST" action="/dictionaries/import/products" enctype="multipart/form-data" class="form-row">
+        <input type="file" name="file" accept=".xlsx,.xls,.csv" required>
+        <button type="submit">Загрузить</button>
+      </form>
+    </details>
+    <table>
+      <thead><tr><th>Название</th><th>Ед.</th></tr></thead>
+      <tbody>
+        <% products.forEach(function(p) { %>
+          <tr><td><%= p.name %></td><td><%= p.short_name || '—' %></td></tr>
+        <% }) %>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <h3>Единицы измерения</h3>
+    <form method="POST" action="/dictionaries/unit" class="form-row">
+      <input name="name" placeholder="Название (Килограмм)" required>
+      <input name="short_name" placeholder="Сокращение (кг)" required style="max-width:160px">
+      <button type="submit" class="btn-primary">Добавить</button>
+    </form>
+    <table>
+      <thead><tr><th>Название</th><th>Сокращение</th></tr></thead>
+      <tbody>
+        <% units.forEach(function(u) { %>
+          <tr><td><%= u.name %></td><td><%= u.short_name %></td></tr>
+        <% }) %>
+      </tbody>
+    </table>
+  </section>
+
+  </main>
+</body>
+</html>

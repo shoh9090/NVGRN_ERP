@@ -327,39 +327,64 @@ admin.post('/appearance', upload.fields([{ name: 'logo' }, { name: 'bg' }]), asy
   res.redirect('/admin/appearance');
 });
 
-// Справочники
-admin.get('/dictionaries', async (req, res) => {
+app.use('/admin', admin);
+
+// ---------- Блок «Справочники» (отдельный модуль ядра) ----------
+// Доступ: администратор — всегда; сотрудник — если его роли назначена плитка с адресом /dictionaries
+
+async function requireDictAccess(req, res, next) {
+  if (!req.user) return res.redirect('/login');
+  if (req.user.isAdmin) return next();
+  const r = await db.pool.query(
+    `SELECT 1 FROM tiles t
+     JOIN role_tiles rt ON rt.tile_id = t.id
+     JOIN user_roles ur ON ur.role_id = rt.role_id
+     WHERE ur.user_id = $1 AND t.url = '/dictionaries' LIMIT 1`,
+    [req.user.id]
+  );
+  if (r.rows.length === 0) return res.status(403).send('Нет доступа к справочникам. Обратитесь к администратору.');
+  next();
+}
+
+const dict = express.Router();
+dict.use(requireDictAccess);
+
+dict.get('/', async (req, res) => {
+  const settings = await db.getSettings();
   const counterparties = await db.pool.query('SELECT * FROM counterparties ORDER BY name');
   const units = await db.pool.query('SELECT * FROM units ORDER BY id');
   const products = await db.pool.query(
     `SELECT p.*, u.short_name FROM products p LEFT JOIN units u ON u.id = p.unit_id ORDER BY p.name`
   );
-  res.render('admin/dictionaries', {
-    ...(await adminContext('dictionaries')),
+  res.render('dictionaries', {
+    settings,
     user: req.user,
     counterparties: counterparties.rows,
     units: units.rows,
     products: products.rows,
+    importResult: req.query.imported ? { added: req.query.imported, skipped: req.query.skipped || 0 } : null,
   });
 });
 
-admin.post('/dictionaries/counterparty', async (req, res) => {
+dict.post('/counterparty', async (req, res) => {
   const { name, inn } = req.body;
   if (name && name.trim()) {
     await db.pool.query('INSERT INTO counterparties (name, inn) VALUES ($1, $2)', [name.trim(), inn || '']);
+    await db.log(req.user.id, 'dict_add_counterparty', name.trim());
   }
-  res.redirect('/admin/dictionaries');
+  res.redirect('/dictionaries');
 });
 
-admin.post('/dictionaries/product', async (req, res) => {
+dict.post('/product', async (req, res) => {
   const { name, unit_id } = req.body;
   if (name && name.trim()) {
     await db.pool.query('INSERT INTO products (name, unit_id) VALUES ($1, $2)', [name.trim(), unit_id || null]);
+    await db.log(req.user.id, 'dict_add_product', name.trim());
   }
-  res.redirect('/admin/dictionaries');
+  res.redirect('/dictionaries');
 });
 
-admin.post('/dictionaries/unit', async (req, res) => {
+dict.post('/unit', async (req, res) => {
   const { name, short_name } = req.body;
   if (name && short_name) {
     try {
@@ -368,10 +393,55 @@ admin.post('/dictionaries/unit', async (req, res) => {
       console.error(e.message);
     }
   }
-  res.redirect('/admin/dictionaries');
+  res.redirect('/dictionaries');
 });
 
-app.use('/admin', admin);
+// Импорт из Excel (.xlsx) или CSV: первая колонка — название, вторая — ИНН (контрагенты) или единица (товары)
+dict.post('/import/:kind', upload.single('file'), async (req, res) => {
+  const kind = req.params.kind; // counterparties | products
+  if (!req.file) return res.redirect('/dictionaries');
+  let rows = [];
+  try {
+    const XLSX = require('xlsx');
+    const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
+    const sheet = wb.Sheets[wb.SheetNames[0]];
+    rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+  } catch (e) {
+    console.error('import parse error', e.message);
+    return res.redirect('/dictionaries');
+  }
+  let added = 0;
+  let skipped = 0;
+  for (const row of rows) {
+    const name = String(row[0] || '').trim();
+    const second = String(row[1] || '').trim();
+    if (!name || name.toLowerCase() === 'название' || name.toLowerCase() === 'наименование') continue;
+    try {
+      if (kind === 'counterparties') {
+        const exists = await db.pool.query('SELECT 1 FROM counterparties WHERE lower(name) = lower($1)', [name]);
+        if (exists.rows.length) { skipped++; continue; }
+        await db.pool.query('INSERT INTO counterparties (name, inn) VALUES ($1, $2)', [name, second]);
+        added++;
+      } else if (kind === 'products') {
+        const exists = await db.pool.query('SELECT 1 FROM products WHERE lower(name) = lower($1)', [name]);
+        if (exists.rows.length) { skipped++; continue; }
+        let unitId = null;
+        if (second) {
+          const u = await db.pool.query('SELECT id FROM units WHERE lower(short_name) = lower($1) OR lower(name) = lower($1)', [second]);
+          if (u.rows.length) unitId = u.rows[0].id;
+        }
+        await db.pool.query('INSERT INTO products (name, unit_id) VALUES ($1, $2)', [name, unitId]);
+        added++;
+      }
+    } catch (e) {
+      skipped++;
+    }
+  }
+  await db.log(req.user.id, 'dict_import_' + kind, `added=${added} skipped=${skipped}`);
+  res.redirect(`/dictionaries?imported=${added}&skipped=${skipped}`);
+});
+
+app.use('/dictionaries', dict);
 app.get('/admin', (req, res) => res.redirect('/admin/users'));
 
 // Здоровье сервиса (для Railway)

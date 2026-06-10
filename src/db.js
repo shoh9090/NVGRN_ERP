@@ -152,6 +152,15 @@ async function seed() {
     );
   }
 
+  // Плитка «Справочники» — внутренний модуль ядра
+  const dt = await pool.query("SELECT id FROM tiles WHERE url = '/dictionaries' LIMIT 1");
+  if (dt.rows.length === 0) {
+    await pool.query(
+      `INSERT INTO tiles (title, description, icon, url, open_new_tab, sort_order)
+       VALUES ('Справочники', 'Контрагенты, номенклатура, единицы', '📚', '/dictionaries', FALSE, 90)`
+    );
+  }
+
   // Первая плитка — Счета-фактуры (адрес меняется в админке)
   const t = await pool.query('SELECT id FROM tiles LIMIT 1');
   if (t.rows.length === 0) {
