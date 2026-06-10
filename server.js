@@ -351,97 +351,15 @@ dict.use(requireDictAccess);
 
 dict.get('/', async (req, res) => {
   const settings = await db.getSettings();
-  const counterparties = await db.pool.query('SELECT * FROM counterparties ORDER BY name');
-  const units = await db.pool.query('SELECT * FROM units ORDER BY id');
-  const products = await db.pool.query(
-    `SELECT p.*, u.short_name FROM products p LEFT JOIN units u ON u.id = p.unit_id ORDER BY p.name`
-  );
-  res.render('dictionaries', {
-    settings,
-    user: req.user,
-    counterparties: counterparties.rows,
-    units: units.rows,
-    products: products.rows,
-    importResult: req.query.imported ? { added: req.query.imported, skipped: req.query.skipped || 0 } : null,
-  });
-});
-
-dict.post('/counterparty', async (req, res) => {
-  const { name, inn } = req.body;
-  if (name && name.trim()) {
-    await db.pool.query('INSERT INTO counterparties (name, inn) VALUES ($1, $2)', [name.trim(), inn || '']);
-    await db.log(req.user.id, 'dict_add_counterparty', name.trim());
-  }
-  res.redirect('/dictionaries');
-});
-
-dict.post('/product', async (req, res) => {
-  const { name, unit_id } = req.body;
-  if (name && name.trim()) {
-    await db.pool.query('INSERT INTO products (name, unit_id) VALUES ($1, $2)', [name.trim(), unit_id || null]);
-    await db.log(req.user.id, 'dict_add_product', name.trim());
-  }
-  res.redirect('/dictionaries');
-});
-
-dict.post('/unit', async (req, res) => {
-  const { name, short_name } = req.body;
-  if (name && short_name) {
-    try {
-      await db.pool.query('INSERT INTO units (name, short_name) VALUES ($1, $2)', [name.trim(), short_name.trim()]);
-    } catch (e) {
-      console.error(e.message);
-    }
-  }
-  res.redirect('/dictionaries');
-});
-
-// Импорт из Excel (.xlsx) или CSV: первая колонка — название, вторая — ИНН (контрагенты) или единица (товары)
-dict.post('/import/:kind', upload.single('file'), async (req, res) => {
-  const kind = req.params.kind; // counterparties | products
-  if (!req.file) return res.redirect('/dictionaries');
-  let rows = [];
-  try {
-    const XLSX = require('xlsx');
-    const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
-    const sheet = wb.Sheets[wb.SheetNames[0]];
-    rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
-  } catch (e) {
-    console.error('import parse error', e.message);
-    return res.redirect('/dictionaries');
-  }
-  let added = 0;
-  let skipped = 0;
-  for (const row of rows) {
-    const name = String(row[0] || '').trim();
-    const second = String(row[1] || '').trim();
-    if (!name || name.toLowerCase() === 'название' || name.toLowerCase() === 'наименование') continue;
-    try {
-      if (kind === 'counterparties') {
-        const exists = await db.pool.query('SELECT 1 FROM counterparties WHERE lower(name) = lower($1)', [name]);
-        if (exists.rows.length) { skipped++; continue; }
-        await db.pool.query('INSERT INTO counterparties (name, inn) VALUES ($1, $2)', [name, second]);
-        added++;
-      } else if (kind === 'products') {
-        const exists = await db.pool.query('SELECT 1 FROM products WHERE lower(name) = lower($1)', [name]);
-        if (exists.rows.length) { skipped++; continue; }
-        let unitId = null;
-        if (second) {
-          const u = await db.pool.query('SELECT id FROM units WHERE lower(short_name) = lower($1) OR lower(name) = lower($1)', [second]);
-          if (u.rows.length) unitId = u.rows[0].id;
-        }
-        await db.pool.query('INSERT INTO products (name, unit_id) VALUES ($1, $2)', [name, unitId]);
-        added++;
-      }
-    } catch (e) {
-      skipped++;
-    }
-  }
-  await db.log(req.user.id, 'dict_import_' + kind, `added=${added} skipped=${skipped}`);
-  res.redirect(`/dictionaries?imported=${added}&skipped=${skipped}`);
+  res.render('dictionaries_spa', { settings, user: req.user });
 });
 
 app.use('/dictionaries', dict);
+
+// JSON API справочников (раздел 18 ТЗ) — те же права доступа, что и у модуля
+const refsRouter = require('./src/refs');
+app.use('/api/refs', requireDictAccess, refsRouter);
+
 app.get('/admin', (req, res) => res.redirect('/admin/users'));
 
 // Здоровье сервиса (для Railway)
@@ -452,6 +370,7 @@ app.get('/health', (req, res) => res.json({ ok: true }));
   try {
     await db.migrate();
     await db.seed();
+    await db.migrateLegacyDicts();
     app.listen(PORT, () => console.log(`Hub запущен на порту ${PORT}`));
   } catch (e) {
     console.error('Ошибка запуска:', e);

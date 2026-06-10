@@ -95,6 +95,37 @@ CREATE TABLE IF NOT EXISTS audit_log (
 
 async function migrate() {
   await pool.query(MIGRATIONS);
+  // Таблицы модуля «Справочники» (генерируются из схем ТЗ)
+  const { allCreateSQL } = require('./refs-config');
+  await pool.query(allCreateSQL());
+}
+
+// Перенос данных из старых простых справочников в новые таблицы (однократно)
+async function migrateLegacyDicts() {
+  const u = await pool.query('SELECT count(*)::int AS n FROM ref_units');
+  if (u.rows[0].n === 0) {
+    await pool.query(
+      `INSERT INTO ref_units (name, short_name)
+       SELECT name, short_name FROM units
+       ON CONFLICT DO NOTHING`
+    ).catch((e) => console.error('legacy units:', e.message));
+  }
+  const c = await pool.query('SELECT count(*)::int AS n FROM ref_counterparties');
+  if (c.rows[0].n === 0) {
+    await pool.query(
+      `INSERT INTO ref_counterparties (name, inn, role_client)
+       SELECT name, inn, TRUE FROM counterparties`
+    ).catch((e) => console.error('legacy counterparties:', e.message));
+  }
+  const p = await pool.query('SELECT count(*)::int AS n FROM ref_finished_goods');
+  if (p.rows[0].n === 0) {
+    await pool.query(
+      `INSERT INTO ref_finished_goods (name, unit_id)
+       SELECT p.name, ru.id FROM products p
+       LEFT JOIN units lu ON lu.id = p.unit_id
+       LEFT JOIN ref_units ru ON lower(ru.short_name) = lower(lu.short_name)`
+    ).catch((e) => console.error('legacy products:', e.message));
+  }
 }
 
 async function seed() {
@@ -202,4 +233,4 @@ async function log(userId, action, details = '') {
   }
 }
 
-module.exports = { pool, migrate, seed, getSettings, setSetting, log };
+module.exports = { pool, migrate, migrateLegacyDicts, seed, getSettings, setSetting, log };
