@@ -14,6 +14,8 @@
     order: 'asc',
     refOptions: {}, // кэш вариантов для ref-полей
     editing: null, // запись в карточке (null = закрыто, {} = новая)
+    filters: {}, // значения фильтров полей (f_*)
+    priceTypeId: null, // выбранный прайс-лист в разделе «Отпускные цены»
   };
 
   const $ = (sel) => document.querySelector(sel);
@@ -101,6 +103,14 @@
           )
         );
       }
+      if (g.key === 'nomenclature') {
+        nav.appendChild(
+          el('a', {
+            class: 'nav-item' + (state.type === 'prices' ? ' active' : ''),
+            href: '#prices',
+          }, [el('span', { class: 'nav-icon' }, '💰 '), 'Отпускные цены'])
+        );
+      }
     }
   }
 
@@ -113,6 +123,9 @@
       order: state.order,
     });
     if (state.q) params.set('q', state.q);
+    for (const [k, v] of Object.entries(state.filters)) {
+      if (v !== '' && v !== null && v !== undefined) params.set('f_' + k, v);
+    }
     const data = await api(`/${state.type}?` + params.toString());
     state.items = data.items;
     state.total = data.total;
@@ -194,6 +207,34 @@
       pag.appendChild(
         el('button', { onclick: () => { if (state.page < pages) { state.page++; loadList(); } } }, '→')
       );
+    }
+  }
+
+
+  // ---------- Фильтры полей (как в SalesDoctor) ----------
+  async function renderFieldFilters() {
+    const box = $('#dict-filters');
+    box.innerHTML = '';
+    if (state.type === 'prices') return;
+    const filterables = fieldsOf(state.type).filter((f) => f.filterable);
+    for (const f of filterables) {
+      const sel = el('select', {
+        class: 'dict-filter',
+        onchange: (e) => {
+          state.filters[f.key] = e.target.value;
+          state.page = 1;
+          loadList();
+        },
+      });
+      sel.appendChild(el('option', { value: '' }, f.label + ': все'));
+      if (f.type === 'enum') {
+        for (const o of f.options) sel.appendChild(el('option', { value: o }, o));
+      } else if (f.type === 'ref') {
+        const opts = await refOpts(f.ref);
+        for (const o of opts) sel.appendChild(el('option', { value: o.id }, o.name));
+      }
+      sel.value = state.filters[f.key] || '';
+      box.appendChild(sel);
     }
   }
 
@@ -349,19 +390,115 @@
     }
   }
 
+
+  // ---------- Раздел «Отпускные цены» ----------
+  async function loadPriceTypes() {
+    const data = await api('/price_types?limit=1000&status=active&sort=name');
+    return data.items;
+  }
+
+  async function renderPricesView() {
+    $('#dict-title').textContent = '💰 Отпускные цены';
+    const box = $('#dict-filters');
+    box.innerHTML = '';
+    const types = await loadPriceTypes();
+    const sel = el('select', {
+      class: 'dict-filter',
+      onchange: (e) => {
+        state.priceTypeId = e.target.value;
+        loadPrices();
+      },
+    });
+    if (!types.length) sel.appendChild(el('option', { value: '' }, 'Нет прайс-листов — нажмите «Синхр. SD»'));
+    for (const t of types) sel.appendChild(el('option', { value: t.id }, t.name + (t.payment_type ? ' · ' + t.payment_type : '')));
+    box.appendChild(sel);
+    if (!state.priceTypeId && types.length) state.priceTypeId = types[0].id;
+    if (state.priceTypeId) sel.value = state.priceTypeId;
+    await loadPrices();
+  }
+
+  async function loadPrices() {
+    const wrap = $('#dict-table-wrap');
+    $('#dict-pagination').innerHTML = '';
+    if (!state.priceTypeId) {
+      $('#dict-count').textContent = '';
+      wrap.innerHTML = '<p class="dict-empty">Выберите прайс-лист или выполните синхронизацию с SalesDoctor.</p>';
+      return;
+    }
+    const params = new URLSearchParams({ price_type_id: state.priceTypeId });
+    if (state.q) params.set('q', state.q);
+    const res = await fetch('/api/prices?' + params.toString());
+    const data = await res.json();
+    const items = data.items || [];
+    $('#dict-count').textContent = items.length + ' поз.';
+    wrap.innerHTML = '';
+    if (!items.length) {
+      wrap.appendChild(el('p', { class: 'dict-empty' }, 'Цен по этому прайс-листу пока нет. Нажмите «Синхр. SD».'));
+      return;
+    }
+    const fmt = new Intl.NumberFormat('ru-RU');
+    const table = el('table', { class: 'dict-table' }, [
+      el('thead', {}, el('tr', {}, [
+        el('th', {}, 'Наименование'),
+        el('th', {}, 'Категория'),
+        el('th', {}, 'Штрихкод'),
+        el('th', { style: 'text-align:right' }, 'Цена'),
+      ])),
+      el('tbody', {}, items.map((i) =>
+        el('tr', {}, [
+          el('td', {}, i.name),
+          el('td', {}, i.category_name || ''),
+          el('td', {}, i.barcode || ''),
+          el('td', { class: 'tnum', style: 'text-align:right; font-weight:700' }, fmt.format(Number(i.price))),
+        ])
+      )),
+    ]);
+    wrap.appendChild(table);
+  }
+
+  async function syncPrices() {
+    const btn = $('#dict-sync-prices');
+    btn.disabled = true;
+    btn.textContent = 'Синхронизация...';
+    try {
+      const res = await fetch('/api/sd/sync/prices', { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Ошибка синхронизации');
+      toast('SalesDoctor: ' + data.summary);
+      state.priceTypeId = null;
+      renderPricesView();
+    } catch (e) {
+      toast(e.message, true);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '⟳ Синхр. SD';
+    }
+  }
+
   // ---------- Переключение справочника ----------
   function switchType(typeKey) {
-    if (!state.meta.types[typeKey]) typeKey = Object.keys(state.meta.types)[0];
+    const isPrices = typeKey === 'prices';
+    if (!isPrices && !state.meta.types[typeKey]) typeKey = Object.keys(state.meta.types)[0];
     state.type = typeKey;
     state.page = 1;
     state.q = '';
+    state.filters = {};
     state.sort = 'name';
     state.order = 'asc';
     $('#dict-search').value = '';
     $('#dict-sync-sd').style.display = typeKey === 'finished_goods' ? '' : 'none';
+    $('#dict-sync-prices').style.display = isPrices ? '' : 'none';
+    $('#dict-create').style.display = isPrices ? 'none' : '';
+    $('#dict-import').style.display = isPrices ? 'none' : '';
+    $('#dict-status').style.display = isPrices ? 'none' : '';
     renderNav();
     closeCard();
-    loadList();
+    if (isPrices) {
+      renderPricesView();
+    } else {
+      renderFieldFilters();
+      loadList();
+    }
   }
 
   async function syncSD() {
@@ -394,7 +531,8 @@
       searchTimer = setTimeout(() => {
         state.q = e.target.value.trim();
         state.page = 1;
-        loadList();
+        if (state.type === 'prices') loadPrices();
+        else loadList();
       }, 300);
     });
     $('#dict-status').addEventListener('change', (e) => {
@@ -410,6 +548,7 @@
     });
     $('#dict-import').addEventListener('click', () => $('#dict-import-input').click());
     $('#dict-sync-sd').addEventListener('click', syncSD);
+    $('#dict-sync-prices').addEventListener('click', syncPrices);
 
     switchType(location.hash.slice(1) || 'raw_materials');
   }

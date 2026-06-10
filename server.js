@@ -401,6 +401,39 @@ app.post('/api/sd/sync/finished-goods', requireDictAccess, async (req, res) => {
   }
 });
 
+// Синхронизация прайс-листов и цен с SalesDoctor
+app.post('/api/sd/sync/prices', requireDictAccess, async (req, res) => {
+  try {
+    const result = await integrations.syncPrices(req.user.id);
+    res.json(result);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Отпускные цены: товары с ценой по выбранному прайс-листу
+app.get('/api/prices', requireDictAccess, async (req, res) => {
+  const typeId = parseInt(req.query.price_type_id);
+  if (!typeId) return res.json({ items: [] });
+  const q = (req.query.q || '').trim();
+  const params = [typeId];
+  let qSQL = '';
+  if (q) {
+    params.push('%' + q + '%');
+    qSQL = ` AND (g.name ILIKE $2 OR g.barcode ILIKE $2 OR g.code ILIKE $2)`;
+  }
+  const rows = await db.pool.query(
+    `SELECT g.id, g.name, g.code, g.barcode, c.name AS category_name, p.price, p.last_sync_at
+     FROM ref_prices p
+     JOIN ref_finished_goods g ON g.id = p.product_id
+     LEFT JOIN ref_categories c ON c.id = g.category_id
+     WHERE p.price_type_id = $1 AND g.status = 'active'${qSQL}
+     ORDER BY g.name`,
+    params
+  );
+  res.json({ items: rows.rows });
+});
+
 app.get('/admin', (req, res) => res.redirect('/admin/users'));
 
 // Здоровье сервиса (для Railway)

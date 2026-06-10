@@ -81,6 +81,20 @@ router.get('/:type', async (req, res) => {
     params.push('%' + q + '%');
     where.push('(' + searchCols.map((c) => `${c} ILIKE $${params.length}`).join(' OR ') + ')');
   }
+
+  // Фильтры по полям (f_<имя_поля>) — для ref- и enum-полей
+  for (const f of t.fields) {
+    if (!f.filterable) continue;
+    const raw = req.query['f_' + f.key];
+    if (raw === undefined || raw === '') continue;
+    if (f.type === 'ref') {
+      params.push(parseInt(raw));
+      where.push(`${f.key} = $${params.length}`);
+    } else {
+      params.push(String(raw));
+      where.push(`${f.key} = $${params.length}`);
+    }
+  }
   const whereSQL = where.length ? 'WHERE ' + where.join(' AND ') : '';
 
   const total = await db.pool.query(`SELECT count(*)::int AS n FROM ${t.table} ${whereSQL}`, params);

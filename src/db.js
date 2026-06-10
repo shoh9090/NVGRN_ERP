@@ -96,8 +96,20 @@ CREATE TABLE IF NOT EXISTS audit_log (
 async function migrate() {
   await pool.query(MIGRATIONS);
   // Таблицы модуля «Справочники» (генерируются из схем ТЗ)
-  const { allCreateSQL } = require('./refs-config');
+  const { allCreateSQL, allAlterSQL } = require('./refs-config');
   await pool.query(allCreateSQL());
+  await pool.query(allAlterSQL());
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ref_prices (
+      id SERIAL PRIMARY KEY,
+      price_type_id INTEGER REFERENCES ref_price_types(id) ON DELETE CASCADE,
+      product_id INTEGER REFERENCES ref_finished_goods(id) ON DELETE CASCADE,
+      price NUMERIC DEFAULT 0,
+      last_sync_at TIMESTAMPTZ,
+      updated_at TIMESTAMPTZ DEFAULT now(),
+      UNIQUE (price_type_id, product_id)
+    );
+  `);
 }
 
 // Перенос данных из старых простых справочников в новые таблицы (однократно)

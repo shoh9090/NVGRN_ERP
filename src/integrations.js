@@ -87,10 +87,78 @@ async function testConnection() {
   return auth;
 }
 
+
+// Постраничная выгрузка любого GET-метода SD
+async function sdGetAll(cfg, auth, method, resultKey, extraParams = {}) {
+  const out = [];
+  let page = 1;
+  const limit = 500;
+  for (;;) {
+    const data = await sdRequest(cfg.url, {
+      method,
+      auth: { userId: auth.userId, token: auth.token },
+      params: { limit, page, ...extraParams },
+    });
+    const items = (data.result && data.result[resultKey]) || [];
+    out.push(...items);
+    const total = data.pagination ? data.pagination.total : 0;
+    if (!items.length || page * limit >= total || items.length < limit) break;
+    page++;
+  }
+  return out;
+}
+
+// Синхронизация категорий и групп товаров SD → ref_categories
+// Возвращает карты sd_sd_id → наш id
+async function syncCatalogStructure(cfg, auth, userIdLocal) {
+  const maps = { category: {}, group: {} };
+
+  async function upsertKind(items, kind, map) {
+    for (const it of items) {
+      const sdId = String(it.SD_id || '');
+      const name = String(it.name || '').trim();
+      if (!name) continue;
+      const status = it.active === 'N' ? 'archived' : 'active';
+      let r = sdId
+        ? await db.pool.query("SELECT id FROM ref_categories WHERE sd_sd_id = $1 AND kind = $2 LIMIT 1", [sdId, kind])
+        : { rows: [] };
+      if (!r.rows.length) {
+        r = await db.pool.query("SELECT id FROM ref_categories WHERE lower(name) = lower($1) AND kind = $2 LIMIT 1", [name, kind]);
+      }
+      if (r.rows.length) {
+        await db.pool.query(
+          `UPDATE ref_categories SET name = $1, sd_sd_id = $2, sd_cs_id = $3,
+             code_1c = COALESCE(NULLIF($4,''), code_1c), status = $5,
+             sync_status = 'synced', last_sync_at = now(), updated_at = now(), updated_by = $6
+           WHERE id = $7`,
+          [name, sdId, String(it.CS_id || ''), String(it.code_1C || ''), status, userIdLocal, r.rows[0].id]
+        );
+        map[sdId] = r.rows[0].id;
+      } else {
+        const ins = await db.pool.query(
+          `INSERT INTO ref_categories (name, kind, sd_sd_id, sd_cs_id, code_1c, status, sync_status, last_sync_at, created_by, updated_by)
+           VALUES ($1,$2,$3,$4,$5,$6,'synced',now(),$7,$7) RETURNING id`,
+          [name, kind, sdId, String(it.CS_id || ''), String(it.code_1C || ''), status, userIdLocal]
+        );
+        map[sdId] = ins.rows[0].id;
+      }
+    }
+  }
+
+  const cats = await sdGetAll(cfg, auth, 'getProductCategory', 'productCategory');
+  await upsertKind(cats, 'категория', maps.category);
+  const groups = await sdGetAll(cfg, auth, 'getProductGroup', 'productGroup');
+  await upsertKind(groups, 'группа', maps.group);
+  return maps;
+}
+
 // Синхронизация готовой продукции: SD getProduct → ref_finished_goods
 async function syncFinishedGoods(userIdLocal) {
   const cfg = await getSdConfig();
   const auth = await sdLogin(cfg);
+
+  // сначала тянем категории и группы, чтобы привязать товары
+  const maps = await syncCatalogStructure(cfg, auth, userIdLocal);
 
   let page = 1;
   const limit = 500;
@@ -131,6 +199,8 @@ async function syncFinishedGoods(userIdLocal) {
         qty_per_box: p.packQuantity != null ? Number(p.packQuantity) : null,
         status: p.active === 'N' ? 'archived' : 'active',
         unit_id: null,
+        category_id: p.category && p.category.SD_id ? maps.category[String(p.category.SD_id)] || null : null,
+        group_id: p.group && p.group.SD_id ? maps.group[String(p.group.SD_id)] || null : null,
       };
       const unitKey = p.unit && p.unit.code_1C ? String(p.unit.code_1C).toLowerCase() : '';
       if (unitKey && unitByKey[unitKey]) values.unit_id = unitByKey[unitKey];
@@ -159,21 +229,24 @@ async function syncFinishedGoods(userIdLocal) {
              name = $1, code = COALESCE(NULLIF($2,''), code), code_1c = COALESCE(NULLIF($3,''), code_1c),
              sd_cs_id = $4, sd_sd_id = $5, barcode = COALESCE(NULLIF($6,''), barcode),
              qty_per_box = COALESCE($7, qty_per_box), unit_id = COALESCE($8, unit_id),
-             status = $9, sync_status = 'synced', last_sync_at = now(), updated_at = now(), updated_by = $10
-           WHERE id = $11`,
+             category_id = COALESCE($9, category_id), group_id = COALESCE($10, group_id),
+             status = $11, sync_status = 'synced', last_sync_at = now(), updated_at = now(), updated_by = $12
+           WHERE id = $13`,
           [values.name, values.code, values.code_1c, values.sd_cs_id, values.sd_sd_id,
-           values.barcode, values.qty_per_box, values.unit_id, values.status, userIdLocal, existing.id]
+           values.barcode, values.qty_per_box, values.unit_id, values.category_id, values.group_id,
+           values.status, userIdLocal, existing.id]
         );
         if (values.status === 'archived' && existing.status !== 'archived') archivedCnt++;
         else updated++;
       } else {
         await db.pool.query(
           `INSERT INTO ref_finished_goods
-             (name, code, code_1c, sd_cs_id, sd_sd_id, barcode, qty_per_box, unit_id, status,
-              sync_status, last_sync_at, created_by, updated_by)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'synced',now(),$10,$10)`,
+             (name, code, code_1c, sd_cs_id, sd_sd_id, barcode, qty_per_box, unit_id,
+              category_id, group_id, status, sync_status, last_sync_at, created_by, updated_by)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'synced',now(),$12,$12)`,
           [values.name, values.code, values.code_1c, values.sd_cs_id, values.sd_sd_id,
-           values.barcode, values.qty_per_box, values.unit_id, values.status, userIdLocal]
+           values.barcode, values.qty_per_box, values.unit_id, values.category_id, values.group_id,
+           values.status, userIdLocal]
         );
         created++;
       }
@@ -190,4 +263,87 @@ async function syncFinishedGoods(userIdLocal) {
   return { created, updated, archived: archivedCnt, total: totalSeen, summary };
 }
 
-module.exports = { getSdConfig, saveSdConfig, testConnection, syncFinishedGoods };
+
+// Синхронизация отпускных цен: getPriceType + getPrice → ref_price_types + ref_prices
+async function syncPrices(userIdLocal) {
+  const cfg = await getSdConfig();
+  const auth = await sdLogin(cfg);
+
+  const types = await sdGetAll(cfg, auth, 'getPriceType', 'priceType');
+  let typesUpserted = 0;
+  let pricesUpserted = 0;
+  const typeMap = {}; // sd_sd_id → наш id
+
+  for (const t of types) {
+    const sdId = String(t.SD_id || '');
+    const name = String(t.name || '').trim();
+    if (!name) continue;
+    const status = t.active === 'N' ? 'archived' : 'active';
+    const payment = t.paymentType ? String(t.paymentType.code_1C || t.paymentType.SD_id || '') : '';
+    const valyuta = t.valyutaType ? String(t.valyutaType.code_1C || '') : '';
+
+    let r = sdId
+      ? await db.pool.query('SELECT id FROM ref_price_types WHERE sd_sd_id = $1 LIMIT 1', [sdId])
+      : { rows: [] };
+    if (!r.rows.length) {
+      r = await db.pool.query('SELECT id FROM ref_price_types WHERE lower(name) = lower($1) LIMIT 1', [name]);
+    }
+    if (r.rows.length) {
+      await db.pool.query(
+        `UPDATE ref_price_types SET name=$1, sd_sd_id=$2, sd_cs_id=$3, code_1c=COALESCE(NULLIF($4,''), code_1c),
+           payment_type=$5, valyuta=$6, status=$7, sync_status='synced', last_sync_at=now(), updated_at=now(), updated_by=$8
+         WHERE id=$9`,
+        [name, sdId, String(t.CS_id || ''), String(t.code_1C || ''), payment, valyuta, status, userIdLocal, r.rows[0].id]
+      );
+      typeMap[sdId] = r.rows[0].id;
+    } else {
+      const ins = await db.pool.query(
+        `INSERT INTO ref_price_types (name, sd_sd_id, sd_cs_id, code_1c, payment_type, valyuta, status, sync_status, last_sync_at, created_by, updated_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,'synced',now(),$8,$8) RETURNING id`,
+        [name, sdId, String(t.CS_id || ''), String(t.code_1C || ''), payment, valyuta, status, userIdLocal]
+      );
+      typeMap[sdId] = ins.rows[0].id;
+    }
+    typesUpserted++;
+  }
+
+  // карта товаров: sd_sd_id → наш id
+  const prods = await db.pool.query("SELECT id, sd_sd_id FROM ref_finished_goods WHERE sd_sd_id <> ''");
+  const prodMap = {};
+  for (const p of prods.rows) prodMap[p.sd_sd_id] = p.id;
+
+  for (const [sdTypeId, localTypeId] of Object.entries(typeMap)) {
+    let rows = [];
+    try {
+      const data = await sdRequest(cfg.url, {
+        method: 'getPrice',
+        auth: { userId: auth.userId, token: auth.token },
+        params: { priceType: { SD_id: sdTypeId } },
+      });
+      rows = Array.isArray(data.result) ? data.result : (data.result && data.result.price) || [];
+    } catch (e) {
+      console.error('getPrice', sdTypeId, e.message);
+      continue;
+    }
+    for (const row of rows) {
+      const prodSd = row.product ? String(row.product.SD_id || '') : '';
+      const localProd = prodMap[prodSd];
+      if (!localProd) continue;
+      const price = Number(row.price) || 0;
+      await db.pool.query(
+        `INSERT INTO ref_prices (price_type_id, product_id, price, last_sync_at, updated_at)
+         VALUES ($1,$2,$3,now(),now())
+         ON CONFLICT (price_type_id, product_id) DO UPDATE SET price = $3, last_sync_at = now(), updated_at = now()`,
+        [localTypeId, localProd, price]
+      );
+      pricesUpserted++;
+    }
+  }
+
+  const summary = `прайс-листов: ${typesUpserted}, цен загружено: ${pricesUpserted}`;
+  await db.setSetting('sd_last_price_sync', `${new Date().toISOString()} — ${summary}`);
+  await db.log(userIdLocal, 'sd_sync_prices', summary);
+  return { types: typesUpserted, prices: pricesUpserted, summary };
+}
+
+module.exports = { getSdConfig, saveSdConfig, testConnection, syncFinishedGoods, syncPrices };

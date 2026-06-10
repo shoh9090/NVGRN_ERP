@@ -31,7 +31,7 @@ const REF_TYPES = {
     group: 'nomenclature',
     dedupe: ['name', 'code'],
     fields: [
-      { key: 'category_id', label: 'Категория', type: 'ref', ref: 'categories', listCol: true },
+      { key: 'category_id', label: 'Категория', type: 'ref', ref: 'categories', listCol: true, filterable: true },
       { key: 'unit_id', label: 'Ед. изм.', type: 'ref', ref: 'units', required: true, listCol: true },
       { key: 'main_supplier_id', label: 'Осн. поставщик', type: 'ref', ref: 'counterparties', listCol: true },
       { key: 'min_stock', label: 'Мин. остаток', type: 'number' },
@@ -52,7 +52,8 @@ const REF_TYPES = {
     group: 'nomenclature',
     dedupe: ['name', 'code', 'barcode'],
     fields: [
-      { key: 'category_id', label: 'Категория', type: 'ref', ref: 'categories', listCol: true },
+      { key: 'category_id', label: 'Категория', type: 'ref', ref: 'categories', listCol: true, filterable: true },
+      { key: 'group_id', label: 'Группа', type: 'ref', ref: 'categories', listCol: true, filterable: true },
       { key: 'unit_id', label: 'Ед. изм.', type: 'ref', ref: 'units', required: true },
       { key: 'net_weight', label: 'Вес нетто, г', type: 'number', listCol: true },
       { key: 'gross_weight', label: 'Вес брутто, г', type: 'number' },
@@ -61,7 +62,7 @@ const REF_TYPES = {
       { key: 'package_type', label: 'Тип упаковки', type: 'enum', options: ['пакет', 'лоток', 'дойпак', 'банка', 'короб'], listCol: true },
       { key: 'shelf_life_days', label: 'Срок годности, дн', type: 'number' },
       { key: 'storage_temp', label: 'Темп. хранения', type: 'text' },
-      { key: 'trade_direction', label: 'Направление', type: 'enum', options: ['Retail', 'HoReCa', 'Оба'], listCol: true },
+      { key: 'trade_direction', label: 'Направление', type: 'enum', options: ['Retail', 'HoReCa', 'Оба'], listCol: true, filterable: true },
     ],
   },
 
@@ -136,6 +137,18 @@ const REF_TYPES = {
     ],
   },
 
+  price_types: {
+    table: 'ref_price_types',
+    label: 'Типы цен (прайс-листы)',
+    icon: '💰',
+    group: 'classifiers',
+    dedupe: ['name'],
+    fields: [
+      { key: 'payment_type', label: 'Способ оплаты', type: 'text', listCol: true },
+      { key: 'valyuta', label: 'Валюта', type: 'text', listCol: true },
+    ],
+  },
+
   categories: {
     table: 'ref_categories',
     label: 'Категории и группы',
@@ -143,7 +156,7 @@ const REF_TYPES = {
     group: 'classifiers',
     dedupe: ['name'],
     fields: [
-      { key: 'kind', label: 'Уровень', type: 'enum', options: ['категория', 'группа', 'подкатегория'], required: true, listCol: true },
+      { key: 'kind', label: 'Уровень', type: 'enum', options: ['категория', 'группа', 'подкатегория'], required: true, listCol: true, filterable: true },
       { key: 'parent_id', label: 'Родитель', type: 'ref', ref: 'categories', listCol: true },
     ],
   },
@@ -201,6 +214,18 @@ function allCreateSQL() {
   return Object.keys(REF_TYPES).map(createTableSQL).join('\n');
 }
 
+// ALTER-миграции: добавляют новые поля в уже существующие таблицы
+function allAlterSQL() {
+  const out = [];
+  for (const t of Object.values(REF_TYPES)) {
+    for (const f of t.fields) {
+      if (RESERVED_COLS.has(f.key)) continue;
+      out.push(`ALTER TABLE ${t.table} ADD COLUMN IF NOT EXISTS ${f.key} ${sqlType(f)};`);
+    }
+  }
+  return out.join('\n');
+}
+
 // Метаданные для клиента (без системной информации о таблицах)
 function clientMeta() {
   const types = {};
@@ -218,4 +243,4 @@ function clientMeta() {
   return { groups: REF_GROUPS, types };
 }
 
-module.exports = { REF_TYPES, REF_GROUPS, COMMON_FIELDS, allCreateSQL, clientMeta };
+module.exports = { REF_TYPES, REF_GROUPS, COMMON_FIELDS, allCreateSQL, allAlterSQL, clientMeta };
