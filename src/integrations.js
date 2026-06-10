@@ -67,6 +67,16 @@ async function sdRequest(baseUrl, body) {
 }
 
 // Логин: возвращает { userId, token }
+function normalizeBarcode(v) {
+  if (v == null) return '';
+  if (Array.isArray(v)) return String(v[0] || '');
+  let str = String(v).trim();
+  if (str.startsWith('[')) {
+    try { const arr = JSON.parse(str); if (Array.isArray(arr)) return String(arr[0] || ''); } catch (e) {}
+  }
+  return str;
+}
+
 async function sdLogin(cfg) {
   if (!cfg.url || !cfg.login || !cfg.password) {
     throw new Error('Заполните адрес, логин и пароль SalesDoctor в разделе «Интеграции»');
@@ -145,10 +155,14 @@ async function syncCatalogStructure(cfg, auth, userIdLocal) {
     }
   }
 
-  const cats = await sdGetAll(cfg, auth, 'getProductCategory', 'productCategory');
-  await upsertKind(cats, 'категория', maps.category);
-  const groups = await sdGetAll(cfg, auth, 'getProductGroup', 'productGroup');
-  await upsertKind(groups, 'группа', maps.group);
+  try {
+    const cats = await sdGetAll(cfg, auth, 'getProductCategory', 'productCategory');
+    await upsertKind(cats, 'категория', maps.category);
+  } catch (e) { console.error('getProductCategory:', e.message); }
+  try {
+    const groups = await sdGetAll(cfg, auth, 'getProductGroup', 'productGroup');
+    await upsertKind(groups, 'группа', maps.group);
+  } catch (e) { console.error('getProductGroup:', e.message); }
   return maps;
 }
 
@@ -195,7 +209,7 @@ async function syncFinishedGoods(userIdLocal) {
         code_1c: String(p.code_1C || ''),
         sd_cs_id: String(p.CS_id || ''),
         sd_sd_id: sdId,
-        barcode: String(p.barCode || ''),
+        barcode: normalizeBarcode(p.barCode),
         qty_per_box: p.packQuantity != null ? Number(p.packQuantity) : null,
         status: p.active === 'N' ? 'archived' : 'active',
         unit_id: null,
@@ -257,7 +271,7 @@ async function syncFinishedGoods(userIdLocal) {
     page++;
   }
 
-  const summary = `создано ${created}, обновлено ${updated}, в архив ${archivedCnt}, всего из SD: ${totalSeen}`;
+  const summary = `создано ${created}, обновлено ${updated}, в архив ${archivedCnt}, всего из SD: ${totalSeen}; категорий: ${Object.keys(maps.category).length}, групп: ${Object.keys(maps.group).length}`;
   await db.setSetting('sd_last_sync', `${new Date().toISOString()} — ${summary}`);
   await db.log(userIdLocal, 'sd_sync_finished_goods', summary);
   return { created, updated, archived: archivedCnt, total: totalSeen, summary };
@@ -269,6 +283,13 @@ async function syncPrices(userIdLocal) {
   const cfg = await getSdConfig();
   const auth = await sdLogin(cfg);
 
+  // названия способов оплаты (чтобы не показывать сырые коды)
+  const paymentNames = {};
+  try {
+    const pts = await sdGetAll(cfg, auth, 'getPaymentType', 'paymentType');
+    for (const pt of pts) paymentNames[String(pt.SD_id || '')] = String(pt.name || '');
+  } catch (e) { console.error('getPaymentType:', e.message); }
+
   const types = await sdGetAll(cfg, auth, 'getPriceType', 'priceType');
   let typesUpserted = 0;
   let pricesUpserted = 0;
@@ -279,7 +300,8 @@ async function syncPrices(userIdLocal) {
     const name = String(t.name || '').trim();
     if (!name) continue;
     const status = t.active === 'N' ? 'archived' : 'active';
-    const payment = t.paymentType ? String(t.paymentType.code_1C || t.paymentType.SD_id || '') : '';
+    const ptSd = t.paymentType ? String(t.paymentType.SD_id || '') : '';
+    const payment = (ptSd && paymentNames[ptSd]) || (t.paymentType ? String(t.paymentType.code_1C || '') : '') || '';
     const valyuta = t.valyutaType ? String(t.valyutaType.code_1C || '') : '';
 
     let r = sdId
