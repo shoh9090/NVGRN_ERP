@@ -411,6 +411,41 @@ app.post('/api/sd/sync/prices', requireDictAccess, async (req, res) => {
   }
 });
 
+// Отпускные цены: матрица товары × прайс-листы (как «Прайс-лист» в SD)
+app.get('/api/prices/matrix', requireDictAccess, async (req, res) => {
+  const q = (req.query.q || '').trim();
+  const catId = parseInt(req.query.category_id) || null;
+
+  const types = await db.pool.query(
+    "SELECT id, name, payment_type FROM ref_price_types WHERE status = 'active' ORDER BY name"
+  );
+
+  const params = [];
+  let where = "g.status = 'active'";
+  if (q) {
+    params.push('%' + q + '%');
+    where += ` AND (g.name ILIKE $${params.length} OR g.barcode ILIKE $${params.length} OR g.code ILIKE $${params.length})`;
+  }
+  if (catId) {
+    params.push(catId);
+    where += ` AND g.category_id = $${params.length}`;
+  }
+  const goods = await db.pool.query(
+    `SELECT g.id, g.name, g.barcode, c.name AS category_name
+     FROM ref_finished_goods g
+     LEFT JOIN ref_categories c ON c.id = g.category_id
+     WHERE ${where} ORDER BY g.name`,
+    params
+  );
+  const prices = await db.pool.query('SELECT price_type_id, product_id, price FROM ref_prices');
+  const priceMap = {};
+  for (const p of prices.rows) {
+    (priceMap[p.product_id] = priceMap[p.product_id] || {})[p.price_type_id] = Number(p.price);
+  }
+  const items = goods.rows.map((g) => ({ ...g, prices: priceMap[g.id] || {} }));
+  res.json({ types: types.rows, items });
+});
+
 // Отпускные цены: товары с ценой по выбранному прайс-листу
 app.get('/api/prices', requireDictAccess, async (req, res) => {
   const typeId = parseInt(req.query.price_type_id);
