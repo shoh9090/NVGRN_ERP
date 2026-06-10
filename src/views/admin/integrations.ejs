@@ -1,0 +1,34 @@
+<%- include('_header') %>
+
+<h2>Интеграции</h2>
+<p class="muted">Подключение внешних систем. Данные доступа хранятся в зашифрованном виде и не отображаются после сохранения.</p>
+
+<section class="card">
+  <h3>SalesDoctor <% if (sd.lastTest && sd.lastTest.startsWith('OK')) { %><span class="badge">подключено</span><% } %></h3>
+
+  <% if (message) { %><div class="<%= messageType === 'error' ? 'error' : 'badge' %>" style="display:block; margin-bottom:12px; padding:11px 14px; border-radius:12px;"><%= message %></div><% } %>
+
+  <form method="POST" action="/admin/integrations/sd" class="form-col">
+    <label>Адрес сервера
+      <input name="url" value="<%= sd.url %>" placeholder="novagreen.salesdoc.io" required>
+    </label>
+    <label>Логин API-пользователя
+      <input name="login" value="<%= sd.login %>" placeholder="sd_user" required>
+    </label>
+    <label>Пароль <%= sd.hasPassword ? '(сохранён — оставьте пустым, чтобы не менять)' : '' %>
+      <input name="password" type="password" placeholder="<%= sd.hasPassword ? '••••••••' : 'пароль' %>" <%= sd.hasPassword ? '' : 'required' %>>
+    </label>
+    <div class="actions" style="margin-top:4px">
+      <button type="submit" class="btn-primary">Сохранить</button>
+      <button type="submit" formaction="/admin/integrations/sd/test">Проверить подключение</button>
+    </div>
+  </form>
+
+  <div style="margin-top:16px">
+    <% if (sd.lastTest) { %><p class="muted">Последняя проверка: <%= sd.lastTest %></p><% } %>
+    <% if (sd.lastSync) { %><p class="muted">Последняя синхронизация ГП: <%= sd.lastSync %></p><% } %>
+    <p class="muted">Кнопка синхронизации находится в модуле «Справочники» → «Готовая продукция».</p>
+  </div>
+</section>
+
+<%- include('_footer') %>

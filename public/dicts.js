@@ -358,9 +358,29 @@
     state.sort = 'name';
     state.order = 'asc';
     $('#dict-search').value = '';
+    $('#dict-sync-sd').style.display = typeKey === 'finished_goods' ? '' : 'none';
     renderNav();
     closeCard();
     loadList();
+  }
+
+  async function syncSD() {
+    const btn = $('#dict-sync-sd');
+    btn.disabled = true;
+    btn.textContent = 'Синхронизация...';
+    try {
+      const res = await fetch('/api/sd/sync/finished-goods', { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Ошибка синхронизации');
+      toast('SalesDoctor: ' + data.summary);
+      delete state.refOptions['finished_goods'];
+      loadList();
+    } catch (e) {
+      toast(e.message, true);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '⟳ Синхр. SD';
+    }
   }
 
   // ---------- Инициализация ----------
@@ -389,6 +409,7 @@
       e.target.value = '';
     });
     $('#dict-import').addEventListener('click', () => $('#dict-import-input').click());
+    $('#dict-sync-sd').addEventListener('click', syncSD);
 
     switchType(location.hash.slice(1) || 'raw_materials');
   }

@@ -327,6 +327,37 @@ admin.post('/appearance', upload.fields([{ name: 'logo' }, { name: 'bg' }]), asy
   res.redirect('/admin/appearance');
 });
 
+// Интеграции
+const integrations = require('./src/integrations');
+
+admin.get('/integrations', async (req, res) => {
+  const sd = await integrations.getSdConfig();
+  sd.password = undefined; // пароль в интерфейс не отдаём
+  res.render('admin/integrations', {
+    ...(await adminContext('integrations')),
+    user: req.user,
+    sd,
+    message: req.query.msg || '',
+    messageType: req.query.t || 'ok',
+  });
+});
+
+admin.post('/integrations/sd', async (req, res) => {
+  await integrations.saveSdConfig(req.body);
+  await db.log(req.user.id, 'sd_config_save');
+  res.redirect('/admin/integrations?msg=' + encodeURIComponent('Настройки сохранены'));
+});
+
+admin.post('/integrations/sd/test', async (req, res) => {
+  try {
+    await integrations.saveSdConfig(req.body); // сохраняем то, что в форме, и сразу проверяем
+    const auth = await integrations.testConnection();
+    res.redirect('/admin/integrations?msg=' + encodeURIComponent('Подключение успешно (userId: ' + auth.userId + ')'));
+  } catch (e) {
+    res.redirect('/admin/integrations?t=error&msg=' + encodeURIComponent(e.message));
+  }
+});
+
 app.use('/admin', admin);
 
 // ---------- Блок «Справочники» (отдельный модуль ядра) ----------
@@ -359,6 +390,16 @@ app.use('/dictionaries', dict);
 // JSON API справочников (раздел 18 ТЗ) — те же права доступа, что и у модуля
 const refsRouter = require('./src/refs');
 app.use('/api/refs', requireDictAccess, refsRouter);
+
+// Синхронизация готовой продукции с SalesDoctor
+app.post('/api/sd/sync/finished-goods', requireDictAccess, async (req, res) => {
+  try {
+    const result = await integrations.syncFinishedGoods(req.user.id);
+    res.json(result);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
 
 app.get('/admin', (req, res) => res.redirect('/admin/users'));
 
