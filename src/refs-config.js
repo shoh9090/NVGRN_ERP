@@ -58,6 +58,7 @@ const REF_TYPES = {
       { key: 'net_weight', label: 'Вес нетто, г', type: 'number', listCol: true },
       { key: 'gross_weight', label: 'Вес брутто, г', type: 'number' },
       { key: 'barcode', label: 'Штрихкод', type: 'text', listCol: true, searchable: true },
+      { key: 'ikpu', label: 'ИКПУ код', type: 'text', searchable: true },
       { key: 'qty_per_box', label: 'Кол-во в коробе', type: 'number' },
       { key: 'package_type', label: 'Тип упаковки', type: 'enum', options: ['пакет', 'лоток', 'дойпак', 'банка', 'короб'], listCol: true },
       { key: 'shelf_life_days', label: 'Срок годности, дн', type: 'number' },

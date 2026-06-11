@@ -135,7 +135,7 @@ async function sdGetAll(cfg, auth, method, resultKey, extraParams = {}) {
 // Синхронизация категорий и групп товаров SD → ref_categories
 // Возвращает карты sd_sd_id → наш id
 async function syncCatalogStructure(cfg, auth, userIdLocal) {
-  const maps = { category: {}, group: {}, categoryByName: {}, groupByName: {} };
+  const maps = { category: {}, group: {}, categoryByName: {}, groupByName: {}, unit: {}, tradeName: {} };
 
   async function upsertKind(items, kind, map) {
     for (const it of items) {
@@ -179,6 +179,49 @@ async function syncCatalogStructure(cfg, auth, userIdLocal) {
     const groups = await sdGetAll(cfg, auth, 'getProductGroup', 'productGroup');
     await upsertKind(groups, 'группа', maps.group);
   } catch (e) { console.error('getProductGroup:', e.message); }
+
+  // Единицы измерения SD → ref_units (привязка товаров идёт по SD_id)
+  try {
+    const units = await sdGetAll(cfg, auth, 'getUnit', 'unit');
+    for (const u of units) {
+      const sdId = String(u.SD_id || '');
+      const name = String(u.name || '').trim();
+      if (!name) continue;
+      const short = String(u.title || u.short_name || name).trim();
+      let r = sdId
+        ? await db.pool.query('SELECT id FROM ref_units WHERE sd_sd_id = $1 LIMIT 1', [sdId])
+        : { rows: [] };
+      if (!r.rows.length) {
+        r = await db.pool.query('SELECT id FROM ref_units WHERE lower(name) = lower($1) OR lower(short_name) = lower($2) LIMIT 1', [name, short]);
+      }
+      if (r.rows.length) {
+        await db.pool.query(
+          `UPDATE ref_units SET name=$1, short_name=$2, sd_sd_id=$3, sync_status='synced', last_sync_at=now(), updated_at=now() WHERE id=$4`,
+          [name, short, sdId, r.rows[0].id]
+        );
+        maps.unit[sdId] = r.rows[0].id;
+      } else {
+        const ins = await db.pool.query(
+          `INSERT INTO ref_units (name, short_name, sd_sd_id, sync_status, last_sync_at, created_by, updated_by)
+           VALUES ($1,$2,$3,'synced',now(),$4,$4) RETURNING id`,
+          [name, short, sdId, userIdLocal]
+        );
+        maps.unit[sdId] = ins.rows[0].id;
+      }
+    }
+  } catch (e) { console.error('getUnit:', e.message); }
+
+  // Направления торговли SD → карта названий
+  for (const [method, key] of [['getTradeDirection', 'tradeDirection'], ['getTrade', 'trade']]) {
+    try {
+      const dirs = await sdGetAll(cfg, auth, method, key);
+      for (const d of dirs) {
+        if (d && d.SD_id != null) maps.tradeName[String(d.SD_id)] = String(d.name || '').trim();
+      }
+      if (Object.keys(maps.tradeName).length) break;
+    } catch (e) { /* пробуем следующий вариант метода */ }
+  }
+
   return maps;
 }
 
@@ -196,14 +239,6 @@ async function syncFinishedGoods(userIdLocal) {
   let updated = 0;
   let archivedCnt = 0;
   let totalSeen = 0;
-
-  // карта единиц SD → наши единицы (по короткому имени из code_1C единицы)
-  const unitsLocal = await db.pool.query('SELECT id, lower(short_name) AS sn, lower(name) AS n FROM ref_units');
-  const unitByKey = {};
-  for (const u of unitsLocal.rows) {
-    unitByKey[u.sn] = u.id;
-    unitByKey[u.n] = u.id;
-  }
 
   for (;;) {
     const data = await sdRequest(cfg.url, {
@@ -230,18 +265,20 @@ async function syncFinishedGoods(userIdLocal) {
         status: p.active === 'N' ? 'archived' : 'active',
         unit_id: null,
       };
-      const catRef = pickRef(p, ['category', 'productCategory', 'categoryProduct', 'cat']);
+      const catRef = pickRef(p, ['category', 'productCategory']);
       values.category_id =
         (catRef.sdId && maps.category[catRef.sdId]) ||
         (catRef.name && maps.categoryByName[catRef.name.toLowerCase()]) || null;
-      const grpRef = pickRef(p, ['group', 'productGroup', 'groupProduct']);
+      const grpRef = pickRef(p, ['group', 'productGroup']);
       values.group_id =
         (grpRef.sdId && maps.group[grpRef.sdId]) ||
         (grpRef.name && maps.groupByName[grpRef.name.toLowerCase()]) || null;
-      const dirRef = pickRef(p, ['tradeDirection', 'trade_direction', 'direction', 'directionTrade']);
-      values.trade_direction = dirRef.name || '';
-      const unitKey = p.unit && p.unit.code_1C ? String(p.unit.code_1C).toLowerCase() : '';
-      if (unitKey && unitByKey[unitKey]) values.unit_id = unitByKey[unitKey];
+      const tradeSd = p.trade && p.trade.SD_id != null ? String(p.trade.SD_id) : '';
+      values.trade_direction = (tradeSd && maps.tradeName[tradeSd]) || '';
+      values.ikpu = String(p.ikpu || '');
+      if (p.unit && p.unit.SD_id != null && maps.unit[String(p.unit.SD_id)]) {
+        values.unit_id = maps.unit[String(p.unit.SD_id)];
+      }
 
       // ищем существующую запись: по SD_id → по штрихкоду → по имени
       let existing = null;
@@ -269,11 +306,12 @@ async function syncFinishedGoods(userIdLocal) {
              qty_per_box = COALESCE($7, qty_per_box), unit_id = COALESCE($8, unit_id),
              category_id = COALESCE($9, category_id), group_id = COALESCE($10, group_id),
              trade_direction = COALESCE(NULLIF($11,''), trade_direction),
-             status = $12, sync_status = 'synced', last_sync_at = now(), updated_at = now(), updated_by = $13
-           WHERE id = $14`,
+             ikpu = COALESCE(NULLIF($12,''), ikpu),
+             status = $13, sync_status = 'synced', last_sync_at = now(), updated_at = now(), updated_by = $14
+           WHERE id = $15`,
           [values.name, values.code, values.code_1c, values.sd_cs_id, values.sd_sd_id,
            values.barcode, values.qty_per_box, values.unit_id, values.category_id, values.group_id,
-           values.trade_direction, values.status, userIdLocal, existing.id]
+           values.trade_direction, values.ikpu, values.status, userIdLocal, existing.id]
         );
         if (values.status === 'archived' && existing.status !== 'archived') archivedCnt++;
         else updated++;
@@ -281,11 +319,11 @@ async function syncFinishedGoods(userIdLocal) {
         await db.pool.query(
           `INSERT INTO ref_finished_goods
              (name, code, code_1c, sd_cs_id, sd_sd_id, barcode, qty_per_box, unit_id,
-              category_id, group_id, trade_direction, status, sync_status, last_sync_at, created_by, updated_by)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'synced',now(),$13,$13)`,
+              category_id, group_id, trade_direction, ikpu, status, sync_status, last_sync_at, created_by, updated_by)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'synced',now(),$14,$14)`,
           [values.name, values.code, values.code_1c, values.sd_cs_id, values.sd_sd_id,
            values.barcode, values.qty_per_box, values.unit_id, values.category_id, values.group_id,
-           values.trade_direction, values.status, userIdLocal]
+           values.trade_direction, values.ikpu, values.status, userIdLocal]
         );
         created++;
       }
@@ -296,7 +334,7 @@ async function syncFinishedGoods(userIdLocal) {
     page++;
   }
 
-  const summary = `создано ${created}, обновлено ${updated}, в архив ${archivedCnt}, всего из SD: ${totalSeen}; категорий: ${Object.keys(maps.category).length}, групп: ${Object.keys(maps.group).length}`;
+  const summary = `создано ${created}, обновлено ${updated}, в архив ${archivedCnt}, всего из SD: ${totalSeen}; категорий: ${Object.keys(maps.category).length}, групп: ${Object.keys(maps.group).length}, единиц: ${Object.keys(maps.unit).length}, направлений: ${Object.keys(maps.tradeName).length}`;
   await db.setSetting('sd_last_sync', `${new Date().toISOString()} — ${summary}`);
   await db.log(userIdLocal, 'sd_sync_finished_goods', summary);
   return { created, updated, archived: archivedCnt, total: totalSeen, summary };
@@ -321,6 +359,7 @@ async function syncPrices(userIdLocal) {
   const typeMap = {}; // sd_sd_id → наш id
 
   for (const t of types) {
+    if (t.type && t.type !== 'sale') continue; // «Отпускные цены» — только продажные прайсы
     const sdId = String(t.SD_id || '');
     const name = String(t.name || '').trim();
     if (!name) continue;
