@@ -308,6 +308,7 @@
 
   function renderBulkBar() {
     const bar = $('#dict-bulkbar');
+    if (!bar) return; // страховка от рассинхрона версий файлов
     const n = state.selected.size;
     if (!n) { bar.innerHTML = ''; bar.style.display = 'none'; return; }
     bar.style.display = '';

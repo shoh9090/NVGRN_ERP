@@ -48,8 +48,8 @@ const REF_TYPES = {
     readonly: true, // данные приходят только из SalesDoctor
     dedupe: ['name', 'code', 'barcode'],
     fields: [
-      { key: 'category_id', label: 'Категория', type: 'ref', ref: 'categories', refQuery: 'f_kind=категория', listCol: true, filterable: true },
-      { key: 'group_id', label: 'Группа', type: 'ref', ref: 'categories', refQuery: 'f_kind=группа', listCol: true, filterable: true },
+      { key: 'category_id', label: 'Категория', type: 'ref', ref: 'categories', refQuery: 'f_kind=категория&origin=sd', listCol: true, filterable: true },
+      { key: 'group_id', label: 'Группа', type: 'ref', ref: 'categories', refQuery: 'f_kind=группа&origin=sd', listCol: true, filterable: true },
       { key: 'trade_direction', label: 'Направление торговли', type: 'text', listCol: true, filterable: true, dynamic: true },
       { key: 'unit_id', label: 'Ед. изм.', type: 'ref', ref: 'units', listCol: true },
       { key: 'barcode', label: 'Штрих-код', type: 'text', listCol: true, searchable: true },
