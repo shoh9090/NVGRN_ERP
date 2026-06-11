@@ -267,6 +267,10 @@ router.get('/:type', async (req, res) => {
     where.push('(' + searchCols.map((c) => `${c} ILIKE $${params.length}`).join(' OR ') + ')');
   }
 
+  // Фильтр происхождения записи: local (создано в ERP) / sd (пришло из SalesDoctor)
+  if (req.query.origin === 'local') where.push("(sd_sd_id IS NULL OR sd_sd_id = '')");
+  if (req.query.origin === 'sd') where.push("sd_sd_id <> ''");
+
   // Фильтры по полям (f_<имя_поля>) — для ref- и enum-полей
   for (const f of t.fields) {
     if (!f.filterable) continue;

@@ -34,7 +34,7 @@ const REF_TYPES = {
     autoCode: 'RM', // артикул RM-<код категории>-<номер>, формируется автоматически и не меняется
     dedupe: ['name', 'code'],
     fields: [
-      { key: 'category_id', label: 'Категория', type: 'ref', ref: 'categories', refQuery: 'f_kind=категория', required: true, listCol: true, filterable: true },
+      { key: 'category_id', label: 'Категория', type: 'ref', ref: 'categories', refQuery: 'f_kind=категория&origin=local', required: true, listCol: true, filterable: true },
       { key: 'cultura_id', label: 'Культура', type: 'ref', ref: 'cultures', required: true, listCol: true, filterable: true },
       { key: 'characteristics', label: 'Характеристика', type: 'text', required: true, listCol: true, searchable: true },
       { key: 'unit_id', label: 'Ед. изм.', type: 'ref', ref: 'units', required: true, listCol: true },
@@ -81,7 +81,7 @@ const REF_TYPES = {
     hidden: true, // показывается внутри подменю «Сырьё и материалы»
     dedupe: ['name'],
     fields: [
-      { key: 'category_id', label: 'Категория', type: 'ref', ref: 'categories', refQuery: 'f_kind=категория', required: true, listCol: true, filterable: true },
+      { key: 'category_id', label: 'Категория', type: 'ref', ref: 'categories', refQuery: 'f_kind=категория&origin=local', required: true, listCol: true, filterable: true },
     ],
   },
 
@@ -276,7 +276,7 @@ function clientMeta() {
       icon: '🌿',
       children: [
         { type: 'raw_materials' },
-        { type: 'categories', label: 'Категории сырья', preset: { kind: 'категория' } },
+        { type: 'categories', label: 'Категории сырья', preset: { kind: 'категория' }, query: 'origin=local' },
         { type: 'cultures' },
         { type: 'packaging' },
       ],
