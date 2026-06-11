@@ -195,6 +195,24 @@ async function seed() {
     );
   }
 
+  // Категории сырья с кодами для артикулов (ТЗ «Номенклатура сырья», раздел 5)
+  const rawCats = [
+    ['BL', 'Baby Leaf'], ['HD', 'Кочанные'], ['LF', 'Листовые'],
+    ['HB', 'Пучковые / свежая зелень'], ['VG', 'Овощи'], ['MG', 'Микрозелень'],
+    ['PK', 'Packaging / упаковка'],
+  ];
+  for (const [code, name] of rawCats) {
+    const ex = await pool.query(
+      "SELECT id, code FROM ref_categories WHERE kind = 'категория' AND (upper(code) = $1 OR lower(name) = lower($2)) LIMIT 1",
+      [code, name]
+    );
+    if (ex.rows.length) {
+      if (!ex.rows[0].code) await pool.query('UPDATE ref_categories SET code = $1 WHERE id = $2', [code, ex.rows[0].id]);
+    } else {
+      await pool.query("INSERT INTO ref_categories (name, kind, code) VALUES ($1, 'категория', $2)", [name, code]);
+    }
+  }
+
   // Плитка «Справочники» — внутренний модуль ядра
   const dt = await pool.query("SELECT id FROM tiles WHERE url = '/dictionaries' LIMIT 1");
   if (dt.rows.length === 0) {

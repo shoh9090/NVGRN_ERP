@@ -30,10 +30,12 @@ const REF_TYPES = {
     label: 'Номенклатура сырья',
     icon: '🥬',
     group: 'nomenclature',
+    autoCode: 'RM', // артикул RM-<код категории>-<номер>, формируется автоматически и не меняется
     dedupe: ['name', 'code'],
     fields: [
-      { key: 'category_id', label: 'Категория', type: 'ref', ref: 'categories', refQuery: 'f_kind=категория', listCol: true, filterable: true },
-      { key: 'characteristics', label: 'Характеристики', type: 'text', listCol: true, searchable: true },
+      { key: 'category_id', label: 'Категория', type: 'ref', ref: 'categories', refQuery: 'f_kind=категория', required: true, listCol: true, filterable: true },
+      { key: 'cultura', label: 'Культура', type: 'text', required: true, listCol: true, searchable: true },
+      { key: 'characteristics', label: 'Характеристика', type: 'text', required: true, listCol: true, searchable: true },
       { key: 'unit_id', label: 'Ед. изм.', type: 'ref', ref: 'units', required: true, listCol: true },
       { key: 'main_supplier_id', label: 'Осн. поставщик', type: 'ref', ref: 'counterparties', listCol: true },
       { key: 'min_stock', label: 'Мин. остаток', type: 'number' },
@@ -244,6 +246,7 @@ function clientMeta() {
       group: t.group,
       hidden: !!t.hidden,
       readonly: !!t.readonly,
+      autoCode: t.autoCode || null,
       fields: [
         ...COMMON_FIELDS.filter((f) => !f.system || true).map((f) => ({ ...f })),
         ...t.fields.map((f) => ({ ...f })),

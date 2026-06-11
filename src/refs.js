@@ -50,6 +50,46 @@ function validate(t, values, isCreate) {
   return errors;
 }
 
+
+// Автогенерация артикула: RM-<код категории>-<номер> (ТЗ «Номенклатура сырья», раздел 4)
+async function nextArticle(t, prefix, categoryId) {
+  const cat = await db.pool.query('SELECT code, name FROM ref_categories WHERE id = $1', [categoryId]);
+  if (!cat.rows.length) throw new Error('категория не найдена');
+  const catCode = String(cat.rows[0].code || '').trim().toUpperCase();
+  if (!catCode) {
+    throw new Error(`категория «${cat.rows[0].name}» не имеет кода для формирования артикула — задайте код категории (например BL)`);
+  }
+  const like = `${prefix}-${catCode}-%`;
+  const r = await db.pool.query(
+    `SELECT code FROM ${t.table} WHERE code LIKE $1`,
+    [like]
+  );
+  let max = 0;
+  for (const row of r.rows) {
+    const m = String(row.code).match(/-(\d+)$/);
+    if (m) max = Math.max(max, parseInt(m[1]));
+  }
+  return `${prefix}-${catCode}-${String(max + 1).padStart(3, '0')}`;
+}
+
+// Ссылочные поля не должны указывать на архивные записи (ТЗ, раздел 11)
+async function checkRefsActive(t, values) {
+  for (const f of t.fields) {
+    if (f.type !== 'ref') continue;
+    const id = values[f.key];
+    if (!id) continue;
+    const refTable = REF_TYPES[f.ref].table;
+    const r = await db.pool.query(`SELECT status, name FROM ${refTable} WHERE id = $1`, [id]);
+    if (!r.rows.length) return `поле «${f.label}»: запись не найдена`;
+    if (r.rows[0].status === 'archived') return `поле «${f.label}»: «${r.rows[0].name}» в архиве — выберите активную запись`;
+  }
+  return null;
+}
+
+function saveError(res, msg, code = 400) {
+  return res.status(code).json({ error: `Не удалось сохранить позицию. Причина: ${msg}` });
+}
+
 // Метаданные схем для интерфейса
 router.get('/_meta', (req, res) => {
   res.json(clientMeta());
@@ -65,6 +105,64 @@ router.get('/:type/distinct/:field', async (req, res) => {
     `SELECT DISTINCT ${f.key} AS v FROM ${t.table} WHERE ${f.key} IS NOT NULL AND ${f.key}::text <> '' ORDER BY 1`
   );
   res.json({ values: r.rows.map((x) => x.v) });
+});
+
+
+// Экспорт справочника в Excel (учитывает поиск, статус и фильтры полей)
+router.get('/:type/export', async (req, res) => {
+  const t = typeOr404(req, res);
+  if (!t) return;
+  const XLSX = require('xlsx');
+  const status = req.query.status || 'active';
+  const q = (req.query.q || '').trim();
+  const where = [];
+  const params = [];
+  if (status !== 'all') { params.push(status); where.push(`status = $${params.length}`); }
+  if (q) {
+    const searchCols = ['name', 'code', 'code_1c', 'short_name', ...t.fields.filter((f) => f.searchable).map((f) => f.key)];
+    params.push('%' + q + '%');
+    where.push('(' + searchCols.map((c) => `${c} ILIKE $${params.length}`).join(' OR ') + ')');
+  }
+  for (const f of t.fields) {
+    if (!f.filterable) continue;
+    const raw = req.query['f_' + f.key];
+    if (raw === undefined || raw === '') continue;
+    params.push(f.type === 'ref' ? parseInt(raw) : String(raw));
+    where.push(`${f.key} = $${params.length}`);
+  }
+  const whereSQL = where.length ? 'WHERE ' + where.join(' AND ') : '';
+  const rows = await db.pool.query(`SELECT * FROM ${t.table} ${whereSQL} ORDER BY code, name`, params);
+
+  // имена для ссылочных полей
+  const refNames = {};
+  for (const f of t.fields) {
+    if (f.type !== 'ref' || refNames[f.ref]) continue;
+    const r = await db.pool.query(`SELECT id, name FROM ${REF_TYPES[f.ref].table}`);
+    refNames[f.ref] = Object.fromEntries(r.rows.map((x) => [x.id, x.name]));
+  }
+  const fields = [
+    { key: 'code', label: 'Артикул' },
+    { key: 'name', label: 'Наименование' },
+    ...t.fields.filter((f) => !f.system),
+    { key: 'status', label: 'Статус' },
+    { key: 'comment', label: 'Комментарий' },
+  ];
+  const data = rows.rows.map((row) => {
+    const out = {};
+    for (const f of fields) {
+      let v = row[f.key];
+      if (f.type === 'ref') v = refNames[f.ref][v] || '';
+      if (f.type === 'bool') v = v ? 'да' : '';
+      out[f.label] = v === null || v === undefined ? '' : v;
+    }
+    return out;
+  });
+  const ws = XLSX.utils.json_to_sheet(data);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, t.label.slice(0, 30));
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(t.label)}.xlsx"`);
+  res.type('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet').send(buf);
 });
 
 // Список с поиском, фильтром, сортировкой, пагинацией
@@ -130,7 +228,19 @@ router.post('/:type', express.json(), async (req, res) => {
   if (!t) return;
   const values = pickValues(t, req.body || {});
   const errors = validate(t, values, true);
-  if (errors.length) return res.status(400).json({ error: errors.join('; ') });
+  if (errors.length) return saveError(res, errors.join('; '));
+
+  const refErr = await checkRefsActive(t, values);
+  if (refErr) return saveError(res, refErr);
+
+  // Автоартикул (если включён для справочника и код не задан вручную)
+  if (t.autoCode && !values.code) {
+    try {
+      values.code = await nextArticle(t, t.autoCode, values.category_id);
+    } catch (e) {
+      return saveError(res, e.message);
+    }
+  }
 
   // Проверка дублей
   for (const dk of t.dedupe || []) {
@@ -138,7 +248,8 @@ router.post('/:type', express.json(), async (req, res) => {
     if (!v) continue;
     const dup = await db.pool.query(`SELECT id, name FROM ${t.table} WHERE lower(${dk}::text) = lower($1) LIMIT 1`, [String(v)]);
     if (dup.rows.length) {
-      return res.status(409).json({ error: `Дубль по полю «${dk}»: уже существует запись «${dup.rows[0].name}» (id ${dup.rows[0].id})` });
+      const label = dk === 'code' ? 'артикул ' + values.code + ' уже существует' : `дубль по полю «${dk}»: уже есть запись «${dup.rows[0].name}»`;
+      return saveError(res, label, 409);
     }
   }
 
@@ -158,8 +269,11 @@ router.put('/:type/:id(\\d+)', express.json(), async (req, res) => {
   const t = typeOr404(req, res);
   if (!t) return;
   const values = pickValues(t, req.body || {});
+  if (t.autoCode) delete values.code; // артикул после создания не меняется (ТЗ, раздел 6)
   const errors = validate(t, values, false);
-  if (errors.length) return res.status(400).json({ error: errors.join('; ') });
+  if (errors.length) return saveError(res, errors.join('; '));
+  const refErr = await checkRefsActive(t, values);
+  if (refErr) return saveError(res, refErr);
   const keys = Object.keys(values);
   if (!keys.length) return res.status(400).json({ error: 'Нет данных для сохранения' });
   const sets = keys.map((k, i) => `${k} = $${i + 1}`);
