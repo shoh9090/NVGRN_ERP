@@ -58,17 +58,22 @@
     return fieldsOf(typeKey).filter((f) => f.listCol);
   }
 
-  async function refOpts(refType) {
-    if (state.refOptions[refType]) return state.refOptions[refType];
-    const data = await api(`/${refType}?limit=1000&status=active&sort=name`);
-    state.refOptions[refType] = data.items.map((i) => ({ id: i.id, name: i.name }));
-    return state.refOptions[refType];
+  async function refOpts(refType, refQuery) {
+    const key = refType + '|' + (refQuery || '');
+    if (state.refOptions[key]) return state.refOptions[key];
+    const data = await api(`/${refType}?limit=1000&status=active&sort=name` + (refQuery ? '&' + refQuery : ''));
+    state.refOptions[key] = data.items.map((i) => ({ id: i.id, name: i.name }));
+    return state.refOptions[key];
   }
 
   function refName(refType, id) {
-    const opts = state.refOptions[refType] || [];
-    const f = opts.find((o) => o.id === id);
-    return f ? f.name : id ? '#' + id : '';
+    if (!id) return '';
+    for (const [key, opts] of Object.entries(state.refOptions)) {
+      if (!key.startsWith(refType + '|')) continue;
+      const f = opts.find((o) => o.id === id);
+      if (f) return f.name;
+    }
+    return '#' + id;
   }
 
   // ---------- Левая панель ----------
@@ -87,8 +92,8 @@
     });
     nav.appendChild(search);
     for (const g of state.meta.groups) {
-      const items = Object.entries(state.meta.types).filter(([, t]) => t.group === g.key);
-      if (!items.length) continue;
+      const items = Object.entries(state.meta.types).filter(([, t]) => t.group === g.key && !t.hidden);
+      if (!items.length && g.key !== 'nomenclature') continue;
       nav.appendChild(el('div', { class: 'nav-group' }, g.label));
       for (const [key, t] of items) {
         nav.appendChild(
@@ -130,7 +135,10 @@
     state.total = data.total;
     // подгружаем имена для ref-колонок
     for (const f of fieldsOf(state.type)) {
-      if (f.type === 'ref') await refOpts(f.ref);
+      if (f.type === 'ref') {
+        await refOpts(f.ref, '');
+        if (f.refQuery) await refOpts(f.ref, f.refQuery);
+      }
     }
     renderTable();
   }
@@ -229,8 +237,13 @@
       if (f.type === 'enum') {
         for (const o of f.options) sel.appendChild(el('option', { value: o }, o));
       } else if (f.type === 'ref') {
-        const opts = await refOpts(f.ref);
+        const opts = await refOpts(f.ref, f.refQuery);
         for (const o of opts) sel.appendChild(el('option', { value: o.id }, o.name));
+      } else if (f.dynamic) {
+        try {
+          const d = await api(`/${state.type}/distinct/${f.key}`);
+          for (const v of d.values) sel.appendChild(el('option', { value: v }, v));
+        } catch (e) { /* нет значений — пустой фильтр */ }
       }
       sel.value = state.filters[f.key] || '';
       box.appendChild(sel);
@@ -248,13 +261,18 @@
     $('#dict-card-title').textContent = isNew ? 'Новая запись — ' + t.label : row.name;
     body.innerHTML = '';
 
+    const ro = !!t.readonly;
     const form = el('form', {
       id: 'card-form',
       onsubmit: async (e) => {
         e.preventDefault();
-        await saveCard();
+        if (!ro) await saveCard();
       },
     });
+    if (ro) {
+      body.appendChild(el('p', { class: 'card-meta', style: 'margin:0 0 12px' },
+        'Раздел синхронизируется из SalesDoctor — изменения вносите в CRM.'));
+    }
 
     for (const f of fieldsOf(state.type)) {
       if (f.system) continue;
@@ -273,7 +291,7 @@
         ]);
         input.value = val || '';
       } else if (f.type === 'ref') {
-        const opts = await refOpts(f.ref);
+        const opts = await refOpts(f.ref, f.refQuery);
         input = el('select', { name: f.key }, [
           el('option', { value: '' }, '—'),
           ...opts.map((o) => el('option', { value: o.id }, o.name)),
@@ -290,11 +308,15 @@
       form.appendChild(label);
     }
 
-    form.appendChild(el('button', { type: 'submit', class: 'btn-primary' }, isNew ? 'Создать' : 'Сохранить'));
+    if (ro) {
+      for (const inp of form.querySelectorAll('input, select, textarea')) inp.disabled = true;
+    } else {
+      form.appendChild(el('button', { type: 'submit', class: 'btn-primary' }, isNew ? 'Создать' : 'Сохранить'));
+    }
     body.appendChild(form);
 
     const actions = el('div', { class: 'card-actions' });
-    if (!isNew) {
+    if (!isNew && !t.readonly) {
       if (row.status === 'active') {
         actions.appendChild(
           el(
@@ -332,6 +354,9 @@
         `id ${row.id}` + (row.code_1c ? ` · 1С: ${row.code_1c}` : '') + (row.sd_sd_id ? ` · SD: ${row.sd_sd_id}` : '')
       );
       actions.appendChild(meta);
+    }
+    if (!isNew && t.readonly && row.sd_sd_id) {
+      actions.appendChild(el('p', { class: 'card-meta' }, `id ${row.id} · SD: ${row.sd_sd_id}`));
     }
     body.appendChild(actions);
   }
@@ -407,6 +432,18 @@
       sel.value = state.filters.category_id || '';
       box.appendChild(sel);
     } catch (e) { /* фильтр не критичен */ }
+    // фильтр по типу цены (как в SD): показывает один прайс или все
+    try {
+      const pts = await api('/price_types?limit=1000&status=active&sort=name');
+      const sel = el('select', {
+        class: 'dict-filter',
+        onchange: (e) => { state.filters.price_type = e.target.value; loadPrices(); },
+      });
+      sel.appendChild(el('option', { value: '' }, 'Тип цены: все'));
+      for (const t of pts.items) sel.appendChild(el('option', { value: t.id }, t.name));
+      sel.value = state.filters.price_type || '';
+      box.appendChild(sel);
+    } catch (e) { /* нет прайсов */ }
     await loadPrices();
   }
 
@@ -418,8 +455,11 @@
     if (state.filters.category_id) params.set('category_id', state.filters.category_id);
     const res = await fetch('/api/prices/matrix?' + params.toString());
     const data = await res.json();
-    const types = data.types || [];
+    let types = data.types || [];
     const items = data.items || [];
+    if (state.filters.price_type) {
+      types = types.filter((t) => String(t.id) === String(state.filters.price_type));
+    }
     $('#dict-count').textContent = items.length + ' поз. · ' + types.length + ' прайс.';
     wrap.innerHTML = '';
     if (!types.length) {
@@ -484,10 +524,11 @@
     state.sort = 'name';
     state.order = 'asc';
     $('#dict-search').value = '';
+    const ro = !isPrices && state.meta.types[typeKey] && state.meta.types[typeKey].readonly;
     $('#dict-sync-sd').style.display = typeKey === 'finished_goods' ? '' : 'none';
     $('#dict-sync-prices').style.display = isPrices ? '' : 'none';
-    $('#dict-create').style.display = isPrices ? 'none' : '';
-    $('#dict-import').style.display = isPrices ? 'none' : '';
+    $('#dict-create').style.display = isPrices || ro ? 'none' : '';
+    $('#dict-import').style.display = isPrices || ro ? 'none' : '';
     $('#dict-status').style.display = isPrices ? 'none' : '';
     renderNav();
     closeCard();
