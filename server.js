@@ -348,6 +348,15 @@ admin.post('/integrations/sd', async (req, res) => {
   res.redirect('/admin/integrations?msg=' + encodeURIComponent('Настройки сохранены'));
 });
 
+admin.get('/integrations/sd/diag', async (req, res) => {
+  try {
+    const out = await integrations.diagSD();
+    res.type('text/plain; charset=utf-8').send(JSON.stringify(out, null, 2));
+  } catch (e) {
+    res.type('text/plain; charset=utf-8').status(400).send('Ошибка диагностики: ' + e.message);
+  }
+});
+
 admin.post('/integrations/sd/test', async (req, res) => {
   try {
     await integrations.saveSdConfig(req.body); // сохраняем то, что в форме, и сразу проверяем
