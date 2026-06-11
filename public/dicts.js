@@ -273,6 +273,10 @@
       body.appendChild(el('p', { class: 'card-meta', style: 'margin:0 0 12px' },
         'Раздел синхронизируется из SalesDoctor — изменения вносите в CRM.'));
     }
+    if (t.autoCode && isNew) {
+      body.appendChild(el('p', { class: 'card-meta', style: 'margin:0 0 12px' },
+        'Артикул сформируется автоматически: ' + t.autoCode + ' + код категории + порядковый номер (например ' + t.autoCode + '-BL-001). После создания не меняется.'));
+    }
 
     for (const f of fieldsOf(state.type)) {
       if (f.system) continue;
@@ -300,6 +304,10 @@
       } else {
         input = el('input', { name: f.key, type: f.type === 'number' ? 'number' : 'text', step: 'any' });
         input.value = val === null || val === undefined ? '' : val;
+        if (f.key === 'code' && t.autoCode) {
+          input.disabled = true;
+          if (isNew) input.placeholder = 'формируется автоматически: ' + t.autoCode + '-КОД-№';
+        }
       }
       const label = el('label', { class: 'card-field' + (f.type === 'bool' ? ' card-field-bool' : '') }, [
         el('span', {}, f.label + (f.required ? ' *' : '')),
@@ -399,6 +407,15 @@
   function closeCard() {
     state.editing = null;
     $('#dict-card').classList.remove('open');
+  }
+
+  function exportExcel() {
+    const params = new URLSearchParams({ status: state.status });
+    if (state.q) params.set('q', state.q);
+    for (const [k, v] of Object.entries(state.filters)) {
+      if (v !== '' && v !== null && v !== undefined) params.set('f_' + k, v);
+    }
+    window.location.href = '/api/refs/' + state.type + '/export?' + params.toString();
   }
 
   // ---------- Импорт ----------
@@ -598,6 +615,7 @@
     $('#dict-sync-prices').style.display = isPrices ? '' : 'none';
     $('#dict-create').style.display = isPrices || ro ? 'none' : '';
     $('#dict-import').style.display = isPrices || ro ? 'none' : '';
+    $('#dict-export').style.display = isPrices ? 'none' : '';
     $('#dict-status').style.display = isPrices ? 'none' : '';
     renderNav();
     closeCard();
@@ -657,6 +675,7 @@
     $('#dict-import').addEventListener('click', () => $('#dict-import-input').click());
     $('#dict-sync-sd').addEventListener('click', syncSD);
     $('#dict-sync-prices').addEventListener('click', syncPrices);
+    $('#dict-export').addEventListener('click', exportExcel);
 
     switchType(location.hash.slice(1) || 'raw_materials');
   }
