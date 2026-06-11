@@ -122,3 +122,13 @@
   .dicts-toolbar-right input{width:130px}
   .dict-card{width:100vw;max-width:100vw}
 }
+
+/* ===== Мастер импорта ===== */
+.imp-overlay{position:fixed;inset:0;background:rgba(16,42,29,.45);z-index:80;display:flex;align-items:center;justify-content:center;padding:24px}
+.imp-panel{background:var(--surface);border-radius:var(--radius);box-shadow:var(--shadow-lg);width:760px;max-width:96vw;max-height:88vh;display:flex;flex-direction:column}
+.imp-head{padding:18px 22px 10px;border-bottom:1px solid var(--line)}
+.imp-head h3{margin:0 0 4px;font-family:'Lora',serif;font-weight:600;font-size:17px}
+.imp-body{overflow:auto;flex:1;padding:0 10px}
+.imp-actions{display:flex;justify-content:flex-end;gap:10px;padding:14px 22px;border-top:1px solid var(--line)}
+.imp-err td{background:var(--red-soft)}
+.imp-upd td{background:var(--amber-soft)}

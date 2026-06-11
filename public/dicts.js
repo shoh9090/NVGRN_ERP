@@ -403,15 +403,84 @@
 
   // ---------- Импорт ----------
   async function importFile(file) {
+    const wizardTypes = ['raw_materials', 'counterparties'];
+    if (!wizardTypes.includes(state.type)) {
+      const fd = new FormData();
+      fd.append('file', file);
+      try {
+        const r = await api(`/${state.type}/import-simple`, { method: 'POST', body: fd });
+        toast(`Импорт: добавлено ${r.added}, пропущено ${r.skipped}`);
+        loadList();
+      } catch (e) {
+        toast(e.message, true);
+      }
+      return;
+    }
+    // мастер: предпросмотр → подтверждение
     const fd = new FormData();
     fd.append('file', file);
+    let preview;
     try {
-      const r = await api(`/${state.type}/import-simple`, { method: 'POST', body: fd });
-      toast(`Импорт: добавлено ${r.added}, пропущено ${r.skipped}`);
-      loadList();
+      preview = await api(`/${state.type}/import/preview`, { method: 'POST', body: fd });
     } catch (e) {
       toast(e.message, true);
+      return;
     }
+    showImportPreview(preview);
+  }
+
+  function showImportPreview(preview) {
+    const old = $('#imp-overlay');
+    if (old) old.remove();
+    const counts = { create: 0, update: 0, skip: 0 };
+    for (const r of preview.rows) counts[r.action]++;
+    const overlay = el('div', { id: 'imp-overlay', class: 'imp-overlay' });
+    const head = el('div', { class: 'imp-head' }, [
+      el('h3', {}, 'Предпросмотр импорта — лист «' + preview.sheet + '»'),
+      el('span', { class: 'muted' }, `новых: ${counts.create} · обновится: ${counts.update} · пропустится: ${counts.skip}`),
+    ]);
+    const table = el('table', { class: 'dict-table' }, [
+      el('thead', {}, el('tr', {}, [
+        el('th', {}, ''), el('th', {}, 'Наименование'), el('th', {}, 'Код'), el('th', {}, 'Примечание'),
+      ])),
+      el('tbody', {}, preview.rows.map((r) =>
+        el('tr', { class: r.error ? 'imp-err' : r.action === 'update' ? 'imp-upd' : '' }, [
+          el('td', {}, r.error ? '✖' : r.action === 'update' ? '↻' : '+'),
+          el('td', {}, r.values.name || ''),
+          el('td', { class: 'tnum' }, r.values.code || ''),
+          el('td', { class: 'muted' }, r.error || r.note || ''),
+        ])
+      )),
+    ]);
+    const actions = el('div', { class: 'imp-actions' }, [
+      el('button', { onclick: () => overlay.remove() }, 'Отмена'),
+      el('button', {
+        class: 'btn-primary',
+        onclick: async (e) => {
+          e.target.disabled = true;
+          e.target.textContent = 'Загружаю...';
+          try {
+            const r = await api(`/${state.type}/import/commit`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ rows: preview.rows }),
+            });
+            toast(`Импорт: создано ${r.created}, обновлено ${r.updated}, пропущено ${r.skipped}`);
+            overlay.remove();
+            delete state.refOptions[state.type + '|'];
+            loadList();
+          } catch (err) {
+            toast(err.message, true);
+            e.target.disabled = false;
+            e.target.textContent = 'Загрузить';
+          }
+        },
+      }, `Загрузить ${counts.create + counts.update} строк`),
+    ]);
+    const panel = el('div', { class: 'imp-panel' }, [head, el('div', { class: 'imp-body' }, table), actions]);
+    overlay.appendChild(panel);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+    document.body.appendChild(overlay);
   }
 
 
