@@ -77,6 +77,20 @@ function normalizeBarcode(v) {
   return str;
 }
 
+// Гибкое извлечение вложенного справочника из ответа SD: поле может называться по-разному
+function pickRef(obj, keys) {
+  for (const k of keys) {
+    const v = obj[k];
+    if (v && typeof v === 'object') {
+      return { sdId: String(v.SD_id || v.sd_id || ''), name: String(v.name || '').trim() };
+    }
+    if (typeof v === 'string' && v.trim()) {
+      return { sdId: '', name: v.trim() };
+    }
+  }
+  return { sdId: '', name: '' };
+}
+
 async function sdLogin(cfg) {
   if (!cfg.url || !cfg.login || !cfg.password) {
     throw new Error('Заполните адрес, логин и пароль SalesDoctor в разделе «Интеграции»');
@@ -121,7 +135,7 @@ async function sdGetAll(cfg, auth, method, resultKey, extraParams = {}) {
 // Синхронизация категорий и групп товаров SD → ref_categories
 // Возвращает карты sd_sd_id → наш id
 async function syncCatalogStructure(cfg, auth, userIdLocal) {
-  const maps = { category: {}, group: {} };
+  const maps = { category: {}, group: {}, categoryByName: {}, groupByName: {} };
 
   async function upsertKind(items, kind, map) {
     for (const it of items) {
@@ -144,6 +158,7 @@ async function syncCatalogStructure(cfg, auth, userIdLocal) {
           [name, sdId, String(it.CS_id || ''), String(it.code_1C || ''), status, userIdLocal, r.rows[0].id]
         );
         map[sdId] = r.rows[0].id;
+        maps[kind === 'категория' ? 'categoryByName' : 'groupByName'][name.toLowerCase()] = r.rows[0].id;
       } else {
         const ins = await db.pool.query(
           `INSERT INTO ref_categories (name, kind, sd_sd_id, sd_cs_id, code_1c, status, sync_status, last_sync_at, created_by, updated_by)
@@ -151,6 +166,7 @@ async function syncCatalogStructure(cfg, auth, userIdLocal) {
           [name, kind, sdId, String(it.CS_id || ''), String(it.code_1C || ''), status, userIdLocal]
         );
         map[sdId] = ins.rows[0].id;
+        maps[kind === 'категория' ? 'categoryByName' : 'groupByName'][name.toLowerCase()] = ins.rows[0].id;
       }
     }
   }
@@ -213,9 +229,17 @@ async function syncFinishedGoods(userIdLocal) {
         qty_per_box: p.packQuantity != null ? Number(p.packQuantity) : null,
         status: p.active === 'N' ? 'archived' : 'active',
         unit_id: null,
-        category_id: p.category && p.category.SD_id ? maps.category[String(p.category.SD_id)] || null : null,
-        group_id: p.group && p.group.SD_id ? maps.group[String(p.group.SD_id)] || null : null,
       };
+      const catRef = pickRef(p, ['category', 'productCategory', 'categoryProduct', 'cat']);
+      values.category_id =
+        (catRef.sdId && maps.category[catRef.sdId]) ||
+        (catRef.name && maps.categoryByName[catRef.name.toLowerCase()]) || null;
+      const grpRef = pickRef(p, ['group', 'productGroup', 'groupProduct']);
+      values.group_id =
+        (grpRef.sdId && maps.group[grpRef.sdId]) ||
+        (grpRef.name && maps.groupByName[grpRef.name.toLowerCase()]) || null;
+      const dirRef = pickRef(p, ['tradeDirection', 'trade_direction', 'direction', 'directionTrade']);
+      values.trade_direction = dirRef.name || '';
       const unitKey = p.unit && p.unit.code_1C ? String(p.unit.code_1C).toLowerCase() : '';
       if (unitKey && unitByKey[unitKey]) values.unit_id = unitByKey[unitKey];
 
@@ -244,11 +268,12 @@ async function syncFinishedGoods(userIdLocal) {
              sd_cs_id = $4, sd_sd_id = $5, barcode = COALESCE(NULLIF($6,''), barcode),
              qty_per_box = COALESCE($7, qty_per_box), unit_id = COALESCE($8, unit_id),
              category_id = COALESCE($9, category_id), group_id = COALESCE($10, group_id),
-             status = $11, sync_status = 'synced', last_sync_at = now(), updated_at = now(), updated_by = $12
-           WHERE id = $13`,
+             trade_direction = COALESCE(NULLIF($11,''), trade_direction),
+             status = $12, sync_status = 'synced', last_sync_at = now(), updated_at = now(), updated_by = $13
+           WHERE id = $14`,
           [values.name, values.code, values.code_1c, values.sd_cs_id, values.sd_sd_id,
            values.barcode, values.qty_per_box, values.unit_id, values.category_id, values.group_id,
-           values.status, userIdLocal, existing.id]
+           values.trade_direction, values.status, userIdLocal, existing.id]
         );
         if (values.status === 'archived' && existing.status !== 'archived') archivedCnt++;
         else updated++;
@@ -256,11 +281,11 @@ async function syncFinishedGoods(userIdLocal) {
         await db.pool.query(
           `INSERT INTO ref_finished_goods
              (name, code, code_1c, sd_cs_id, sd_sd_id, barcode, qty_per_box, unit_id,
-              category_id, group_id, status, sync_status, last_sync_at, created_by, updated_by)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'synced',now(),$12,$12)`,
+              category_id, group_id, trade_direction, status, sync_status, last_sync_at, created_by, updated_by)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'synced',now(),$13,$13)`,
           [values.name, values.code, values.code_1c, values.sd_cs_id, values.sd_sd_id,
            values.barcode, values.qty_per_box, values.unit_id, values.category_id, values.group_id,
-           values.status, userIdLocal]
+           values.trade_direction, values.status, userIdLocal]
         );
         created++;
       }
@@ -368,4 +393,30 @@ async function syncPrices(userIdLocal) {
   return { types: typesUpserted, prices: pricesUpserted, summary };
 }
 
-module.exports = { getSdConfig, saveSdConfig, testConnection, syncFinishedGoods, syncPrices };
+
+// Диагностика: сырые ответы SD для сверки имён полей
+async function diagSD() {
+  const cfg = await getSdConfig();
+  const auth = await sdLogin(cfg);
+  const out = {};
+  for (const [method, key] of [
+    ['getProduct', 'product'],
+    ['getProductCategory', 'productCategory'],
+    ['getProductGroup', 'productGroup'],
+    ['getPriceType', 'priceType'],
+  ]) {
+    try {
+      const data = await sdRequest(cfg.url, {
+        method,
+        auth: { userId: auth.userId, token: auth.token },
+        params: { limit: 2, page: 1 },
+      });
+      out[method] = data.result;
+    } catch (e) {
+      out[method] = 'ОШИБКА: ' + e.message;
+    }
+  }
+  return out;
+}
+
+module.exports = { getSdConfig, saveSdConfig, testConnection, syncFinishedGoods, syncPrices, diagSD };
