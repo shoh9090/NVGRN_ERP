@@ -17,6 +17,7 @@ const REF_TYPES = {
     label: 'Единицы измерения',
     icon: '📏',
     group: 'classifiers',
+    hidden: true,
     dedupe: ['name', 'short_name'],
     fields: [
       { key: 'short_name', label: 'Краткое', type: 'text', required: true, listCol: true, searchable: true },
@@ -31,7 +32,7 @@ const REF_TYPES = {
     group: 'nomenclature',
     dedupe: ['name', 'code'],
     fields: [
-      { key: 'category_id', label: 'Категория', type: 'ref', ref: 'categories', listCol: true, filterable: true },
+      { key: 'category_id', label: 'Категория', type: 'ref', ref: 'categories', refQuery: 'f_kind=категория', listCol: true, filterable: true },
       { key: 'unit_id', label: 'Ед. изм.', type: 'ref', ref: 'units', required: true, listCol: true },
       { key: 'main_supplier_id', label: 'Осн. поставщик', type: 'ref', ref: 'counterparties', listCol: true },
       { key: 'min_stock', label: 'Мин. остаток', type: 'number' },
@@ -50,20 +51,21 @@ const REF_TYPES = {
     label: 'Готовая продукция',
     icon: '🥗',
     group: 'nomenclature',
+    readonly: true, // данные приходят только из SalesDoctor
     dedupe: ['name', 'code', 'barcode'],
     fields: [
-      { key: 'category_id', label: 'Категория', type: 'ref', ref: 'categories', listCol: true, filterable: true },
-      { key: 'group_id', label: 'Группа', type: 'ref', ref: 'categories', listCol: true, filterable: true },
-      { key: 'unit_id', label: 'Ед. изм.', type: 'ref', ref: 'units', required: true },
-      { key: 'net_weight', label: 'Вес нетто, г', type: 'number', listCol: true },
-      { key: 'gross_weight', label: 'Вес брутто, г', type: 'number' },
-      { key: 'barcode', label: 'Штрихкод', type: 'text', listCol: true, searchable: true },
+      { key: 'category_id', label: 'Категория', type: 'ref', ref: 'categories', refQuery: 'f_kind=категория', listCol: true, filterable: true },
+      { key: 'group_id', label: 'Группа', type: 'ref', ref: 'categories', refQuery: 'f_kind=группа', listCol: true, filterable: true },
+      { key: 'trade_direction', label: 'Направление торговли', type: 'text', listCol: true, filterable: true, dynamic: true },
+      { key: 'unit_id', label: 'Ед. изм.', type: 'ref', ref: 'units', listCol: true },
+      { key: 'barcode', label: 'Штрих-код', type: 'text', listCol: true, searchable: true },
       { key: 'ikpu', label: 'ИКПУ код', type: 'text', searchable: true },
-      { key: 'qty_per_box', label: 'Кол-во в коробе', type: 'number' },
-      { key: 'package_type', label: 'Тип упаковки', type: 'enum', options: ['пакет', 'лоток', 'дойпак', 'банка', 'короб'], listCol: true },
+      { key: 'net_weight', label: 'Вес, г', type: 'number', listCol: true },
+      { key: 'qty_per_box', label: 'В блоке', type: 'number', listCol: true },
+      { key: 'gross_weight', label: 'Вес брутто, г', type: 'number' },
+      { key: 'package_type', label: 'Тип упаковки', type: 'enum', options: ['пакет', 'лоток', 'дойпак', 'банка', 'короб'] },
       { key: 'shelf_life_days', label: 'Срок годности, дн', type: 'number' },
       { key: 'storage_temp', label: 'Темп. хранения', type: 'text' },
-      { key: 'trade_direction', label: 'Направление', type: 'enum', options: ['Retail', 'HoReCa', 'Оба'], listCol: true, filterable: true },
     ],
   },
 
@@ -143,6 +145,7 @@ const REF_TYPES = {
     label: 'Типы цен (прайс-листы)',
     icon: '💰',
     group: 'classifiers',
+    hidden: true,
     dedupe: ['name'],
     fields: [
       { key: 'payment_type', label: 'Способ оплаты', type: 'text', listCol: true },
@@ -155,6 +158,7 @@ const REF_TYPES = {
     label: 'Категории и группы',
     icon: '🗂️',
     group: 'classifiers',
+    hidden: true,
     dedupe: ['name'],
     fields: [
       { key: 'kind', label: 'Уровень', type: 'enum', options: ['категория', 'группа', 'подкатегория'], required: true, listCol: true, filterable: true },
@@ -235,6 +239,8 @@ function clientMeta() {
       label: t.label,
       icon: t.icon,
       group: t.group,
+      hidden: !!t.hidden,
+      readonly: !!t.readonly,
       fields: [
         ...COMMON_FIELDS.filter((f) => !f.system || true).map((f) => ({ ...f })),
         ...t.fields.map((f) => ({ ...f })),

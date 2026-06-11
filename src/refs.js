@@ -55,6 +55,18 @@ router.get('/_meta', (req, res) => {
   res.json(clientMeta());
 });
 
+// Уникальные значения текстового поля (для динамических фильтров, как «Направление торговли»)
+router.get('/:type/distinct/:field', async (req, res) => {
+  const t = typeOr404(req, res);
+  if (!t) return;
+  const f = t.fields.find((x) => x.key === req.params.field && x.filterable);
+  if (!f) return res.status(400).json({ error: 'Поле недоступно для фильтра' });
+  const r = await db.pool.query(
+    `SELECT DISTINCT ${f.key} AS v FROM ${t.table} WHERE ${f.key} IS NOT NULL AND ${f.key}::text <> '' ORDER BY 1`
+  );
+  res.json({ values: r.rows.map((x) => x.v) });
+});
+
 // Список с поиском, фильтром, сортировкой, пагинацией
 router.get('/:type', async (req, res) => {
   const t = typeOr404(req, res);

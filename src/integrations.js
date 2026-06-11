@@ -256,7 +256,7 @@ async function syncFinishedGoods(userIdLocal) {
       if (!name) continue;
       const values = {
         name,
-        code: String(p.part_number || ''),
+        code: String(p.part_number || p.code_1C || ''),
         code_1c: String(p.code_1C || ''),
         sd_cs_id: String(p.CS_id || ''),
         sd_sd_id: sdId,
@@ -276,6 +276,7 @@ async function syncFinishedGoods(userIdLocal) {
       const tradeSd = p.trade && p.trade.SD_id != null ? String(p.trade.SD_id) : '';
       values.trade_direction = (tradeSd && maps.tradeName[tradeSd]) || '';
       values.ikpu = String(p.ikpu || '');
+      values.net_weight = p.weight != null && p.weight !== '' ? Math.round(Number(p.weight) * 1000) : null;
       if (p.unit && p.unit.SD_id != null && maps.unit[String(p.unit.SD_id)]) {
         values.unit_id = maps.unit[String(p.unit.SD_id)];
       }
@@ -306,12 +307,12 @@ async function syncFinishedGoods(userIdLocal) {
              qty_per_box = COALESCE($7, qty_per_box), unit_id = COALESCE($8, unit_id),
              category_id = COALESCE($9, category_id), group_id = COALESCE($10, group_id),
              trade_direction = COALESCE(NULLIF($11,''), trade_direction),
-             ikpu = COALESCE(NULLIF($12,''), ikpu),
-             status = $13, sync_status = 'synced', last_sync_at = now(), updated_at = now(), updated_by = $14
-           WHERE id = $15`,
+             ikpu = COALESCE(NULLIF($12,''), ikpu), net_weight = COALESCE($13, net_weight),
+             status = $14, sync_status = 'synced', last_sync_at = now(), updated_at = now(), updated_by = $15
+           WHERE id = $16`,
           [values.name, values.code, values.code_1c, values.sd_cs_id, values.sd_sd_id,
            values.barcode, values.qty_per_box, values.unit_id, values.category_id, values.group_id,
-           values.trade_direction, values.ikpu, values.status, userIdLocal, existing.id]
+           values.trade_direction, values.ikpu, values.net_weight, values.status, userIdLocal, existing.id]
         );
         if (values.status === 'archived' && existing.status !== 'archived') archivedCnt++;
         else updated++;
@@ -319,11 +320,11 @@ async function syncFinishedGoods(userIdLocal) {
         await db.pool.query(
           `INSERT INTO ref_finished_goods
              (name, code, code_1c, sd_cs_id, sd_sd_id, barcode, qty_per_box, unit_id,
-              category_id, group_id, trade_direction, ikpu, status, sync_status, last_sync_at, created_by, updated_by)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'synced',now(),$14,$14)`,
+              category_id, group_id, trade_direction, ikpu, net_weight, status, sync_status, last_sync_at, created_by, updated_by)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'synced',now(),$15,$15)`,
           [values.name, values.code, values.code_1c, values.sd_cs_id, values.sd_sd_id,
            values.barcode, values.qty_per_box, values.unit_id, values.category_id, values.group_id,
-           values.trade_direction, values.ikpu, values.status, userIdLocal]
+           values.trade_direction, values.ikpu, values.net_weight, values.status, userIdLocal]
         );
         created++;
       }
