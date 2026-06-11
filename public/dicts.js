@@ -18,6 +18,7 @@
     navOpen: {}, // раскрытые ветки меню
     preset: null, // предустановленный фильтр дочернего пункта
     extraQuery: '', // доп. параметры списка от пункта меню (например origin=local)
+    selected: new Set(), // отмеченные галочками записи
   };
 
   const $ = (sel) => document.querySelector(sel);
@@ -187,7 +188,19 @@
     $('#dict-count').textContent = state.total + ' зап.';
 
     const cols = listCols(state.type);
+    const ro = state.meta.types[state.type] && state.meta.types[state.type].readonly;
+    const headCheck = el('input', {
+      type: 'checkbox',
+      onclick: (e) => {
+        e.stopPropagation();
+        if (e.target.checked) state.items.forEach((r) => state.selected.add(r.id));
+        else state.items.forEach((r) => state.selected.delete(r.id));
+        renderTable();
+      },
+    });
+    headCheck.checked = state.items.length > 0 && state.items.every((r) => state.selected.has(r.id));
     const thead = el('tr', {}, [
+      ro ? null : el('th', { style: 'width:34px' }, headCheck),
       ...cols.map((f) =>
         el(
           'th',
@@ -208,8 +221,18 @@
       el('th', {}, 'Статус'),
     ]);
 
-    const rows = state.items.map((row) =>
-      el(
+    const rows = state.items.map((row) => {
+      const cb = el('input', {
+        type: 'checkbox',
+        onclick: (e) => {
+          e.stopPropagation();
+          if (e.target.checked) state.selected.add(row.id);
+          else state.selected.delete(row.id);
+          renderBulkBar();
+        },
+      });
+      cb.checked = state.selected.has(row.id);
+      return el(
         'tr',
         {
           class: row.status === 'archived' ? 'row-archived' : '',
@@ -217,12 +240,14 @@
           onclick: () => openCard(row),
         },
         [
+          ro ? null : el('td', { onclick: (e) => e.stopPropagation() }, cb),
           ...cols.map((f) => el('td', {}, cellValue(f, row))),
           el('td', {}, el('span', { class: 'status-pill status-' + row.status }, row.status === 'active' ? 'Активный' : 'Архив')),
         ]
-      )
-    );
+      );
+    });
 
+    renderBulkBar();
     const table = el('table', { class: 'dict-table' }, [el('thead', {}, thead), el('tbody', {}, rows)]);
     const wrap = $('#dict-table-wrap');
     wrap.innerHTML = '';
@@ -278,6 +303,56 @@
       sel.value = state.filters[f.key] || '';
       box.appendChild(sel);
     }
+  }
+
+
+  function renderBulkBar() {
+    const bar = $('#dict-bulkbar');
+    const n = state.selected.size;
+    if (!n) { bar.innerHTML = ''; bar.style.display = 'none'; return; }
+    bar.style.display = '';
+    bar.innerHTML = '';
+    bar.appendChild(el('span', { class: 'bulk-count' }, 'Выбрано: ' + n));
+    bar.appendChild(el('button', {
+      onclick: async () => {
+        try {
+          const r = await api(`/${state.type}/bulk`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'archive', ids: [...state.selected] }),
+          });
+          toast('В архив: ' + r.done);
+          state.selected.clear();
+          loadList();
+        } catch (e) { toast(e.message, true); }
+      },
+    }, 'В архив'));
+    if (window.HUB_USER && window.HUB_USER.isAdmin) {
+      bar.appendChild(el('button', {
+        class: 'btn-danger-link', style: 'border:1px solid #e8c7bd;border-radius:11px;padding:8px 16px;text-decoration:none',
+        onclick: async () => {
+          if (!confirm('Полностью удалить выбранные записи (' + n + ' шт.)?\nЭто действие нельзя отменить.')) return;
+          try {
+            let r = await api(`/${state.type}/bulk`, {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ action: 'delete', ids: [...state.selected] }),
+            });
+            if (r.blocked > 0) {
+              const force = confirm('Удалено: ' + r.deleted + '. Ещё ' + r.blocked + ' записей используются в связанных данных.\nУдалить их принудительно?');
+              if (force) {
+                r = await api(`/${state.type}/bulk`, {
+                  method: 'POST', headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ action: 'delete', ids: [...state.selected], force: true }),
+                });
+              }
+            }
+            toast('Удалено: ' + r.deleted + (r.blocked ? ', пропущено: ' + r.blocked : ''));
+            state.selected.clear();
+            loadList();
+          } catch (e) { toast(e.message, true); }
+        },
+      }, 'Удалить выбранные'));
+    }
+    bar.appendChild(el('button', { onclick: () => { state.selected.clear(); renderTable(); } }, 'Снять выбор'));
   }
 
   // ---------- Карточка ----------
@@ -674,6 +749,7 @@
     state.preset = null;
     state.extraQuery = state.nextExtraQuery || '';
     state.nextExtraQuery = '';
+    state.selected.clear();
     state.sort = 'name';
     state.order = 'asc';
     $('#dict-search').value = '';
