@@ -52,14 +52,20 @@ function validate(t, values, isCreate) {
 
 
 // Автогенерация артикула: RM-<код категории>-<номер> (ТЗ «Номенклатура сырья», раздел 4)
-async function nextArticle(t, prefix, categoryId) {
-  const cat = await db.pool.query('SELECT code, name FROM ref_categories WHERE id = $1', [categoryId]);
-  if (!cat.rows.length) throw new Error('категория не найдена');
-  const catCode = String(cat.rows[0].code || '').trim().toUpperCase();
-  if (!catCode) {
-    throw new Error(`категория «${cat.rows[0].name}» не имеет кода для формирования артикула — задайте код категории (например BL)`);
+async function nextArticle(t, prefix, categoryId, fixedPrefix) {
+  let base;
+  if (fixedPrefix) {
+    base = fixedPrefix;
+  } else {
+    const cat = await db.pool.query('SELECT code, name FROM ref_categories WHERE id = $1', [categoryId]);
+    if (!cat.rows.length) throw new Error('категория не найдена');
+    const catCode = String(cat.rows[0].code || '').trim().toUpperCase();
+    if (!catCode) {
+      throw new Error(`категория «${cat.rows[0].name}» не имеет кода для формирования артикула — задайте код категории (например BL)`);
+    }
+    base = `${prefix}-${catCode}`;
   }
-  const like = `${prefix}-${catCode}-%`;
+  const like = `${base}-%`;
   const r = await db.pool.query(
     `SELECT code FROM ${t.table} WHERE code LIKE $1`,
     [like]
@@ -69,7 +75,7 @@ async function nextArticle(t, prefix, categoryId) {
     const m = String(row.code).match(/-(\d+)$/);
     if (m) max = Math.max(max, parseInt(m[1]));
   }
-  return `${prefix}-${catCode}-${String(max + 1).padStart(3, '0')}`;
+  return `${base}-${String(max + 1).padStart(3, '0')}`;
 }
 
 // Ссылочные поля не должны указывать на архивные записи (ТЗ, раздел 11)
@@ -107,6 +113,75 @@ router.get('/:type/distinct/:field', async (req, res) => {
   res.json({ values: r.rows.map((x) => x.v) });
 });
 
+
+
+// Полное удаление — только администратор (ТЗ, раздел 9)
+router.delete('/:type/:id(\\d+)', async (req, res) => {
+  const t = typeOr404(req, res);
+  if (!t) return;
+  if (!req.user.isAdmin) return res.status(403).json({ error: 'Недостаточно прав: удаление доступно только администратору' });
+
+  const cur = await db.pool.query(`SELECT id, code, name FROM ${t.table} WHERE id = $1`, [req.params.id]);
+  if (!cur.rows.length) return res.status(404).json({ error: 'Запись не найдена' });
+  const rec = cur.rows[0];
+
+  // проверка использования в других справочниках и ценах
+  const usedIn = [];
+  for (const [otherKey, ot] of Object.entries(REF_TYPES)) {
+    for (const f of ot.fields) {
+      if (f.type === 'ref' && f.ref === req.params.type) {
+        const u = await db.pool.query(`SELECT count(*)::int AS n FROM ${ot.table} WHERE ${f.key} = $1`, [req.params.id]);
+        if (u.rows[0].n > 0) usedIn.push(`${ot.label} (${u.rows[0].n})`);
+      }
+    }
+  }
+  if (req.params.type === 'finished_goods') {
+    const u = await db.pool.query('SELECT count(*)::int AS n FROM ref_prices WHERE product_id = $1', [req.params.id]);
+    if (u.rows[0].n > 0) usedIn.push(`Отпускные цены (${u.rows[0].n})`);
+  }
+  if (req.params.type === 'price_types') {
+    const u = await db.pool.query('SELECT count(*)::int AS n FROM ref_prices WHERE price_type_id = $1', [req.params.id]);
+    if (u.rows[0].n > 0) usedIn.push(`Отпускные цены (${u.rows[0].n})`);
+  }
+
+  if (usedIn.length && req.query.force !== '1') {
+    return res.status(409).json({ error: 'used', usedIn });
+  }
+  if (req.params.type === 'finished_goods' || req.params.type === 'price_types') {
+    await db.pool.query(
+      `DELETE FROM ref_prices WHERE ${req.params.type === 'finished_goods' ? 'product_id' : 'price_type_id'} = $1`,
+      [req.params.id]
+    );
+  }
+  await db.pool.query(`DELETE FROM ${t.table} WHERE id = $1`, [req.params.id]);
+  await db.log(req.user.id, `ref_delete_${req.params.type}`,
+    `id=${rec.id} код=${rec.code || '—'} «${rec.name}»${usedIn.length ? ' ПРИНУДИТЕЛЬНО, связи: ' + usedIn.join(', ') : ''}`);
+  res.json({ ok: true });
+});
+
+// Перекодировка старых артикулов nvXX → RM-XX-000 (только администратор; раздел 10)
+router.post('/raw_materials/recode-legacy', async (req, res) => {
+  if (!req.user.isAdmin) return res.status(403).json({ error: 'Недостаточно прав' });
+  const t = REF_TYPES.raw_materials;
+  const rows = await db.pool.query(
+    `SELECT id, code, name, category_id FROM ${t.table} WHERE (code IS NULL OR code !~ '^RM-') ORDER BY name`
+  );
+  const mapping = [];
+  let skipped = 0;
+  for (const r of rows.rows) {
+    if (!r.category_id) { mapping.push({ id: r.id, name: r.name, old: r.code, new: '', note: 'нет категории — пропущено' }); skipped++; continue; }
+    try {
+      const code = await nextArticle(t, 'RM', r.category_id);
+      await db.pool.query(`UPDATE ${t.table} SET code = $1, updated_at = now(), updated_by = $2 WHERE id = $3`, [code, req.user.id, r.id]);
+      mapping.push({ id: r.id, name: r.name, old: r.code, new: code });
+    } catch (e) {
+      mapping.push({ id: r.id, name: r.name, old: r.code, new: '', note: e.message });
+      skipped++;
+    }
+  }
+  await db.log(req.user.id, 'ref_recode_legacy_raw_materials', `перекодировано ${mapping.length - skipped}, пропущено ${skipped}`);
+  res.json({ recoded: mapping.length - skipped, skipped, mapping });
+});
 
 // Экспорт справочника в Excel (учитывает поиск, статус и фильтры полей)
 router.get('/:type/export', async (req, res) => {
@@ -234,9 +309,9 @@ router.post('/:type', express.json(), async (req, res) => {
   if (refErr) return saveError(res, refErr);
 
   // Автоартикул (если включён для справочника и код не задан вручную)
-  if (t.autoCode && !values.code) {
+  if ((t.autoCode || t.autoCodeFixed) && !values.code) {
     try {
-      values.code = await nextArticle(t, t.autoCode, values.category_id);
+      values.code = await nextArticle(t, t.autoCode, values.category_id, t.autoCodeFixed);
     } catch (e) {
       return saveError(res, e.message);
     }
@@ -269,7 +344,27 @@ router.put('/:type/:id(\\d+)', express.json(), async (req, res) => {
   const t = typeOr404(req, res);
   if (!t) return;
   const values = pickValues(t, req.body || {});
-  if (t.autoCode) delete values.code; // артикул после создания не меняется (ТЗ, раздел 6)
+  if ((t.autoCode || t.autoCodeFixed) && 'code' in values) {
+    if (!req.user.isAdmin) {
+      delete values.code; // обычный пользователь номенклатурный код не меняет
+    } else {
+      const cur = await db.pool.query(`SELECT code, name FROM ${t.table} WHERE id = $1`, [req.params.id]);
+      const oldCode = cur.rows.length ? cur.rows[0].code : '';
+      const newCode = String(values.code || '').trim().toUpperCase();
+      if (newCode === String(oldCode || '')) {
+        delete values.code;
+      } else {
+        if (!/^RM-[A-Z]{2,3}-[0-9]{3,4}$/.test(newCode)) {
+          return saveError(res, `код «${newCode}» не соответствует формату RM-XX-000`);
+        }
+        const dup = await db.pool.query(`SELECT id FROM ${t.table} WHERE upper(code::text) = $1 AND id <> $2 LIMIT 1`, [newCode, req.params.id]);
+        if (dup.rows.length) return saveError(res, `артикул ${newCode} уже существует`, 409);
+        values.code = newCode;
+        await db.log(req.user.id, `ref_code_change_${req.params.type}`,
+          `id=${req.params.id} «${cur.rows.length ? cur.rows[0].name : ''}»: ${oldCode} → ${newCode}`);
+      }
+    }
+  }
   const errors = validate(t, values, false);
   if (errors.length) return saveError(res, errors.join('; '));
   const refErr = await checkRefsActive(t, values);

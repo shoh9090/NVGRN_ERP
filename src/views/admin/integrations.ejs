@@ -32,4 +32,14 @@
   </div>
 </section>
 
+<section class="card" style="border-color:#e8c7bd">
+  <h3 style="color:var(--red)">Опасная зона: очистка справочников</h3>
+  <p class="muted">Полностью удаляет все записи справочников (сырьё, ГП, упаковку, контрагентов, культуры, цены и пр.) и восстанавливает базовые категории с кодами. Пользователи, роли, плитки и настройки не затрагиваются. Перед очисткой выгрузите нужные справочники через «Экспорт».</p>
+  <form method="POST" action="/admin/maintenance/wipe-dictionaries" class="form-row"
+        onsubmit="return confirm('Все данные справочников будут удалены безвозвратно. Продолжить?')">
+    <input name="confirm" placeholder="Введите слово ОЧИСТИТЬ" required style="max-width:260px">
+    <button type="submit" class="btn-danger-link" style="text-decoration:none;border:1px solid #e8c7bd;border-radius:11px;padding:9px 18px">Очистить все справочники</button>
+  </form>
+</section>
+
 <%- include('_footer') %>

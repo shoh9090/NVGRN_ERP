@@ -367,6 +367,23 @@ admin.post('/integrations/sd/test', async (req, res) => {
   }
 });
 
+// Обслуживание: полная очистка справочников (для повторной загрузки данных)
+admin.post('/maintenance/wipe-dictionaries', async (req, res) => {
+  if ((req.body.confirm || '').trim().toUpperCase() !== 'ОЧИСТИТЬ') {
+    return res.redirect('/admin/integrations?t=error&msg=' + encodeURIComponent('Очистка не выполнена: введите слово ОЧИСТИТЬ для подтверждения'));
+  }
+  try {
+    await db.pool.query(`TRUNCATE ref_prices, ref_raw_materials, ref_finished_goods, ref_packaging,
+      ref_counterparties, ref_warehouses, ref_production_areas, ref_cultures, ref_categories,
+      ref_units, ref_price_types RESTART IDENTITY CASCADE`);
+    await db.seed(); // восстановить базовые единицы, категории с кодами и культуры
+    await db.log(req.user.id, 'maintenance_wipe_dictionaries');
+    res.redirect('/admin/integrations?msg=' + encodeURIComponent('Справочники очищены. Базовые категории, культуры и единицы восстановлены — можно загружать данные заново.'));
+  } catch (e) {
+    res.redirect('/admin/integrations?t=error&msg=' + encodeURIComponent('Ошибка очистки: ' + e.message));
+  }
+});
+
 app.use('/admin', admin);
 
 // ---------- Блок «Справочники» (отдельный модуль ядра) ----------

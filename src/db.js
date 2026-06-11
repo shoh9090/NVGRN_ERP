@@ -195,6 +195,37 @@ async function seed() {
     );
   }
 
+  // Культуры: перенос из старого текстового поля cultura → справочник ref_cultures (однократно)
+  try {
+    const hasOld = await pool.query(
+      "SELECT 1 FROM information_schema.columns WHERE table_name='ref_raw_materials' AND column_name='cultura'"
+    );
+    if (hasOld.rows.length) {
+      const texts = await pool.query(
+        "SELECT DISTINCT trim(cultura) AS c FROM ref_raw_materials WHERE cultura IS NOT NULL AND trim(cultura) <> ''"
+      );
+      for (const row of texts.rows) {
+        const ex = await pool.query('SELECT id FROM ref_cultures WHERE lower(name)=lower($1) LIMIT 1', [row.c]);
+        const cid = ex.rows.length ? ex.rows[0].id
+          : (await pool.query('INSERT INTO ref_cultures (name) VALUES ($1) RETURNING id', [row.c])).rows[0].id;
+        await pool.query(
+          'UPDATE ref_raw_materials SET cultura_id = $1 WHERE lower(trim(cultura)) = lower($2) AND cultura_id IS NULL',
+          [cid, row.c]
+        );
+      }
+    }
+  } catch (e) { console.error('cultura migrate:', e.message); }
+
+  // Стартовые культуры по категориям (ТЗ, раздел 12)
+  const cultSeed = [
+    ['Baby Leaf', ['Руккола', 'Шпинат', 'Мангольд']],
+    ['Кочанные', ['Романо', 'Айсберг']],
+    ['Пучковые / свежая зелень', ['Укроп', 'Кинза']],
+    ['Овощи', ['Морковь', 'Баклажан']],
+    ['Packaging / упаковка', ['Пакет', 'Короб', 'Этикетка', 'Плёнка']],
+  ];
+  // выполняется после сида категорий ниже — поэтому категории создаём раньше культур
+
   // Категории сырья с кодами для артикулов (ТЗ «Номенклатура сырья», раздел 5)
   const rawCats = [
     ['BL', 'Baby Leaf'], ['HD', 'Кочанные'], ['LF', 'Листовые'],
@@ -210,6 +241,19 @@ async function seed() {
       if (!ex.rows[0].code) await pool.query('UPDATE ref_categories SET code = $1 WHERE id = $2', [code, ex.rows[0].id]);
     } else {
       await pool.query("INSERT INTO ref_categories (name, kind, code) VALUES ($1, 'категория', $2)", [name, code]);
+    }
+  }
+
+  for (const [catName, cults] of cultSeed) {
+    const cat = await pool.query("SELECT id FROM ref_categories WHERE kind='категория' AND lower(name)=lower($1) LIMIT 1", [catName]);
+    if (!cat.rows.length) continue;
+    for (const cu of cults) {
+      const ex = await pool.query('SELECT id, category_id FROM ref_cultures WHERE lower(name)=lower($1) LIMIT 1', [cu]);
+      if (ex.rows.length) {
+        if (!ex.rows[0].category_id) await pool.query('UPDATE ref_cultures SET category_id=$1 WHERE id=$2', [cat.rows[0].id, ex.rows[0].id]);
+      } else {
+        await pool.query('INSERT INTO ref_cultures (name, category_id) VALUES ($1,$2)', [cu, cat.rows[0].id]);
+      }
     }
   }
 

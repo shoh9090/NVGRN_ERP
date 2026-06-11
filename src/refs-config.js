@@ -30,11 +30,12 @@ const REF_TYPES = {
     label: 'Номенклатура сырья',
     icon: '🥬',
     group: 'nomenclature',
+    hidden: true,
     autoCode: 'RM', // артикул RM-<код категории>-<номер>, формируется автоматически и не меняется
     dedupe: ['name', 'code'],
     fields: [
       { key: 'category_id', label: 'Категория', type: 'ref', ref: 'categories', refQuery: 'f_kind=категория', required: true, listCol: true, filterable: true },
-      { key: 'cultura', label: 'Культура', type: 'text', required: true, listCol: true, searchable: true },
+      { key: 'cultura_id', label: 'Культура', type: 'ref', ref: 'cultures', required: true, listCol: true, filterable: true },
       { key: 'characteristics', label: 'Характеристика', type: 'text', required: true, listCol: true, searchable: true },
       { key: 'unit_id', label: 'Ед. изм.', type: 'ref', ref: 'units', required: true, listCol: true },
       { key: 'main_supplier_id', label: 'Осн. поставщик', type: 'ref', ref: 'counterparties', listCol: true },
@@ -72,11 +73,25 @@ const REF_TYPES = {
     ],
   },
 
+  cultures: {
+    table: 'ref_cultures',
+    label: 'Культуры сырья',
+    icon: '🌱',
+    group: 'nomenclature',
+    hidden: true, // показывается внутри подменю «Сырьё и материалы»
+    dedupe: ['name'],
+    fields: [
+      { key: 'category_id', label: 'Категория', type: 'ref', ref: 'categories', refQuery: 'f_kind=категория', required: true, listCol: true, filterable: true },
+    ],
+  },
+
   packaging: {
     table: 'ref_packaging',
-    label: 'Упаковка',
+    label: 'Упаковочные материалы',
     icon: '📦',
     group: 'nomenclature',
+    hidden: true,
+    autoCodeFixed: 'RM-PK',
     dedupe: ['name', 'code'],
     fields: [
       { key: 'pack_category', label: 'Категория', type: 'enum', options: ['пакет', 'короб', 'этикетка', 'банка', 'плёнка', 'крышка', 'стикер', 'прочее'], listCol: true },
@@ -160,7 +175,7 @@ const REF_TYPES = {
 
   categories: {
     table: 'ref_categories',
-    label: 'Категории и группы',
+    label: 'Категории сырья',
     icon: '🗂️',
     group: 'classifiers',
     hidden: true,
@@ -247,13 +262,27 @@ function clientMeta() {
       hidden: !!t.hidden,
       readonly: !!t.readonly,
       autoCode: t.autoCode || null,
+      autoCodeFixed: t.autoCodeFixed || null,
       fields: [
         ...COMMON_FIELDS.filter((f) => !f.system || true).map((f) => ({ ...f })),
         ...t.fields.map((f) => ({ ...f })),
       ],
     };
   }
-  return { groups: REF_GROUPS, types };
+  const navTree = [
+    {
+      group: 'nomenclature',
+      title: 'Сырьё и материалы',
+      icon: '🌿',
+      children: [
+        { type: 'raw_materials' },
+        { type: 'categories', label: 'Категории сырья', preset: { kind: 'категория' } },
+        { type: 'cultures' },
+        { type: 'packaging' },
+      ],
+    },
+  ];
+  return { groups: REF_GROUPS, types, navTree };
 }
 
 module.exports = { REF_TYPES, REF_GROUPS, COMMON_FIELDS, allCreateSQL, allAlterSQL, clientMeta };
