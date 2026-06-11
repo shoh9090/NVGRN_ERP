@@ -132,3 +132,10 @@
 .imp-actions{display:flex;justify-content:flex-end;gap:10px;padding:14px 22px;border-top:1px solid var(--line)}
 .imp-err td{background:var(--red-soft)}
 .imp-upd td{background:var(--amber-soft)}
+
+/* ===== Подменю «Сырьё и материалы» ===== */
+.nav-parent{font-weight:800;position:relative}
+.nav-arrow{margin-left:auto;font-size:11px;color:var(--ink-faint)}
+.nav-parent.open .nav-arrow{color:#3f6a16}
+.nav-child{padding-left:30px;font-weight:600;font-size:13px}
+@media (max-width:760px){.nav-child{padding-left:4px}.nav-arrow{display:none}}

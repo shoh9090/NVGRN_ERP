@@ -15,6 +15,8 @@
     refOptions: {}, // кэш вариантов для ref-полей
     editing: null, // запись в карточке (null = закрыто, {} = новая)
     filters: {}, // значения фильтров полей (f_*)
+    navOpen: {}, // раскрытые ветки меню
+    preset: null, // предустановленный фильтр дочернего пункта
   };
 
   const $ = (sel) => document.querySelector(sel);
@@ -91,20 +93,46 @@
       },
     });
     nav.appendChild(search);
+    const tree = state.meta.navTree || [];
     for (const g of state.meta.groups) {
       const items = Object.entries(state.meta.types).filter(([, t]) => t.group === g.key && !t.hidden);
-      if (!items.length && g.key !== 'nomenclature') continue;
+      const branches = tree.filter((b) => b.group === g.key);
+      if (!items.length && !branches.length && g.key !== 'nomenclature') continue;
       nav.appendChild(el('div', { class: 'nav-group' }, g.label));
+
+      // раскрывающиеся ветки (Сырьё и материалы)
+      for (const b of branches) {
+        const childKeys = b.children.map((c) => c.type);
+        const isInside = childKeys.includes(state.type);
+        const open = isInside || state.navOpen[b.title];
+        const parent = el('a', {
+          class: 'nav-item nav-parent' + (open ? ' open' : ''),
+          href: 'javascript:void(0)',
+          onclick: () => { state.navOpen[b.title] = !open; renderNav(); },
+        }, [
+          el('span', { class: 'nav-icon' }, b.icon + ' '), b.title,
+          el('span', { class: 'nav-arrow' }, open ? '▾' : '▸'),
+        ]);
+        nav.appendChild(parent);
+        if (open) {
+          for (const c of b.children) {
+            const t = state.meta.types[c.type];
+            if (!t) continue;
+            nav.appendChild(el('a', {
+              class: 'nav-item nav-child' + (c.type === state.type ? ' active' : ''),
+              href: '#' + c.type,
+              onclick: () => { state.preset = c.preset || null; },
+            }, [el('span', { class: 'nav-icon' }, t.icon + ' '), c.label || t.label]));
+          }
+        }
+      }
+
       for (const [key, t] of items) {
         nav.appendChild(
-          el(
-            'a',
-            {
-              class: 'nav-item' + (key === state.type ? ' active' : ''),
-              href: '#' + key,
-            },
-            [el('span', { class: 'nav-icon' }, t.icon + ' '), t.label]
-          )
+          el('a', {
+            class: 'nav-item' + (key === state.type ? ' active' : ''),
+            href: '#' + key,
+          }, [el('span', { class: 'nav-icon' }, t.icon + ' '), t.label])
         );
       }
       if (g.key === 'nomenclature') {
@@ -304,9 +332,12 @@
       } else {
         input = el('input', { name: f.key, type: f.type === 'number' ? 'number' : 'text', step: 'any' });
         input.value = val === null || val === undefined ? '' : val;
-        if (f.key === 'code' && t.autoCode) {
-          input.disabled = true;
-          if (isNew) input.placeholder = 'формируется автоматически: ' + t.autoCode + '-КОД-№';
+        if (f.key === 'code' && (t.autoCode || t.autoCodeFixed)) {
+          const admin = window.HUB_USER && window.HUB_USER.isAdmin;
+          input.disabled = isNew || !admin;
+          if (isNew) input.placeholder = 'формируется автоматически: ' + (t.autoCodeFixed || t.autoCode + '-КОД') + '-№';
+          else if (!admin) input.title = 'Номенклатурный код меняет только администратор';
+          else input.dataset.codeEditable = '1';
         }
       }
       const label = el('label', { class: 'card-field' + (f.type === 'bool' ? ' card-field-bool' : '') }, [
@@ -362,6 +393,29 @@
         `id ${row.id}` + (row.code_1c ? ` · 1С: ${row.code_1c}` : '') + (row.sd_sd_id ? ` · SD: ${row.sd_sd_id}` : '')
       );
       actions.appendChild(meta);
+      if (window.HUB_USER && window.HUB_USER.isAdmin) {
+        actions.appendChild(el('button', {
+          class: 'btn-danger-link',
+          onclick: async () => {
+            if (!confirm('Вы собираетесь полностью удалить запись из справочника.\nЭто действие нельзя отменить.\nПродолжить?')) return;
+            try {
+              let res = await fetch(`/api/refs/${state.type}/${row.id}`, { method: 'DELETE' });
+              let data = await res.json().catch(() => ({}));
+              if (res.status === 409 && data.error === 'used') {
+                const choice = confirm('Эта запись используется в связанных данных: ' + data.usedIn.join('; ') +
+                  '.\nУдаление может нарушить историю.\n\nОК — удалить принудительно, Отмена — оставить (можно архивировать).');
+                if (!choice) return;
+                res = await fetch(`/api/refs/${state.type}/${row.id}?force=1`, { method: 'DELETE' });
+                data = await res.json().catch(() => ({}));
+              }
+              if (!res.ok) throw new Error(data.error || 'Ошибка удаления');
+              toast('Запись удалена');
+              closeCard();
+              loadList();
+            } catch (e) { toast(e.message, true); }
+          },
+        }, 'Удалить навсегда'));
+      }
     }
     if (!isNew && t.readonly && row.sd_sd_id) {
       actions.appendChild(el('p', { class: 'card-meta' }, `id ${row.id} · SD: ${row.sd_sd_id}`));
@@ -378,6 +432,14 @@
       const input = form.elements[f.key];
       if (!input) continue;
       payload[f.key] = f.type === 'bool' ? input.checked : input.value;
+    }
+    const codeInput = form.elements['code'];
+    if (codeInput && codeInput.dataset && codeInput.dataset.codeEditable === '1' && state.editing.id) {
+      const oldCode = String(state.editing.code || '');
+      if (String(codeInput.value).trim().toUpperCase() !== oldCode.toUpperCase()) {
+        const ok = confirm('Вы изменяете номенклатурный код позиции.\nЭто может повлиять на связанные документы, отчёты и интеграции.\nПродолжить?');
+        if (!ok) return;
+      }
     }
     try {
       const isNew = !state.editing.id;
@@ -606,7 +668,8 @@
     state.type = typeKey;
     state.page = 1;
     state.q = '';
-    state.filters = {};
+    state.filters = state.preset ? { ...state.preset } : {};
+    state.preset = null;
     state.sort = 'name';
     state.order = 'asc';
     $('#dict-search').value = '';
@@ -616,6 +679,8 @@
     $('#dict-create').style.display = isPrices || ro ? 'none' : '';
     $('#dict-import').style.display = isPrices || ro ? 'none' : '';
     $('#dict-export').style.display = isPrices ? 'none' : '';
+    $('#dict-recode').style.display =
+      typeKey === 'raw_materials' && window.HUB_USER && window.HUB_USER.isAdmin ? '' : 'none';
     $('#dict-status').style.display = isPrices ? 'none' : '';
     renderNav();
     closeCard();
@@ -676,6 +741,17 @@
     $('#dict-sync-sd').addEventListener('click', syncSD);
     $('#dict-sync-prices').addEventListener('click', syncPrices);
     $('#dict-export').addEventListener('click', exportExcel);
+    $('#dict-recode').addEventListener('click', async () => {
+      if (!confirm('Перекодировать все старые артикулы (nvXX и пустые) в формат RM-XX-000?\n\nПеред запуском рекомендуется нажать «Экспорт» — это ваша резервная копия со старыми кодами.\nПозиции без категории будут пропущены.')) return;
+      const btn = $('#dict-recode');
+      btn.disabled = true;
+      try {
+        const r = await api('/raw_materials/recode-legacy', { method: 'POST' });
+        toast(`Перекодировано: ${r.recoded}, пропущено: ${r.skipped}`);
+        loadList();
+      } catch (e) { toast(e.message, true); }
+      btn.disabled = false;
+    });
 
     switchType(location.hash.slice(1) || 'raw_materials');
   }
