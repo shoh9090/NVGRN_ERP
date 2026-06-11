@@ -33,6 +33,7 @@ const REF_TYPES = {
     dedupe: ['name', 'code'],
     fields: [
       { key: 'category_id', label: 'Категория', type: 'ref', ref: 'categories', refQuery: 'f_kind=категория', listCol: true, filterable: true },
+      { key: 'characteristics', label: 'Характеристики', type: 'text', listCol: true, searchable: true },
       { key: 'unit_id', label: 'Ед. изм.', type: 'ref', ref: 'units', required: true, listCol: true },
       { key: 'main_supplier_id', label: 'Осн. поставщик', type: 'ref', ref: 'counterparties', listCol: true },
       { key: 'min_stock', label: 'Мин. остаток', type: 'number' },
@@ -99,6 +100,8 @@ const REF_TYPES = {
       { key: 'role_supplier', label: 'Поставщик', type: 'bool', listCol: true },
       { key: 'role_carrier', label: 'Перевозчик', type: 'bool' },
       { key: 'role_services', label: 'Услуги', type: 'bool' },
+      { key: 'supplies', label: 'Какое сырьё возит', type: 'text', searchable: true },
+      { key: 'opening_balance', label: 'Стартовый долг, сум', type: 'number', listCol: true },
       { key: 'inn', label: 'ИНН', type: 'text', listCol: true, searchable: true },
       { key: 'pinfl', label: 'ПИНФЛ', type: 'text' },
       { key: 'phone', label: 'Телефон', type: 'text', listCol: true, searchable: true },

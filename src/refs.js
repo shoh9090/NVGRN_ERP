@@ -196,7 +196,195 @@ router.post('/:type/:id(\\d+)/restore', async (req, res) => {
   res.json({ ok: true });
 });
 
-// Простой импорт (полный мастер импорта — Итерация 3): колонка A — название, B — код
+
+// ===== Мастер импорта (Итерация 3): предпросмотр → подтверждение =====
+// Понимает реальные файлы Novagreen: вкладку db (сырьё), список поставщиков, TOTAL (долги)
+
+function sheetRows(buf) {
+  const XLSX = require('xlsx');
+  const wb = XLSX.read(buf, { type: 'buffer' });
+  const out = [];
+  for (const name of wb.SheetNames) {
+    out.push({ name, rows: XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: '' }) });
+  }
+  return out;
+}
+
+const IMPORT_PROFILES = {
+  raw_materials: {
+    must: ['наимен', 'артикул'],
+    map: [
+      { kw: 'наимен', field: 'name' },
+      { kw: 'категор', field: '_category' },
+      { kw: 'характер', field: 'characteristics' },
+      { kw: 'артикул', field: 'code' },
+      { kw: 'ед', field: '_unit' },
+    ],
+  },
+  counterparties: {
+    must: ['имя'],
+    map: [
+      { kw: 'код', field: 'code' },
+      { kw: 'имя', field: 'name' },
+      { kw: 'фирм', field: 'legal_name' },
+      { kw: 'сырь', field: 'supplies' },
+      { kw: 'тел', field: 'phone' },
+      { kw: 'инн', field: 'inn' },
+      { kw: 'приход', field: 'opening_balance' },
+      { kw: 'долг', field: 'opening_balance' },
+    ],
+  },
+};
+
+function detectTable(sheets, profile) {
+  for (const sh of sheets) {
+    for (let i = 0; i < Math.min(sh.rows.length, 12); i++) {
+      const row = sh.rows[i].map((c) => String(c || '').toLowerCase());
+      const hit = profile.must.every((kw) => row.some((c) => c.includes(kw)));
+      if (!hit) continue;
+      const cols = {};
+      for (const m of profile.map) {
+        const idx = row.findIndex((c) => c.includes(m.kw));
+        if (idx >= 0 && !(m.field in cols)) cols[m.field] = idx;
+      }
+      return { sheet: sh.name, headerRow: i, cols, rows: sh.rows.slice(i + 1) };
+    }
+  }
+  return null;
+}
+
+async function buildPreview(typeKey, t, buf) {
+  const profile = IMPORT_PROFILES[typeKey];
+  if (!profile) return { error: 'Для этого справочника мастер импорта пока не настроен' };
+  const det = detectTable(sheetRows(buf), profile);
+  if (!det) return { error: 'Не нашёл таблицу в файле: нет строки заголовков с нужными колонками' };
+
+  // справочные карты для подсказок
+  const units = await db.pool.query('SELECT id, lower(name) AS n, lower(short_name) AS s FROM ref_units');
+  const unitMap = {};
+  for (const u of units.rows) { unitMap[u.n] = u.id; unitMap[u.s] = u.id; }
+  const cats = await db.pool.query("SELECT id, lower(name) AS n FROM ref_categories WHERE kind = 'категория'");
+  const catMap = {};
+  for (const c of cats.rows) catMap[c.n] = c.id;
+  const existing = await db.pool.query(`SELECT id, lower(name) AS n, lower(code::text) AS c FROM ${t.table}`);
+  const byName = {};
+  const byCode = {};
+  for (const e of existing.rows) { byName[e.n] = e.id; if (e.c) byCode[e.c] = e.id; }
+
+  const seen = new Set();
+  const rows = [];
+  for (const raw of det.rows) {
+    const get = (f) => (det.cols[f] !== undefined ? String(raw[det.cols[f]] ?? '').trim() : '');
+    const name = get('name');
+    if (!name || /^(итого|total|№)/i.test(name)) continue;
+    const values = { name };
+    for (const f of ['code', 'characteristics', 'legal_name', 'supplies', 'phone', 'inn']) {
+      const v = get(f);
+      if (v) values[f] = v;
+    }
+    if (det.cols.opening_balance !== undefined) {
+      const num = parseFloat(String(raw[det.cols.opening_balance]).replace(/\s/g, '').replace(',', '.'));
+      if (!isNaN(num)) values.opening_balance = num;
+    }
+    let note = '';
+    let error = '';
+    if (typeKey === 'raw_materials') {
+      const unitName = get('_unit').toLowerCase();
+      if (unitName && unitMap[unitName]) values.unit_id = unitMap[unitName];
+      else if (unitName) note += `единица «${unitName}» будет создана; `;
+      values._unit_name = get('_unit');
+      const catName = get('_category').toLowerCase();
+      if (catName && catMap[catName]) values.category_id = catMap[catName];
+      else if (catName) note += `категория «${get('_category')}» будет создана; `;
+      values._category_name = get('_category');
+    }
+    if (typeKey === 'counterparties') values.role_supplier = true;
+    const key = (values.code || name).toLowerCase();
+    if (seen.has(key)) error = 'дубль внутри файла — строка будет пропущена';
+    seen.add(key);
+    const exId = (values.code && byCode[String(values.code).toLowerCase()]) || byName[name.toLowerCase()];
+    const action = error ? 'skip' : exId ? 'update' : 'create';
+    rows.push({ action, values, note: note.trim(), error });
+  }
+  return { sheet: det.sheet, total: rows.length, rows };
+}
+
+router.post('/:type/import/preview', upload.single('file'), async (req, res) => {
+  const t = typeOr404(req, res);
+  if (!t) return;
+  if (!req.file) return res.status(400).json({ error: 'Файл не получен' });
+  try {
+    const preview = await buildPreview(req.params.type, t, req.file.buffer);
+    if (preview.error) return res.status(400).json({ error: preview.error });
+    res.json(preview);
+  } catch (e) {
+    res.status(400).json({ error: 'Не удалось прочитать файл: ' + e.message });
+  }
+});
+
+router.post('/:type/import/commit', express.json({ limit: '10mb' }), async (req, res) => {
+  const t = typeOr404(req, res);
+  if (!t) return;
+  const rows = Array.isArray(req.body && req.body.rows) ? req.body.rows : [];
+  let created = 0;
+  let updated = 0;
+  let skipped = 0;
+
+  for (const r of rows) {
+    if (!r || r.action === 'skip' || !r.values || !r.values.name) { skipped++; continue; }
+    const v = { ...r.values };
+    try {
+      // создаём недостающие единицы/категории (для сырья)
+      if (req.params.type === 'raw_materials') {
+        if (!v.unit_id && v._unit_name) {
+          const un = String(v._unit_name).trim();
+          const ex = await db.pool.query('SELECT id FROM ref_units WHERE lower(short_name)=lower($1) OR lower(name)=lower($1) LIMIT 1', [un]);
+          v.unit_id = ex.rows.length ? ex.rows[0].id
+            : (await db.pool.query('INSERT INTO ref_units (name, short_name, created_by, updated_by) VALUES ($1,$1,$2,$2) RETURNING id', [un, req.user.id])).rows[0].id;
+        }
+        if (!v.category_id && v._category_name) {
+          const cn = String(v._category_name).trim();
+          const ex = await db.pool.query("SELECT id FROM ref_categories WHERE lower(name)=lower($1) AND kind='категория' LIMIT 1", [cn]);
+          v.category_id = ex.rows.length ? ex.rows[0].id
+            : (await db.pool.query("INSERT INTO ref_categories (name, kind, created_by, updated_by) VALUES ($1,'категория',$2,$2) RETURNING id", [cn, req.user.id])).rows[0].id;
+        }
+      }
+      delete v._unit_name;
+      delete v._category_name;
+
+      // существующая запись: по коду, затем по имени
+      let exId = null;
+      if (v.code) {
+        const ex = await db.pool.query(`SELECT id FROM ${t.table} WHERE lower(code::text)=lower($1) LIMIT 1`, [String(v.code)]);
+        exId = ex.rows.length ? ex.rows[0].id : null;
+      }
+      if (!exId) {
+        const ex = await db.pool.query(`SELECT id FROM ${t.table} WHERE lower(name)=lower($1) LIMIT 1`, [v.name]);
+        exId = ex.rows.length ? ex.rows[0].id : null;
+      }
+      const keys = Object.keys(v);
+      if (exId) {
+        const sets = keys.map((k, i) => `${k} = $${i + 1}`);
+        await db.pool.query(
+          `UPDATE ${t.table} SET ${sets.join(', ')}, updated_at = now(), updated_by = $${keys.length + 1} WHERE id = $${keys.length + 2}`,
+          [...Object.values(v), req.user.id, exId]
+        );
+        updated++;
+      } else {
+        keys.push('created_by', 'updated_by');
+        const ph = keys.map((_, i) => `$${i + 1}`).join(', ');
+        await db.pool.query(`INSERT INTO ${t.table} (${keys.join(', ')}) VALUES (${ph})`, [...Object.values(v), req.user.id, req.user.id]);
+        created++;
+      }
+    } catch (e) {
+      skipped++;
+    }
+  }
+  await db.log(req.user.id, `ref_import_wizard_${req.params.type}`, `created=${created} updated=${updated} skipped=${skipped}`);
+  res.json({ created, updated, skipped });
+});
+
+// Простой импорт (для остальных справочников): колонка A — название, B — код
 router.post('/:type/import-simple', upload.single('file'), async (req, res) => {
   const t = typeOr404(req, res);
   if (!t) return;
