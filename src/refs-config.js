@@ -31,22 +31,12 @@ const REF_TYPES = {
     icon: '🥬',
     group: 'nomenclature',
     hidden: true,
-    autoCode: 'RM', // артикул RM-<код категории>-<номер>, формируется автоматически и не меняется
+    autoCode: 'RM',
     dedupe: ['name', 'code'],
     fields: [
       { key: 'category_id', label: 'Категория', type: 'ref', ref: 'categories', refQuery: 'f_kind=категория&origin=local', required: true, listCol: true, filterable: true },
-      { key: 'cultura_id', label: 'Культура', type: 'ref', ref: 'cultures', required: true, listCol: true, filterable: true },
-      { key: 'characteristics', label: 'Характеристика', type: 'text', required: true, listCol: true, searchable: true },
+      { key: 'characteristics', label: 'Характеристика', type: 'text', listCol: true, searchable: true },
       { key: 'unit_id', label: 'Ед. изм.', type: 'ref', ref: 'units', required: true, listCol: true },
-      { key: 'main_supplier_id', label: 'Осн. поставщик', type: 'ref', ref: 'counterparties', listCol: true },
-      { key: 'min_stock', label: 'Мин. остаток', type: 'number' },
-      { key: 'max_stock', label: 'Макс. остаток', type: 'number' },
-      { key: 'storage_temp', label: 'Темп. хранения', type: 'text' },
-      { key: 'shelf_life_days', label: 'Срок хранения, дн', type: 'number' },
-      { key: 'requires_batch', label: 'Требует партии', type: 'bool' },
-      { key: 'requires_expiry', label: 'Требует срока годности', type: 'bool' },
-      { key: 'requires_incoming_control', label: 'Входной контроль', type: 'bool' },
-      { key: 'waste_norm_pct', label: 'Норма отхода, %', type: 'number', listCol: true },
     ],
   },
 
@@ -277,7 +267,6 @@ function clientMeta() {
       children: [
         { type: 'raw_materials' },
         { type: 'categories', label: 'Категории сырья', preset: { kind: 'категория' }, query: 'origin=local' },
-        { type: 'cultures' },
         { type: 'packaging' },
       ],
     },

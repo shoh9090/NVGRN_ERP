@@ -115,6 +115,58 @@ router.get('/:type/distinct/:field', async (req, res) => {
 
 
 
+
+// Массовые операции: архивирование (всем редакторам) и удаление (только администратор)
+router.post('/:type/bulk', express.json(), async (req, res) => {
+  const t = typeOr404(req, res);
+  if (!t) return;
+  const ids = (Array.isArray(req.body.ids) ? req.body.ids : []).map((x) => parseInt(x)).filter(Boolean);
+  const action = req.body.action;
+  if (!ids.length) return res.status(400).json({ error: 'Не выбраны записи' });
+
+  if (action === 'archive') {
+    await db.pool.query(
+      `UPDATE ${t.table} SET status='archived', archived_at=now(), archived_by=$1 WHERE id = ANY($2)`,
+      [req.user.id, ids]
+    );
+    await db.log(req.user.id, `ref_bulk_archive_${req.params.type}`, `ids=${ids.length}`);
+    return res.json({ done: ids.length });
+  }
+
+  if (action === 'delete') {
+    if (!req.user.isAdmin) return res.status(403).json({ error: 'Удаление доступно только администратору' });
+    let deleted = 0;
+    const blocked = [];
+    for (const id of ids) {
+      // проверка использования в ссылках
+      let used = false;
+      for (const ot of Object.values(REF_TYPES)) {
+        for (const f of ot.fields) {
+          if (f.type === 'ref' && f.ref === req.params.type) {
+            const u = await db.pool.query(`SELECT 1 FROM ${ot.table} WHERE ${f.key} = $1 LIMIT 1`, [id]);
+            if (u.rows.length) { used = true; break; }
+          }
+        }
+        if (used) break;
+      }
+      if (!used && req.params.type === 'finished_goods') {
+        const u = await db.pool.query('SELECT 1 FROM ref_prices WHERE product_id = $1 LIMIT 1', [id]);
+        used = u.rows.length > 0;
+      }
+      if (used && req.body.force !== true) { blocked.push(id); continue; }
+      if (req.params.type === 'finished_goods') {
+        await db.pool.query('DELETE FROM ref_prices WHERE product_id = $1', [id]);
+      }
+      await db.pool.query(`DELETE FROM ${t.table} WHERE id = $1`, [id]);
+      deleted++;
+    }
+    await db.log(req.user.id, `ref_bulk_delete_${req.params.type}`, `удалено=${deleted}, занято=${blocked.length}${req.body.force ? ' (force)' : ''}`);
+    return res.json({ deleted, blocked: blocked.length });
+  }
+
+  res.status(400).json({ error: 'Неизвестное действие' });
+});
+
 // Полное удаление — только администратор (ТЗ, раздел 9)
 router.delete('/:type/:id(\\d+)', async (req, res) => {
   const t = typeOr404(req, res);
@@ -550,8 +602,9 @@ router.post('/:type/import/commit', express.json({ limit: '10mb' }), async (req,
       // создаём недостающие единицы/категории (для сырья)
       if (req.params.type === 'raw_materials') {
         if (!v.unit_id && v._unit_name) {
-          const un = String(v._unit_name).trim();
-          const ex = await db.pool.query('SELECT id FROM ref_units WHERE lower(short_name)=lower($1) OR lower(name)=lower($1) LIMIT 1', [un]);
+          const { normalizeUnit } = require('./units-util');
+          const un = normalizeUnit(v._unit_name);
+          const ex = await db.pool.query('SELECT id FROM ref_units WHERE lower(short_name)=$1 LIMIT 1', [un]);
           v.unit_id = ex.rows.length ? ex.rows[0].id
             : (await db.pool.query('INSERT INTO ref_units (name, short_name, created_by, updated_by) VALUES ($1,$1,$2,$2) RETURNING id', [un, req.user.id])).rows[0].id;
         }

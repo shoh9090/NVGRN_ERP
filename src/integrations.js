@@ -187,12 +187,13 @@ async function syncCatalogStructure(cfg, auth, userIdLocal) {
       const sdId = String(u.SD_id || '');
       const name = String(u.name || '').trim();
       if (!name) continue;
-      const short = String(u.title || u.short_name || name).trim();
+      const { normalizeUnit } = require('./units-util');
+      const short = normalizeUnit(u.title || u.short_name || name) || String(u.title || name).trim().toLowerCase();
       let r = sdId
         ? await db.pool.query('SELECT id FROM ref_units WHERE sd_sd_id = $1 LIMIT 1', [sdId])
         : { rows: [] };
       if (!r.rows.length) {
-        r = await db.pool.query('SELECT id FROM ref_units WHERE lower(name) = lower($1) OR lower(short_name) = lower($2) LIMIT 1', [name, short]);
+        r = await db.pool.query('SELECT id FROM ref_units WHERE lower(short_name) = $1 OR lower(name) = lower($2) LIMIT 1', [short, name]);
       }
       if (r.rows.length) {
         await db.pool.query(

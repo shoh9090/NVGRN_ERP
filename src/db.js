@@ -93,6 +93,31 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 `;
 
+// Однократное слияние дублей единиц измерения (Штука/Штук/шт. → шт)
+async function mergeDuplicateUnits() {
+  const { normalizeUnit } = require('./units-util');
+  const units = await pool.query('SELECT id, name, short_name FROM ref_units ORDER BY id');
+  const keep = {}; // нормализованный ключ → id
+  for (const u of units.rows) {
+    const key = normalizeUnit(u.short_name || u.name);
+    if (!key) continue;
+    if (!(key in keep)) {
+      keep[key] = u.id;
+      // приводим короткое имя к каноничному виду
+      if ((u.short_name || '').toLowerCase() !== key) {
+        await pool.query('UPDATE ref_units SET short_name = $1 WHERE id = $2', [key, u.id]);
+      }
+    } else {
+      const target = keep[key];
+      for (const tbl of ['ref_raw_materials', 'ref_finished_goods', 'ref_packaging']) {
+        await pool.query(`UPDATE ${tbl} SET unit_id = $1 WHERE unit_id = $2`, [target, u.id]).catch(() => {});
+      }
+      await pool.query('DELETE FROM ref_units WHERE id = $1', [u.id]);
+      console.log(`[units] дубль «${u.short_name || u.name}» слит с «${key}»`);
+    }
+  }
+}
+
 async function migrate() {
   await pool.query(MIGRATIONS);
   // Таблицы модуля «Справочники» (генерируются из схем ТЗ)
@@ -114,6 +139,7 @@ async function migrate() {
 
 // Перенос данных из старых простых справочников в новые таблицы (однократно)
 async function migrateLegacyDicts() {
+  await mergeDuplicateUnits();
   const u = await pool.query('SELECT count(*)::int AS n FROM ref_units');
   if (u.rows[0].n === 0) {
     await pool.query(
