@@ -17,6 +17,7 @@
     filters: {}, // значения фильтров полей (f_*)
     navOpen: {}, // раскрытые ветки меню
     preset: null, // предустановленный фильтр дочернего пункта
+    extraQuery: '', // доп. параметры списка от пункта меню (например origin=local)
   };
 
   const $ = (sel) => document.querySelector(sel);
@@ -121,7 +122,7 @@
             nav.appendChild(el('a', {
               class: 'nav-item nav-child' + (c.type === state.type ? ' active' : ''),
               href: '#' + c.type,
-              onclick: () => { state.preset = c.preset || null; },
+              onclick: () => { state.preset = c.preset || null; state.nextExtraQuery = c.query || ''; },
             }, [el('span', { class: 'nav-icon' }, t.icon + ' '), c.label || t.label]));
           }
         }
@@ -158,7 +159,8 @@
     for (const [k, v] of Object.entries(state.filters)) {
       if (v !== '' && v !== null && v !== undefined) params.set('f_' + k, v);
     }
-    const data = await api(`/${state.type}?` + params.toString());
+    const extra = state.extraQuery ? '&' + state.extraQuery : '';
+    const data = await api(`/${state.type}?` + params.toString() + extra);
     state.items = data.items;
     state.total = data.total;
     // подгружаем имена для ref-колонок
@@ -670,6 +672,8 @@
     state.q = '';
     state.filters = state.preset ? { ...state.preset } : {};
     state.preset = null;
+    state.extraQuery = state.nextExtraQuery || '';
+    state.nextExtraQuery = '';
     state.sort = 'name';
     state.order = 'asc';
     $('#dict-search').value = '';
