@@ -81,17 +81,15 @@ const REF_TYPES = {
     icon: '📦',
     group: 'nomenclature',
     hidden: true,
-    autoCodeFixed: 'RM-PK',
+    autoCode: 'RM', // артикул по коду выбранной категории, как у сырья (RM-PK-001 и т.д.)
     dedupe: ['name', 'code'],
     fields: [
-      { key: 'pack_category', label: 'Категория', type: 'enum', options: ['пакет', 'короб', 'этикетка', 'банка', 'плёнка', 'крышка', 'стикер', 'прочее'], listCol: true },
+      { key: 'category_id', label: 'Категория', type: 'ref', ref: 'categories', refQuery: 'f_kind=категория&origin=local', required: true, listCol: true, filterable: true },
       { key: 'unit_id', label: 'Ед. изм.', type: 'ref', ref: 'units', required: true, listCol: true },
-      { key: 'size', label: 'Размер', type: 'text' },
+      { key: 'size', label: 'Размер', type: 'text', listCol: true, searchable: true },
       { key: 'material', label: 'Материал', type: 'text', listCol: true },
       { key: 'thickness', label: 'Толщина', type: 'text' },
       { key: 'color', label: 'Цвет', type: 'text' },
-      { key: 'supplier_id', label: 'Поставщик', type: 'ref', ref: 'counterparties' },
-      { key: 'min_stock', label: 'Мин. остаток', type: 'number' },
     ],
   },
 
@@ -100,6 +98,7 @@ const REF_TYPES = {
     label: 'Контрагенты',
     icon: '🤝',
     group: 'partners',
+    hidden: true, // управление переезжает в плитку «Закуп» (вкладка «Поставщики»)
     dedupe: ['name', 'inn'],
     fields: [
       { key: 'legal_name', label: 'Юр. название', type: 'text', searchable: true },
