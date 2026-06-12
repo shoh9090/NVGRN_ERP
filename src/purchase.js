@@ -215,6 +215,81 @@ router.get('/api/materials', async (req, res) => {
   res.json({ items: r.rows });
 });
 
+
+// ---------- Динамика цен ----------
+// Сводка по номенклатуре: последняя/мин/макс/средняя цена и число закупок
+router.get('/api/price-list', async (req, res) => {
+  const q = (req.query.q || '').trim();
+  const params = [];
+  let qSQL = '';
+  if (q) {
+    params.push('%' + q + '%');
+    qSQL = ` AND (m.name ILIKE $1 OR m.code ILIKE $1)`;
+  }
+  const r = await db.pool.query(
+    `WITH hist AS (
+       SELECT i.item_kind, i.item_id,
+              COALESCE(i.fact_price, i.price) AS price,
+              po.received_at
+       FROM purchase_order_items i
+       JOIN purchase_orders po ON po.id = i.order_id AND po.status = 'received'
+       WHERE COALESCE(i.fact_price, i.price) > 0
+     ),
+     agg AS (
+       SELECT item_kind, item_id,
+              COUNT(*)::int AS buys,
+              MIN(price) AS min_price,
+              MAX(price) AS max_price,
+              ROUND(AVG(price)) AS avg_price
+       FROM hist GROUP BY item_kind, item_id
+     ),
+     last AS (
+       SELECT DISTINCT ON (item_kind, item_id) item_kind, item_id, price AS last_price, received_at AS last_at
+       FROM hist ORDER BY item_kind, item_id, received_at DESC
+     ),
+     prev AS (
+       SELECT item_kind, item_id, price AS prev_price,
+              ROW_NUMBER() OVER (PARTITION BY item_kind, item_id ORDER BY received_at DESC) AS rn
+       FROM hist
+     ),
+     mats AS (
+       SELECT 'raw' AS kind, id, code, name FROM ref_raw_materials WHERE status = 'active'
+       UNION ALL
+       SELECT 'packaging', id, code, name FROM ref_packaging WHERE status = 'active'
+     )
+     SELECT m.kind, m.id, m.code, m.name,
+            l.last_price, l.last_at, a.min_price, a.max_price, a.avg_price, a.buys,
+            p2.prev_price
+     FROM mats m
+     JOIN agg a ON a.item_kind = m.kind AND a.item_id = m.id
+     JOIN last l ON l.item_kind = m.kind AND l.item_id = m.id
+     LEFT JOIN prev p2 ON p2.item_kind = m.kind AND p2.item_id = m.id AND p2.rn = 2
+     WHERE TRUE${qSQL}
+     ORDER BY m.name`,
+    params
+  );
+  res.json({ items: r.rows });
+});
+
+// История цен по конкретной позиции (для сезонности)
+router.get('/api/price-history', async (req, res) => {
+  const kind = req.query.kind === 'packaging' ? 'packaging' : 'raw';
+  const id = parseInt(req.query.id);
+  if (!id) return res.status(400).json({ error: 'Не указана позиция' });
+  const r = await db.pool.query(
+    `SELECT po.received_at, po.number, c.name AS supplier_name,
+            COALESCE(i.fact_qty, i.qty) AS qty,
+            COALESCE(i.fact_price, i.price) AS price
+     FROM purchase_order_items i
+     JOIN purchase_orders po ON po.id = i.order_id AND po.status = 'received'
+     JOIN ref_counterparties c ON c.id = po.supplier_id
+     WHERE i.item_kind = $1 AND i.item_id = $2 AND COALESCE(i.fact_price, i.price) > 0
+     ORDER BY po.received_at ASC`,
+    [kind, id]
+  );
+  res.json({ items: r.rows });
+});
+
 // ---------- Заявки ----------
 async function nextOrderNumber() {
   const year = new Date().getFullYear();

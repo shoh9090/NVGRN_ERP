@@ -8,9 +8,11 @@
   const el = (tag, attrs = {}, children = []) => {
     const n = document.createElement(tag);
     for (const [k, v] of Object.entries(attrs)) {
+      if (v === false || v === null || v === undefined) continue;
       if (k === 'class') n.className = v;
       else if (k.startsWith('on')) n.addEventListener(k.slice(2), v);
       else if (k === 'html') n.innerHTML = v;
+      else if (v === true) n.setAttribute(k, '');
       else n.setAttribute(k, v);
     }
     for (const c of [].concat(children)) {
@@ -482,12 +484,21 @@
           const payload = {};
           for (const k of Object.keys(f)) payload[k] = f[k].value;
           try {
-            if (sup) await api('/suppliers/' + sup.id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-            else await api('/suppliers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+            let createdId = null;
+            if (sup) {
+              await api('/suppliers/' + sup.id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+            } else {
+              const r = await api('/suppliers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+              createdId = r.id;
+            }
             toast('Сохранено');
             m.close();
             loadSuppliers();
             if (currentTab === 'settlements') loadSettlements();
+            if (createdId) {
+              // сразу предлагаем прикрепить номенклатуру нового поставщика
+              openAttach({ id: createdId, name: payload.name });
+            }
           } catch (e) { toast(e.message, true); ev.target.disabled = false; }
         },
       }, 'Сохранить'),
@@ -700,6 +711,101 @@
     ]);
   }
 
+
+  // ================= ДИНАМИКА ЦЕН =================
+  async function viewPrices() {
+    const main = $('#pur-main');
+    main.innerHTML = '';
+    main.appendChild(el('div', { class: 'pur-toolbar' }, [
+      el('h2', {}, 'Динамика цен закупа'),
+      el('div', { class: 'pur-toolbar-right' }, [
+        el('input', { id: 'pr-q', placeholder: 'Поиск...', oninput: debounce(loadPriceList, 300) }),
+      ]),
+    ]));
+    main.appendChild(el('div', { id: 'pr-list', class: 'pur-content' }));
+    await loadPriceList();
+  }
+
+  function trendArrow(last, prev) {
+    if (prev == null || last == null) return el('span', {}, '');
+    const l = Number(last); const p = Number(prev);
+    if (l > p) return el('span', { style: 'color:var(--red);font-weight:800', title: 'дороже прошлой закупки' }, '↑');
+    if (l < p) return el('span', { style: 'color:#3f6a16;font-weight:800', title: 'дешевле прошлой закупки' }, '↓');
+    return el('span', { class: 'muted' }, '＝');
+  }
+
+  async function loadPriceList() {
+    const q = $('#pr-q') ? $('#pr-q').value.trim() : '';
+    const data = await api('/price-list' + (q ? '?q=' + encodeURIComponent(q) : ''));
+    const box = $('#pr-list');
+    box.innerHTML = '';
+    if (!data.items.length) {
+      box.appendChild(el('p', { class: 'dict-empty' }, 'История цен появится после первых принятых поставок.'));
+      return;
+    }
+    box.appendChild(el('table', { class: 'dict-table' }, [
+      el('thead', {}, el('tr', {}, ['Артикул', 'Наименование', 'Последняя', '', 'Мин', 'Макс', 'Средняя', 'Закупок'].map((h, i) =>
+        el('th', { style: i >= 2 ? 'text-align:right' : '' }, h)))),
+      el('tbody', {}, data.items.map((m) =>
+        el('tr', { onclick: () => openPriceHistory(m) }, [
+          el('td', { class: 'tnum' }, m.code || ''),
+          el('td', { style: 'font-weight:700' }, m.name + (m.kind === 'packaging' ? ' 📦' : '')),
+          el('td', { class: 'tnum', style: 'text-align:right;font-weight:800' }, fmtMoney(m.last_price)),
+          el('td', { style: 'text-align:center;width:30px' }, trendArrow(m.last_price, m.prev_price)),
+          el('td', { class: 'tnum muted', style: 'text-align:right' }, fmtMoney(m.min_price)),
+          el('td', { class: 'tnum muted', style: 'text-align:right' }, fmtMoney(m.max_price)),
+          el('td', { class: 'tnum muted', style: 'text-align:right' }, fmtMoney(m.avg_price)),
+          el('td', { class: 'tnum muted', style: 'text-align:right' }, String(m.buys)),
+        ])
+      )),
+    ]));
+  }
+
+  // график истории: простая SVG-линия + таблица всех закупок
+  async function openPriceHistory(mat) {
+    const data = await api('/price-history?kind=' + mat.kind + '&id=' + mat.id);
+    const rows = data.items;
+    let chart = null;
+    if (rows.length >= 2) {
+      const W = 820, H = 180, P = 30;
+      const prices = rows.map((r) => Number(r.price));
+      const min = Math.min(...prices), max = Math.max(...prices);
+      const span = max - min || 1;
+      const x = (i) => P + (i * (W - 2 * P)) / (rows.length - 1);
+      const y = (v) => H - P - ((v - min) * (H - 2 * P)) / span;
+      const pts = prices.map((v, i) => x(i) + ',' + y(v)).join(' ');
+      const dots = prices.map((v, i) =>
+        `<circle cx="${x(i)}" cy="${y(v)}" r="4" fill="var(--lime-d)"><title>${fmtMoney(v)} сум · ${dt(rows[i].received_at)}</title></circle>`).join('');
+      chart = el('div', {
+        class: 'pur-chart',
+        html: `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+          <text x="${P}" y="${y(max) - 8}" font-size="11" fill="var(--ink-faint)">${fmtMoney(max)}</text>
+          <text x="${P}" y="${y(min) + 14}" font-size="11" fill="var(--ink-faint)">${fmtMoney(min)}</text>
+          <polyline points="${pts}" fill="none" stroke="var(--lime-d)" stroke-width="2.5" stroke-linejoin="round"/>
+          ${dots}
+        </svg>`,
+      });
+    }
+    const table = el('table', { class: 'dict-table' }, [
+      el('thead', {}, el('tr', {}, ['Дата', 'Заявка', 'Поставщик', 'Кол-во', 'Цена'].map((h, i) =>
+        el('th', { style: i >= 3 ? 'text-align:right' : '' }, h)))),
+      el('tbody', {}, [...rows].reverse().map((r) =>
+        el('tr', {}, [
+          el('td', {}, dt(r.received_at)),
+          el('td', { class: 'tnum' }, r.number),
+          el('td', {}, r.supplier_name),
+          el('td', { class: 'tnum', style: 'text-align:right' }, fmt.format(Number(r.qty))),
+          el('td', { class: 'tnum', style: 'text-align:right;font-weight:700' }, fmtMoney(r.price)),
+        ])
+      )),
+    ]);
+    const body = el('div', {}, [
+      chart,
+      el('div', { class: 'oe-table-wrap', style: 'max-height:38vh' }, [table]),
+    ]);
+    const m = modal('📈 ' + mat.name + ' — история цен', body, [el('button', { onclick: () => m.close() }, 'Закрыть')]);
+  }
+
   // ================= Каркас =================
   let currentTab = 'orders';
   function debounce(fn, ms) {
@@ -712,6 +818,7 @@
     document.querySelectorAll('.pur-tab').forEach((a) => a.classList.toggle('active', a.dataset.tab === tab));
     if (tab === 'suppliers') viewSuppliers();
     else if (tab === 'settlements') viewSettlements();
+    else if (tab === 'prices') viewPrices();
     else viewOrders();
   }
 

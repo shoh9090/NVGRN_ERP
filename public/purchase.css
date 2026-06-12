@@ -79,3 +79,7 @@
 
 /* серые «прошлые» цены: не тронул — осталась последняя */
 .oe-ghost{color:var(--ink-faint)}
+
+/* график динамики цен */
+.pur-chart{border:1px solid var(--line);border-radius:var(--radius-s);background:var(--surface-2);margin-bottom:12px;padding:6px}
+.pur-chart svg{width:100%;height:180px;display:block}
