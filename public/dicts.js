@@ -16,7 +16,6 @@
     editing: null, // запись в карточке (null = закрыто, {} = новая)
     filters: {}, // значения фильтров полей (f_*)
     navOpen: {}, // раскрытые ветки меню
-    preset: null, // предустановленный фильтр дочернего пункта
     extraQuery: '', // доп. параметры списка от пункта меню (например origin=local)
     selected: new Set(), // отмеченные галочками записи
   };
@@ -123,7 +122,6 @@
             nav.appendChild(el('a', {
               class: 'nav-item nav-child' + (c.type === state.type ? ' active' : ''),
               href: '#' + c.type,
-              onclick: () => { state.preset = c.preset || null; state.nextExtraQuery = c.query || ''; },
             }, [el('span', { class: 'nav-icon' }, t.icon + ' '), c.label || t.label]));
           }
         }
@@ -746,10 +744,11 @@
     state.type = typeKey;
     state.page = 1;
     state.q = '';
-    state.filters = state.preset ? { ...state.preset } : {};
-    state.preset = null;
-    state.extraQuery = state.nextExtraQuery || '';
-    state.nextExtraQuery = '';
+    const navChild = (state.meta.navTree || [])
+      .flatMap((b) => b.children)
+      .find((c) => c.type === typeKey);
+    state.filters = navChild && navChild.preset ? { ...navChild.preset } : {};
+    state.extraQuery = navChild && navChild.query ? navChild.query : '';
     state.selected.clear();
     state.sort = 'name';
     state.order = 'asc';
