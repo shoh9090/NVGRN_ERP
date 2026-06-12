@@ -24,7 +24,8 @@ router.get('/api/suppliers', async (req, res) => {
             COALESCE(c.opening_balance, 0) AS opening_balance,
             COALESCE(d.delivered, 0) AS delivered,
             COALESCE(p.paid, 0) AS paid,
-            COALESCE(c.opening_balance, 0) + COALESCE(d.delivered, 0) - COALESCE(p.paid, 0) AS balance
+            COALESCE(c.opening_balance, 0) + COALESCE(d.delivered, 0) - COALESCE(p.paid, 0) AS balance,
+            COALESCE(sm.n, 0) AS attached_count
      FROM ref_counterparties c
      LEFT JOIN (
        SELECT po.supplier_id, SUM(COALESCE(i.fact_qty, i.qty) * COALESCE(i.fact_price, i.price)) AS delivered
@@ -36,6 +37,9 @@ router.get('/api/suppliers', async (req, res) => {
      LEFT JOIN (
        SELECT supplier_id, SUM(amount) AS paid FROM supplier_payments GROUP BY supplier_id
      ) p ON p.supplier_id = c.id
+     LEFT JOIN (
+       SELECT supplier_id, COUNT(*)::int AS n FROM supplier_materials GROUP BY supplier_id
+     ) sm ON sm.supplier_id = c.id
      WHERE c.role_supplier = TRUE AND c.status = 'active'${qSQL}
      ORDER BY c.name`,
     params

@@ -172,7 +172,7 @@
       tableWrap.innerHTML = '';
       const hasAttached = mats.some((m) => m.attached);
       let filtered = mats.filter((m) => !q || m.name.toLowerCase().includes(q) || String(m.code || '').toLowerCase().includes(q));
-      if (attachedOnly && hasAttached && !q) {
+      if (attachedOnly && supSel.value && hasAttached && !q) {
         filtered = filtered.filter((m) => m.attached || entered[m.kind + ':' + m.id]);
       }
       const rows = filtered.map((m) => {
@@ -261,7 +261,13 @@
       }, orderId ? 'Сохранить' : 'Создать заявку'),
     ]);
 
-    if (order) await loadMats();
+    if (!suppliers.length) {
+      body.insertBefore(
+        el('div', { class: 'error' }, 'Поставщиков пока нет. Добавьте их на вкладке «Поставщики» (кнопка «+ Поставщик» или «📥 Импорт Excel») — и возвращайтесь к заявке.'),
+        body.firstChild
+      );
+    }
+    await loadMats(); // номенклатура видна сразу, без ожидания выбора поставщика
   }
 
   // --- карточка заявки ---
@@ -372,7 +378,8 @@
       el('h2', {}, 'Поставщики'),
       el('div', { class: 'pur-toolbar-right' }, [
         el('input', { id: 'sup-q', placeholder: 'Поиск...', oninput: debounce(loadSuppliers, 300) }),
-        el('a', { class: 'pur-link-btn', href: '/dictionaries#counterparties', target: '_blank', title: 'Импорт из Excel выполняется в справочнике контрагентов' }, 'Импорт Excel'),
+        el('button', { onclick: () => $('#sup-import-file').click(), title: 'Файл со списком поставщиков или вкладкой TOTAL' }, '📥 Импорт Excel'),
+        (() => { const f = el('input', { id: 'sup-import-file', type: 'file', accept: '.xlsx,.xls,.csv', style: 'display:none', onchange: (e) => { if (e.target.files[0]) importSuppliers(e.target.files[0]); e.target.value = ''; } }); return f; })(),
         el('button', { class: 'btn-primary', onclick: () => openSupplierEdit(null) }, '+ Поставщик'),
       ]),
     ]));
@@ -390,14 +397,14 @@
       return;
     }
     box.appendChild(el('table', { class: 'dict-table' }, [
-      el('thead', {}, el('tr', {}, ['Имя', 'Фирма', 'Телефон', 'Что возит', 'Сальдо'].map((h, i) =>
+      el('thead', {}, el('tr', {}, ['Имя', 'Фирма', 'Телефон', 'Товары', 'Сальдо'].map((h, i) =>
         el('th', { style: i === 4 ? 'text-align:right' : '' }, h)))),
       el('tbody', {}, data.items.map((s) =>
         el('tr', { onclick: () => openStatement(s.id) }, [
           el('td', { style: 'font-weight:700' }, s.name),
           el('td', {}, s.legal_name || ''),
           el('td', { class: 'tnum' }, s.phone || ''),
-          el('td', { class: 'muted', style: 'max-width:280px' }, (s.supplies || '').slice(0, 60)),
+          el('td', { class: 'muted' }, s.attached_count > 0 ? '📎 ' + s.attached_count : ((s.supplies || '').slice(0, 40) || '—')),
           el('td', { class: 'tnum', style: 'text-align:right;font-weight:800;color:' + (Number(s.balance) > 0 ? 'var(--red)' : '#3f6a16') },
             fmtMoney(s.balance)),
         ])
@@ -405,11 +412,62 @@
     ]));
   }
 
+
+  // импорт поставщиков (файл 4 / TOTAL) — мастер с предпросмотром, не выходя из закупа
+  async function importSuppliers(file) {
+    const fd = new FormData();
+    fd.append('file', file);
+    let preview;
+    try {
+      const res = await fetch('/api/refs/counterparties/import/preview', { method: 'POST', body: fd });
+      preview = await res.json();
+      if (!res.ok) throw new Error(preview.error || 'Ошибка чтения файла');
+    } catch (e) { return toast(e.message, true); }
+
+    const counts = { create: 0, update: 0, skip: 0 };
+    for (const r of preview.rows) counts[r.action]++;
+    const table = el('table', { class: 'dict-table' }, [
+      el('thead', {}, el('tr', {}, ['', 'Имя', 'ИНН', 'Примечание'].map((h) => el('th', {}, h)))),
+      el('tbody', {}, preview.rows.map((r) =>
+        el('tr', { class: r.error ? 'imp-err' : r.action === 'update' ? 'imp-upd' : '' }, [
+          el('td', {}, r.error ? '✖' : r.action === 'update' ? '↻' : '+'),
+          el('td', {}, r.values.name || ''),
+          el('td', { class: 'tnum' }, r.values.inn || ''),
+          el('td', { class: 'muted' }, r.error || r.note || (r.values.opening_balance != null ? 'долг: ' + fmtMoney(r.values.opening_balance) : '')),
+        ])
+      )),
+    ]);
+    const body = el('div', {}, [
+      el('p', { class: 'muted' }, `Лист «${preview.sheet}»: новых ${counts.create} · обновится ${counts.update} · пропустится ${counts.skip}. В базу ничего не запишется, пока вы не подтвердите.`),
+      el('div', { class: 'oe-table-wrap' }, [table]),
+    ]);
+    const m = modal('📥 Предпросмотр импорта поставщиков', body, [
+      el('button', { onclick: () => m.close() }, 'Отмена'),
+      el('button', {
+        class: 'btn-primary',
+        onclick: async (ev) => {
+          ev.target.disabled = true;
+          try {
+            const res = await fetch('/api/refs/counterparties/import/commit', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ rows: preview.rows }),
+            });
+            const r = await res.json();
+            if (!res.ok) throw new Error(r.error || 'Ошибка импорта');
+            toast(`Импорт: создано ${r.created}, обновлено ${r.updated}, пропущено ${r.skipped}`);
+            m.close();
+            loadSuppliers();
+          } catch (e) { toast(e.message, true); ev.target.disabled = false; }
+        },
+      }, `Загрузить ${counts.create + counts.update} строк`),
+    ]);
+  }
+
   function openSupplierEdit(sup) {
     const f = {};
     const fields = [
       ['name', 'Имя поставщика *'], ['legal_name', 'Наименование фирмы'], ['phone', 'Телефон'],
-      ['inn', 'ИНН'], ['supplies', 'Какое сырьё возит'], ['opening_balance', 'Стартовый долг, сум'],
+      ['inn', 'ИНН'], ['opening_balance', 'Стартовый долг, сум'],
     ];
     const body = el('div', { class: 'form-col', style: 'max-width:100%' }, fields.map(([k, label]) => {
       f[k] = el('input', { type: k === 'opening_balance' ? 'number' : 'text', value: sup ? (sup[k] ?? '') : '' });
