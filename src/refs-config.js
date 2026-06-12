@@ -34,7 +34,7 @@ const REF_TYPES = {
     autoCode: 'RM',
     dedupe: ['name', 'code'],
     fields: [
-      { key: 'category_id', label: 'Категория', type: 'ref', ref: 'categories', refQuery: 'f_kind=категория&origin=local', required: true, listCol: true, filterable: true },
+      { key: 'category_id', label: 'Категория', type: 'ref', ref: 'categories', refQuery: 'f_kind=категория&origin=local&f_branch=Свежая зелень', required: true, listCol: true, filterable: true },
       { key: 'characteristics', label: 'Характеристика', type: 'text', listCol: true, searchable: true },
       { key: 'unit_id', label: 'Ед. изм.', type: 'ref', ref: 'units', required: true, listCol: true },
     ],
@@ -82,9 +82,10 @@ const REF_TYPES = {
     group: 'nomenclature',
     hidden: true,
     autoCode: 'RM', // артикул по коду выбранной категории, как у сырья (RM-PK-001 и т.д.)
+    autoCodeFallback: 'PK', // если у категории нет кода — артикул всё равно присвоится: RM-PK-NNN
     dedupe: ['name', 'code'],
     fields: [
-      { key: 'category_id', label: 'Категория', type: 'ref', ref: 'categories', refQuery: 'f_kind=категория&origin=local', required: true, listCol: true, filterable: true },
+      { key: 'category_id', label: 'Категория', type: 'ref', ref: 'categories', refQuery: 'f_kind=категория&origin=local&f_branch=Упаковка', required: true, listCol: true, filterable: true },
       { key: 'unit_id', label: 'Ед. изм.', type: 'ref', ref: 'units', required: true, listCol: true },
       { key: 'size', label: 'Размер', type: 'text', listCol: true, searchable: true },
       { key: 'material', label: 'Материал', type: 'text', listCol: true },

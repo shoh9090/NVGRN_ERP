@@ -52,14 +52,15 @@ function validate(t, values, isCreate) {
 
 
 // Автогенерация артикула: RM-<код категории>-<номер> (ТЗ «Номенклатура сырья», раздел 4)
-async function nextArticle(t, prefix, categoryId, fixedPrefix) {
+async function nextArticle(t, prefix, categoryId, fixedPrefix, fallbackCode) {
   let base;
   if (fixedPrefix) {
     base = fixedPrefix;
   } else {
     const cat = await db.pool.query('SELECT code, name FROM ref_categories WHERE id = $1', [categoryId]);
     if (!cat.rows.length) throw new Error('категория не найдена');
-    const catCode = String(cat.rows[0].code || '').trim().toUpperCase();
+    let catCode = String(cat.rows[0].code || '').trim().toUpperCase();
+    if (!catCode && fallbackCode) catCode = fallbackCode;
     if (!catCode) {
       throw new Error(`категория «${cat.rows[0].name}» не имеет кода для формирования артикула — задайте код категории (например BL)`);
     }
@@ -212,9 +213,9 @@ router.delete('/:type/:id(\\d+)', async (req, res) => {
 });
 
 // Перекодировка старых артикулов nvXX → RM-XX-000 (только администратор; раздел 10)
-router.post('/raw_materials/recode-legacy', async (req, res) => {
+router.post('/:type(raw_materials|packaging)/recode-legacy', async (req, res) => {
   if (!req.user.isAdmin) return res.status(403).json({ error: 'Недостаточно прав' });
-  const t = REF_TYPES.raw_materials;
+  const t = REF_TYPES[req.params.type];
   const rows = await db.pool.query(
     `SELECT id, code, name, category_id FROM ${t.table} WHERE (code IS NULL OR code !~ '^RM-') ORDER BY name`
   );
@@ -223,7 +224,7 @@ router.post('/raw_materials/recode-legacy', async (req, res) => {
   for (const r of rows.rows) {
     if (!r.category_id) { mapping.push({ id: r.id, name: r.name, old: r.code, new: '', note: 'нет категории — пропущено' }); skipped++; continue; }
     try {
-      const code = await nextArticle(t, 'RM', r.category_id);
+      const code = await nextArticle(t, t.autoCode || 'RM', r.category_id, t.autoCodeFixed, t.autoCodeFallback);
       await db.pool.query(`UPDATE ${t.table} SET code = $1, updated_at = now(), updated_by = $2 WHERE id = $3`, [code, req.user.id, r.id]);
       mapping.push({ id: r.id, name: r.name, old: r.code, new: code });
     } catch (e) {
@@ -231,7 +232,7 @@ router.post('/raw_materials/recode-legacy', async (req, res) => {
       skipped++;
     }
   }
-  await db.log(req.user.id, 'ref_recode_legacy_raw_materials', `перекодировано ${mapping.length - skipped}, пропущено ${skipped}`);
+  await db.log(req.user.id, `ref_recode_legacy_${req.params.type}`, `перекодировано ${mapping.length - skipped}, пропущено ${skipped}`);
   res.json({ recoded: mapping.length - skipped, skipped, mapping });
 });
 
@@ -369,7 +370,7 @@ router.post('/:type', express.json(), async (req, res) => {
   // Автоартикул (если включён для справочника и код не задан вручную)
   if ((t.autoCode || t.autoCodeFixed) && !values.code) {
     try {
-      values.code = await nextArticle(t, t.autoCode, values.category_id, t.autoCodeFixed);
+      values.code = await nextArticle(t, t.autoCode, values.category_id, t.autoCodeFixed, t.autoCodeFallback);
     } catch (e) {
       return saveError(res, e.message);
     }
@@ -488,6 +489,19 @@ const IMPORT_PROFILES = {
       { kw: 'ед', field: '_unit' },
     ],
   },
+  packaging: {
+    must: ['наимен'],
+    map: [
+      { kw: 'наимен', field: 'name' },
+      { kw: 'категор', field: '_category' },
+      { kw: 'артикул', field: 'code' },
+      { kw: 'размер', field: 'size' },
+      { kw: 'материал', field: 'material' },
+      { kw: 'толщин', field: 'thickness' },
+      { kw: 'цвет', field: 'color' },
+      { kw: 'ед', field: '_unit' },
+    ],
+  },
   counterparties: {
     must: ['имя'],
     map: [
@@ -545,7 +559,7 @@ async function buildPreview(typeKey, t, buf) {
     const name = get('name');
     if (!name || /^(итого|total|№)/i.test(name)) continue;
     const values = { name };
-    for (const f of ['code', 'characteristics', 'legal_name', 'supplies', 'phone', 'inn']) {
+    for (const f of ['code', 'characteristics', 'legal_name', 'supplies', 'phone', 'inn', 'size', 'material', 'thickness', 'color']) {
       const v = get(f);
       if (v) values[f] = v;
     }
@@ -555,7 +569,7 @@ async function buildPreview(typeKey, t, buf) {
     }
     let note = '';
     let error = '';
-    if (typeKey === 'raw_materials') {
+    if (det.cols._unit !== undefined || det.cols._category !== undefined) {
       const unitName = get('_unit').toLowerCase();
       if (unitName && unitMap[unitName]) values.unit_id = unitMap[unitName];
       else if (unitName) note += `единица «${unitName}» будет создана; `;
@@ -602,7 +616,7 @@ router.post('/:type/import/commit', express.json({ limit: '10mb' }), async (req,
     const v = { ...r.values };
     try {
       // создаём недостающие единицы/категории (для сырья)
-      if (req.params.type === 'raw_materials') {
+      if (v._unit_name !== undefined || v._category_name !== undefined) {
         if (!v.unit_id && v._unit_name) {
           const { normalizeUnit } = require('./units-util');
           const un = normalizeUnit(v._unit_name);
@@ -612,9 +626,10 @@ router.post('/:type/import/commit', express.json({ limit: '10mb' }), async (req,
         }
         if (!v.category_id && v._category_name) {
           const cn = String(v._category_name).trim();
+          const branch = req.params.type === 'packaging' ? 'Упаковка' : 'Свежая зелень';
           const ex = await db.pool.query("SELECT id FROM ref_categories WHERE lower(name)=lower($1) AND kind='категория' LIMIT 1", [cn]);
           v.category_id = ex.rows.length ? ex.rows[0].id
-            : (await db.pool.query("INSERT INTO ref_categories (name, kind, created_by, updated_by) VALUES ($1,'категория',$2,$2) RETURNING id", [cn, req.user.id])).rows[0].id;
+            : (await db.pool.query("INSERT INTO ref_categories (name, kind, branch, created_by, updated_by) VALUES ($1,'категория',$2,$3,$3) RETURNING id", [cn, branch, req.user.id])).rows[0].id;
         }
       }
       delete v._unit_name;
@@ -623,7 +638,7 @@ router.post('/:type/import/commit', express.json({ limit: '10mb' }), async (req,
       // автоартикул при импорте: если код пуст, а категория определена — присваиваем RM-XX-NNN
       if ((t.autoCode || t.autoCodeFixed) && !v.code && (v.category_id || t.autoCodeFixed)) {
         try {
-          v.code = await nextArticle(t, t.autoCode, v.category_id, t.autoCodeFixed);
+          v.code = await nextArticle(t, t.autoCode, v.category_id, t.autoCodeFixed, t.autoCodeFallback);
         } catch (e) { /* категория без кода — позиция останется без артикула, добьёт «Перекодировка» */ }
       }
 

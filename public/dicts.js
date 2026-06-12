@@ -558,7 +558,7 @@
 
   // ---------- Импорт ----------
   async function importFile(file) {
-    const wizardTypes = ['raw_materials', 'counterparties'];
+    const wizardTypes = ['raw_materials', 'packaging', 'counterparties'];
     if (!wizardTypes.includes(state.type)) {
       const fd = new FormData();
       fd.append('file', file);
@@ -760,7 +760,7 @@
     $('#dict-import').style.display = isPrices || ro ? 'none' : '';
     $('#dict-export').style.display = isPrices ? 'none' : '';
     $('#dict-recode').style.display =
-      typeKey === 'raw_materials' && window.HUB_USER && window.HUB_USER.isAdmin ? '' : 'none';
+      (typeKey === 'raw_materials' || typeKey === 'packaging') && window.HUB_USER && window.HUB_USER.isAdmin ? '' : 'none';
     $('#dict-status').style.display = isPrices ? 'none' : '';
     renderNav();
     closeCard();
@@ -826,7 +826,7 @@
       const btn = $('#dict-recode');
       btn.disabled = true;
       try {
-        const r = await api('/raw_materials/recode-legacy', { method: 'POST' });
+        const r = await api('/' + state.type + '/recode-legacy', { method: 'POST' });
         toast(`Перекодировано: ${r.recoded}, пропущено: ${r.skipped}`);
         loadList();
       } catch (e) { toast(e.message, true); }
