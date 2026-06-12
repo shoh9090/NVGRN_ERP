@@ -76,3 +76,6 @@
   .oe-num{width:84px}
   .pur-kpi-val{font-size:17px}
 }
+
+/* серые «прошлые» цены: не тронул — осталась последняя */
+.oe-ghost{color:var(--ink-faint)}

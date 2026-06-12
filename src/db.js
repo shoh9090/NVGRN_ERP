@@ -109,6 +109,14 @@ CREATE TABLE IF NOT EXISTS purchase_order_items (
   fact_price NUMERIC
 );
 
+CREATE TABLE IF NOT EXISTS supplier_materials (
+  id SERIAL PRIMARY KEY,
+  supplier_id INTEGER NOT NULL,
+  item_kind TEXT NOT NULL,
+  item_id INTEGER NOT NULL,
+  UNIQUE (supplier_id, item_kind, item_id)
+);
+
 CREATE TABLE IF NOT EXISTS supplier_payments (
   id SERIAL PRIMARY KEY,
   supplier_id INTEGER NOT NULL,

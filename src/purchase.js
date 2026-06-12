@@ -74,6 +74,32 @@ router.post('/api/suppliers', express.json(), async (req, res) => {
   res.json({ id: r.rows[0].id });
 });
 
+
+// Прикреплённые товары поставщика
+router.get('/api/suppliers/:id(\\d+)/materials', async (req, res) => {
+  const r = await db.pool.query(
+    'SELECT item_kind, item_id FROM supplier_materials WHERE supplier_id = $1',
+    [req.params.id]
+  );
+  res.json({ items: r.rows });
+});
+
+router.post('/api/suppliers/:id(\\d+)/materials', express.json({ limit: '1mb' }), async (req, res) => {
+  const items = Array.isArray(req.body.items) ? req.body.items : [];
+  await db.pool.query('DELETE FROM supplier_materials WHERE supplier_id = $1', [req.params.id]);
+  for (const it of items) {
+    const kind = it.item_kind === 'packaging' ? 'packaging' : 'raw';
+    const id = parseInt(it.item_id);
+    if (!id) continue;
+    await db.pool.query(
+      'INSERT INTO supplier_materials (supplier_id, item_kind, item_id) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING',
+      [req.params.id, kind, id]
+    );
+  }
+  await db.log(req.user.id, 'purchase_supplier_materials', `supplier=${req.params.id} items=${items.length}`);
+  res.json({ ok: true });
+});
+
 // Выписка по поставщику: поставки с позициями + оплаты
 router.get('/api/suppliers/:id(\\d+)/statement', async (req, res) => {
   const sup = await db.pool.query(
@@ -163,11 +189,21 @@ router.get('/api/materials', async (req, res) => {
        FROM purchase_order_items i
        JOIN purchase_orders po ON po.id = i.order_id AND po.status = 'received'
        ORDER BY i.item_kind, i.item_id, po.received_at DESC
+     ),
+     stock AS (
+       SELECT i.item_kind, i.item_id, SUM(COALESCE(i.fact_qty, 0)) AS received_total
+       FROM purchase_order_items i
+       JOIN purchase_orders po ON po.id = i.order_id AND po.status = 'received'
+       GROUP BY i.item_kind, i.item_id
      )
-     SELECT m.*, ls.price AS supplier_price, la.price AS any_price
+     SELECT m.*, ls.price AS supplier_price, la.price AS any_price,
+            COALESCE(st.received_total, 0) AS stock,
+            (sm.id IS NOT NULL) AS attached
      FROM mats m
      LEFT JOIN last_sup ls ON ls.item_kind = m.kind AND ls.item_id = m.id
      LEFT JOIN last_any la ON la.item_kind = m.kind AND la.item_id = m.id
+     LEFT JOIN stock st ON st.item_kind = m.kind AND st.item_id = m.id
+     LEFT JOIN supplier_materials sm ON sm.supplier_id = $1 AND sm.item_kind = m.kind AND sm.item_id = m.id
      ${q ? "WHERE (m.name ILIKE $2 OR m.code ILIKE $2)" : ''}
      ORDER BY m.name`,
     params
@@ -335,6 +371,15 @@ router.post('/api/orders/:id(\\d+)/receive', express.json({ limit: '2mb' }), asy
   await db.pool.query("UPDATE purchase_orders SET status = 'received', received_at = now(), received_by = $1 WHERE id = $2", [
     req.user.id, req.params.id,
   ]);
+  // система запоминает, что этот поставщик возит эти позиции
+  await db.pool.query(
+    `INSERT INTO supplier_materials (supplier_id, item_kind, item_id)
+     SELECT po.supplier_id, i.item_kind, i.item_id
+     FROM purchase_order_items i JOIN purchase_orders po ON po.id = i.order_id
+     WHERE i.order_id = $1 AND COALESCE(i.fact_qty, 0) > 0
+     ON CONFLICT DO NOTHING`,
+    [req.params.id]
+  );
   await db.log(req.user.id, 'purchase_order_receive', o.rows[0].number);
   res.json({ ok: true });
 });

@@ -116,7 +116,7 @@
   }
 
   // --- редактор заявки (создание/черновик) ---
-  async function openOrderEditor(orderId) {
+  async function openOrderEditor(orderId, presetSupplierId) {
     let order = null;
     let items = [];
     if (orderId) {
@@ -131,6 +131,7 @@
       ...suppliers.map((s) => el('option', { value: s.id }, s.name)),
     ]);
     if (order) supSel.value = order.supplier_id;
+    else if (presetSupplierId) supSel.value = presetSupplierId;
 
     const paySel = el('select', { id: 'oe-pay' }, [
       el('option', { value: 'перечисление' }, '🏦 Перечисление'),
@@ -139,6 +140,10 @@
     if (order) paySel.value = order.payment_type;
 
     const search = el('input', { placeholder: 'Поиск по номенклатуре...', oninput: debounce(renderRows, 250) });
+    let attachedOnly = true;
+    const modeBtn = el('button', {
+      onclick: () => { attachedOnly = !attachedOnly; modeBtn.textContent = attachedOnly ? '📎 Товары поставщика' : '📚 Вся номенклатура'; renderRows(); },
+    }, '📎 Товары поставщика');
     const comment = el('input', { id: 'oe-comment', placeholder: 'Комментарий (необязательно)' });
     if (order) comment.value = order.comment || '';
 
@@ -165,7 +170,11 @@
     function renderRows() {
       const q = search.value.trim().toLowerCase();
       tableWrap.innerHTML = '';
-      const filtered = mats.filter((m) => !q || m.name.toLowerCase().includes(q) || String(m.code || '').toLowerCase().includes(q));
+      const hasAttached = mats.some((m) => m.attached);
+      let filtered = mats.filter((m) => !q || m.name.toLowerCase().includes(q) || String(m.code || '').toLowerCase().includes(q));
+      if (attachedOnly && hasAttached && !q) {
+        filtered = filtered.filter((m) => m.attached || entered[m.kind + ':' + m.id]);
+      }
       const rows = filtered.map((m) => {
         const key = m.kind + ':' + m.id;
         const e = entered[key] || { qty: '', price: m.supplier_price != null ? Number(m.supplier_price) : (m.any_price != null ? Number(m.any_price) : '') };
@@ -178,9 +187,13 @@
             recalcTotal();
           },
         });
+        const priceTouched = !!entered[key];
         const priceIn = el('input', {
-          type: 'number', step: 'any', min: '0', class: 'oe-num', value: e.price === '' ? '' : e.price,
+          type: 'number', step: 'any', min: '0',
+          class: 'oe-num' + (priceTouched ? '' : ' oe-ghost'),
+          value: e.price === '' ? '' : e.price,
           oninput: (ev) => {
+            ev.target.classList.remove('oe-ghost');
             if (entered[key]) { entered[key].price = Number(ev.target.value) || 0; recalcTotal(); }
           },
         });
@@ -188,13 +201,13 @@
           el('td', { class: 'tnum' }, m.code || ''),
           el('td', { style: 'font-weight:600' }, m.name + (m.kind === 'packaging' ? ' 📦' : '')),
           el('td', {}, m.unit || ''),
+          el('td', { class: 'tnum muted' }, m.stock > 0 ? fmt.format(Number(m.stock)) : '—'),
           el('td', {}, qtyIn),
           el('td', {}, priceIn),
-          el('td', { class: 'muted', style: 'font-size:12px' }, m.supplier_price != null ? 'был: ' + fmtMoney(m.supplier_price) : ''),
         ]);
       });
       tableWrap.appendChild(el('table', { class: 'dict-table oe-table' }, [
-        el('thead', {}, el('tr', {}, ['Артикул', 'Наименование', 'Ед.', 'Кол-во', 'Цена', 'Прошлая цена'].map((h) => el('th', {}, h)))),
+        el('thead', {}, el('tr', {}, ['Артикул', 'Наименование', 'Ед.', 'Остаток*', 'Кол-во', 'Цена'].map((h) => el('th', {}, h)))),
         el('tbody', {}, rows),
       ]));
       recalcTotal();
@@ -208,8 +221,9 @@
         el('label', { style: 'flex:1 1 160px' }, ['Тип платежа', paySel]),
         el('label', { style: 'flex:2 1 200px' }, ['Комментарий', comment]),
       ]),
-      el('div', { class: 'form-row', style: 'margin:10px 0' }, [search]),
+      el('div', { class: 'form-row', style: 'margin:10px 0' }, [search, modeBtn]),
       tableWrap,
+      el('p', { class: 'muted', style: 'margin:6px 0 0;font-size:11.5px' }, '* Остаток = принятые приходы; расход производства подключится с блоком «Склад сырья». Серая цена — последняя цена закупа: не меняли — останется она.'),
       totalBox,
     ]);
 
@@ -422,6 +436,59 @@
     ]);
   }
 
+
+  // прикрепление товаров к поставщику
+  async function openAttach(sup) {
+    const mats = (await api('/materials?supplier_id=' + sup.id)).items;
+    const checked = new Set(mats.filter((m) => m.attached).map((m) => m.kind + ':' + m.id));
+    const search = el('input', { placeholder: 'Поиск...', oninput: debounce(render, 200) });
+    const wrap = el('div', { class: 'oe-table-wrap' });
+    function render() {
+      const q = search.value.trim().toLowerCase();
+      wrap.innerHTML = '';
+      const rows = mats
+        .filter((m) => !q || m.name.toLowerCase().includes(q) || String(m.code || '').toLowerCase().includes(q))
+        .map((m) => {
+          const key = m.kind + ':' + m.id;
+          const cb = el('input', {
+            type: 'checkbox',
+            onchange: (e) => { if (e.target.checked) checked.add(key); else checked.delete(key); },
+          });
+          cb.checked = checked.has(key);
+          return el('tr', {}, [
+            el('td', { style: 'width:34px' }, cb),
+            el('td', { class: 'tnum' }, m.code || ''),
+            el('td', { style: 'font-weight:600' }, m.name + (m.kind === 'packaging' ? ' 📦' : '')),
+            el('td', {}, m.unit || ''),
+          ]);
+        });
+      wrap.appendChild(el('table', { class: 'dict-table' }, [el('tbody', {}, rows)]));
+    }
+    render();
+    const body = el('div', {}, [
+      el('p', { class: 'muted' }, 'Отметьте номенклатуру, которую возит этот поставщик — она будет выпадать в заявке первой. При приёмках список пополняется автоматически.'),
+      el('div', { class: 'form-row', style: 'margin-bottom:10px' }, [search]),
+      wrap,
+    ]);
+    const m = modal('📎 Товары поставщика — ' + sup.name, body, [
+      el('button', { onclick: () => m.close() }, 'Отмена'),
+      el('button', {
+        class: 'btn-primary',
+        onclick: async (ev) => {
+          ev.target.disabled = true;
+          try {
+            await api('/suppliers/' + sup.id + '/materials', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ items: [...checked].map((k) => { const [kind, id] = k.split(':'); return { item_kind: kind, item_id: id }; }) }),
+            });
+            toast('Привязка сохранена (' + checked.size + ')');
+            m.close();
+          } catch (e) { toast(e.message, true); ev.target.disabled = false; }
+        },
+      }, 'Сохранить'),
+    ]);
+  }
+
   // ================= ВЗАИМОРАСЧЁТЫ =================
   async function viewSettlements() {
     const main = $('#pur-main');
@@ -485,7 +552,10 @@
       el('h3', { class: 'pur-sub' }, '📥 Поставки'),
       d.orders.length ? el('div', {}, d.orders.map((o) =>
         el('details', { class: 'pur-details' }, [
-          el('summary', {}, `${o.number} · ${dt(o.received_at)} · ${fmtMoney(o.total)} сум · ${payIcon(o.payment_type)}`),
+          el('summary', {}, [
+            `${o.number} · ${dt(o.received_at)} · ${fmtMoney(o.total)} сум · ${payIcon(o.payment_type)} `,
+            el('a', { href: 'javascript:void(0)', style: 'margin-left:8px;font-weight:700', onclick: (e) => { e.preventDefault(); m.close(); openOrderCard(o.id); } }, 'открыть →'),
+          ]),
           el('table', { class: 'dict-table' }, [
             el('tbody', {}, (itemsByOrder[o.id] || []).map((i) =>
               el('tr', {}, [
@@ -527,6 +597,8 @@
     ]);
     const m = modal('🤝 ' + s.name, body, [
       el('button', { onclick: () => { m.close(); openSupplierEdit(s); } }, '✏️ Изменить'),
+      el('button', { onclick: () => { m.close(); openAttach(s); } }, '📎 Товары поставщика'),
+      el('button', { onclick: () => { m.close(); openOrderEditor(null, s.id); } }, '🧾 Новая заявка'),
       el('button', { class: 'btn-primary', onclick: () => { m.close(); openPayment(s); } }, '+ Оплата'),
       el('button', { onclick: () => m.close() }, 'Закрыть'),
     ]);
