@@ -315,6 +315,12 @@ async function seed() {
     }
   }
 
+  // ветка «родителя» для категорий сырья: зелень / упаковка
+  await pool.query(`UPDATE ref_categories SET branch = 'Упаковка'
+    WHERE kind = 'категория' AND COALESCE(branch,'') = '' AND (upper(code) IN ('PK','LAB') OR lower(name) LIKE '%пакет%' OR lower(name) LIKE '%стикер%' OR lower(name) LIKE '%контейнер%' OR lower(name) LIKE '%упаков%')`).catch(()=>{});
+  await pool.query(`UPDATE ref_categories SET branch = 'Свежая зелень'
+    WHERE kind = 'категория' AND COALESCE(branch,'') = '' AND (sd_sd_id IS NULL OR sd_sd_id = '') AND upper(code) <> ''`).catch(()=>{});
+
   for (const [catName, cults] of cultSeed) {
     const cat = await pool.query("SELECT id FROM ref_categories WHERE kind='категория' AND lower(name)=lower($1) LIMIT 1", [catName]);
     if (!cat.rows.length) continue;

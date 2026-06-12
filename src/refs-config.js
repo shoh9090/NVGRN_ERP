@@ -170,8 +170,9 @@ const REF_TYPES = {
     hidden: true,
     dedupe: ['name'],
     fields: [
-      { key: 'kind', label: 'Уровень', type: 'enum', options: ['категория', 'группа', 'подкатегория'], required: true, listCol: true, filterable: true },
-      { key: 'parent_id', label: 'Родитель', type: 'ref', ref: 'categories', listCol: true },
+      { key: 'branch', label: 'Родитель', type: 'enum', options: ['Свежая зелень', 'Упаковка'], required: true, listCol: true, filterable: true },
+      { key: 'kind', label: 'Уровень', type: 'enum', options: ['категория', 'группа', 'подкатегория'], hiddenField: true, filterable: true },
+      { key: 'parent_id', label: 'Родитель (служебное)', type: 'ref', ref: 'categories', hiddenField: true },
     ],
   },
 };

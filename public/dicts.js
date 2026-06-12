@@ -276,7 +276,7 @@
     const box = $('#dict-filters');
     box.innerHTML = '';
     if (state.type === 'prices') return;
-    const filterables = fieldsOf(state.type).filter((f) => f.filterable);
+    const filterables = fieldsOf(state.type).filter((f) => f.filterable && !f.hiddenField);
     for (const f of filterables) {
       const sel = el('select', {
         class: 'dict-filter',
@@ -383,7 +383,7 @@
     }
 
     for (const f of fieldsOf(state.type)) {
-      if (f.system) continue;
+      if (f.system || f.hiddenField) continue;
       const val = state.editing[f.key];
       let input;
       if (f.type === 'textarea') {

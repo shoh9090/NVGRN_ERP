@@ -361,6 +361,8 @@ router.post('/:type', express.json(), async (req, res) => {
   const errors = validate(t, values, true);
   if (errors.length) return saveError(res, errors.join('; '));
 
+  if (req.params.type === 'categories' && !values.kind) values.kind = 'категория';
+
   const refErr = await checkRefsActive(t, values);
   if (refErr) return saveError(res, refErr);
 
