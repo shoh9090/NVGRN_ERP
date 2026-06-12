@@ -618,6 +618,13 @@ router.post('/:type/import/commit', express.json({ limit: '10mb' }), async (req,
       delete v._unit_name;
       delete v._category_name;
 
+      // автоартикул при импорте: если код пуст, а категория определена — присваиваем RM-XX-NNN
+      if ((t.autoCode || t.autoCodeFixed) && !v.code && (v.category_id || t.autoCodeFixed)) {
+        try {
+          v.code = await nextArticle(t, t.autoCode, v.category_id, t.autoCodeFixed);
+        } catch (e) { /* категория без кода — позиция останется без артикула, добьёт «Перекодировка» */ }
+      }
+
       // существующая запись: по коду, затем по имени
       let exId = null;
       if (v.code) {
