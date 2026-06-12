@@ -396,12 +396,30 @@ async function requireDictAccess(req, res, next) {
     `SELECT 1 FROM tiles t
      JOIN role_tiles rt ON rt.tile_id = t.id
      JOIN user_roles ur ON ur.role_id = rt.role_id
-     WHERE ur.user_id = $1 AND t.url = '/dictionaries' LIMIT 1`,
+     WHERE ur.user_id = $1 AND t.url IN ('/dictionaries', '/purchase') LIMIT 1`,
     [req.user.id]
   );
   if (r.rows.length === 0) return res.status(403).send('Нет доступа к справочникам. Обратитесь к администратору.');
   next();
 }
+
+async function requirePurchaseAccess(req, res, next) {
+  if (!req.user) return res.redirect('/login');
+  if (req.user.isAdmin) return next();
+  const r = await db.pool.query(
+    `SELECT 1 FROM tiles t
+     JOIN role_tiles rt ON rt.tile_id = t.id
+     JOIN user_roles ur ON ur.role_id = rt.role_id
+     WHERE ur.user_id = $1 AND t.url = '/purchase' LIMIT 1`,
+    [req.user.id]
+  );
+  if (r.rows.length === 0) return res.status(403).send('Нет доступа к блоку «Закуп». Обратитесь к администратору.');
+  next();
+}
+
+// Блок «Закуп»: страница и JSON API
+const purchaseRouter = require('./src/purchase');
+app.use('/purchase', requirePurchaseAccess, purchaseRouter);
 
 const dict = express.Router();
 dict.use(requireDictAccess);

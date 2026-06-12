@@ -83,6 +83,43 @@ CREATE TABLE IF NOT EXISTS products (
   is_active BOOLEAN DEFAULT TRUE
 );
 
+-- ===== Блок «Закуп» =====
+CREATE TABLE IF NOT EXISTS purchase_orders (
+  id SERIAL PRIMARY KEY,
+  number TEXT UNIQUE NOT NULL,
+  supplier_id INTEGER NOT NULL,
+  status TEXT DEFAULT 'draft', -- draft | ordered | received | cancelled
+  payment_type TEXT DEFAULT 'перечисление', -- перечисление | наличка
+  comment TEXT DEFAULT '',
+  created_by INTEGER,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  ordered_at TIMESTAMPTZ,
+  received_at TIMESTAMPTZ,
+  received_by INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS purchase_order_items (
+  id SERIAL PRIMARY KEY,
+  order_id INTEGER REFERENCES purchase_orders(id) ON DELETE CASCADE,
+  item_kind TEXT NOT NULL, -- raw | packaging
+  item_id INTEGER NOT NULL,
+  qty NUMERIC DEFAULT 0,
+  price NUMERIC DEFAULT 0,
+  fact_qty NUMERIC,
+  fact_price NUMERIC
+);
+
+CREATE TABLE IF NOT EXISTS supplier_payments (
+  id SERIAL PRIMARY KEY,
+  supplier_id INTEGER NOT NULL,
+  amount NUMERIC NOT NULL,
+  payment_type TEXT DEFAULT 'перечисление',
+  paid_at DATE DEFAULT CURRENT_DATE,
+  comment TEXT DEFAULT '',
+  created_by INTEGER,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
 -- Журнал действий (минимальный, расширяется на Этапе 5)
 CREATE TABLE IF NOT EXISTS audit_log (
   id SERIAL PRIMARY KEY,
@@ -289,6 +326,15 @@ async function seed() {
     await pool.query(
       `INSERT INTO tiles (title, description, icon, url, open_new_tab, sort_order)
        VALUES ('Справочники', 'Контрагенты, номенклатура, единицы', '📚', '/dictionaries', FALSE, 90)`
+    );
+  }
+
+  // Плитка «Закуп» — модуль ядра
+  const pt = await pool.query("SELECT id FROM tiles WHERE url = '/purchase' LIMIT 1");
+  if (pt.rows.length === 0) {
+    await pool.query(
+      `INSERT INTO tiles (title, description, icon, url, open_new_tab, sort_order)
+       VALUES ('Закуп', 'Заявки, приёмка, взаиморасчёты с поставщиками', '🛒', '/purchase', FALSE, 20)`
     );
   }
 
