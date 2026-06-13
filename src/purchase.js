@@ -216,16 +216,32 @@ router.get('/api/materials', async (req, res) => {
 });
 
 
+
+// Справочные списки для фильтров вкладки «Цены»
+router.get('/api/filter-options', async (req, res) => {
+  const sup = await db.pool.query(
+    "SELECT id, name FROM ref_counterparties WHERE role_supplier = TRUE AND status = 'active' ORDER BY name"
+  );
+  const cat = await db.pool.query(
+    "SELECT id, name, branch FROM ref_categories WHERE kind = 'категория' AND (sd_sd_id IS NULL OR sd_sd_id = '') ORDER BY branch, name"
+  );
+  res.json({ suppliers: sup.rows, categories: cat.rows });
+});
+
 // ---------- Динамика цен ----------
 // Сводка по номенклатуре: последняя/мин/макс/средняя цена и число закупок
 router.get('/api/price-list', async (req, res) => {
   const q = (req.query.q || '').trim();
   const params = [];
+  // фильтры истории цен: поставщик, категория, период
+  const histWhere = ["COALESCE(i.fact_price, i.price) > 0"];
+  if (req.query.supplier_id) { params.push(parseInt(req.query.supplier_id)); histWhere.push(`po.supplier_id = $${params.length}`); }
+  if (req.query.from) { params.push(req.query.from); histWhere.push(`po.received_at >= $${params.length}::date`); }
+  if (req.query.to) { params.push(req.query.to); histWhere.push(`po.received_at < ($${params.length}::date + INTERVAL '1 day')`); }
+  let catSQL = '';
+  if (req.query.category_id) { params.push(parseInt(req.query.category_id)); catSQL = ` AND m.category_id = $${params.length}`; }
   let qSQL = '';
-  if (q) {
-    params.push('%' + q + '%');
-    qSQL = ` AND (m.name ILIKE $1 OR m.code ILIKE $1)`;
-  }
+  if (q) { params.push('%' + q + '%'); qSQL = ` AND (m.name ILIKE $${params.length} OR m.code ILIKE $${params.length})`; }
   const r = await db.pool.query(
     `WITH hist AS (
        SELECT i.item_kind, i.item_id,
@@ -233,7 +249,7 @@ router.get('/api/price-list', async (req, res) => {
               po.received_at
        FROM purchase_order_items i
        JOIN purchase_orders po ON po.id = i.order_id AND po.status = 'received'
-       WHERE COALESCE(i.fact_price, i.price) > 0
+       WHERE ${histWhere.join(' AND ')}
      ),
      agg AS (
        SELECT item_kind, item_id,
@@ -253,9 +269,9 @@ router.get('/api/price-list', async (req, res) => {
        FROM hist
      ),
      mats AS (
-       SELECT 'raw' AS kind, id, code, name FROM ref_raw_materials WHERE status = 'active'
+       SELECT 'raw' AS kind, id, code, name, category_id FROM ref_raw_materials WHERE status = 'active'
        UNION ALL
-       SELECT 'packaging', id, code, name FROM ref_packaging WHERE status = 'active'
+       SELECT 'packaging', id, code, name, category_id FROM ref_packaging WHERE status = 'active'
      )
      SELECT m.kind, m.id, m.code, m.name,
             l.last_price, l.last_at, a.min_price, a.max_price, a.avg_price, a.buys,
@@ -264,7 +280,7 @@ router.get('/api/price-list', async (req, res) => {
      JOIN agg a ON a.item_kind = m.kind AND a.item_id = m.id
      JOIN last l ON l.item_kind = m.kind AND l.item_id = m.id
      LEFT JOIN prev p2 ON p2.item_kind = m.kind AND p2.item_id = m.id AND p2.rn = 2
-     WHERE TRUE${qSQL}
+     WHERE TRUE${catSQL}${qSQL}
      ORDER BY m.name`,
     params
   );

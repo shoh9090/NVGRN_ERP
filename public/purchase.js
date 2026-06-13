@@ -716,11 +716,32 @@
   async function viewPrices() {
     const main = $('#pur-main');
     main.innerHTML = '';
+    const opts = await api('/filter-options');
     main.appendChild(el('div', { class: 'pur-toolbar' }, [
       el('h2', {}, 'Динамика цен закупа'),
       el('div', { class: 'pur-toolbar-right' }, [
-        el('input', { id: 'pr-q', placeholder: 'Поиск...', oninput: debounce(loadPriceList, 300) }),
+        el('input', { id: 'pr-q', placeholder: 'Поиск по товару...', oninput: debounce(loadPriceList, 300) }),
       ]),
+    ]));
+    const supSel = el('select', { id: 'pr-supplier', onchange: loadPriceList }, [
+      el('option', { value: '' }, 'Все поставщики'),
+      ...opts.suppliers.map((s) => el('option', { value: s.id }, s.name)),
+    ]);
+    const catSel = el('select', { id: 'pr-category', onchange: loadPriceList }, [
+      el('option', { value: '' }, 'Все категории'),
+      ...opts.categories.map((c) => el('option', { value: c.id }, (c.branch === 'Упаковка' ? '📦 ' : '🌿 ') + c.name)),
+    ]);
+    const fromIn = el('input', { id: 'pr-from', type: 'date', onchange: loadPriceList });
+    const toIn = el('input', { id: 'pr-to', type: 'date', onchange: loadPriceList });
+    const resetBtn = el('button', {
+      onclick: () => { supSel.value = ''; catSel.value = ''; fromIn.value = ''; toIn.value = ''; $('#pr-q').value = ''; loadPriceList(); },
+    }, 'Сбросить');
+    main.appendChild(el('div', { class: 'pur-filters' }, [
+      el('label', {}, ['Поставщик', supSel]),
+      el('label', {}, ['Категория', catSel]),
+      el('label', {}, ['Период с', fromIn]),
+      el('label', {}, ['по', toIn]),
+      resetBtn,
     ]));
     main.appendChild(el('div', { id: 'pr-list', class: 'pur-content' }));
     await loadPriceList();
@@ -735,12 +756,18 @@
   }
 
   async function loadPriceList() {
+    const p = new URLSearchParams();
     const q = $('#pr-q') ? $('#pr-q').value.trim() : '';
-    const data = await api('/price-list' + (q ? '?q=' + encodeURIComponent(q) : ''));
+    if (q) p.set('q', q);
+    if ($('#pr-supplier') && $('#pr-supplier').value) p.set('supplier_id', $('#pr-supplier').value);
+    if ($('#pr-category') && $('#pr-category').value) p.set('category_id', $('#pr-category').value);
+    if ($('#pr-from') && $('#pr-from').value) p.set('from', $('#pr-from').value);
+    if ($('#pr-to') && $('#pr-to').value) p.set('to', $('#pr-to').value);
+    const data = await api('/price-list' + (p.toString() ? '?' + p.toString() : ''));
     const box = $('#pr-list');
     box.innerHTML = '';
     if (!data.items.length) {
-      box.appendChild(el('p', { class: 'dict-empty' }, 'История цен появится после первых принятых поставок.'));
+      box.appendChild(el('p', { class: 'dict-empty' }, 'Нет данных по выбранным фильтрам. Сбросьте фильтры или дождитесь принятых поставок.'));
       return;
     }
     box.appendChild(el('table', { class: 'dict-table' }, [

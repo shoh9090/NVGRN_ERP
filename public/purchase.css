@@ -83,3 +83,10 @@
 /* график динамики цен */
 .pur-chart{border:1px solid var(--line);border-radius:var(--radius-s);background:var(--surface-2);margin-bottom:12px;padding:6px}
 .pur-chart svg{width:100%;height:180px;display:block}
+
+/* фильтры вкладки «Цены» */
+.pur-filters{display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;margin-bottom:14px}
+.pur-filters label{display:flex;flex-direction:column;gap:4px;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-faint)}
+.pur-filters select,.pur-filters input{min-width:150px}
+.pur-filters button{align-self:flex-end}
+@media (max-width:760px){.pur-filters select,.pur-filters input{min-width:120px}}
