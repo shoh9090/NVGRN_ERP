@@ -17,16 +17,20 @@ router.get('/api/suppliers', async (req, res) => {
   let qSQL = '';
   if (q) {
     params.push('%' + q + '%');
-    qSQL = ` AND (c.name ILIKE $1 OR c.legal_name ILIKE $1 OR c.inn ILIKE $1 OR c.supplies ILIKE $1)`;
+    qSQL = ` AND (c.name ILIKE $${params.length} OR c.legal_name ILIKE $${params.length} OR c.inn ILIKE $${params.length} OR c.supplies ILIKE $${params.length})`;
   }
+  let pcSQL = '';
+  if (req.query.parent_category_id) { params.push(parseInt(req.query.parent_category_id)); pcSQL = ` AND c.parent_category_id = $${params.length}`; }
   const r = await db.pool.query(
     `SELECT c.id, c.name, c.legal_name, c.phone, c.inn, c.supplies, c.payment_terms, c.status,
+            c.parent_category_id, pc.name AS parent_category_name, pc.color AS parent_category_color,
             COALESCE(c.opening_balance, 0) AS opening_balance,
             COALESCE(d.delivered, 0) AS delivered,
             COALESCE(p.paid, 0) AS paid,
             COALESCE(c.opening_balance, 0) + COALESCE(d.delivered, 0) - COALESCE(p.paid, 0) AS balance,
             COALESCE(sm.n, 0) AS attached_count
      FROM ref_counterparties c
+     LEFT JOIN ref_parent_categories pc ON pc.id = c.parent_category_id
      LEFT JOIN (
        SELECT po.supplier_id, SUM(COALESCE(i.fact_qty, i.qty) * COALESCE(i.fact_price, i.price)) AS delivered
        FROM purchase_orders po
@@ -40,7 +44,7 @@ router.get('/api/suppliers', async (req, res) => {
      LEFT JOIN (
        SELECT supplier_id, COUNT(*)::int AS n FROM supplier_materials GROUP BY supplier_id
      ) sm ON sm.supplier_id = c.id
-     WHERE c.role_supplier = TRUE AND c.status = 'active'${qSQL}
+     WHERE c.role_supplier = TRUE AND c.status = 'active'${qSQL}${pcSQL}
      ORDER BY c.name`,
     params
   );
@@ -48,12 +52,12 @@ router.get('/api/suppliers', async (req, res) => {
 });
 
 router.put('/api/suppliers/:id(\\d+)', express.json(), async (req, res) => {
-  const allowed = ['name', 'legal_name', 'phone', 'inn', 'supplies', 'payment_terms', 'opening_balance', 'comment'];
+  const allowed = ['name', 'legal_name', 'phone', 'inn', 'supplies', 'payment_terms', 'opening_balance', 'comment', 'parent_category_id'];
   const sets = [];
   const vals = [];
   for (const k of allowed) {
     if (k in req.body) {
-      vals.push(k === 'opening_balance' ? (req.body[k] === '' ? null : Number(req.body[k])) : String(req.body[k] ?? ''));
+      vals.push((k === 'opening_balance' || k === 'parent_category_id') ? (req.body[k] === '' || req.body[k] == null ? null : Number(req.body[k])) : String(req.body[k] ?? ''));
       sets.push(`${k} = $${vals.length}`);
     }
   }
@@ -70,9 +74,10 @@ router.post('/api/suppliers', express.json(), async (req, res) => {
   const dup = await db.pool.query('SELECT id FROM ref_counterparties WHERE lower(name) = lower($1) LIMIT 1', [name]);
   if (dup.rows.length) return res.status(409).json({ error: `Поставщик «${name}» уже существует` });
   const r = await db.pool.query(
-    `INSERT INTO ref_counterparties (name, legal_name, phone, inn, supplies, role_supplier, created_by, updated_by)
-     VALUES ($1, $2, $3, $4, $5, TRUE, $6, $6) RETURNING id`,
-    [name, req.body.legal_name || '', req.body.phone || '', req.body.inn || '', req.body.supplies || '', req.user.id]
+    `INSERT INTO ref_counterparties (name, legal_name, phone, inn, supplies, parent_category_id, role_supplier, created_by, updated_by)
+     VALUES ($1, $2, $3, $4, $5, $6, TRUE, $7, $7) RETURNING id`,
+    [name, req.body.legal_name || '', req.body.phone || '', req.body.inn || '', req.body.supplies || '',
+     req.body.parent_category_id ? Number(req.body.parent_category_id) : null, req.user.id]
   );
   await db.log(req.user.id, 'purchase_supplier_create', name);
   res.json({ id: r.rows[0].id });
@@ -223,9 +228,17 @@ router.get('/api/filter-options', async (req, res) => {
     "SELECT id, name FROM ref_counterparties WHERE role_supplier = TRUE AND status = 'active' ORDER BY name"
   );
   const cat = await db.pool.query(
-    "SELECT id, name, branch FROM ref_categories WHERE kind = 'категория' AND (sd_sd_id IS NULL OR sd_sd_id = '') ORDER BY branch, name"
+    "SELECT id, name FROM ref_categories WHERE kind = 'категория' AND (sd_sd_id IS NULL OR sd_sd_id = '') ORDER BY name"
   );
-  res.json({ suppliers: sup.rows, categories: cat.rows });
+  const parents = await db.pool.query(
+    "SELECT id, name, color FROM ref_parent_categories WHERE status = 'active' ORDER BY name"
+  );
+  const items = await db.pool.query(
+    `SELECT 'raw' AS kind, id, code, name FROM ref_raw_materials WHERE status='active'
+     UNION ALL SELECT 'packaging', id, code, name FROM ref_packaging WHERE status='active'
+     ORDER BY name`
+  );
+  res.json({ suppliers: sup.rows, categories: cat.rows, parents: parents.rows, items: items.rows });
 });
 
 const multer = require('multer');
@@ -279,13 +292,12 @@ router.post('/api/price-history/import-preview', requireAdmin, upload.single('fi
     const ws = wb.Sheets[wb.SheetNames[0]];
     const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
     const header = rows[0] || [];
-    // карта столбец → дата (со столбца 3, т.к. 0=артикул, 1=наим, 2=цена в кальк)
+    // столбцы с датами: ищем начиная со 2-го (0=артикул, 1=наименование), берём всё, что парсится как дата
     const dateCols = [];
-    for (let c = 3; c < header.length; c++) {
+    for (let c = 2; c < header.length; c++) {
       const d = parseHeaderDate(header[c]);
       if (d) dateCols.push({ col: c, date: d });
     }
-    // существующие артикулы
     const raw = await db.pool.query("SELECT id, code FROM ref_raw_materials WHERE code IS NOT NULL");
     const pk = await db.pool.query("SELECT id, code FROM ref_packaging WHERE code IS NOT NULL");
     const byCode = {};
@@ -294,47 +306,74 @@ router.post('/api/price-history/import-preview', requireAdmin, upload.single('fi
 
     let matched = 0, unmatched = 0, points = 0;
     const sample = [];
-    const payload = [];
     for (let i = 1; i < rows.length; i++) {
       const code = String(rows[i][0] || '').trim().toUpperCase();
       const name = String(rows[i][1] || '').trim();
       if (!code) continue;
       const mat = byCode[code];
-      if (!mat) { unmatched++; if (sample.length < 8) sample.push({ code, name, status: 'не найден артикул' }); continue; }
+      if (!mat) { unmatched++; if (sample.length < 10) sample.push({ code, name, status: 'не найден артикул' }); continue; }
       let cnt = 0;
       for (const dc of dateCols) {
         const v = parseFloat(String(rows[i][dc.col]).replace(/\s/g, '').replace(',', '.'));
-        if (!isNaN(v) && v > 0) { payload.push({ kind: mat.kind, id: mat.id, date: dc.date, price: Math.round(v) }); cnt++; points++; }
+        if (!isNaN(v) && v > 0) { cnt++; points++; }
       }
       matched++;
-      if (sample.length < 8) sample.push({ code, name, status: cnt + ' цен' });
+      if (sample.length < 10) sample.push({ code, name, status: cnt + ' цен' });
     }
-    // временно положим payload в сессию импорта — отдадим клиенту для commit
-    res.json({ dates: dateCols.length, matched, unmatched, points, sample, payload });
+    res.json({ dates: dateCols.length, matched, unmatched, points, sample });
   } catch (e) {
     res.status(400).json({ error: 'Не удалось прочитать файл: ' + e.message });
   }
 });
 
-router.post('/api/price-history/import-commit', requireAdmin, express.json({ limit: '12mb' }), async (req, res) => {
-  const rows = Array.isArray(req.body.payload) ? req.body.payload : [];
-  if (!rows.length) return res.status(400).json({ error: 'Нет данных для импорта' });
-  let saved = 0;
-  for (const r of rows) {
-    const kind = r.kind === 'packaging' ? 'packaging' : 'raw';
-    const id = parseInt(r.id);
-    const price = Math.round(Number(r.price));
-    if (!id || !r.date || !price) continue;
-    await db.pool.query(
-      `INSERT INTO price_history_import (item_kind, item_id, price_date, price, source)
-       VALUES ($1, $2, $3, $4, 'import')
-       ON CONFLICT (item_kind, item_id, price_date, source) DO UPDATE SET price = EXCLUDED.price`,
-      [kind, id, r.date, price]
-    );
-    saved++;
+router.post('/api/price-history/import-commit', requireAdmin, upload.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'Файл не получен' });
+  const client = await db.pool.connect();
+  try {
+    const XLSX = require('xlsx');
+    const wb = XLSX.read(req.file.buffer, { type: 'buffer', cellDates: true });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+    const header = rows[0] || [];
+    const dateCols = [];
+    for (let c = 2; c < header.length; c++) {
+      const d = parseHeaderDate(header[c]);
+      if (d) dateCols.push({ col: c, date: d });
+    }
+    const raw = await client.query("SELECT id, code FROM ref_raw_materials WHERE code IS NOT NULL");
+    const pk = await client.query("SELECT id, code FROM ref_packaging WHERE code IS NOT NULL");
+    const byCode = {};
+    for (const r of raw.rows) byCode[String(r.code).toUpperCase()] = { kind: 'raw', id: r.id };
+    for (const r of pk.rows) byCode[String(r.code).toUpperCase()] = { kind: 'packaging', id: r.id };
+
+    await client.query('BEGIN');
+    let saved = 0;
+    for (let i = 1; i < rows.length; i++) {
+      const code = String(rows[i][0] || '').trim().toUpperCase();
+      if (!code) continue;
+      const mat = byCode[code];
+      if (!mat) continue;
+      for (const dc of dateCols) {
+        const v = parseFloat(String(rows[i][dc.col]).replace(/\s/g, '').replace(',', '.'));
+        if (isNaN(v) || v <= 0) continue;
+        await client.query(
+          `INSERT INTO price_history_import (item_kind, item_id, price_date, price, source)
+           VALUES ($1, $2, $3, $4, 'import')
+           ON CONFLICT (item_kind, item_id, price_date, source) DO UPDATE SET price = EXCLUDED.price`,
+          [mat.kind, mat.id, dc.date, Math.round(v)]
+        );
+        saved++;
+      }
+    }
+    await client.query('COMMIT');
+    await db.log(req.user.id, 'price_history_import', `точек=${saved}`);
+    res.json({ saved });
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    res.status(400).json({ error: 'Ошибка импорта: ' + e.message });
+  } finally {
+    client.release();
   }
-  await db.log(req.user.id, 'price_history_import', `точек=${saved}`);
-  res.json({ saved });
 });
 
 // ---------- Динамика цен ----------
@@ -421,6 +460,46 @@ router.get('/api/price-history', async (req, res) => {
   res.json({ items });
 });
 
+
+// Матрица цен: строки = товары, столбцы = даты (объединяет архив-импорт и живые приёмки)
+router.get('/api/price-matrix', async (req, res) => {
+  const params = [];
+  const where = [];
+  if (req.query.q) { params.push('%' + req.query.q + '%'); where.push(`(m.name ILIKE $${params.length} OR m.code ILIKE $${params.length})`); }
+  if (req.query.category_id) { params.push(parseInt(req.query.category_id)); where.push(`m.category_id = $${params.length}`); }
+  const whereSQL = where.length ? 'WHERE ' + where.join(' AND ') : '';
+
+  // все точки (архив + приёмки) по дате
+  const pts = await db.pool.query(
+    `SELECT item_kind, item_id, price_date::text AS d, price FROM price_history_import
+     UNION ALL
+     SELECT i.item_kind, i.item_id, po.received_at::date::text AS d, COALESCE(i.fact_price, i.price) AS price
+     FROM purchase_order_items i JOIN purchase_orders po ON po.id = i.order_id AND po.status = 'received'
+     WHERE COALESCE(i.fact_price, i.price) > 0`
+  );
+  const mats = await db.pool.query(
+    `SELECT m.kind, m.id, m.code, m.name, m.characteristics FROM (
+       SELECT 'raw' AS kind, id, code, name, category_id, characteristics FROM ref_raw_materials WHERE status='active'
+       UNION ALL
+       SELECT 'packaging', id, code, name, category_id, NULL FROM ref_packaging WHERE status='active'
+     ) m ${whereSQL} ORDER BY m.name`,
+    params
+  );
+  // собрать набор дат и матрицу
+  const dateSet = new Set();
+  const byItem = {};
+  for (const p of pts.rows) {
+    dateSet.add(p.d);
+    const k = p.item_kind + ':' + p.item_id;
+    (byItem[k] = byItem[k] || {})[p.d] = Math.round(Number(p.price));
+  }
+  const dates = [...dateSet].sort();
+  const items = mats.rows
+    .map((m) => ({ kind: m.kind, id: m.id, code: m.code, name: m.name, characteristics: m.characteristics, prices: byItem[m.kind + ':' + m.id] || {} }))
+    .filter((it) => Object.keys(it.prices).length > 0);
+  res.json({ dates, items });
+});
+
 // ---------- Заявки ----------
 async function nextOrderNumber() {
   const year = new Date().getFullYear();
@@ -446,16 +525,32 @@ router.get('/api/orders', async (req, res) => {
     params.push('%' + q + '%');
     where += ` AND (po.number ILIKE $${params.length} OR c.name ILIKE $${params.length})`;
   }
+  if (req.query.parent_category_id) {
+    params.push(parseInt(req.query.parent_category_id));
+    where += ` AND c.parent_category_id = $${params.length}`;
+  }
+  if (req.query.supplier_id) {
+    params.push(parseInt(req.query.supplier_id));
+    where += ` AND po.supplier_id = $${params.length}`;
+  }
+  // мультивыбор товаров: показываем заявки, где есть хотя бы один из выбранных
+  let itemJoin = '';
+  const itemIds = String(req.query.item_ids || '').split(',').map((x) => parseInt(x)).filter(Boolean);
+  if (itemIds.length) {
+    params.push(itemIds);
+    where += ` AND EXISTS (SELECT 1 FROM purchase_order_items pi WHERE pi.order_id = po.id AND pi.item_id = ANY($${params.length}))`;
+  }
   const r = await db.pool.query(
     `SELECT po.id, po.number, po.status, po.payment_type, po.created_at, po.received_at, po.comment,
-            c.name AS supplier_name,
+            c.name AS supplier_name, pc.name AS parent_category_name, pc.color AS parent_category_color,
             COALESCE(SUM(COALESCE(i.fact_qty, i.qty) * COALESCE(i.fact_price, i.price)), 0) AS total,
             COUNT(i.id)::int AS positions
      FROM purchase_orders po
      JOIN ref_counterparties c ON c.id = po.supplier_id
+     LEFT JOIN ref_parent_categories pc ON pc.id = c.parent_category_id
      LEFT JOIN purchase_order_items i ON i.order_id = po.id
      WHERE ${where}
-     GROUP BY po.id, c.name
+     GROUP BY po.id, c.name, pc.name, pc.color
      ORDER BY po.id DESC LIMIT 300`,
     params
   );

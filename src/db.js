@@ -332,6 +332,33 @@ async function seed() {
   await pool.query(`UPDATE ref_categories SET branch = 'Свежая зелень'
     WHERE kind = 'категория' AND COALESCE(branch,'') = '' AND (sd_sd_id IS NULL OR sd_sd_id = '') AND upper(code) <> ''`).catch(()=>{});
 
+  // ШАГ 3/4: родительские категории как справочник + привязка категорий и поставщиков
+  try {
+    // стартовые родительские категории (имя, цвет, код-префикс)
+    const parents = [
+      ['Свежая зелень', '#3f8f3f', 'G'],
+      ['Упаковка', '#c98a2b', 'P'],
+    ];
+    const pidByName = {};
+    for (const [name, color, prefix] of parents) {
+      const ex = await pool.query('SELECT id FROM ref_parent_categories WHERE lower(name)=lower($1) LIMIT 1', [name]);
+      if (ex.rows.length) {
+        pidByName[name] = ex.rows[0].id;
+        await pool.query('UPDATE ref_parent_categories SET color=COALESCE(NULLIF(color,$1),$2), code_prefix=COALESCE(NULLIF(code_prefix,$3),$4) WHERE id=$5', ['', color, '', prefix, ex.rows[0].id]).catch(()=>{});
+      } else {
+        const r = await pool.query("INSERT INTO ref_parent_categories (name, color, code_prefix, status) VALUES ($1,$2,$3,'active') RETURNING id", [name, color, prefix]);
+        pidByName[name] = r.rows[0].id;
+      }
+    }
+    // категории сырья: текстовый branch → parent_id
+    for (const [name, pid] of Object.entries(pidByName)) {
+      await pool.query("UPDATE ref_categories SET parent_id=$1 WHERE kind='категория' AND lower(COALESCE(branch,''))=lower($2) AND parent_id IS NULL", [pid, name]).catch(()=>{});
+    }
+    // поставщики: по supplier_type проставим родительскую категорию, где пусто
+    await pool.query("UPDATE ref_counterparties SET parent_category_id=$1 WHERE role_supplier=TRUE AND parent_category_id IS NULL AND lower(COALESCE(supplier_type,'')) LIKE '%упаков%'", [pidByName['Упаковка']]).catch(()=>{});
+    await pool.query("UPDATE ref_counterparties SET parent_category_id=$1 WHERE role_supplier=TRUE AND parent_category_id IS NULL AND lower(COALESCE(supplier_type,'')) LIKE '%сырь%'", [pidByName['Свежая зелень']]).catch(()=>{});
+  } catch (e) { console.error('parent_categories migrate:', e.message); }
+
   for (const [catName, cults] of cultSeed) {
     const cat = await pool.query("SELECT id FROM ref_categories WHERE kind='категория' AND lower(name)=lower($1) LIMIT 1", [catName]);
     if (!cat.rows.length) continue;

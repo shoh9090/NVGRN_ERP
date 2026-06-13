@@ -119,6 +119,7 @@ const REF_TYPES = {
       { key: 'payment_terms', label: 'Оплата', type: 'enum', options: ['предоплата', 'отсрочка', 'по факту'] },
       { key: 'defer_days', label: 'Дней отсрочки', type: 'number' },
       { key: 'supplier_type', label: 'Тип поставщика', type: 'enum', options: ['сырьё', 'упаковка', 'услуги', '—'] },
+      { key: 'parent_category_id', label: 'Родительская категория', type: 'ref', ref: 'parent_categories', listCol: true, filterable: true },
       { key: 'quality_rating', label: 'Рейтинг', type: 'enum', options: ['A', 'B', 'C', '—'] },
       { key: 'bank_details', label: 'Банковские реквизиты', type: 'textarea' },
     ],
@@ -163,6 +164,20 @@ const REF_TYPES = {
     ],
   },
 
+  parent_categories: {
+    table: 'ref_parent_categories',
+    label: 'Родительские категории',
+    icon: '🌳',
+    group: 'classifiers',
+    hidden: true,
+    autoCode: false,
+    dedupe: ['name'],
+    fields: [
+      { key: 'color', label: 'Цвет', type: 'color', listCol: true },
+      { key: 'code_prefix', label: 'Код-префикс', type: 'text', listCol: true, searchable: true },
+    ],
+  },
+
   categories: {
     table: 'ref_categories',
     label: 'Категории сырья',
@@ -171,9 +186,9 @@ const REF_TYPES = {
     hidden: true,
     dedupe: ['name'],
     fields: [
-      { key: 'branch', label: 'Родитель', type: 'enum', options: ['Свежая зелень', 'Упаковка'], required: true, listCol: true, filterable: true },
+      { key: 'parent_id', label: 'Родительская категория', type: 'ref', ref: 'parent_categories', required: true, listCol: true, filterable: true },
+      { key: 'branch', label: 'Родитель (текст, служебное)', type: 'text', hiddenField: true },
       { key: 'kind', label: 'Уровень', type: 'enum', options: ['категория', 'группа', 'подкатегория'], hiddenField: true, filterable: true },
-      { key: 'parent_id', label: 'Родитель (служебное)', type: 'ref', ref: 'categories', hiddenField: true },
     ],
   },
 };
@@ -266,8 +281,9 @@ function clientMeta() {
       title: 'Сырьё и материалы',
       icon: '🌿',
       children: [
-        { type: 'raw_materials' },
+        { type: 'parent_categories', label: 'Родительские категории' },
         { type: 'categories', label: 'Категории сырья', preset: { kind: 'категория' }, query: 'origin=local' },
+        { type: 'raw_materials' },
         { type: 'packaging' },
       ],
     },
