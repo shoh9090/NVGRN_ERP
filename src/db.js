@@ -128,6 +128,17 @@ CREATE TABLE IF NOT EXISTS supplier_payments (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS price_history_import (
+  id SERIAL PRIMARY KEY,
+  item_kind TEXT NOT NULL DEFAULT 'raw',
+  item_id INTEGER NOT NULL,
+  price_date DATE NOT NULL,
+  price NUMERIC NOT NULL,
+  source TEXT DEFAULT 'import',
+  created_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE (item_kind, item_id, price_date, source)
+);
+
 -- Журнал действий (минимальный, расширяется на Этапе 5)
 CREATE TABLE IF NOT EXISTS audit_log (
   id SERIAL PRIMARY KEY,

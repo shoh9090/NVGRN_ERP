@@ -228,6 +228,115 @@ router.get('/api/filter-options', async (req, res) => {
   res.json({ suppliers: sup.rows, categories: cat.rows });
 });
 
+const multer = require('multer');
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
+function requireAdmin(req, res, next) {
+  if (!req.user || !req.user.isAdmin) return res.status(403).json({ error: 'Доступно только администратору' });
+  next();
+}
+
+// --- Импорт истории закупочных цен (вариант А: артикул + дата + цена, без поставщика) ---
+// Парсер дат из заголовков: понимает «цены\nна 19.08.2023», «март 2026», Excel-серийное число, ISO/datetime
+function parseHeaderDate(raw) {
+  if (raw == null || raw === '') return null;
+  // настоящий Date (datetime из xlsx)
+  if (raw instanceof Date && !isNaN(raw)) return raw.toISOString().slice(0, 10);
+  const str = String(raw).trim();
+
+  // Excel-серийное число (например 45132)
+  if (/^\d{5}$/.test(str)) {
+    const epoch = new Date(Date.UTC(1899, 11, 30));
+    epoch.setUTCDate(epoch.getUTCDate() + parseInt(str));
+    return epoch.toISOString().slice(0, 10);
+  }
+  // dd.mm.yyyy в любом месте строки
+  let m = str.match(/(\d{1,2})[.\/](\d{1,2})[.\/](\d{2,4})/);
+  if (m) {
+    let [, d, mo, y] = m;
+    if (y.length === 2) y = '20' + y;
+    return `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+  }
+  // ISO yyyy-mm-dd
+  m = str.match(/(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  // «март 2026», «апр 2026», «янв.2026», «Цена на июль 2025»
+  const months = { янв:1, фев:2, мар:3, апр:4, май:5, мая:5, июн:6, июл:7, авг:8, сен:9, окт:10, ноя:11, дек:12 };
+  const low = str.toLowerCase();
+  for (const [k, v] of Object.entries(months)) {
+    if (low.includes(k)) {
+      const ym = low.match(/(20\d{2})/);
+      if (ym) return `${ym[1]}-${String(v).padStart(2, '0')}-01`;
+    }
+  }
+  return null;
+}
+
+router.post('/api/price-history/import-preview', requireAdmin, upload.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'Файл не получен' });
+  try {
+    const XLSX = require('xlsx');
+    const wb = XLSX.read(req.file.buffer, { type: 'buffer', cellDates: true });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+    const header = rows[0] || [];
+    // карта столбец → дата (со столбца 3, т.к. 0=артикул, 1=наим, 2=цена в кальк)
+    const dateCols = [];
+    for (let c = 3; c < header.length; c++) {
+      const d = parseHeaderDate(header[c]);
+      if (d) dateCols.push({ col: c, date: d });
+    }
+    // существующие артикулы
+    const raw = await db.pool.query("SELECT id, code FROM ref_raw_materials WHERE code IS NOT NULL");
+    const pk = await db.pool.query("SELECT id, code FROM ref_packaging WHERE code IS NOT NULL");
+    const byCode = {};
+    for (const r of raw.rows) byCode[String(r.code).toUpperCase()] = { kind: 'raw', id: r.id };
+    for (const r of pk.rows) byCode[String(r.code).toUpperCase()] = { kind: 'packaging', id: r.id };
+
+    let matched = 0, unmatched = 0, points = 0;
+    const sample = [];
+    const payload = [];
+    for (let i = 1; i < rows.length; i++) {
+      const code = String(rows[i][0] || '').trim().toUpperCase();
+      const name = String(rows[i][1] || '').trim();
+      if (!code) continue;
+      const mat = byCode[code];
+      if (!mat) { unmatched++; if (sample.length < 8) sample.push({ code, name, status: 'не найден артикул' }); continue; }
+      let cnt = 0;
+      for (const dc of dateCols) {
+        const v = parseFloat(String(rows[i][dc.col]).replace(/\s/g, '').replace(',', '.'));
+        if (!isNaN(v) && v > 0) { payload.push({ kind: mat.kind, id: mat.id, date: dc.date, price: Math.round(v) }); cnt++; points++; }
+      }
+      matched++;
+      if (sample.length < 8) sample.push({ code, name, status: cnt + ' цен' });
+    }
+    // временно положим payload в сессию импорта — отдадим клиенту для commit
+    res.json({ dates: dateCols.length, matched, unmatched, points, sample, payload });
+  } catch (e) {
+    res.status(400).json({ error: 'Не удалось прочитать файл: ' + e.message });
+  }
+});
+
+router.post('/api/price-history/import-commit', requireAdmin, express.json({ limit: '12mb' }), async (req, res) => {
+  const rows = Array.isArray(req.body.payload) ? req.body.payload : [];
+  if (!rows.length) return res.status(400).json({ error: 'Нет данных для импорта' });
+  let saved = 0;
+  for (const r of rows) {
+    const kind = r.kind === 'packaging' ? 'packaging' : 'raw';
+    const id = parseInt(r.id);
+    const price = Math.round(Number(r.price));
+    if (!id || !r.date || !price) continue;
+    await db.pool.query(
+      `INSERT INTO price_history_import (item_kind, item_id, price_date, price, source)
+       VALUES ($1, $2, $3, $4, 'import')
+       ON CONFLICT (item_kind, item_id, price_date, source) DO UPDATE SET price = EXCLUDED.price`,
+      [kind, id, r.date, price]
+    );
+    saved++;
+  }
+  await db.log(req.user.id, 'price_history_import', `точек=${saved}`);
+  res.json({ saved });
+});
+
 // ---------- Динамика цен ----------
 // Сводка по номенклатуре: последняя/мин/макс/средняя цена и число закупок
 router.get('/api/price-list', async (req, res) => {
@@ -269,11 +378,11 @@ router.get('/api/price-list', async (req, res) => {
        FROM hist
      ),
      mats AS (
-       SELECT 'raw' AS kind, id, code, name, category_id FROM ref_raw_materials WHERE status = 'active'
+       SELECT 'raw' AS kind, id, code, name, category_id, characteristics FROM ref_raw_materials WHERE status = 'active'
        UNION ALL
-       SELECT 'packaging', id, code, name, category_id FROM ref_packaging WHERE status = 'active'
+       SELECT 'packaging', id, code, name, category_id, NULL AS characteristics FROM ref_packaging WHERE status = 'active'
      )
-     SELECT m.kind, m.id, m.code, m.name,
+     SELECT m.kind, m.id, m.code, m.name, m.characteristics,
             l.last_price, l.last_at, a.min_price, a.max_price, a.avg_price, a.buys,
             p2.prev_price
      FROM mats m
@@ -292,18 +401,24 @@ router.get('/api/price-history', async (req, res) => {
   const kind = req.query.kind === 'packaging' ? 'packaging' : 'raw';
   const id = parseInt(req.query.id);
   if (!id) return res.status(400).json({ error: 'Не указана позиция' });
-  const r = await db.pool.query(
-    `SELECT po.received_at, po.number, c.name AS supplier_name,
+  const live = await db.pool.query(
+    `SELECT po.received_at AS d, po.number, c.name AS supplier_name,
             COALESCE(i.fact_qty, i.qty) AS qty,
-            COALESCE(i.fact_price, i.price) AS price
+            COALESCE(i.fact_price, i.price) AS price, 'live' AS source
      FROM purchase_order_items i
      JOIN purchase_orders po ON po.id = i.order_id AND po.status = 'received'
      JOIN ref_counterparties c ON c.id = po.supplier_id
-     WHERE i.item_kind = $1 AND i.item_id = $2 AND COALESCE(i.fact_price, i.price) > 0
-     ORDER BY po.received_at ASC`,
+     WHERE i.item_kind = $1 AND i.item_id = $2 AND COALESCE(i.fact_price, i.price) > 0`,
     [kind, id]
   );
-  res.json({ items: r.rows });
+  const arch = await db.pool.query(
+    `SELECT price_date AS d, NULL AS number, 'архив (импорт)' AS supplier_name,
+            NULL AS qty, price, 'import' AS source
+     FROM price_history_import WHERE item_kind = $1 AND item_id = $2`,
+    [kind, id]
+  );
+  const items = [...arch.rows, ...live.rows].sort((a, b) => new Date(a.d) - new Date(b.d));
+  res.json({ items });
 });
 
 // ---------- Заявки ----------
@@ -480,13 +595,15 @@ router.post('/api/orders/:id(\\d+)/receive', express.json({ limit: '2mb' }), asy
 });
 
 router.delete('/api/orders/:id(\\d+)', async (req, res) => {
+  if (!req.user.isAdmin) return res.status(403).json({ error: 'Удаление заявок доступно только администратору' });
   const o = await db.pool.query('SELECT status, number FROM purchase_orders WHERE id = $1', [req.params.id]);
   if (!o.rows.length) return res.status(404).json({ error: 'Заявка не найдена' });
-  if (o.rows[0].status !== 'draft' && o.rows[0].status !== 'cancelled') {
-    return res.status(400).json({ error: 'Удалить можно только черновик или отменённую заявку' });
+  // принятая заявка влияет на долг — предупреждаем и требуем подтверждение
+  if (o.rows[0].status === 'received' && req.query.force !== '1') {
+    return res.status(409).json({ error: 'received', message: 'Заявка уже принята и учтена в долге поставщика. Удаление откатит поставку.' });
   }
-  await db.pool.query('DELETE FROM purchase_orders WHERE id = $1', [req.params.id]);
-  await db.log(req.user.id, 'purchase_order_delete', o.rows[0].number);
+  await db.pool.query('DELETE FROM purchase_orders WHERE id = $1', [req.params.id]); // позиции удалятся каскадом
+  await db.log(req.user.id, 'purchase_order_delete', o.rows[0].number + (o.rows[0].status === 'received' ? ' (принятая, откат поставки)' : ''));
   res.json({ ok: true });
 });
 
