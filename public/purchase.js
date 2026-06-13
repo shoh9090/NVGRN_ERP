@@ -163,6 +163,10 @@
     ]);
     if (order) paySel.value = order.payment_type;
 
+    const dateIn = el('input', { id: 'oe-date', type: 'date' });
+    if (order && order.delivery_date) dateIn.value = String(order.delivery_date).slice(0, 10);
+    else dateIn.value = new Date().toISOString().slice(0, 10);
+
     const search = el('input', { placeholder: 'Поиск по номенклатуре...', oninput: debounce(renderRows, 250) });
     let attachedOnly = true;
     const modeBtn = el('button', {
@@ -241,9 +245,10 @@
 
     const body = el('div', {}, [
       el('div', { class: 'oe-head form-row' }, [
-        el('label', { style: 'flex:2 1 220px' }, ['Поставщик', supSel]),
-        el('label', { style: 'flex:1 1 160px' }, ['Тип платежа', paySel]),
-        el('label', { style: 'flex:2 1 200px' }, ['Комментарий', comment]),
+        el('label', { style: 'flex:2 1 200px' }, ['Поставщик', supSel]),
+        el('label', { style: 'flex:1 1 150px' }, ['📅 Дата поставки', dateIn]),
+        el('label', { style: 'flex:1 1 140px' }, ['Тип платежа', paySel]),
+        el('label', { style: 'flex:1 1 160px' }, ['Комментарий', comment]),
       ]),
       el('div', { class: 'form-row', style: 'margin:10px 0' }, [search, modeBtn]),
       tableWrap,
@@ -260,6 +265,7 @@
           const payload = {
             supplier_id: supSel.value,
             payment_type: paySel.value,
+            delivery_date: dateIn.value || null,
             comment: comment.value,
             items: Object.entries(entered).map(([k, v]) => {
               const [kind, id] = k.split(':');

@@ -1,6 +1,7 @@
 // purchase.js — блок «Закуп»: поставщики, заявки, приёмка, взаиморасчёты
 const express = require('express');
 const db = require('./db');
+const { notify } = require('./notifications');
 
 const router = express.Router();
 
@@ -596,10 +597,11 @@ router.post('/api/orders', express.json({ limit: '2mb' }), async (req, res) => {
   if (!items.length) return res.status(400).json({ error: 'Добавьте хотя бы одну позицию с количеством' });
   const ptype = req.body.payment_type === 'наличка' ? 'наличка' : 'перечисление';
   const number = await nextOrderNumber();
+  const deliveryDate = req.body.delivery_date || null;
   const o = await db.pool.query(
-    `INSERT INTO purchase_orders (number, supplier_id, payment_type, comment, created_by)
-     VALUES ($1, $2, $3, $4, $5) RETURNING id, number`,
-    [number, supplierId, ptype, req.body.comment || '', req.user.id]
+    `INSERT INTO purchase_orders (number, supplier_id, payment_type, delivery_date, comment, created_by)
+     VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, number`,
+    [number, supplierId, ptype, deliveryDate, req.body.comment || '', req.user.id]
   );
   for (const it of items) {
     await db.pool.query(
@@ -608,6 +610,20 @@ router.post('/api/orders', express.json({ limit: '2mb' }), async (req, res) => {
     );
   }
   await db.log(req.user.id, 'purchase_order_create', number);
+  // уведомление кладовщику, если поставка ожидается сегодня или завтра
+  if (deliveryDate) {
+    const today = new Date().toISOString().slice(0, 10);
+    const tmr = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+    if (deliveryDate === today || deliveryDate === tmr) {
+      const sup = await db.pool.query('SELECT name FROM ref_counterparties WHERE id = $1', [supplierId]);
+      await notify({
+        role: 'warehouse',
+        title: 'Новая заявка на приёмку',
+        body: `${deliveryDate === today ? 'Сегодня' : 'Завтра'}: ${sup.rows[0] ? sup.rows[0].name : ''}, ${items.length} позиц.`,
+        kind: 'info', link: '/stock#receiving',
+      });
+    }
+  }
   res.json({ id: o.rows[0].id, number: o.rows[0].number });
 });
 
@@ -618,8 +634,8 @@ router.put('/api/orders/:id(\\d+)', express.json({ limit: '2mb' }), async (req, 
   const items = cleanItems(req.body.items);
   if (!items.length) return res.status(400).json({ error: 'Добавьте хотя бы одну позицию' });
   const ptype = req.body.payment_type === 'наличка' ? 'наличка' : 'перечисление';
-  await db.pool.query('UPDATE purchase_orders SET payment_type = $1, comment = $2 WHERE id = $3', [
-    ptype, req.body.comment || '', req.params.id,
+  await db.pool.query('UPDATE purchase_orders SET payment_type = $1, comment = $2, delivery_date = $3 WHERE id = $4', [
+    ptype, req.body.comment || '', req.body.delivery_date || null, req.params.id,
   ]);
   await db.pool.query('DELETE FROM purchase_order_items WHERE order_id = $1', [req.params.id]);
   for (const it of items) {

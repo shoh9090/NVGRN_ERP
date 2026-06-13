@@ -438,6 +438,10 @@ async function requireStockAccess(req, res, next) {
 const stockRouter = require('./src/stock');
 app.use('/stock', requireStockAccess, stockRouter);
 
+// Уведомления (колокольчик) — для всех авторизованных
+const notificationsRouter = require('./src/notifications');
+app.use('/', requireAuth, notificationsRouter);
+
 const dict = express.Router();
 dict.use(requireDictAccess);
 

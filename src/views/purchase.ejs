@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="/static/style.css">
   <link rel="stylesheet" href="/static/dicts.css">
   <link rel="stylesheet" href="/static/purchase.css">
+  <link rel="stylesheet" href="/static/stock.css">
   <style>:root { --brand: <%= settings.brand_color || '#2E7D32' %>; }</style>
 </head>
 <body class="admin-body pur-body">
@@ -16,6 +17,7 @@
       <span class="company">🛒 Закуп</span>
     </div>
     <div class="topbar-right">
+      <div id="bell-root" class="bell-root"></div>
       <span style="font-size:13px; font-weight:700"><%= user.name %></span>
     </div>
   </header>
@@ -32,6 +34,7 @@
   <div id="pur-modal-root"></div>
 
   <script>window.HUB_USER = { isAdmin: <%= user.isAdmin ? "true" : "false" %>, name: "<%= user.name %>" };</script>
+  <script src="/static/bell.js"></script>
   <script src="/static/purchase.js"></script>
 </body>
 </html>

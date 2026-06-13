@@ -17,14 +17,22 @@
       <span class="company">📦 Склад сырья</span>
     </div>
     <div class="topbar-right">
+      <div id="bell-root" class="bell-root"></div>
       <span style="font-size:13px; font-weight:700"><%= user.name %></span>
     </div>
   </header>
+
+  <nav class="pur-tabs">
+    <a href="#receiving" data-tab="receiving" class="pur-tab">📥 Приёмка сегодня</a>
+    <a href="#issue" data-tab="issue" class="pur-tab">📤 Передача в производство</a>
+    <a href="#summary" data-tab="summary" class="pur-tab">📊 Итоги дня</a>
+  </nav>
 
   <main class="pur-main" id="stk-main"></main>
   <div id="stk-modal-root"></div>
 
   <script>window.HUB_USER = { isAdmin: <%= user.isAdmin ? "true" : "false" %>, name: "<%= user.name %>" };</script>
+  <script src="/static/bell.js"></script>
   <script src="/static/stock.js"></script>
 </body>
 </html>

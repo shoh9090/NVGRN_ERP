@@ -90,6 +90,8 @@ CREATE TABLE IF NOT EXISTS purchase_orders (
   supplier_id INTEGER NOT NULL,
   status TEXT DEFAULT 'draft', -- draft | ordered | received | cancelled
   payment_type TEXT DEFAULT 'перечисление', -- перечисление | наличка
+  delivery_date DATE,
+  receipt_status TEXT DEFAULT 'pending', -- pending | received | partial | not_arrived | rejected
   comment TEXT DEFAULT '',
   created_by INTEGER,
   created_at TIMESTAMPTZ DEFAULT now(),
@@ -126,6 +128,37 @@ CREATE TABLE IF NOT EXISTS supplier_payments (
   comment TEXT DEFAULT '',
   created_by INTEGER,
   created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Уведомления (колокольчик, принцип Trello)
+CREATE TABLE IF NOT EXISTS notifications (
+  id SERIAL PRIMARY KEY,
+  recipient_role TEXT,          -- кому по роли: purchaser | manager | warehouse | NULL=всем
+  recipient_user_id INTEGER,    -- либо конкретному пользователю
+  title TEXT NOT NULL,
+  body TEXT DEFAULT '',
+  kind TEXT DEFAULT 'info',     -- info | success | warning
+  link TEXT DEFAULT '',
+  is_read BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_notif_unread ON notifications (is_read, created_at DESC);
+
+-- Передача сырья в производство
+CREATE TABLE IF NOT EXISTS production_issues (
+  id SERIAL PRIMARY KEY,
+  area TEXT NOT NULL,           -- производственная зона
+  issued_at DATE DEFAULT CURRENT_DATE,
+  comment TEXT DEFAULT '',
+  created_by INTEGER,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS production_issue_items (
+  id SERIAL PRIMARY KEY,
+  issue_id INTEGER REFERENCES production_issues(id) ON DELETE CASCADE,
+  item_kind TEXT NOT NULL DEFAULT 'raw',
+  item_id INTEGER NOT NULL,
+  qty NUMERIC NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS stock_movements (
@@ -197,6 +230,9 @@ async function migrate() {
   const { allCreateSQL, allAlterSQL } = require('./refs-config');
   await pool.query(allCreateSQL());
   await pool.query(allAlterSQL());
+  // миграции колонок блока закупа/склада (для уже существующих баз)
+  await pool.query("ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS delivery_date DATE").catch(()=>{});
+  await pool.query("ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS receipt_status TEXT DEFAULT 'pending'").catch(()=>{});
   await pool.query(`
     CREATE TABLE IF NOT EXISTS ref_prices (
       id SERIAL PRIMARY KEY,
