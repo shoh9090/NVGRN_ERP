@@ -83,6 +83,24 @@
       ]),
     ]);
     main.appendChild(toolbar);
+    await ensureOpts();
+    const ordPc = el('select', { id: 'ord-pc', onchange: loadOrders }, [
+      el('option', { value: '' }, 'Все родит. категории'),
+      ...FOPTS.parents.map((p) => el('option', { value: p.id }, p.name)),
+    ]);
+    const ordSup = el('select', { id: 'ord-sup', onchange: loadOrders }, [
+      el('option', { value: '' }, 'Все поставщики'),
+      ...FOPTS.suppliers.map((sp) => el('option', { value: sp.id }, sp.name)),
+    ]);
+    ORD_ITEMS = new Set();
+    const ordItems = itemMultiSelect(FOPTS.items, ORD_ITEMS, loadOrders);
+    const reset = el('button', { onclick: () => { ordPc.value=''; ordSup.value=''; ORD_ITEMS.clear(); $('#ord-q').value=''; viewOrders(); } }, 'Сбросить');
+    main.appendChild(el('div', { class: 'pur-filters' }, [
+      el('label', {}, ['Родит. категория', ordPc]),
+      el('label', {}, ['Поставщик', ordSup]),
+      el('label', {}, ['Товары (мультивыбор)', ordItems]),
+      reset,
+    ]));
     main.appendChild(el('div', { id: 'ord-list', class: 'pur-content' }));
     await loadOrders();
   }
@@ -93,6 +111,9 @@
     const q = $('#ord-q') ? $('#ord-q').value.trim() : '';
     const params = new URLSearchParams({ status });
     if (q) params.set('q', q);
+    if ($('#ord-pc') && $('#ord-pc').value) params.set('parent_category_id', $('#ord-pc').value);
+    if ($('#ord-sup') && $('#ord-sup').value) params.set('supplier_id', $('#ord-sup').value);
+    if (ORD_ITEMS && ORD_ITEMS.size) params.set('item_ids', [...ORD_ITEMS].join(','));
     const data = await api('/orders?' + params.toString());
     box.innerHTML = '';
     if (!data.items.length) {
@@ -100,13 +121,14 @@
       return;
     }
     const table = el('table', { class: 'dict-table' }, [
-      el('thead', {}, el('tr', {}, ['№', 'Дата', 'Поставщик', 'Позиций', 'Сумма', 'Оплата', 'Статус'].map((h, i) =>
-        el('th', { style: i === 4 ? 'text-align:right' : '' }, h)))),
+      el('thead', {}, el('tr', {}, ['№', 'Дата', 'Поставщик', 'Категория', 'Позиций', 'Сумма', 'Оплата', 'Статус'].map((h, i) =>
+        el('th', { style: i === 5 ? 'text-align:right' : '' }, h)))),
       el('tbody', {}, data.items.map((o) =>
         el('tr', { onclick: () => openOrderCard(o.id) }, [
           el('td', { style: 'font-weight:800' }, o.number),
           el('td', {}, dt(o.received_at || o.created_at)),
           el('td', {}, o.supplier_name),
+          el('td', {}, pcBadge(o.parent_category_name, o.parent_category_color)),
           el('td', {}, String(o.positions)),
           el('td', { class: 'tnum', style: 'text-align:right;font-weight:700' }, fmtMoney(o.total)),
           el('td', {}, payIcon(o.payment_type)),
@@ -397,6 +419,7 @@
   async function viewSuppliers() {
     const main = $('#pur-main');
     main.innerHTML = '';
+    await ensureOpts();
     main.appendChild(el('div', { class: 'pur-toolbar' }, [
       el('h2', {}, 'Поставщики'),
       el('div', { class: 'pur-toolbar-right' }, [
@@ -406,13 +429,20 @@
         el('button', { class: 'btn-primary', onclick: () => openSupplierEdit(null) }, '+ Поставщик'),
       ]),
     ]));
+    const pcSel = el('select', { id: 'sup-pc', onchange: loadSuppliers }, [
+      el('option', { value: '' }, 'Все родительские категории'),
+      ...FOPTS.parents.map((p) => el('option', { value: p.id }, p.name)),
+    ]);
+    main.appendChild(el('div', { class: 'pur-filters' }, [el('label', {}, ['Родительская категория', pcSel])]));
     main.appendChild(el('div', { id: 'sup-list', class: 'pur-content' }));
     await loadSuppliers();
   }
 
   async function loadSuppliers() {
-    const q = $('#sup-q') ? $('#sup-q').value.trim() : '';
-    const data = await api('/suppliers' + (q ? '?q=' + encodeURIComponent(q) : ''));
+    const p = new URLSearchParams();
+    if ($('#sup-q') && $('#sup-q').value.trim()) p.set('q', $('#sup-q').value.trim());
+    if ($('#sup-pc') && $('#sup-pc').value) p.set('parent_category_id', $('#sup-pc').value);
+    const data = await api('/suppliers' + (p.toString() ? '?' + p.toString() : ''));
     const box = $('#sup-list');
     box.innerHTML = '';
     if (!data.items.length) {
@@ -420,11 +450,12 @@
       return;
     }
     box.appendChild(el('table', { class: 'dict-table' }, [
-      el('thead', {}, el('tr', {}, ['Имя', 'Фирма', 'Телефон', 'Товары', 'Сальдо'].map((h, i) =>
-        el('th', { style: i === 4 ? 'text-align:right' : '' }, h)))),
+      el('thead', {}, el('tr', {}, ['Имя', 'Категория', 'Фирма', 'Телефон', 'Товары', 'Сальдо'].map((h, i) =>
+        el('th', { style: i === 5 ? 'text-align:right' : '' }, h)))),
       el('tbody', {}, data.items.map((s) =>
         el('tr', { onclick: () => openStatement(s.id) }, [
           el('td', { style: 'font-weight:700' }, s.name),
+          el('td', {}, pcBadge(s.parent_category_name, s.parent_category_color)),
           el('td', {}, s.legal_name || ''),
           el('td', { class: 'tnum' }, s.phone || ''),
           el('td', { class: 'muted' }, s.attached_count > 0 ? '📎 ' + s.attached_count : ((s.supplies || '').slice(0, 40) || '—')),
@@ -486,16 +517,26 @@
     ]);
   }
 
-  function openSupplierEdit(sup) {
+  async function openSupplierEdit(sup) {
+    await ensureOpts();
     const f = {};
     const fields = [
       ['name', 'Имя поставщика *'], ['legal_name', 'Наименование фирмы'], ['phone', 'Телефон'],
       ['inn', 'ИНН'], ['opening_balance', 'Стартовый долг, сум'],
     ];
-    const body = el('div', { class: 'form-col', style: 'max-width:100%' }, fields.map(([k, label]) => {
+    const rows = fields.map(([k, label]) => {
       f[k] = el('input', { type: k === 'opening_balance' ? 'number' : 'text', value: sup ? (sup[k] ?? '') : '' });
       return el('label', {}, [label, f[k]]);
-    }));
+    });
+    // родительская категория
+    const pcSel = el('select', {}, [
+      el('option', { value: '' }, '— не указана —'),
+      ...FOPTS.parents.map((p) => el('option', { value: p.id }, p.name)),
+    ]);
+    if (sup && sup.parent_category_id) pcSel.value = sup.parent_category_id;
+    f['parent_category_id'] = pcSel;
+    rows.push(el('label', {}, ['Родительская категория', pcSel]));
+    const body = el('div', { class: 'form-col', style: 'max-width:100%' }, rows);
     const m = modal(sup ? '✏️ ' + sup.name : '+ Новый поставщик', body, [
       el('button', { onclick: () => m.close() }, 'Отмена'),
       el('button', {
@@ -513,6 +554,7 @@
               createdId = r.id;
             }
             toast('Сохранено');
+            FOPTS = null; // обновить кэш опций фильтров
             m.close();
             loadSuppliers();
             if (currentTab === 'settlements') loadSettlements();
@@ -590,14 +632,22 @@
         el('button', { class: 'btn-primary', onclick: () => openPayment(null) }, '+ Оплата'),
       ]),
     ]));
+    await ensureOpts();
+    const setPc = el('select', { id: 'set-pc', onchange: loadSettlements }, [
+      el('option', { value: '' }, 'Все родительские категории'),
+      ...FOPTS.parents.map((p) => el('option', { value: p.id }, p.name)),
+    ]);
+    main.appendChild(el('div', { class: 'pur-filters' }, [el('label', {}, ['Родительская категория', setPc])]));
     main.appendChild(el('div', { id: 'set-totals', class: 'pur-kpis' }));
     main.appendChild(el('div', { id: 'set-list', class: 'pur-content' }));
     await loadSettlements();
   }
 
   async function loadSettlements() {
-    const q = $('#set-q') ? $('#set-q').value.trim() : '';
-    const data = await api('/suppliers' + (q ? '?q=' + encodeURIComponent(q) : ''));
+    const p = new URLSearchParams();
+    if ($('#set-q') && $('#set-q').value.trim()) p.set('q', $('#set-q').value.trim());
+    if ($('#set-pc') && $('#set-pc').value) p.set('parent_category_id', $('#set-pc').value);
+    const data = await api('/suppliers' + (p.toString() ? '?' + p.toString() : ''));
     const items = data.items;
     const totalDebt = items.reduce((s, x) => s + Math.max(0, Number(x.balance)), 0);
     const totalDelivered = items.reduce((s, x) => s + Number(x.delivered), 0);
@@ -741,7 +791,8 @@
     main.appendChild(el('div', { class: 'pur-toolbar' }, [
       el('h2', {}, 'Динамика цен закупа'),
       el('div', { class: 'pur-toolbar-right' }, [
-        el('input', { id: 'pr-q', placeholder: 'Поиск по товару...', oninput: debounce(loadPriceList, 300) }),
+        el('input', { id: 'pr-q', placeholder: 'Поиск по товару...', oninput: debounce(reloadPrices, 300) }),
+        el('button', { id: 'pr-mode-btn', onclick: togglePriceMode }, '📊 Матрица цен'),
         (window.HUB_USER && window.HUB_USER.isAdmin)
           ? el('button', { onclick: () => $('#pr-import-file').click(), title: 'Импорт истории закупочных цен из Excel' }, '📥 Импорт истории')
           : null,
@@ -750,18 +801,18 @@
           : null,
       ]),
     ]));
-    const supSel = el('select', { id: 'pr-supplier', onchange: loadPriceList }, [
+    const supSel = el('select', { id: 'pr-supplier', onchange: reloadPrices }, [
       el('option', { value: '' }, 'Все поставщики'),
       ...opts.suppliers.map((s) => el('option', { value: s.id }, s.name)),
     ]);
-    const catSel = el('select', { id: 'pr-category', onchange: loadPriceList }, [
+    const catSel = el('select', { id: 'pr-category', onchange: reloadPrices }, [
       el('option', { value: '' }, 'Все категории'),
       ...opts.categories.map((c) => el('option', { value: c.id }, (c.branch === 'Упаковка' ? '📦 ' : '🌿 ') + c.name)),
     ]);
-    const fromIn = el('input', { id: 'pr-from', type: 'date', onchange: loadPriceList });
-    const toIn = el('input', { id: 'pr-to', type: 'date', onchange: loadPriceList });
+    const fromIn = el('input', { id: 'pr-from', type: 'date', onchange: reloadPrices });
+    const toIn = el('input', { id: 'pr-to', type: 'date', onchange: reloadPrices });
     const resetBtn = el('button', {
-      onclick: () => { supSel.value = ''; catSel.value = ''; fromIn.value = ''; toIn.value = ''; $('#pr-q').value = ''; loadPriceList(); },
+      onclick: () => { supSel.value = ''; catSel.value = ''; fromIn.value = ''; toIn.value = ''; $('#pr-q').value = ''; reloadPrices(); },
     }, 'Сбросить');
     main.appendChild(el('div', { class: 'pur-filters' }, [
       el('label', {}, ['Поставщик', supSel]),
@@ -771,7 +822,7 @@
       resetBtn,
     ]));
     main.appendChild(el('div', { id: 'pr-list', class: 'pur-content' }));
-    await loadPriceList();
+    await reloadPrices();
   }
 
   function trendArrow(last, prev) {
@@ -780,6 +831,56 @@
     if (l > p) return el('span', { style: 'color:var(--red);font-weight:800', title: 'дороже прошлой закупки' }, '↑');
     if (l < p) return el('span', { style: 'color:#3f6a16;font-weight:800', title: 'дешевле прошлой закупки' }, '↓');
     return el('span', { class: 'muted' }, '＝');
+  }
+
+  let priceMode = 'summary'; // summary | matrix
+  function togglePriceMode() {
+    priceMode = priceMode === 'summary' ? 'matrix' : 'summary';
+    const btn = $('#pr-mode-btn');
+    if (btn) btn.textContent = priceMode === 'summary' ? '📊 Матрица цен' : '📋 Сводка';
+    reloadPrices();
+  }
+  function reloadPrices() {
+    if (priceMode === 'matrix') loadPriceMatrix();
+    else loadPriceList();
+  }
+
+  async function loadPriceMatrix() {
+    const p = new URLSearchParams();
+    if ($('#pr-q') && $('#pr-q').value.trim()) p.set('q', $('#pr-q').value.trim());
+    if ($('#pr-category') && $('#pr-category').value) p.set('category_id', $('#pr-category').value);
+    const data = await api('/price-matrix' + (p.toString() ? '?' + p.toString() : ''));
+    const box = $('#pr-list');
+    box.innerHTML = '';
+    if (!data.items.length) {
+      box.appendChild(el('p', { class: 'dict-empty' }, 'Нет данных. Загрузите историю цен кнопкой «📥 Импорт истории» или дождитесь приёмок.'));
+      return;
+    }
+    const fmtD = (s) => { const d = new Date(s); return String(d.getDate()).padStart(2,'0') + '.' + String(d.getMonth()+1).padStart(2,'0') + '.' + String(d.getFullYear()).slice(2); };
+    const headCells = [el('th', { class: 'pm-sticky' }, 'Артикул'), el('th', { class: 'pm-sticky2' }, 'Наименование')];
+    for (const d of data.dates) headCells.push(el('th', { style: 'text-align:right;white-space:nowrap' }, fmtD(d)));
+    const bodyRows = data.items.map((it) => {
+      const cells = [
+        el('td', { class: 'tnum pm-sticky', title: it.characteristics || '' }, it.code || ''),
+        el('td', { class: 'pm-sticky2', style: 'font-weight:600;cursor:pointer', title: it.characteristics || 'нажмите — график цен', onclick: () => openPriceHistory(it) }, it.name + (it.kind === 'packaging' ? ' 📦' : '')),
+      ];
+      let prev = null;
+      for (const d of data.dates) {
+        const v = it.prices[d];
+        if (v == null) { cells.push(el('td', { class: 'muted', style: 'text-align:right' }, '·')); continue; }
+        let cls = 'tnum'; let color = '';
+        if (prev != null) { if (v > prev) color = 'color:var(--red)'; else if (v < prev) color = 'color:#3f6a16'; }
+        prev = v;
+        cells.push(el('td', { class: cls, style: 'text-align:right;' + color }, fmtMoney(v)));
+      }
+      return el('tr', {}, cells);
+    });
+    const table = el('table', { class: 'dict-table pm-table' }, [
+      el('thead', {}, el('tr', {}, headCells)),
+      el('tbody', {}, bodyRows),
+    ]);
+    box.appendChild(el('p', { class: 'muted', style: 'margin:0 0 8px' }, 'Цены по датам (как в Excel). Зелёным — дешевле предыдущей, красным — дороже. Клик по названию — график. Наведите на артикул — характеристика.'));
+    box.appendChild(el('div', { class: 'pm-scroll' }, [table]));
   }
 
   async function loadPriceList() {
@@ -844,7 +945,7 @@
         pv.unmatched ? ', не найдено: ' + pv.unmatched : '',
         '. Всего точек цен к загрузке: ', el('b', {}, String(pv.points)), '.',
       ]),
-      el('p', { class: 'muted' }, 'Это архив цен (вариант А): он не влияет на долги и взаиморасчёты, а только показывается на графике рядом с живыми приёмками. Повторный импорт обновит цены за те же даты, не создавая дублей.'),
+      el('p', { class: 'muted' }, 'Это архив цен: он не влияет на долги и взаиморасчёты, только показывается на графике рядом с живыми приёмками. Повторный импорт обновит цены за те же даты, не создавая дублей.'),
       el('div', { class: 'oe-table-wrap', style: 'max-height:34vh' }, [sampleTable]),
     ]);
     const m = modal('📥 Импорт истории цен', body, [
@@ -852,19 +953,19 @@
       el('button', {
         class: 'btn-primary',
         onclick: async (ev) => {
-          if (!pv.points) return toast('Нет точек для импорта', true);
+          if (!pv.points) return toast('Нет точек для импорта — проверьте, что артикулы из файла есть в справочнике', true);
           ev.target.disabled = true;
+          ev.target.textContent = 'Загружаю...';
           try {
-            const res = await fetch('/purchase/api/price-history/import-commit', {
-              method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ payload: pv.payload }),
-            });
+            const fd2 = new FormData();
+            fd2.append('file', file);
+            const res = await fetch('/purchase/api/price-history/import-commit', { method: 'POST', body: fd2 });
             const r = await res.json();
             if (!res.ok) throw new Error(r.error || 'Ошибка импорта');
             toast('Импортировано точек: ' + r.saved);
             m.close();
             loadPriceList();
-          } catch (e) { toast(e.message, true); ev.target.disabled = false; }
+          } catch (e) { toast(e.message, true); ev.target.disabled = false; ev.target.textContent = 'Загрузить'; }
         },
       }, `Загрузить ${pv.points} точек`),
     ]);
@@ -932,6 +1033,44 @@
 
   // ================= Каркас =================
   let currentTab = 'orders';
+  let FOPTS = null;
+  let ORD_ITEMS = new Set(); // кэш filter-options (поставщики, категории, родительские категории, товары)
+  async function ensureOpts() { if (!FOPTS) FOPTS = await api('/filter-options'); return FOPTS; }
+  function pcBadge(name, color) {
+    if (!name) return el('span', { class: 'muted' }, '—');
+    return el('span', { class: 'pc-badge', style: 'background:' + (color || '#999') + '22;color:' + (color || '#555') + ';border:1px solid ' + (color || '#999') + '55' }, name);
+  }
+  // мультиселект товаров (выпадающий список с чекбоксами)
+  function itemMultiSelect(items, selectedSet, onChange) {
+    const box = el('div', { class: 'pur-multi' });
+    const btn = el('button', { class: 'pur-multi-btn', type: 'button' }, 'Товары: все');
+    const panel = el('div', { class: 'pur-multi-panel', style: 'display:none' });
+    const search = el('input', { placeholder: 'поиск товара...', oninput: () => renderOpts() });
+    panel.appendChild(search);
+    const list = el('div', { class: 'pur-multi-list' });
+    panel.appendChild(list);
+    function label() {
+      btn.textContent = selectedSet.size ? 'Товаров: ' + selectedSet.size : 'Товары: все';
+    }
+    function renderOpts() {
+      const q = search.value.trim().toLowerCase();
+      list.innerHTML = '';
+      items.filter((it) => !q || it.name.toLowerCase().includes(q) || String(it.code || '').toLowerCase().includes(q))
+        .slice(0, 200)
+        .forEach((it) => {
+          const cb = el('input', { type: 'checkbox' });
+          cb.checked = selectedSet.has(it.id);
+          cb.addEventListener('change', () => { if (cb.checked) selectedSet.add(it.id); else selectedSet.delete(it.id); label(); onChange(); });
+          list.appendChild(el('label', { class: 'pur-multi-item' }, [cb, ' ', (it.code ? it.code + ' · ' : '') + it.name]));
+        });
+    }
+    btn.addEventListener('click', () => { panel.style.display = panel.style.display === 'none' ? 'block' : 'none'; renderOpts(); });
+    document.addEventListener('click', (e) => { if (!box.contains(e.target)) panel.style.display = 'none'; });
+    box.appendChild(btn); box.appendChild(panel);
+    label();
+    return box;
+  }
+
   function debounce(fn, ms) {
     let t;
     return () => { clearTimeout(t); t = setTimeout(fn, ms); };

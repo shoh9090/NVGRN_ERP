@@ -96,3 +96,23 @@
 .pur-legend i{display:inline-block;width:10px;height:10px;border-radius:50%;vertical-align:middle;margin-right:4px}
 .pur-legend .dot-live{background:var(--lime-d)}
 .pur-legend .dot-arch{background:#b9b09a}
+
+/* матрица цен (как Excel): закреплённые первые столбцы, горизонтальный скролл */
+.pm-scroll{overflow-x:auto;max-width:100%}
+.pm-table{min-width:max-content;font-size:13px}
+.pm-table th,.pm-table td{padding:7px 10px;white-space:nowrap}
+.pm-table .pm-sticky{position:sticky;left:0;background:var(--surface);z-index:3;min-width:96px}
+.pm-table .pm-sticky2{position:sticky;left:96px;background:var(--surface);z-index:3;min-width:180px;box-shadow:1px 0 0 var(--line)}
+.pm-table thead .pm-sticky,.pm-table thead .pm-sticky2{z-index:4;background:var(--surface-2)}
+
+/* родительская категория: цветная метка */
+.pc-badge{display:inline-block;padding:2px 9px;border-radius:11px;font-size:12px;font-weight:700;white-space:nowrap}
+
+/* мультиселект товаров в фильтрах */
+.pur-multi{position:relative;display:inline-block}
+.pur-multi-btn{min-width:170px;text-align:left}
+.pur-multi-panel{position:absolute;top:calc(100% + 4px);left:0;z-index:30;background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow-lg);padding:10px;width:280px}
+.pur-multi-panel input{width:100%;margin-bottom:8px}
+.pur-multi-list{max-height:260px;overflow:auto;display:flex;flex-direction:column;gap:2px}
+.pur-multi-item{display:flex;align-items:center;gap:6px;font-size:13px;font-weight:500;padding:3px 4px;border-radius:7px;cursor:pointer}
+.pur-multi-item:hover{background:var(--lime-soft)}

@@ -175,6 +175,7 @@
   function cellValue(f, row) {
     const v = row[f.key];
     if (f.type === 'bool') return v ? '✓' : '';
+    if (f.type === 'color') { const sp = el('span', { style: 'display:inline-block;width:16px;height:16px;border-radius:4px;vertical-align:middle;border:1px solid #0002;background:' + (v || '#ccc') }); return sp; }
     if (f.type === 'ref') return refName(f.ref, v);
     if (v === null || v === undefined) return '';
     return String(v);
@@ -398,6 +399,9 @@
           ...f.options.map((o) => el('option', { value: o }, o)),
         ]);
         input.value = val || '';
+      } else if (f.type === 'color') {
+        input = el('input', { name: f.key, type: 'color' });
+        input.value = val || '#3f8f3f';
       } else if (f.type === 'ref') {
         const opts = await refOpts(f.ref, f.refQuery);
         input = el('select', { name: f.key }, [
