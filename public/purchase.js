@@ -328,6 +328,27 @@
         },
       }, 'Отменить'));
     }
+    if (window.HUB_USER && window.HUB_USER.isAdmin) {
+      actions.push(el('button', {
+        class: 'btn-danger-link',
+        onclick: async () => {
+          if (!confirm('Удалить заявку ' + o.number + ' навсегда? Это действие нельзя отменить.')) return;
+          try {
+            let res = await fetch('/purchase/api/orders/' + id, { method: 'DELETE' });
+            let data = await res.json().catch(() => ({}));
+            if (res.status === 409 && data.error === 'received') {
+              if (!confirm(data.message + '\n\nВсё равно удалить?')) return;
+              res = await fetch('/purchase/api/orders/' + id + '?force=1', { method: 'DELETE' });
+              data = await res.json().catch(() => ({}));
+            }
+            if (!res.ok) throw new Error(data.error || 'Ошибка удаления');
+            toast('Заявка удалена');
+            m.close();
+            loadOrders();
+          } catch (e) { toast(e.message, true); }
+        },
+      }, '🗑 Удалить'));
+    }
     const m = modal('Заявка ' + o.number, body, actions);
   }
 
@@ -721,6 +742,12 @@
       el('h2', {}, 'Динамика цен закупа'),
       el('div', { class: 'pur-toolbar-right' }, [
         el('input', { id: 'pr-q', placeholder: 'Поиск по товару...', oninput: debounce(loadPriceList, 300) }),
+        (window.HUB_USER && window.HUB_USER.isAdmin)
+          ? el('button', { onclick: () => $('#pr-import-file').click(), title: 'Импорт истории закупочных цен из Excel' }, '📥 Импорт истории')
+          : null,
+        (window.HUB_USER && window.HUB_USER.isAdmin)
+          ? (() => { const f = el('input', { id: 'pr-import-file', type: 'file', accept: '.xlsx,.xls', style: 'display:none', onchange: (e) => { if (e.target.files[0]) importPriceHistory(e.target.files[0]); e.target.value = ''; } }); return f; })()
+          : null,
       ]),
     ]));
     const supSel = el('select', { id: 'pr-supplier', onchange: loadPriceList }, [
@@ -775,8 +802,8 @@
         el('th', { style: i >= 2 ? 'text-align:right' : '' }, h)))),
       el('tbody', {}, data.items.map((m) =>
         el('tr', { onclick: () => openPriceHistory(m) }, [
-          el('td', { class: 'tnum' }, m.code || ''),
-          el('td', { style: 'font-weight:700' }, m.name + (m.kind === 'packaging' ? ' 📦' : '')),
+          el('td', { class: 'tnum', title: m.characteristics || '' }, m.code || ''),
+          el('td', { style: 'font-weight:700', title: m.characteristics || '' }, m.name + (m.kind === 'packaging' ? ' 📦' : '')),
           el('td', { class: 'tnum', style: 'text-align:right;font-weight:800' }, fmtMoney(m.last_price)),
           el('td', { style: 'text-align:center;width:30px' }, trendArrow(m.last_price, m.prev_price)),
           el('td', { class: 'tnum muted', style: 'text-align:right' }, fmtMoney(m.min_price)),
@@ -788,49 +815,119 @@
     ]));
   }
 
+
+  // импорт истории закупочных цен (вариант А) — с предпросмотром
+  async function importPriceHistory(file) {
+    const fd = new FormData();
+    fd.append('file', file);
+    let pv;
+    try {
+      const res = await fetch('/purchase/api/price-history/import-preview', { method: 'POST', body: fd });
+      pv = await res.json();
+      if (!res.ok) throw new Error(pv.error || 'Ошибка чтения файла');
+    } catch (e) { return toast(e.message, true); }
+
+    const sampleTable = el('table', { class: 'dict-table' }, [
+      el('thead', {}, el('tr', {}, ['Артикул', 'Наименование', 'Статус'].map((h) => el('th', {}, h)))),
+      el('tbody', {}, (pv.sample || []).map((r) =>
+        el('tr', { class: /не найден/.test(r.status) ? 'imp-err' : '' }, [
+          el('td', { class: 'tnum' }, r.code),
+          el('td', {}, r.name),
+          el('td', { class: 'muted' }, r.status),
+        ])
+      )),
+    ]);
+    const body = el('div', {}, [
+      el('p', {}, [
+        'Найдено столбцов с датами: ', el('b', {}, String(pv.dates)),
+        '. Товаров распознано по артикулу: ', el('b', {}, String(pv.matched)),
+        pv.unmatched ? ', не найдено: ' + pv.unmatched : '',
+        '. Всего точек цен к загрузке: ', el('b', {}, String(pv.points)), '.',
+      ]),
+      el('p', { class: 'muted' }, 'Это архив цен (вариант А): он не влияет на долги и взаиморасчёты, а только показывается на графике рядом с живыми приёмками. Повторный импорт обновит цены за те же даты, не создавая дублей.'),
+      el('div', { class: 'oe-table-wrap', style: 'max-height:34vh' }, [sampleTable]),
+    ]);
+    const m = modal('📥 Импорт истории цен', body, [
+      el('button', { onclick: () => m.close() }, 'Отмена'),
+      el('button', {
+        class: 'btn-primary',
+        onclick: async (ev) => {
+          if (!pv.points) return toast('Нет точек для импорта', true);
+          ev.target.disabled = true;
+          try {
+            const res = await fetch('/purchase/api/price-history/import-commit', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ payload: pv.payload }),
+            });
+            const r = await res.json();
+            if (!res.ok) throw new Error(r.error || 'Ошибка импорта');
+            toast('Импортировано точек: ' + r.saved);
+            m.close();
+            loadPriceList();
+          } catch (e) { toast(e.message, true); ev.target.disabled = false; }
+        },
+      }, `Загрузить ${pv.points} точек`),
+    ]);
+  }
+
   // график истории: простая SVG-линия + таблица всех закупок
   async function openPriceHistory(mat) {
     const data = await api('/price-history?kind=' + mat.kind + '&id=' + mat.id);
     const rows = data.items;
     let chart = null;
     if (rows.length >= 2) {
-      const W = 820, H = 180, P = 30;
+      const W = 820, H = 200, P = 36;
       const prices = rows.map((r) => Number(r.price));
+      const times = rows.map((r) => new Date(r.d).getTime());
       const min = Math.min(...prices), max = Math.max(...prices);
+      const tMin = Math.min(...times), tMax = Math.max(...times);
       const span = max - min || 1;
-      const x = (i) => P + (i * (W - 2 * P)) / (rows.length - 1);
+      const tSpan = tMax - tMin || 1;
+      const x = (t) => P + ((t - tMin) * (W - 2 * P)) / tSpan;
       const y = (v) => H - P - ((v - min) * (H - 2 * P)) / span;
-      const pts = prices.map((v, i) => x(i) + ',' + y(v)).join(' ');
-      const dots = prices.map((v, i) =>
-        `<circle cx="${x(i)}" cy="${y(v)}" r="4" fill="var(--lime-d)"><title>${fmtMoney(v)} сум · ${dt(rows[i].received_at)}</title></circle>`).join('');
+      const pts = rows.map((r) => x(new Date(r.d).getTime()) + ',' + y(Number(r.price))).join(' ');
+      const dots = rows.map((r) => {
+        const isLive = r.source === 'live';
+        const color = isLive ? 'var(--lime-d)' : '#b9b09a';
+        const sup = isLive ? (r.supplier_name || '') : 'архив';
+        return `<circle cx="${x(new Date(r.d).getTime())}" cy="${y(Number(r.price))}" r="4.5" fill="${color}" stroke="#fff" stroke-width="1.5"><title>${fmtMoney(r.price)} сум · ${dt(r.d)}${sup ? ' · ' + sup : ''}</title></circle>`;
+      }).join('');
       chart = el('div', {
         class: 'pur-chart',
         html: `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
-          <text x="${P}" y="${y(max) - 8}" font-size="11" fill="var(--ink-faint)">${fmtMoney(max)}</text>
-          <text x="${P}" y="${y(min) + 14}" font-size="11" fill="var(--ink-faint)">${fmtMoney(min)}</text>
+          <text x="4" y="${y(max) + 4}" font-size="11" fill="var(--ink-faint)">${fmtMoney(max)}</text>
+          <text x="4" y="${y(min) + 4}" font-size="11" fill="var(--ink-faint)">${fmtMoney(min)}</text>
+          <text x="${P}" y="${H - 8}" font-size="10" fill="var(--ink-faint)">${dt(rows[0].d)}</text>
+          <text x="${W - P - 50}" y="${H - 8}" font-size="10" fill="var(--ink-faint)">${dt(rows[rows.length - 1].d)}</text>
           <polyline points="${pts}" fill="none" stroke="var(--lime-d)" stroke-width="2.5" stroke-linejoin="round"/>
           ${dots}
         </svg>`,
       });
     }
+    const legend = el('div', { class: 'pur-legend' }, [
+      el('span', {}, [el('i', { class: 'dot-live' }), ' живые приёмки']),
+      el('span', {}, [el('i', { class: 'dot-arch' }), ' архив (импорт)']),
+    ]);
     const table = el('table', { class: 'dict-table' }, [
-      el('thead', {}, el('tr', {}, ['Дата', 'Заявка', 'Поставщик', 'Кол-во', 'Цена'].map((h, i) =>
+      el('thead', {}, el('tr', {}, ['Дата', 'Источник', 'Поставщик/заявка', 'Кол-во', 'Цена'].map((h, i) =>
         el('th', { style: i >= 3 ? 'text-align:right' : '' }, h)))),
       el('tbody', {}, [...rows].reverse().map((r) =>
         el('tr', {}, [
-          el('td', {}, dt(r.received_at)),
-          el('td', { class: 'tnum' }, r.number),
-          el('td', {}, r.supplier_name),
-          el('td', { class: 'tnum', style: 'text-align:right' }, fmt.format(Number(r.qty))),
+          el('td', {}, dt(r.d)),
+          el('td', {}, r.source === 'live' ? '🟢 приёмка' : '◽ архив'),
+          el('td', {}, r.source === 'live' ? (r.supplier_name || '') + (r.number ? ' · ' + r.number : '') : '—'),
+          el('td', { class: 'tnum', style: 'text-align:right' }, r.qty != null ? fmt.format(Number(r.qty)) : '—'),
           el('td', { class: 'tnum', style: 'text-align:right;font-weight:700' }, fmtMoney(r.price)),
         ])
       )),
     ]);
     const body = el('div', {}, [
+      rows.length < 2 ? el('p', { class: 'muted' }, 'Точек пока мало для графика — нужны минимум две закупки/цены.') : null,
       chart,
+      legend,
       el('div', { class: 'oe-table-wrap', style: 'max-height:38vh' }, [table]),
     ]);
-    const m = modal('📈 ' + mat.name + ' — история цен', body, [el('button', { onclick: () => m.close() }, 'Закрыть')]);
+    const m = modal('📈 ' + (mat.code ? mat.code + ' · ' : '') + mat.name + ' — история цен', body, [el('button', { onclick: () => m.close() }, 'Закрыть')]);
   }
 
   // ================= Каркас =================

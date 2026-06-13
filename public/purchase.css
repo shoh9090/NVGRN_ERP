@@ -90,3 +90,9 @@
 .pur-filters select,.pur-filters input{min-width:150px}
 .pur-filters button{align-self:flex-end}
 @media (max-width:760px){.pur-filters select,.pur-filters input{min-width:120px}}
+
+/* легенда графика истории цен */
+.pur-legend{display:flex;gap:18px;margin:8px 2px 4px;font-size:12px;color:var(--ink-soft)}
+.pur-legend i{display:inline-block;width:10px;height:10px;border-radius:50%;vertical-align:middle;margin-right:4px}
+.pur-legend .dot-live{background:var(--lime-d)}
+.pur-legend .dot-arch{background:#b9b09a}
