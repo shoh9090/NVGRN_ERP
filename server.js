@@ -421,6 +421,23 @@ async function requirePurchaseAccess(req, res, next) {
 const purchaseRouter = require('./src/purchase');
 app.use('/purchase', requirePurchaseAccess, purchaseRouter);
 
+// Блок «Склад сырья»
+async function requireStockAccess(req, res, next) {
+  if (!req.user) return res.redirect('/login');
+  if (req.user.isAdmin) return next();
+  const r = await db.pool.query(
+    `SELECT 1 FROM tiles t
+     JOIN role_tiles rt ON rt.tile_id = t.id
+     JOIN user_roles ur ON ur.role_id = rt.role_id
+     WHERE ur.user_id = $1 AND t.url = '/stock' LIMIT 1`,
+    [req.user.id]
+  );
+  if (r.rows.length === 0) return res.status(403).send('Нет доступа к блоку «Склад сырья». Обратитесь к администратору.');
+  next();
+}
+const stockRouter = require('./src/stock');
+app.use('/stock', requireStockAccess, stockRouter);
+
 const dict = express.Router();
 dict.use(requireDictAccess);
 

@@ -200,10 +200,8 @@ router.get('/api/materials', async (req, res) => {
        ORDER BY i.item_kind, i.item_id, po.received_at DESC
      ),
      stock AS (
-       SELECT i.item_kind, i.item_id, SUM(COALESCE(i.fact_qty, 0)) AS received_total
-       FROM purchase_order_items i
-       JOIN purchase_orders po ON po.id = i.order_id AND po.status = 'received'
-       GROUP BY i.item_kind, i.item_id
+       SELECT item_kind, item_id, SUM(qty) AS received_total
+       FROM stock_movements GROUP BY item_kind, item_id
      )
      SELECT m.*, ls.price AS supplier_price, la.price AS any_price,
             COALESCE(st.received_total, 0) AS stock,
@@ -685,6 +683,16 @@ router.post('/api/orders/:id(\\d+)/receive', express.json({ limit: '2mb' }), asy
      ON CONFLICT DO NOTHING`,
     [req.params.id]
   );
+  // приход на склад сырья: журнал движений (идемпотентно для повторной приёмки)
+  await db.pool.query("DELETE FROM stock_movements WHERE ref_type = 'purchase_order' AND ref_id = $1", [req.params.id]);
+  await db.pool.query(
+    `INSERT INTO stock_movements (item_kind, item_id, qty, direction, reason, price, ref_type, ref_id, moved_at, created_by)
+     SELECT i.item_kind, i.item_id, i.fact_qty, 'in', 'receive', COALESCE(i.fact_price, i.price),
+            'purchase_order', $1, now()::date, $2
+     FROM purchase_order_items i
+     WHERE i.order_id = $1 AND COALESCE(i.fact_qty, 0) > 0`,
+    [req.params.id, req.user.id]
+  );
   await db.log(req.user.id, 'purchase_order_receive', o.rows[0].number);
   res.json({ ok: true });
 });
@@ -697,6 +705,7 @@ router.delete('/api/orders/:id(\\d+)', async (req, res) => {
   if (o.rows[0].status === 'received' && req.query.force !== '1') {
     return res.status(409).json({ error: 'received', message: 'Заявка уже принята и учтена в долге поставщика. Удаление откатит поставку.' });
   }
+  await db.pool.query("DELETE FROM stock_movements WHERE ref_type = 'purchase_order' AND ref_id = $1", [req.params.id]);
   await db.pool.query('DELETE FROM purchase_orders WHERE id = $1', [req.params.id]); // позиции удалятся каскадом
   await db.log(req.user.id, 'purchase_order_delete', o.rows[0].number + (o.rows[0].status === 'received' ? ' (принятая, откат поставки)' : ''));
   res.json({ ok: true });

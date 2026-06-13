@@ -128,6 +128,23 @@ CREATE TABLE IF NOT EXISTS supplier_payments (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS stock_movements (
+  id SERIAL PRIMARY KEY,
+  item_kind TEXT NOT NULL DEFAULT 'raw',   -- raw | packaging
+  item_id INTEGER NOT NULL,
+  qty NUMERIC NOT NULL,                     -- + приход, - расход
+  direction TEXT NOT NULL,                  -- in | out | adjust
+  reason TEXT NOT NULL,                     -- receive | writeoff | adjust | return
+  price NUMERIC,                            -- цена прихода (для оценки запаса)
+  ref_type TEXT,                            -- purchase_order | manual
+  ref_id INTEGER,
+  comment TEXT DEFAULT '',
+  moved_at DATE DEFAULT CURRENT_DATE,
+  created_by INTEGER,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_stock_mov_item ON stock_movements (item_kind, item_id);
+
 CREATE TABLE IF NOT EXISTS price_history_import (
   id SERIAL PRIMARY KEY,
   item_kind TEXT NOT NULL DEFAULT 'raw',
@@ -332,6 +349,19 @@ async function seed() {
   await pool.query(`UPDATE ref_categories SET branch = 'Свежая зелень'
     WHERE kind = 'категория' AND COALESCE(branch,'') = '' AND (sd_sd_id IS NULL OR sd_sd_id = '') AND upper(code) <> ''`).catch(()=>{});
 
+  // Бэкафилл склада: перенос ранее принятых приёмок в журнал движений (однократно)
+  try {
+    await pool.query(`
+      INSERT INTO stock_movements (item_kind, item_id, qty, direction, reason, price, ref_type, ref_id, moved_at, created_by)
+      SELECT i.item_kind, i.item_id, i.fact_qty, 'in', 'receive', COALESCE(i.fact_price, i.price),
+             'purchase_order', po.id, po.received_at::date, po.received_by
+      FROM purchase_order_items i
+      JOIN purchase_orders po ON po.id = i.order_id AND po.status = 'received'
+      WHERE COALESCE(i.fact_qty, 0) > 0
+        AND NOT EXISTS (SELECT 1 FROM stock_movements sm WHERE sm.ref_type = 'purchase_order' AND sm.ref_id = po.id)
+    `);
+  } catch (e) { console.error('stock backfill:', e.message); }
+
   // ШАГ 3/4: родительские категории как справочник + привязка категорий и поставщиков
   try {
     // стартовые родительские категории (имя, цвет, код-префикс)
@@ -387,6 +417,15 @@ async function seed() {
     await pool.query(
       `INSERT INTO tiles (title, description, icon, url, open_new_tab, sort_order)
        VALUES ('Закуп', 'Заявки, приёмка, взаиморасчёты с поставщиками', '🛒', '/purchase', FALSE, 20)`
+    );
+  }
+
+  // Плитка «Склад сырья» — модуль ядра
+  const wt = await pool.query("SELECT id FROM tiles WHERE url = '/stock' LIMIT 1");
+  if (wt.rows.length === 0) {
+    await pool.query(
+      `INSERT INTO tiles (title, description, icon, url, open_new_tab, sort_order)
+       VALUES ('Склад сырья', 'Остатки сырья и упаковки, приходы, списания, инвентаризация', '📦', '/stock', FALSE, 30)`
     );
   }
 
