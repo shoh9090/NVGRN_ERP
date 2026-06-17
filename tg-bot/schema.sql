@@ -25,3 +25,11 @@ CREATE TABLE IF NOT EXISTS bot_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_bot_events_created ON bot_events (created_at);
+
+-- Токен доступа к SalesDoctor (одна строка, id всегда = 1).
+CREATE TABLE IF NOT EXISTS api_tokens (
+  id         INTEGER PRIMARY KEY,
+  user_id    TEXT,
+  token      TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

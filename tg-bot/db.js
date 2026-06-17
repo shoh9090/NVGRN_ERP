@@ -7,15 +7,12 @@ const { Pool } = require("pg");
 
 const SCHEMA = process.env.DB_SCHEMA || "tgbot";
 
-// Пул соединений. ssl нужен для подключения к базе на Railway.
+// Пул соединений. ssl нужен для базы на Railway.
+// search_path задаём сразу при подключении — без лишних запросов.
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
-});
-
-// Каждое соединение работает внутри нашей схемы.
-pool.on("connect", (client) => {
-  client.query(`SET search_path TO "${SCHEMA}", public`);
+  options: `-c search_path=${SCHEMA},public`,
 });
 
 // Простой запрос к базе.
@@ -26,13 +23,12 @@ async function query(text, params) {
 // Создаёт схему и таблицы, если их ещё нет. Запускается один раз при старте.
 async function migrate() {
   await pool.query(`CREATE SCHEMA IF NOT EXISTS "${SCHEMA}"`);
-  await pool.query(`SET search_path TO "${SCHEMA}", public`);
   const sql = fs.readFileSync(path.join(__dirname, "schema.sql"), "utf8");
   await pool.query(sql);
   console.log(`[БД] Схема "${SCHEMA}" и таблицы готовы.`);
 }
 
-// Записать событие в журнал. Ошибки логирования не должны ронять бота.
+// Записать событие в журнал. Сбой логирования не должен ронять бота.
 async function logEvent(type, telegramId, payload) {
   try {
     await query(
