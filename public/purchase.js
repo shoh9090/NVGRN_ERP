@@ -166,6 +166,9 @@
     const dateIn = el('input', { id: 'oe-date', type: 'date' });
     if (order && order.delivery_date) dateIn.value = String(order.delivery_date).slice(0, 10);
     else dateIn.value = new Date().toISOString().slice(0, 10);
+    const windows = ['08:00–10:00','10:00–12:00','12:00–14:00','14:00–16:00','16:00–18:00','18:00–20:00'];
+    const winSel = el('select', { id: 'oe-window' }, [el('option', { value: '' }, '— окно —'), ...windows.map((w) => el('option', { value: w }, w))]);
+    if (order && order.delivery_window) winSel.value = order.delivery_window;
 
     const search = el('input', { placeholder: 'Поиск по номенклатуре...', oninput: debounce(renderRows, 250) });
     let attachedOnly = true;
@@ -246,8 +249,9 @@
     const body = el('div', {}, [
       el('div', { class: 'oe-head form-row' }, [
         el('label', { style: 'flex:2 1 200px' }, ['Поставщик', supSel]),
-        el('label', { style: 'flex:1 1 150px' }, ['📅 Дата поставки', dateIn]),
-        el('label', { style: 'flex:1 1 140px' }, ['Тип платежа', paySel]),
+        el('label', { style: 'flex:1 1 140px' }, ['📅 Дата поставки', dateIn]),
+        el('label', { style: 'flex:1 1 130px' }, ['🕐 Время', winSel]),
+        el('label', { style: 'flex:1 1 130px' }, ['Тип платежа', paySel]),
         el('label', { style: 'flex:1 1 160px' }, ['Комментарий', comment]),
       ]),
       el('div', { class: 'form-row', style: 'margin:10px 0' }, [search, modeBtn]),
@@ -266,6 +270,7 @@
             supplier_id: supSel.value,
             payment_type: paySel.value,
             delivery_date: dateIn.value || null,
+            delivery_window: winSel.value || '',
             comment: comment.value,
             items: Object.entries(entered).map(([k, v]) => {
               const [kind, id] = k.split(':');
@@ -1037,6 +1042,86 @@
     const m = modal('📈 ' + (mat.code ? mat.code + ' · ' : '') + mat.name + ' — история цен', body, [el('button', { onclick: () => m.close() }, 'Закрыть')]);
   }
 
+
+  // ================= СПЕЦИФИКАЦИИ =================
+  async function viewSpecs() {
+    const main = $('#pur-main');
+    main.innerHTML = '';
+    main.appendChild(el('div', { class: 'pur-toolbar' }, [
+      el('h2', {}, 'Спецификации на продукт'),
+      el('div', { class: 'pur-toolbar-right' }, [
+        el('input', { id: 'spec-q', placeholder: 'Поиск продукта...', oninput: debounce(loadSpecProducts, 300) }),
+      ]),
+    ]));
+    main.appendChild(el('p', { class: 'muted', style: 'margin:0 0 12px' }, 'Физические параметры с коридором — что кладовщик проверяет при приёмке. Меняются в любой момент; в приёмку подтягиваются автоматически.'));
+    main.appendChild(el('div', { id: 'spec-list', class: 'pur-content' }));
+    await loadSpecProducts();
+  }
+
+  async function loadSpecProducts() {
+    const q = $('#spec-q') ? $('#spec-q').value.trim() : '';
+    const data = await api('/spec-products' + (q ? '?q=' + encodeURIComponent(q) : ''));
+    const box = $('#spec-list');
+    box.innerHTML = '';
+    box.appendChild(el('table', { class: 'dict-table' }, [
+      el('thead', {}, el('tr', {}, ['Артикул', 'Продукт', 'Параметров', ''].map((h) => el('th', {}, h)))),
+      el('tbody', {}, data.items.map((m) =>
+        el('tr', { onclick: () => openSpecEditor(m) }, [
+          el('td', { class: 'tnum muted' }, m.code || ''),
+          el('td', { style: 'font-weight:600' }, m.name + (m.kind === 'packaging' ? ' 📦' : '')),
+          el('td', { class: 'tnum' }, m.param_count ? String(m.param_count) : '—'),
+          el('td', { style: 'text-align:right' }, el('button', {}, m.param_count ? 'Изменить' : '+ Задать')),
+        ])
+      )),
+    ]));
+  }
+
+  async function openSpecEditor(m) {
+    const data = await api('/spec?kind=' + m.kind + '&id=' + m.id);
+    let params = data.params.slice();
+    const listWrap = el('div', {});
+    function render() {
+      listWrap.innerHTML = '';
+      params.forEach((p, idx) => {
+        const nameIn = el('input', { value: p.name || '', placeholder: 'Параметр (Размер листа)', oninput: (e) => p.name = e.target.value });
+        const typeSel = el('select', { onchange: (e) => { p.ptype = e.target.value; render(); } }, [
+          el('option', { value: 'range' }, 'Числовой коридор'),
+          el('option', { value: 'quality' }, 'Качественный (✓/✗)'),
+        ]);
+        typeSel.value = p.ptype || 'range';
+        const fields = [el('div', { class: 'spec-row-name' }, [nameIn]), el('div', {}, [typeSel])];
+        if ((p.ptype || 'range') === 'range') {
+          fields.push(el('input', { type: 'number', step: 'any', value: p.min_val ?? '', placeholder: 'от', class: 'spec-num', oninput: (e) => p.min_val = e.target.value }));
+          fields.push(el('input', { type: 'number', step: 'any', value: p.max_val ?? '', placeholder: 'до', class: 'spec-num', oninput: (e) => p.max_val = e.target.value }));
+          fields.push(el('input', { value: p.unit || '', placeholder: 'ед (см, г)', class: 'spec-unit', oninput: (e) => p.unit = e.target.value }));
+        } else {
+          fields.push(el('input', { value: p.target || '', placeholder: 'эталон (насыщенно-зелёный)', class: 'spec-target', oninput: (e) => p.target = e.target.value }));
+        }
+        fields.push(el('button', { class: 'spec-del', onclick: () => { params.splice(idx, 1); render(); } }, '✕'));
+        listWrap.appendChild(el('div', { class: 'spec-row' }, fields));
+      });
+    }
+    render();
+    const body = el('div', {}, [
+      el('p', { class: 'muted' }, m.name + (m.code ? ' (' + m.code + ')' : '')),
+      listWrap,
+      el('button', { class: 'spec-add', onclick: () => { params.push({ name: '', ptype: 'range', min_val: '', max_val: '', unit: '', target: '' }); render(); } }, '+ Добавить параметр'),
+    ]);
+    const mm = modal('📋 Спецификация — ' + m.name, body, [
+      el('button', { onclick: () => mm.close() }, 'Отмена'),
+      el('button', { class: 'btn-primary', onclick: async (ev) => {
+        ev.target.disabled = true;
+        try {
+          await api('/spec', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ item_kind: m.kind, item_id: m.id, params }) });
+          toast('Спецификация сохранена');
+          mm.close();
+          loadSpecProducts();
+        } catch (e) { toast(e.message, true); ev.target.disabled = false; }
+      } }, 'Сохранить'),
+    ]);
+  }
+
   // ================= Каркас =================
   let currentTab = 'orders';
   let FOPTS = null;
@@ -1088,6 +1173,7 @@
     if (tab === 'suppliers') viewSuppliers();
     else if (tab === 'settlements') viewSettlements();
     else if (tab === 'prices') viewPrices();
+    else if (tab === 'specs') viewSpecs();
     else viewOrders();
   }
 

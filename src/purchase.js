@@ -375,6 +375,74 @@ router.post('/api/price-history/import-commit', requireAdmin, upload.single('fil
   }
 });
 
+
+// ===== Справочник спецификаций (физические параметры на продукт) =====
+// Список продуктов (сырьё + упаковка) с признаком наличия спеки
+router.get('/api/spec-products', async (req, res) => {
+  const q = (req.query.q || '').trim();
+  const params = [];
+  let qSQL = '';
+  if (q) { params.push('%' + q + '%'); qSQL = ` AND (m.name ILIKE $1 OR m.code ILIKE $1)`; }
+  const r = await db.pool.query(
+    `WITH mats AS (
+       SELECT 'raw' AS kind, id, code, name FROM ref_raw_materials WHERE status='active'
+       UNION ALL SELECT 'packaging', id, code, name FROM ref_packaging WHERE status='active'
+     )
+     SELECT m.*, s.id AS spec_id,
+            (SELECT COUNT(*) FROM specification_params sp WHERE sp.spec_id = s.id)::int AS param_count
+     FROM mats m
+     LEFT JOIN specifications s ON s.item_kind = m.kind AND s.item_id = m.id
+     WHERE TRUE ${qSQL} ORDER BY m.name`,
+    params
+  );
+  res.json({ items: r.rows });
+});
+
+// Получить спеку продукта (с параметрами)
+router.get('/api/spec', async (req, res) => {
+  const kind = req.query.kind === 'packaging' ? 'packaging' : 'raw';
+  const id = parseInt(req.query.id);
+  if (!id) return res.status(400).json({ error: 'Не указан продукт' });
+  const s = await db.pool.query('SELECT id FROM specifications WHERE item_kind=$1 AND item_id=$2', [kind, id]);
+  if (!s.rows.length) return res.json({ params: [] });
+  const p = await db.pool.query('SELECT id, name, ptype, min_val, max_val, unit, target, sort_order FROM specification_params WHERE spec_id=$1 ORDER BY sort_order, id', [s.rows[0].id]);
+  res.json({ spec_id: s.rows[0].id, params: p.rows });
+});
+
+// Сохранить спеку продукта (перезаписывает параметры)
+router.post('/api/spec', express.json({ limit: '1mb' }), async (req, res) => {
+  const kind = req.body.item_kind === 'packaging' ? 'packaging' : 'raw';
+  const id = parseInt(req.body.item_id);
+  if (!id) return res.status(400).json({ error: 'Не указан продукт' });
+  const params = Array.isArray(req.body.params) ? req.body.params : [];
+  let spec = await db.pool.query('SELECT id FROM specifications WHERE item_kind=$1 AND item_id=$2', [kind, id]);
+  let specId;
+  if (spec.rows.length) {
+    specId = spec.rows[0].id;
+    await db.pool.query('UPDATE specifications SET updated_at=now(), updated_by=$1 WHERE id=$2', [req.user.id, specId]);
+  } else {
+    const r = await db.pool.query('INSERT INTO specifications (item_kind, item_id, updated_by) VALUES ($1,$2,$3) RETURNING id', [kind, id, req.user.id]);
+    specId = r.rows[0].id;
+  }
+  await db.pool.query('DELETE FROM specification_params WHERE spec_id=$1', [specId]);
+  let i = 0;
+  for (const p of params) {
+    const name = String(p.name || '').trim();
+    if (!name) continue;
+    const ptype = p.ptype === 'quality' ? 'quality' : 'range';
+    await db.pool.query(
+      `INSERT INTO specification_params (spec_id, name, ptype, min_val, max_val, unit, target, sort_order)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [specId, name, ptype,
+       p.min_val === '' || p.min_val == null ? null : Number(p.min_val),
+       p.max_val === '' || p.max_val == null ? null : Number(p.max_val),
+       p.unit || '', p.target || '', i++]
+    );
+  }
+  await db.log(req.user.id, 'spec_save', `${kind}#${id}, параметров ${i}`);
+  res.json({ ok: true, spec_id: specId });
+});
+
 // ---------- Динамика цен ----------
 // Сводка по номенклатуре: последняя/мин/макс/средняя цена и число закупок
 router.get('/api/price-list', async (req, res) => {
@@ -598,10 +666,11 @@ router.post('/api/orders', express.json({ limit: '2mb' }), async (req, res) => {
   const ptype = req.body.payment_type === 'наличка' ? 'наличка' : 'перечисление';
   const number = await nextOrderNumber();
   const deliveryDate = req.body.delivery_date || null;
+  const deliveryWindow = String(req.body.delivery_window || '').trim();
   const o = await db.pool.query(
-    `INSERT INTO purchase_orders (number, supplier_id, payment_type, delivery_date, comment, created_by)
-     VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, number`,
-    [number, supplierId, ptype, deliveryDate, req.body.comment || '', req.user.id]
+    `INSERT INTO purchase_orders (number, supplier_id, payment_type, delivery_date, delivery_window, comment, created_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, number`,
+    [number, supplierId, ptype, deliveryDate, deliveryWindow, req.body.comment || '', req.user.id]
   );
   for (const it of items) {
     await db.pool.query(
@@ -634,8 +703,8 @@ router.put('/api/orders/:id(\\d+)', express.json({ limit: '2mb' }), async (req, 
   const items = cleanItems(req.body.items);
   if (!items.length) return res.status(400).json({ error: 'Добавьте хотя бы одну позицию' });
   const ptype = req.body.payment_type === 'наличка' ? 'наличка' : 'перечисление';
-  await db.pool.query('UPDATE purchase_orders SET payment_type = $1, comment = $2, delivery_date = $3 WHERE id = $4', [
-    ptype, req.body.comment || '', req.body.delivery_date || null, req.params.id,
+  await db.pool.query('UPDATE purchase_orders SET payment_type = $1, comment = $2, delivery_date = $3, delivery_window = $4 WHERE id = $5', [
+    ptype, req.body.comment || '', req.body.delivery_date || null, String(req.body.delivery_window || '').trim(), req.params.id,
   ]);
   await db.pool.query('DELETE FROM purchase_order_items WHERE order_id = $1', [req.params.id]);
   for (const it of items) {

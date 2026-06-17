@@ -59,7 +59,17 @@ router.get('/api/receipt/:id(\\d+)', async (req, res) => {
      WHERE i.order_id = $1 ORDER BY i.id`,
     [req.params.id]
   );
-  res.json({ order: o.rows[0], items: items.rows });
+  // спецификация по каждой позиции (физпараметры)
+  for (const it of items.rows) {
+    const sp = await db.pool.query(
+      `SELECT p.name, p.ptype, p.min_val, p.max_val, p.unit, p.target
+       FROM specifications s JOIN specification_params p ON p.spec_id = s.id
+       WHERE s.item_kind = $1 AND s.item_id = $2 ORDER BY p.sort_order, p.id`,
+      [it.item_kind, it.item_id]
+    );
+    it.spec_params = sp.rows;
+  }
+  res.json({ order: o.rows[0], items: items.rows, isAdmin: !!req.user.isAdmin });
 });
 
 router.post('/api/receipt/:id(\\d+)', express.json({ limit: '2mb' }), async (req, res) => {
@@ -70,11 +80,34 @@ router.post('/api/receipt/:id(\\d+)', express.json({ limit: '2mb' }), async (req
   );
   if (!o.rows.length) return res.status(404).json({ error: 'Заявка не найдена' });
   const facts = Array.isArray(req.body.items) ? req.body.items : [];
+  const temperature = String(req.body.temperature || '').trim();
+  const receiptComment = String(req.body.comment || '').trim();
+  const receiptReason = String(req.body.reason || '').trim();
+  const overrideSpec = !!req.body.override_spec; // принять с отклонением (админ/руководитель)
+
+  // проверка спеки: есть ли проваленные параметры
+  let specFailed = false;
+  const checks = Array.isArray(req.body.checks) ? req.body.checks : [];
+  for (const c of checks) { if (c.passed === false) specFailed = true; }
+
+  // мягкая блокировка: спека провалена и нет override → отказ
+  if (specFailed && !overrideSpec) {
+    return res.status(409).json({ error: 'spec_failed', message: 'Часть параметров не соответствует спецификации. Принять может только администратор/руководитель — кнопкой «Принять с отклонением».' });
+  }
+
   for (const f of facts) {
     const id = parseInt(f.id);
     const fq = Number(f.fact_qty);
     if (!id || isNaN(fq) || fq < 0) continue;
     await db.pool.query('UPDATE purchase_order_items SET fact_qty = $1 WHERE id = $2 AND order_id = $3', [fq, id, req.params.id]);
+  }
+  // сохранить результаты проверки спеки
+  await db.pool.query('DELETE FROM receipt_param_checks WHERE order_id = $1', [req.params.id]);
+  for (const c of checks) {
+    await db.pool.query(
+      'INSERT INTO receipt_param_checks (order_id, item_id, param_name, ptype, measured, passed) VALUES ($1,$2,$3,$4,$5,$6)',
+      [req.params.id, c.item_id || null, String(c.param_name || ''), c.ptype || null, String(c.measured || ''), c.passed === false ? false : true]
+    );
   }
   const sums = await db.pool.query(
     'SELECT COALESCE(SUM(qty),0) AS plan, COALESCE(SUM(fact_qty),0) AS fact FROM purchase_order_items WHERE order_id = $1',
@@ -87,8 +120,9 @@ router.post('/api/receipt/:id(\\d+)', express.json({ limit: '2mb' }), async (req
   else if (factSum < planSum) rstatus = 'partial';
 
   await db.pool.query(
-    "UPDATE purchase_orders SET status = 'received', receipt_status = $1, received_at = now(), received_by = $2 WHERE id = $3",
-    [rstatus, req.user.id, req.params.id]
+    `UPDATE purchase_orders SET status = 'received', receipt_status = $1, received_at = now(), received_by = $2,
+            temperature = $3, receipt_comment = $4, receipt_reason = $5 WHERE id = $6`,
+    [rstatus, req.user.id, temperature, receiptComment, receiptReason, req.params.id]
   );
   await db.pool.query(
     `INSERT INTO supplier_materials (supplier_id, item_kind, item_id)
@@ -123,6 +157,56 @@ router.post('/api/receipt/:id(\\d+)', express.json({ limit: '2mb' }), async (req
   res.json({ ok: true, status: rstatus, planSum, factSum });
 });
 
+
+// ===== Справочник причин =====
+router.get('/api/reasons', async (req, res) => {
+  const scope = req.query.scope;
+  const params = [];
+  let where = "status = 'active'";
+  if (scope) { params.push(scope); where += ` AND scope = $${params.length}`; }
+  const r = await db.pool.query(`SELECT id, name, scope FROM reject_reasons WHERE ${where} ORDER BY sort_order, name`, params);
+  res.json({ items: r.rows });
+});
+router.post('/api/reasons', express.json(), async (req, res) => {
+  if (!req.user.isAdmin) return res.status(403).json({ error: 'Только администратор' });
+  const name = String(req.body.name || '').trim();
+  if (!name) return res.status(400).json({ error: 'Укажите название' });
+  await db.pool.query('INSERT INTO reject_reasons (name, scope) VALUES ($1, $2)', [name, req.body.scope || 'receipt']);
+  res.json({ ok: true });
+});
+router.delete('/api/reasons/:id(\\d+)', async (req, res) => {
+  if (!req.user.isAdmin) return res.status(403).json({ error: 'Только администратор' });
+  await db.pool.query("UPDATE reject_reasons SET status='archived' WHERE id=$1", [req.params.id]);
+  res.json({ ok: true });
+});
+
+// ===== Откат приёмки (отмена-возврат): убирает приход со склада, возвращает статус заявки =====
+router.post('/api/receipt/:id(\\d+)/cancel', async (req, res) => {
+  const o = await db.pool.query('SELECT number, receipt_status FROM purchase_orders WHERE id=$1', [req.params.id]);
+  if (!o.rows.length) return res.status(404).json({ error: 'Заявка не найдена' });
+  if (!req.user.isAdmin) return res.status(403).json({ error: 'Откат приёмки доступен только администратору' });
+  // убираем движения склада этой приёмки и обнуляем факт/статус
+  await db.pool.query("DELETE FROM stock_movements WHERE ref_type='purchase_order' AND ref_id=$1", [req.params.id]);
+  await db.pool.query('UPDATE purchase_order_items SET fact_qty = NULL WHERE order_id=$1', [req.params.id]);
+  await db.pool.query("UPDATE purchase_orders SET receipt_status='pending', received_at=NULL, temperature='', receipt_comment='', receipt_reason='' WHERE id=$1", [req.params.id]);
+  await db.pool.query('DELETE FROM receipt_param_checks WHERE order_id=$1', [req.params.id]);
+  await db.log(req.user.id, 'stock_receipt_cancel', o.rows[0].number);
+  res.json({ ok: true });
+});
+
+// ===== Зачистка склада для тестов (только админ) =====
+router.post('/api/wipe', express.json(), async (req, res) => {
+  if (!req.user.isAdmin) return res.status(403).json({ error: 'Только администратор' });
+  if ((req.body.confirm || '').trim().toUpperCase() !== 'ОЧИСТИТЬ') {
+    return res.status(400).json({ error: 'Введите слово ОЧИСТИТЬ для подтверждения' });
+  }
+  await db.pool.query('TRUNCATE stock_movements, production_issue_items, production_issues, receipt_param_checks RESTART IDENTITY');
+  await db.pool.query("UPDATE purchase_orders SET receipt_status='pending', received_at=NULL, temperature='', receipt_comment='', receipt_reason='' WHERE receipt_status <> 'pending'");
+  await db.pool.query('UPDATE purchase_order_items SET fact_qty = NULL');
+  await db.log(req.user.id, 'stock_wipe', 'полная зачистка склада для тестов');
+  res.json({ ok: true });
+});
+
 // ===== Вкладка 2: ПЕРЕДАЧА В ПРОИЗВОДСТВО =====
 router.get('/api/available', async (req, res) => {
   const r = await db.pool.query(
@@ -133,9 +217,19 @@ router.get('/api/available', async (req, res) => {
        SELECT 'packaging', pk.id, pk.code, pk.name, u.short_name
        FROM ref_packaging pk LEFT JOIN ref_units u ON u.id = pk.unit_id WHERE pk.status='active'
      ),
-     mv AS (SELECT item_kind, item_id, SUM(qty) AS balance FROM stock_movements GROUP BY item_kind, item_id)
-     SELECT m.*, COALESCE(mv.balance,0) AS balance
-     FROM mats m LEFT JOIN mv ON mv.item_kind=m.kind AND mv.item_id=m.id
+     mv AS (SELECT item_kind, item_id, SUM(qty) AS balance FROM stock_movements GROUP BY item_kind, item_id),
+     reserved AS (
+       SELECT pii.item_kind, pii.item_id, SUM(pii.qty) AS in_transit
+       FROM production_issue_items pii
+       JOIN production_issues pi ON pi.id = pii.issue_id AND pi.status = 'pending'
+       GROUP BY pii.item_kind, pii.item_id
+     )
+     SELECT m.*, COALESCE(mv.balance,0) AS balance,
+            COALESCE(rs.in_transit,0) AS in_transit,
+            COALESCE(mv.balance,0) - COALESCE(rs.in_transit,0) AS available
+     FROM mats m
+     LEFT JOIN mv ON mv.item_kind=m.kind AND mv.item_id=m.id
+     LEFT JOIN reserved rs ON rs.item_kind=m.kind AND rs.item_id=m.id
      WHERE COALESCE(mv.balance,0) > 0 ORDER BY m.name`
   );
   let zones = [];
@@ -155,21 +249,86 @@ router.post('/api/issue', express.json({ limit: '2mb' }), async (req, res) => {
   if (!area) return res.status(400).json({ error: 'Выберите производственную зону' });
   if (!items.length) return res.status(400).json({ error: 'Добавьте хотя бы одну позицию с количеством' });
 
-  const iss = await db.pool.query(
-    'INSERT INTO production_issues (area, issued_at, comment, created_by) VALUES ($1, COALESCE($2::date, CURRENT_DATE), $3, $4) RETURNING id',
-    [area, req.body.issued_at || null, req.body.comment || '', req.user.id]
-  );
-  const issueId = iss.rows[0].id;
-  for (const it of items) {
-    await db.pool.query('INSERT INTO production_issue_items (issue_id, item_kind, item_id, qty) VALUES ($1,$2,$3,$4)', [issueId, it.kind, it.id, it.qty]);
-    await db.pool.query(
-      `INSERT INTO stock_movements (item_kind, item_id, qty, direction, reason, ref_type, ref_id, moved_at, created_by)
-       VALUES ($1, $2, $3, 'out', 'production', 'production_issue', $4, COALESCE($5::date, CURRENT_DATE), $6)`,
-      [it.kind, it.id, -Math.abs(it.qty), issueId, req.body.issued_at || null, req.user.id]
+  // Атомарно: проверка доступного остатка + создание документа в одной транзакции
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    // блокируем строки движений по этим позициям, чтобы исключить гонку
+    for (const it of items) {
+      const bal = await client.query(
+        'SELECT COALESCE(SUM(qty),0) AS b FROM stock_movements WHERE item_kind=$1 AND item_id=$2',
+        [it.kind, it.id]
+      );
+      const res2 = await client.query(
+        `SELECT COALESCE(SUM(pii.qty),0) AS r FROM production_issue_items pii
+         JOIN production_issues pi ON pi.id = pii.issue_id AND pi.status='pending'
+         WHERE pii.item_kind=$1 AND pii.item_id=$2`, [it.kind, it.id]);
+      const available = Number(bal.rows[0].b) - Number(res2.rows[0].r);
+      if (it.qty > available + 1e-9) {
+        await client.query('ROLLBACK');
+        const nm = await db.pool.query(
+          it.kind === 'raw' ? 'SELECT name FROM ref_raw_materials WHERE id=$1' : 'SELECT name FROM ref_packaging WHERE id=$1', [it.id]);
+        return res.status(400).json({ error: `Нельзя передать больше доступного остатка по «${nm.rows[0] ? nm.rows[0].name : ''}». Доступно: ${available}` });
+      }
+    }
+    const iss = await client.query(
+      "INSERT INTO production_issues (area, status, issued_at, comment, created_by) VALUES ($1, 'pending', COALESCE($2::date, CURRENT_DATE), $3, $4) RETURNING id",
+      [area, req.body.issued_at || null, req.body.comment || '', req.user.id]
     );
+    var issueId = iss.rows[0].id;
+    for (const it of items) {
+      await client.query('INSERT INTO production_issue_items (issue_id, item_kind, item_id, qty) VALUES ($1,$2,$3,$4)', [issueId, it.kind, it.id, it.qty]);
+    }
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    return res.status(400).json({ error: 'Ошибка создания передачи: ' + e.message });
+  } finally {
+    client.release();
   }
-  await notify({ role: 'manager', title: 'Передача в производство', body: `${area}: ${items.length} позиц.`, kind: 'info', link: '/stock#issue' });
-  await db.log(req.user.id, 'stock_issue', `${area}, позиций ${items.length}`);
+  await notify({ role: 'manager', title: 'Новая передача в производство', body: `${area}: ${items.length} позиц. — ожидает подтверждения`, kind: 'info', link: '/stock#issue' });
+  await db.log(req.user.id, 'stock_issue_create', `#${issueId} ${area}, позиций ${items.length}`);
+  res.json({ ok: true, issueId });
+});
+
+// Список передач (для вкладки склада: история своих передач со статусами)
+router.get('/api/issues', async (req, res) => {
+  const r = await db.pool.query(
+    `SELECT pi.id, pi.area, pi.status, pi.issued_at::text AS issued_at, pi.created_at,
+            COUNT(pii.id)::int AS positions,
+            COALESCE(SUM(pii.qty),0) AS total_qty,
+            COALESCE(SUM(pii.fact_qty),0) AS total_fact
+     FROM production_issues pi
+     LEFT JOIN production_issue_items pii ON pii.issue_id = pi.id
+     GROUP BY pi.id ORDER BY pi.id DESC LIMIT 100`
+  );
+  res.json({ items: r.rows });
+});
+
+// Позиции передачи (карточка)
+router.get('/api/issue/:id(\\d+)', async (req, res) => {
+  const pi = await db.pool.query('SELECT * FROM production_issues WHERE id=$1', [req.params.id]);
+  if (!pi.rows.length) return res.status(404).json({ error: 'Передача не найдена' });
+  const items = await db.pool.query(
+    `SELECT pii.id, pii.qty, pii.fact_qty, pii.diff_comment, pii.item_kind, pii.item_id,
+            COALESCE(rm.name, pk.name) AS item_name, COALESCE(rm.code, pk.code) AS item_code,
+            COALESCE(u1.short_name, u2.short_name) AS unit
+     FROM production_issue_items pii
+     LEFT JOIN ref_raw_materials rm ON pii.item_kind='raw' AND rm.id=pii.item_id
+     LEFT JOIN ref_packaging pk ON pii.item_kind='packaging' AND pk.id=pii.item_id
+     LEFT JOIN ref_units u1 ON u1.id=rm.unit_id
+     LEFT JOIN ref_units u2 ON u2.id=pk.unit_id
+     WHERE pii.issue_id=$1 ORDER BY pii.id`, [req.params.id]);
+  res.json({ issue: pi.rows[0], items: items.rows });
+});
+
+// Отмена передачи складом (только до подтверждения производством)
+router.post('/api/issue/:id(\\d+)/cancel', async (req, res) => {
+  const pi = await db.pool.query('SELECT status FROM production_issues WHERE id=$1', [req.params.id]);
+  if (!pi.rows.length) return res.status(404).json({ error: 'Передача не найдена' });
+  if (pi.rows[0].status !== 'pending') return res.status(400).json({ error: 'Отменить можно только передачу, ожидающую подтверждения' });
+  await db.pool.query("UPDATE production_issues SET status='cancelled' WHERE id=$1", [req.params.id]);
+  await db.log(req.user.id, 'stock_issue_cancel', '#' + req.params.id);
   res.json({ ok: true });
 });
 
@@ -178,6 +337,7 @@ router.get('/api/day-summary', async (req, res) => {
   const date = req.query.date || new Date().toISOString().slice(0, 10);
   const arrived = await db.pool.query("SELECT COALESCE(SUM(qty),0) AS s FROM stock_movements WHERE reason='receive' AND moved_at = $1::date", [date]);
   const issued = await db.pool.query("SELECT COALESCE(SUM(-qty),0) AS s FROM stock_movements WHERE reason='production' AND moved_at = $1::date", [date]);
+  const inTransit = await db.pool.query("SELECT COALESCE(SUM(qty),0) AS s FROM production_issue_items pii JOIN production_issues pi ON pi.id=pii.issue_id AND pi.status='pending'");
   const balance = await db.pool.query('SELECT COALESCE(SUM(qty),0) AS s FROM stock_movements');
   const problems = await db.pool.query(
     `SELECT po.number, c.name AS supplier_name, po.receipt_status,
@@ -191,6 +351,7 @@ router.get('/api/day-summary', async (req, res) => {
   res.json({
     date,
     arrived: Number(arrived.rows[0].s), issued: Number(issued.rows[0].s), balance: Number(balance.rows[0].s),
+    inTransit: Number(inTransit.rows[0].s),
     problems: problems.rows, problemsCount: problems.rows.length,
     notArrived: problems.rows.filter((x) => x.receipt_status === 'not_arrived').length,
   });

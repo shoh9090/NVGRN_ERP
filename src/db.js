@@ -91,7 +91,11 @@ CREATE TABLE IF NOT EXISTS purchase_orders (
   status TEXT DEFAULT 'draft', -- draft | ordered | received | cancelled
   payment_type TEXT DEFAULT 'перечисление', -- перечисление | наличка
   delivery_date DATE,
+  delivery_window TEXT DEFAULT '',
   receipt_status TEXT DEFAULT 'pending', -- pending | received | partial | not_arrived | rejected
+  temperature TEXT DEFAULT '',
+  receipt_comment TEXT DEFAULT '',
+  receipt_reason TEXT DEFAULT '',
   comment TEXT DEFAULT '',
   created_by INTEGER,
   created_at TIMESTAMPTZ DEFAULT now(),
@@ -130,6 +134,48 @@ CREATE TABLE IF NOT EXISTS supplier_payments (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
+-- Спецификации на продукт (физические параметры, правятся в любой момент)
+CREATE TABLE IF NOT EXISTS specifications (
+  id SERIAL PRIMARY KEY,
+  item_kind TEXT NOT NULL DEFAULT 'raw',
+  item_id INTEGER NOT NULL,
+  updated_at TIMESTAMPTZ DEFAULT now(),
+  updated_by INTEGER,
+  UNIQUE (item_kind, item_id)
+);
+CREATE TABLE IF NOT EXISTS specification_params (
+  id SERIAL PRIMARY KEY,
+  spec_id INTEGER REFERENCES specifications(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,           -- «Размер листа», «Масса кочана», «Цвет»
+  ptype TEXT NOT NULL DEFAULT 'range', -- range (числовой коридор) | quality (качественный ✓/✗)
+  min_val NUMERIC,
+  max_val NUMERIC,
+  unit TEXT DEFAULT '',         -- см, г, ...
+  target TEXT DEFAULT '',       -- для качественного: «насыщенно-зелёный», «не вялый»
+  sort_order INTEGER DEFAULT 0
+);
+
+-- Результаты проверки спецификации при приёмке
+CREATE TABLE IF NOT EXISTS receipt_param_checks (
+  id SERIAL PRIMARY KEY,
+  order_id INTEGER NOT NULL,
+  item_id INTEGER,              -- позиция заявки (purchase_order_items.id)
+  param_name TEXT NOT NULL,
+  ptype TEXT,
+  measured TEXT DEFAULT '',     -- замер кладовщика (число или текст)
+  passed BOOLEAN,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Справочник причин (брак, недопоставка, отклонение спеки)
+CREATE TABLE IF NOT EXISTS reject_reasons (
+  id SERIAL PRIMARY KEY,
+  name TEXT NOT NULL,
+  scope TEXT DEFAULT 'receipt', -- receipt | spec | issue
+  sort_order INTEGER DEFAULT 0,
+  status TEXT DEFAULT 'active'
+);
+
 -- Уведомления (колокольчик, принцип Trello)
 CREATE TABLE IF NOT EXISTS notifications (
   id SERIAL PRIMARY KEY,
@@ -148,8 +194,12 @@ CREATE INDEX IF NOT EXISTS idx_notif_unread ON notifications (is_read, created_a
 CREATE TABLE IF NOT EXISTS production_issues (
   id SERIAL PRIMARY KEY,
   area TEXT NOT NULL,           -- производственная зона
+  status TEXT DEFAULT 'pending', -- pending | accepted | accepted_diff | rejected | overdue | cancelled
   issued_at DATE DEFAULT CURRENT_DATE,
   comment TEXT DEFAULT '',
+  reject_reason TEXT DEFAULT '',
+  confirmed_at TIMESTAMPTZ,
+  confirmed_by INTEGER,
   created_by INTEGER,
   created_at TIMESTAMPTZ DEFAULT now()
 );
@@ -158,7 +208,9 @@ CREATE TABLE IF NOT EXISTS production_issue_items (
   issue_id INTEGER REFERENCES production_issues(id) ON DELETE CASCADE,
   item_kind TEXT NOT NULL DEFAULT 'raw',
   item_id INTEGER NOT NULL,
-  qty NUMERIC NOT NULL
+  qty NUMERIC NOT NULL,         -- сколько указал склад
+  fact_qty NUMERIC,             -- сколько принято производством
+  diff_comment TEXT DEFAULT ''  -- комментарий к расхождению
 );
 
 CREATE TABLE IF NOT EXISTS stock_movements (
@@ -233,6 +285,36 @@ async function migrate() {
   // миграции колонок блока закупа/склада (для уже существующих баз)
   await pool.query("ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS delivery_date DATE").catch(()=>{});
   await pool.query("ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS receipt_status TEXT DEFAULT 'pending'").catch(()=>{});
+  await pool.query("ALTER TABLE production_issues ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'pending'").catch(()=>{});
+  await pool.query("ALTER TABLE production_issues ADD COLUMN IF NOT EXISTS reject_reason TEXT DEFAULT ''").catch(()=>{});
+  await pool.query("ALTER TABLE production_issues ADD COLUMN IF NOT EXISTS confirmed_at TIMESTAMPTZ").catch(()=>{});
+  await pool.query("ALTER TABLE production_issues ADD COLUMN IF NOT EXISTS confirmed_by INTEGER").catch(()=>{});
+  await pool.query("ALTER TABLE production_issue_items ADD COLUMN IF NOT EXISTS fact_qty NUMERIC").catch(()=>{});
+  await pool.query("ALTER TABLE production_issue_items ADD COLUMN IF NOT EXISTS diff_comment TEXT DEFAULT ''").catch(()=>{});
+  await pool.query("ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS delivery_window TEXT DEFAULT ''").catch(()=>{});
+  await pool.query("ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS temperature TEXT DEFAULT ''").catch(()=>{});
+  await pool.query("ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS receipt_comment TEXT DEFAULT ''").catch(()=>{});
+  await pool.query("ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS receipt_reason TEXT DEFAULT ''").catch(()=>{});
+  await pool.query("ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS delivery_window TEXT DEFAULT ''").catch(()=>{});
+  await pool.query("ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS temperature TEXT DEFAULT ''").catch(()=>{});
+  await pool.query("ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS receipt_comment TEXT DEFAULT ''").catch(()=>{});
+  await pool.query("ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS receipt_reason TEXT DEFAULT ''").catch(()=>{});
+
+  // сид справочника причин (один раз)
+  const rcReasons = await pool.query('SELECT COUNT(*)::int AS n FROM reject_reasons');
+  if (rcReasons.rows[0].n === 0) {
+    const seed = [
+      ['Не приехала машина', 'receipt'], ['Опоздание поставки', 'receipt'],
+      ['Брак (гниль, повреждения)', 'receipt'], ['Пересорт', 'receipt'],
+      ['Недовес', 'receipt'], ['Несоответствие спецификации', 'spec'],
+      ['Размер вне коридора', 'spec'], ['Цвет/вид не соответствует', 'spec'],
+      ['Другое', 'receipt'],
+    ];
+    let i = 0;
+    for (const [name, scope] of seed) {
+      await pool.query('INSERT INTO reject_reasons (name, scope, sort_order) VALUES ($1,$2,$3)', [name, scope, i++]);
+    }
+  }
   await pool.query(`
     CREATE TABLE IF NOT EXISTS ref_prices (
       id SERIAL PRIMARY KEY,

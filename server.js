@@ -435,6 +435,31 @@ async function requireStockAccess(req, res, next) {
   if (r.rows.length === 0) return res.status(403).send('Нет доступа к блоку «Склад сырья». Обратитесь к администратору.');
   next();
 }
+// Фоновая проверка: передачи, не подтверждённые производством > 30 мин → уведомление + статус overdue
+async function checkOverdueIssues() {
+  try {
+    const { notify } = require('./src/notifications');
+    const r = await db.pool.query(
+      `SELECT pi.id, pi.area FROM production_issues pi
+       WHERE pi.status = 'pending' AND pi.created_at < now() - INTERVAL '30 minutes'`
+    );
+    for (const row of r.rows) {
+      await db.pool.query("UPDATE production_issues SET status='overdue' WHERE id=$1", [row.id]);
+      const items = await db.pool.query(
+        `SELECT COALESCE(rm.name,pk.name) AS name, COALESCE(rm.code,pk.code) AS code, pii.qty
+         FROM production_issue_items pii
+         LEFT JOIN ref_raw_materials rm ON pii.item_kind='raw' AND rm.id=pii.item_id
+         LEFT JOIN ref_packaging pk ON pii.item_kind='packaging' AND pk.id=pii.item_id
+         WHERE pii.issue_id=$1`, [row.id]);
+      const body = items.rows.map((x) => `${x.name} ${x.code || ''} — ${x.qty}`).join('; ');
+      for (const role of ['warehouse', 'manager']) {
+        await notify({ role, title: 'Передача не подтверждена производством', body: `${row.area}: ${body}`, kind: 'warning', link: '/stock#issue' });
+      }
+    }
+  } catch (e) { console.error('overdue check:', e.message); }
+}
+setInterval(checkOverdueIssues, 5 * 60 * 1000); // каждые 5 минут
+
 const stockRouter = require('./src/stock');
 app.use('/stock', requireStockAccess, stockRouter);
 
