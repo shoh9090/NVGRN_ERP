@@ -1,6 +1,6 @@
 // Точка входа бота.
-// Шаг 1 — каркас (база + приветствие).
-// Шаг 2 — вход в SalesDoctor + диагностический прогон (по флагу SD_PROBE).
+// Шаг 1 — каркас. Шаг 2 — вход в SalesDoctor + проба.
+// Шаг 3 — первый отчёт (Фаза 1): кто из HoReCa сегодня не заказал.
 
 require("dotenv").config();
 const TelegramBot = require("node-telegram-bot-api");
@@ -8,6 +8,7 @@ const db = require("./db");
 const sd = require("./salesdoctor");
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const ADMIN_TG_ID = process.env.ADMIN_TG_ID;
 
 if (!TOKEN) {
   console.error("[СТАРТ] Нет TELEGRAM_BOT_TOKEN. Добавь его в Railway → Variables.");
@@ -18,73 +19,93 @@ if (!process.env.DATABASE_URL) {
   process.exit(1);
 }
 
-// Достаёт первую запись из ответа, не зная заранее точной структуры.
-function firstRecord(resp) {
-  if (!resp) return resp;
-  if (Array.isArray(resp)) return resp[0];
-  if (resp.data) return Array.isArray(resp.data) ? resp.data[0] : resp.data;
-  if (resp.result) return Array.isArray(resp.result) ? resp.result[0] : resp.result;
-  return resp;
+const isAdmin = (id) => ADMIN_TG_ID && String(id) === String(ADMIN_TG_ID);
+const todayStr = () => new Date().toISOString().slice(0, 10);
+
+// Отчёт: HoReCa-клиенты без заказа на сегодня (заказ сегодня = доставка завтра).
+async function buildHorecaReport() {
+  const catId = await sd.resolveCategoryId("Horeca");
+  if (!catId) throw new Error("В SalesDoctor не найдена категория «Horeca».");
+
+  // Активные клиенты категории HoReCa.
+  const allClients = await sd.fetchAll("getClient", {});
+  const clients = allClients.filter(
+    (c) => c.active === "Y" && c.category && c.category.SD_id === catId
+  );
+
+  // Все сегодняшние заказы, кроме отменённых (5).
+  const d = todayStr();
+  const orders = await sd.fetchAll("getOrder", {
+    filter: { period: { date: { from: d, to: d } }, status: [1, 2, 3, 4] },
+  });
+  const orderedIds = new Set(
+    orders.map((o) => o.client && o.client.SD_id).filter(Boolean)
+  );
+
+  const notOrdered = clients.filter((c) => !orderedIds.has(c.SD_id));
+  return { total: clients.length, ordered: orderedIds.size, notOrdered };
 }
 
-// Разовый диагностический прогон: показывает реальные поля клиента и заказа.
-async function runProbe() {
-  console.log("[ДИАГ] Пробный запрос в SalesDoctor...");
-  try {
-    const auth = await sd.login();
-    console.log("[ДИАГ] Вход выполнен. userId:", auth.userId);
-
-    const clients = await sd.call("getClient", { limit: 2, page: 1, filter: { active: "Y" } });
-    console.log("[ДИАГ] getClient — ответ (обрезано):", JSON.stringify(clients).slice(0, 1500));
-    console.log("[ДИАГ] getClient — первая запись целиком:");
-    console.log(JSON.stringify(firstRecord(clients), null, 2));
-
-    const now = new Date();
-    const from = new Date(now.getTime() - 7 * 24 * 3600 * 1000);
-    const fmt = (d) => d.toISOString().slice(0, 10);
-    const orders = await sd.call("getOrder", {
-      limit: 3,
-      page: 1,
-      filter: { period: { date: { from: fmt(from), to: fmt(now) } } },
-    });
-    console.log("[ДИАГ] getOrder — ответ (обрезано):", JSON.stringify(orders).slice(0, 1500));
-    console.log("[ДИАГ] getOrder — первая запись целиком:");
-    console.log(JSON.stringify(firstRecord(orders), null, 2));
-  } catch (e) {
-    console.error("[ДИАГ] Ошибка пробы:", e.message);
-  }
+function formatReport(r) {
+  const lines = r.notOrdered
+    .slice(0, 50)
+    .map((c, i) => `${i + 1}. ${c.name}${c.tel ? " — " + c.tel : ""}`);
+  const more = r.notOrdered.length > 50 ? `\n…и ещё ${r.notOrdered.length - 50}` : "";
+  const head =
+    `HoReCa на сегодня:\n` +
+    `Всего активных: ${r.total}\n` +
+    `Уже заказали: ${r.ordered}\n` +
+    `Не заказали: ${r.notOrdered.length}\n\n`;
+  return head + (lines.length ? lines.join("\n") + more : "Все заказали.");
 }
 
 async function main() {
   await db.migrate();
 
-  if (process.env.SD_PROBE) {
-    await runProbe();
-  }
-
   const bot = new TelegramBot(TOKEN, { polling: true });
   console.log("[СТАРТ] Бот на связи (режим polling).");
 
   bot.onText(/\/start/, async (msg) => {
-    const id = msg.chat.id;
-    await db.logEvent("start", id, { from: msg.from });
+    await db.logEvent("start", msg.chat.id, { from: msg.from });
     bot.sendMessage(
-      id,
+      msg.chat.id,
       "Здравствуйте! Это бот Novagreen Foods.\n\n" +
         "Пока я на этапе настройки. Скоро здесь появятся напоминания и оформление заказов."
     );
   });
 
-  // Подсказка: узнать свой Telegram ID (понадобится для роли админа позже).
+  // Узнать свой Telegram ID (нужно для назначения админа).
   bot.onText(/\/whoami/, (msg) => {
     bot.sendMessage(msg.chat.id, "Ваш Telegram ID: " + msg.chat.id);
   });
 
-  bot.on("message", async (msg) => {
-    if (msg.text && (msg.text.startsWith("/start") || msg.text.startsWith("/whoami"))) return;
+  // Отчёт для администратора: кто из HoReCa сегодня не заказал.
+  bot.onText(/\/horeca/, async (msg) => {
     const id = msg.chat.id;
-    await db.logEvent("message", id, { text: msg.text });
-    bot.sendMessage(id, "Принял. Полноценные функции появятся на следующих шагах.");
+    if (!isAdmin(id)) {
+      bot.sendMessage(id, "Команда доступна только администратору. Узнать свой ID: /whoami");
+      return;
+    }
+    bot.sendMessage(id, "Считаю HoReCa-клиентов без заказа на сегодня…");
+    try {
+      const r = await buildHorecaReport();
+      bot.sendMessage(id, formatReport(r));
+      await db.logEvent("report_horeca", id, {
+        total: r.total,
+        ordered: r.ordered,
+        notOrdered: r.notOrdered.length,
+      });
+    } catch (e) {
+      console.error("[ОТЧЁТ] Ошибка:", e.message);
+      bot.sendMessage(id, "Не получилось собрать отчёт: " + e.message);
+    }
+  });
+
+  // Прочие сообщения (не команды) — лог + заглушка.
+  bot.on("message", async (msg) => {
+    if (msg.text && msg.text.startsWith("/")) return;
+    await db.logEvent("message", msg.chat.id, { text: msg.text });
+    bot.sendMessage(msg.chat.id, "Принял. Полноценные функции появятся на следующих шагах.");
   });
 
   bot.on("polling_error", (err) => {

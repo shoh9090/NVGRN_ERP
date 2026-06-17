@@ -79,4 +79,43 @@ async function call(method, params = {}, data = undefined) {
   return r.json;
 }
 
-module.exports = { login, call, post, getAuth, SD_URL };
+// Достаёт массив записей из ответа (result лежит под ключом-сущностью: client/order/...).
+function listFrom(resp) {
+  const res = resp && resp.result;
+  if (!res) return [];
+  if (Array.isArray(res)) return res;
+  for (const k of Object.keys(res)) {
+    if (Array.isArray(res[k])) return res[k];
+  }
+  return [];
+}
+
+// Постранично собирает все записи метода.
+async function fetchAll(method, params = {}, pageLimit = 200, maxPages = 50) {
+  let page = 1;
+  let all = [];
+  while (page <= maxPages) {
+    const resp = await call(method, { ...params, limit: pageLimit, page });
+    const chunk = listFrom(resp);
+    all = all.concat(chunk);
+    const total = resp && resp.pagination && resp.pagination.total;
+    if (!chunk.length || (total != null && all.length >= total)) break;
+    page++;
+  }
+  return all;
+}
+
+// Находит SD_id категории клиента по названию (без учёта регистра). Результат кэшируется.
+let _catCache = null;
+async function resolveCategoryId(name) {
+  if (!_catCache) {
+    _catCache = await fetchAll("getClientCategory", { filter: { include: "all" } });
+  }
+  const needle = String(name).trim().toLowerCase();
+  const exact = _catCache.find((c) => (c.name || "").trim().toLowerCase() === needle);
+  const partial = _catCache.find((c) => (c.name || "").toLowerCase().includes(needle));
+  const found = exact || partial;
+  return found ? found.SD_id : null;
+}
+
+module.exports = { login, call, post, getAuth, listFrom, fetchAll, resolveCategoryId, SD_URL };
