@@ -276,7 +276,8 @@
 
     const body = el('div', {}, [
       el('div', { class: 'oe-head form-row' }, [
-        el('label', { style: 'flex:2 1 200px' }, ['Поставщик', supSel]),
+        el('label', { style: 'flex:1 1 150px' }, ['Родит. категория', pcSel]),
+        el('label', { style: 'flex:2 1 180px' }, ['Поставщик', supSel]),
         el('label', { style: 'flex:1 1 140px' }, ['📅 Дата поставки', dateIn]),
         el('label', { style: 'flex:1 1 130px' }, ['🕐 Время', winSel]),
         el('label', { style: 'flex:1 1 130px' }, ['Тип платежа', paySel]),

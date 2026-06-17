@@ -113,7 +113,7 @@ router.post('/api/suppliers/:id(\\d+)/materials', express.json({ limit: '1mb' })
 // Выписка по поставщику: поставки с позициями + оплаты
 router.get('/api/suppliers/:id(\\d+)/statement', async (req, res) => {
   const sup = await db.pool.query(
-    'SELECT id, name, legal_name, phone, inn, supplies, payment_terms, COALESCE(opening_balance,0) AS opening_balance FROM ref_counterparties WHERE id = $1',
+    'SELECT id, name, legal_name, phone, inn, supplies, payment_terms, parent_category_id, COALESCE(opening_balance,0) AS opening_balance FROM ref_counterparties WHERE id = $1',
     [req.params.id]
   );
   if (!sup.rows.length) return res.status(404).json({ error: 'Поставщик не найден' });
