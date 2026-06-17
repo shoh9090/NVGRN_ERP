@@ -161,11 +161,13 @@
     function fillSuppliers() {
       const pc = pcSel.value;
       supSel.innerHTML = '';
-      supSel.appendChild(el('option', { value: '' }, pc ? '— выберите поставщика —' : '— сначала выберите категорию —'));
+      supSel.appendChild(el('option', { value: '' }, '— выберите поставщика —'));
+      let list = suppliers;
       if (pc) {
-        suppliers.filter((s) => String(s.parent_category_id) === String(pc))
-          .forEach((s) => supSel.appendChild(el('option', { value: s.id }, s.name)));
+        // поставщики выбранной категории + те, у кого категория ещё не задана (чтобы старые не пропадали)
+        list = suppliers.filter((s) => String(s.parent_category_id) === String(pc) || !s.parent_category_id);
       }
+      list.forEach((s) => supSel.appendChild(el('option', { value: s.id }, s.name + (!s.parent_category_id ? ' ⚠️' : ''))));
     }
     fillSuppliers();
     pcSel.addEventListener('change', () => { fillSuppliers(); supSel.value = ''; loadMats(); });

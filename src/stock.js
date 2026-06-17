@@ -323,6 +323,25 @@ router.get('/api/issue/:id(\\d+)', async (req, res) => {
 });
 
 // Отмена передачи складом (только до подтверждения производством)
+// Массовая очистка всех передач (только админ, для тестов)
+router.post('/api/issues/wipe', async (req, res) => {
+  if (!req.user.isAdmin) return res.status(403).json({ error: 'Доступно только администратору' });
+  await db.pool.query("DELETE FROM stock_movements WHERE ref_type='production_issue'");
+  await db.pool.query('DELETE FROM production_issues');
+  await db.log(req.user.id, 'stock_issues_wipe', 'удалены все передачи');
+  res.json({ ok: true });
+});
+
+// Удаление передачи (только админ, для чистки тестовых)
+router.delete('/api/issue/:id(\\d+)', async (req, res) => {
+  if (!req.user.isAdmin) return res.status(403).json({ error: 'Удаление доступно только администратору' });
+  // если передача была подтверждена — вернуть списанное на склад (откат движения)
+  await db.pool.query("DELETE FROM stock_movements WHERE ref_type='production_issue' AND ref_id=$1", [req.params.id]);
+  await db.pool.query('DELETE FROM production_issues WHERE id=$1', [req.params.id]);
+  await db.log(req.user.id, 'stock_issue_delete', '#' + req.params.id);
+  res.json({ ok: true });
+});
+
 router.post('/api/issue/:id(\\d+)/cancel', async (req, res) => {
   const pi = await db.pool.query('SELECT status FROM production_issues WHERE id=$1', [req.params.id]);
   if (!pi.rows.length) return res.status(404).json({ error: 'Передача не найдена' });

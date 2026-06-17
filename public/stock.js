@@ -373,7 +373,17 @@
     const issues = await api('/issues');
     if (issues.items.length) {
       const hist = el('div', { class: 'pur-content', style: 'margin-top:18px' });
-      hist.appendChild(el('h3', { class: 'pur-sub', style: 'margin:14px' }, 'Мои передачи'));
+      const histHead = el('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin:14px' }, [
+        el('h3', { class: 'pur-sub', style: 'margin:0' }, 'Мои передачи'),
+        (window.HUB_USER && window.HUB_USER.isAdmin)
+          ? el('button', { class: 'btn-danger-link', onclick: async () => {
+              if (!confirm('Удалить ВСЕ передачи навсегда? Это действие для очистки тестовых данных. Подтверждённые списания вернутся на склад.')) return;
+              try { await api('/issues/wipe', { method: 'POST' }); toast('Все передачи удалены'); viewIssue(); }
+              catch (e) { toast(e.message, true); }
+            } }, '🗑 Очистить все передачи')
+          : null,
+      ]);
+      hist.appendChild(histHead);
       hist.appendChild(el('table', { class: 'dict-table' }, [
         el('thead', {}, el('tr', {}, ['Дата', 'Зона', 'Позиций', 'Передано', 'Принято', 'Статус', ''].map((h) => el('th', {}, h)))),
         el('tbody', {}, issues.items.map((it) =>
@@ -384,13 +394,22 @@
             el('td', { class: 'tnum' }, fmtQty(it.total_qty)),
             el('td', { class: 'tnum' }, it.status === 'pending' ? '—' : fmtQty(it.total_fact)),
             el('td', {}, iPill(it.status)),
-            el('td', { style: 'text-align:right' }, it.status === 'pending'
-              ? el('button', { onclick: async () => {
-                  if (!confirm('Отменить передачу?')) return;
-                  try { await api('/issue/' + it.id + '/cancel', { method: 'POST' }); toast('Передача отменена'); viewIssue(); }
-                  catch (e) { toast(e.message, true); }
-                } }, 'Отменить')
-              : ''),
+            el('td', { style: 'text-align:right;white-space:nowrap' }, [
+              it.status === 'pending'
+                ? el('button', { onclick: async () => {
+                    if (!confirm('Отменить передачу?')) return;
+                    try { await api('/issue/' + it.id + '/cancel', { method: 'POST' }); toast('Передача отменена'); viewIssue(); }
+                    catch (e) { toast(e.message, true); }
+                  } }, 'Отменить')
+                : null,
+              (window.HUB_USER && window.HUB_USER.isAdmin)
+                ? el('button', { class: 'btn-danger-link', style: 'margin-left:6px', title: 'Удалить запись (админ)', onclick: async () => {
+                    if (!confirm('Удалить передачу №' + it.id + ' навсегда? Если была подтверждена — списание вернётся на склад.')) return;
+                    try { await api('/issue/' + it.id, { method: 'DELETE' }); toast('Передача удалена'); viewIssue(); }
+                    catch (e) { toast(e.message, true); }
+                  } }, '🗑')
+                : null,
+            ]),
           ])
         )),
       ]));
