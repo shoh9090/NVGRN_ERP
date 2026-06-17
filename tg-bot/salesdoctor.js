@@ -31,8 +31,8 @@ async function login() {
     throw new Error("Нет SD_LOGIN / SD_PASSWORD в настройках.");
   }
   const r = await post({ method: "login", auth: { login: SD_LOGIN, password: SD_PASSWORD } });
-  // Точную структуру ответа уточним по логам пробы; пробуем типичные места.
-  const data = (r.json && (r.json.data || r.json)) || {};
+  // SalesDoctor отвечает в формате { status: true, result: { userId, token } }.
+  const data = (r.json && (r.json.result || r.json.data || r.json)) || {};
   const userId = data.userId || data.userid || data.user_id;
   const token = data.token;
   if (!userId || !token) {

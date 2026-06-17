@@ -1,6 +1,6 @@
 {
   "name": "nvgrn-tg-bot",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Novagreen — Telegram-бот заказов HoReCa. Движок (Шаг 1: каркас).",
   "main": "index.js",
   "scripts": {
