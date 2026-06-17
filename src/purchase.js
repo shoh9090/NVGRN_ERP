@@ -663,6 +663,13 @@ router.post('/api/orders', express.json({ limit: '2mb' }), async (req, res) => {
   if (!supplierId) return res.status(400).json({ error: 'Выберите поставщика' });
   const items = cleanItems(req.body.items);
   if (!items.length) return res.status(400).json({ error: 'Добавьте хотя бы одну позицию с количеством' });
+  // П5: все позиции должны быть прикреплены к поставщику
+  const att = await db.pool.query('SELECT item_kind, item_id FROM supplier_materials WHERE supplier_id = $1', [supplierId]);
+  const attSet = new Set(att.rows.map((r) => r.item_kind + ':' + r.item_id));
+  const bad = items.filter((it) => !attSet.has(it.item_kind + ':' + it.item_id));
+  if (bad.length) {
+    return res.status(400).json({ error: 'В заявке есть товары, не закреплённые за поставщиком. Сначала прикрепите их в карточке поставщика (📎 Товары поставщика).' });
+  }
   const ptype = req.body.payment_type === 'наличка' ? 'наличка' : 'перечисление';
   const number = await nextOrderNumber();
   const deliveryDate = req.body.delivery_date || null;

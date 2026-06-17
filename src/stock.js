@@ -332,6 +332,42 @@ router.post('/api/issue/:id(\\d+)/cancel', async (req, res) => {
   res.json({ ok: true });
 });
 
+
+// ===== Вкладка: РЕЗЮМЕ / ОСТАТКИ (инвентаризация) =====
+router.get('/api/inventory', async (req, res) => {
+  const date = req.query.date || new Date().toISOString().slice(0, 10);
+  const r = await db.pool.query(
+    `WITH mats AS (
+       SELECT 'raw' AS kind, rm.id, rm.code, rm.name, u.short_name AS unit, rm.characteristics
+       FROM ref_raw_materials rm LEFT JOIN ref_units u ON u.id = rm.unit_id WHERE rm.status='active'
+       UNION ALL
+       SELECT 'packaging', pk.id, pk.code, pk.name, u.short_name, NULL
+       FROM ref_packaging pk LEFT JOIN ref_units u ON u.id = pk.unit_id WHERE pk.status='active'
+     ),
+     bal AS (SELECT item_kind, item_id, SUM(qty) AS balance FROM stock_movements GROUP BY item_kind, item_id),
+     today_in AS (SELECT item_kind, item_id, SUM(qty) AS s FROM stock_movements WHERE reason='receive' AND moved_at=$1::date GROUP BY item_kind, item_id),
+     today_out AS (SELECT item_kind, item_id, SUM(-qty) AS s FROM stock_movements WHERE reason='production' AND moved_at=$1::date GROUP BY item_kind, item_id),
+     reserved AS (
+       SELECT pii.item_kind, pii.item_id, SUM(pii.qty) AS s
+       FROM production_issue_items pii JOIN production_issues pi ON pi.id=pii.issue_id AND pi.status='pending'
+       GROUP BY pii.item_kind, pii.item_id
+     )
+     SELECT m.kind, m.id, m.code, m.name, m.unit, m.characteristics,
+            COALESCE(b.balance,0) AS balance,
+            COALESCE(ti.s,0) AS today_in,
+            COALESCE(to2.s,0) AS today_out,
+            COALESCE(rv.s,0) AS reserved
+     FROM mats m
+     LEFT JOIN bal b ON b.item_kind=m.kind AND b.item_id=m.id
+     LEFT JOIN today_in ti ON ti.item_kind=m.kind AND ti.item_id=m.id
+     LEFT JOIN today_out to2 ON to2.item_kind=m.kind AND to2.item_id=m.id
+     LEFT JOIN reserved rv ON rv.item_kind=m.kind AND rv.item_id=m.id
+     ORDER BY m.name`,
+    [date]
+  );
+  res.json({ date, items: r.rows });
+});
+
 // ===== Вкладка 3: ИТОГИ ДНЯ =====
 router.get('/api/day-summary', async (req, res) => {
   const date = req.query.date || new Date().toISOString().slice(0, 10);

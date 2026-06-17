@@ -63,3 +63,7 @@
 .spec-target{width:200px}
 .spec-del{width:34px;height:36px;border:1px solid var(--line);background:var(--surface);border-radius:8px;cursor:pointer;color:var(--red)}
 .spec-add{margin-top:6px;border:1px dashed var(--lime-d);background:var(--lime-soft);color:#3f6a16;border-radius:10px;padding:9px 16px;font-weight:700;cursor:pointer}
+
+/* приёмка: подсветка превышения плана (мягкий лимит) */
+.stk-fact.over{border-color:var(--amber-d,#b9770a);background:var(--amber-soft,#fff3df)}
+.stk-over{display:block;font-size:11px;font-weight:700;color:var(--amber-d,#b9770a);margin-top:3px}

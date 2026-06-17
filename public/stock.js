@@ -152,11 +152,17 @@
     const rowsNodes = [];
     d.items.forEach((i) => {
       const inp = el('input', { type: 'number', step: 'any', min: '0', class: 'stk-fact', value: i.fact_qty != null ? Number(i.fact_qty) : '' });
+      const overHint = el('span', { class: 'stk-over', style: 'display:none' }, '');
+      inp.addEventListener('input', () => {
+        const v = Number(inp.value), pl = Number(i.plan_qty);
+        if (v > pl) { inp.classList.add('over'); overHint.style.display = ''; overHint.textContent = '+' + fmtQty(v - pl) + ' сверх плана'; }
+        else { inp.classList.remove('over'); overHint.style.display = 'none'; }
+      });
       inputs[i.id] = { inp, plan: Number(i.plan_qty) };
       rowsNodes.push(el('tr', {}, [
         el('td', { style: 'font-weight:600;font-size:16px' }, i.item_name + (i.item_code ? ' (' + i.item_code + ')' : '')),
         el('td', { class: 'tnum', style: 'font-size:16px' }, fmtQty(i.plan_qty)),
-        el('td', {}, inp),
+        el('td', {}, [inp, overHint]),
         el('td', {}, i.unit || ''),
       ]));
       // параметры спеки этой позиции
@@ -225,6 +231,9 @@
     const zeroAll = () => { for (const k in inputs) inputs[k].inp.value = 0; };
 
     async function save(override) {
+      // П2: мягкая проверка превышения плана
+      const over = Object.values(inputs).filter((v) => Number(v.inp.value) > v.plan);
+      if (over.length && !override && !confirm('По ' + over.length + ' позиц. факт больше плана. Привезли с запасом — принять как есть?')) return;
       const items = Object.entries(inputs).map(([iid, v]) => ({ id: iid, fact_qty: v.inp.value === '' ? 0 : Number(v.inp.value) }));
       const checks = Object.values(checkState);
       const payload = {
@@ -430,10 +439,69 @@
     main.appendChild(box);
   }
 
+
+  // ================= ВКЛАДКА: РЕЗЮМЕ / ОСТАТКИ (инвентаризация) =================
+  let invFilter = 'all'; // all | instock | nomove
+  async function viewInventory() {
+    const main = $('#stk-main');
+    main.innerHTML = '';
+    const data = await api('/inventory');
+    main.appendChild(el('div', { class: 'stk-head' }, [
+      el('div', {}, [
+        el('div', { class: 'stk-today' }, 'Резюме склада — остатки для инвентаризации'),
+        el('div', { class: 'stk-counts' }, [el('span', {}, 'Позиций всего: ' + data.items.length)]),
+      ]),
+    ]));
+
+    const filterWrap = el('div', { class: 'pur-filters' }, [
+      el('label', {}, ['Показать', (() => {
+        const sel = el('select', { onchange: (e) => { invFilter = e.target.value; render(); } }, [
+          el('option', { value: 'all' }, 'Все позиции'),
+          el('option', { value: 'instock' }, '🟢 В наличии (есть остаток)'),
+          el('option', { value: 'nomove' }, '⚪ Пусто (нулевой остаток)'),
+        ]);
+        sel.value = invFilter;
+        return sel;
+      })()]),
+      el('label', { style: 'flex:1' }, ['Поиск', el('input', { id: 'inv-q', placeholder: '🔍 артикул, наименование...', oninput: () => render() })]),
+    ]);
+    main.appendChild(filterWrap);
+    const box = el('div', { class: 'pur-content' });
+    main.appendChild(box);
+
+    function render() {
+      const q = ($('#inv-q') ? $('#inv-q').value.trim().toLowerCase() : '');
+      let items = data.items.slice();
+      if (invFilter === 'instock') items = items.filter((m) => Number(m.balance) !== 0);
+      else if (invFilter === 'nomove') items = items.filter((m) => Number(m.balance) === 0);
+      if (q) items = items.filter((m) => m.name.toLowerCase().includes(q) || String(m.code || '').toLowerCase().includes(q));
+      box.innerHTML = '';
+      if (!items.length) { box.appendChild(el('p', { class: 'dict-empty' }, 'Нет позиций по фильтру.')); return; }
+      box.appendChild(el('table', { class: 'dict-table' }, [
+        el('thead', {}, el('tr', {}, ['Артикул', 'Наименование', 'Остаток', 'В передаче', 'Приход сегодня', 'Передано сегодня', 'Ед.'].map((h, i) =>
+          el('th', { style: i >= 2 && i <= 5 ? 'text-align:right' : '' }, h)))),
+        el('tbody', {}, items.map((m) => {
+          const bal = Number(m.balance);
+          return el('tr', { title: m.characteristics || '' }, [
+            el('td', { class: 'tnum muted' }, m.code || ''),
+            el('td', { style: 'font-weight:600' }, m.name + (m.kind === 'packaging' ? ' 📦' : '')),
+            el('td', { class: 'tnum', style: 'text-align:right;font-weight:800;color:' + (bal > 0 ? '#3f6a16' : bal < 0 ? 'var(--red)' : 'var(--ink-faint)') }, fmtQty(bal)),
+            el('td', { class: 'tnum', style: 'text-align:right;color:var(--amber-d,#b9770a)' }, Number(m.reserved) ? fmtQty(m.reserved) : '—'),
+            el('td', { class: 'tnum muted', style: 'text-align:right' }, Number(m.today_in) ? '+' + fmtQty(m.today_in) : '—'),
+            el('td', { class: 'tnum muted', style: 'text-align:right' }, Number(m.today_out) ? '−' + fmtQty(m.today_out) : '—'),
+            el('td', {}, m.unit || ''),
+          ]);
+        })),
+      ]));
+    }
+    render();
+  }
+
   // ================= Каркас =================
   function switchTab(tab) {
     document.querySelectorAll('.pur-tab').forEach((a) => a.classList.toggle('active', a.dataset.tab === tab));
     if (tab === 'issue') viewIssue();
+    else if (tab === 'inventory') viewInventory();
     else if (tab === 'summary') viewSummary();
     else viewReceiving();
   }

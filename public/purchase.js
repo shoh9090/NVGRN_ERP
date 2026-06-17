@@ -148,14 +148,35 @@
       order = d.order;
       items = d.items;
     }
+    await ensureOpts();
     const suppliers = (await api('/suppliers')).items;
 
-    const supSel = el('select', { id: 'oe-supplier', disabled: !!orderId }, [
-      el('option', { value: '' }, '— выберите поставщика —'),
-      ...suppliers.map((s) => el('option', { value: s.id }, s.name)),
+    // П4: обязательный фильтр — сначала родительская категория, потом поставщики этой категории
+    const pcSel = el('select', { id: 'oe-pc', disabled: !!orderId }, [
+      el('option', { value: '' }, '— категория —'),
+      ...FOPTS.parents.map((p) => el('option', { value: p.id }, p.name)),
     ]);
-    if (order) supSel.value = order.supplier_id;
-    else if (presetSupplierId) supSel.value = presetSupplierId;
+    const supSel = el('select', { id: 'oe-supplier', disabled: !!orderId }, []);
+
+    function fillSuppliers() {
+      const pc = pcSel.value;
+      supSel.innerHTML = '';
+      supSel.appendChild(el('option', { value: '' }, pc ? '— выберите поставщика —' : '— сначала выберите категорию —'));
+      if (pc) {
+        suppliers.filter((s) => String(s.parent_category_id) === String(pc))
+          .forEach((s) => supSel.appendChild(el('option', { value: s.id }, s.name)));
+      }
+    }
+    fillSuppliers();
+    pcSel.addEventListener('change', () => { fillSuppliers(); supSel.value = ''; loadMats(); });
+
+    // при редактировании/preset — выставить категорию по поставщику
+    if (order || presetSupplierId) {
+      const sid = order ? order.supplier_id : presetSupplierId;
+      const sup = suppliers.find((s) => String(s.id) === String(sid));
+      if (sup && sup.parent_category_id) { pcSel.value = sup.parent_category_id; fillSuppliers(); }
+      supSel.value = sid;
+    }
 
     const paySel = el('select', { id: 'oe-pay' }, [
       el('option', { value: 'перечисление' }, '🏦 Перечисление'),
@@ -170,11 +191,7 @@
     const winSel = el('select', { id: 'oe-window' }, [el('option', { value: '' }, '— окно —'), ...windows.map((w) => el('option', { value: w }, w))]);
     if (order && order.delivery_window) winSel.value = order.delivery_window;
 
-    const search = el('input', { placeholder: 'Поиск по номенклатуре...', oninput: debounce(renderRows, 250) });
-    let attachedOnly = true;
-    const modeBtn = el('button', {
-      onclick: () => { attachedOnly = !attachedOnly; modeBtn.textContent = attachedOnly ? '📎 Товары поставщика' : '📚 Вся номенклатура'; renderRows(); },
-    }, '📎 Товары поставщика');
+    const search = el('input', { placeholder: 'Поиск по прикреплённым товарам...', oninput: debounce(renderRows, 250) });
     const comment = el('input', { id: 'oe-comment', placeholder: 'Комментарий (необязательно)' });
     if (order) comment.value = order.comment || '';
 
@@ -201,10 +218,19 @@
     function renderRows() {
       const q = search.value.trim().toLowerCase();
       tableWrap.innerHTML = '';
-      const hasAttached = mats.some((m) => m.attached);
-      let filtered = mats.filter((m) => !q || m.name.toLowerCase().includes(q) || String(m.code || '').toLowerCase().includes(q));
-      if (attachedOnly && supSel.value && hasAttached && !q) {
-        filtered = filtered.filter((m) => m.attached || entered[m.kind + ':' + m.id]);
+      if (!supSel.value) {
+        tableWrap.appendChild(el('p', { class: 'dict-empty' }, 'Выберите категорию и поставщика — появятся его прикреплённые товары.'));
+        return;
+      }
+      // П5: только прикреплённые к поставщику товары
+      let filtered = mats.filter((m) => m.attached || entered[m.kind + ':' + m.id]);
+      if (q) filtered = filtered.filter((m) => m.name.toLowerCase().includes(q) || String(m.code || '').toLowerCase().includes(q));
+      if (!filtered.length) {
+        tableWrap.appendChild(el('div', { class: 'dict-empty' }, [
+          el('p', {}, 'У этого поставщика нет прикреплённых товаров.'),
+          el('p', { class: 'muted' }, 'Чтобы заказать — сначала прикрепите товар в карточке поставщика (вкладка «Поставщики» → 📎 Товары поставщика).'),
+        ]));
+        return;
       }
       const rows = filtered.map((m) => {
         const key = m.kind + ':' + m.id;
@@ -254,7 +280,7 @@
         el('label', { style: 'flex:1 1 130px' }, ['Тип платежа', paySel]),
         el('label', { style: 'flex:1 1 160px' }, ['Комментарий', comment]),
       ]),
-      el('div', { class: 'form-row', style: 'margin:10px 0' }, [search, modeBtn]),
+      el('div', { class: 'form-row', style: 'margin:10px 0' }, [search]),
       tableWrap,
       el('p', { class: 'muted', style: 'margin:6px 0 0;font-size:11.5px' }, '* Остаток = принятые приходы; расход производства подключится с блоком «Склад сырья». Серая цена — последняя цена закупа: не меняли — останется она.'),
       totalBox,
@@ -350,7 +376,6 @@
       }, '📨 Заказать'));
     }
     if (o.status === 'draft' || o.status === 'ordered') {
-      actions.push(el('button', { class: 'btn-primary', onclick: () => { m.close(); openReceive(id); } }, '📥 Принять'));
       actions.push(el('button', {
         class: 'btn-danger-link',
         onclick: async () => {
@@ -385,46 +410,7 @@
     const m = modal('Заявка ' + o.number, body, actions);
   }
 
-  // --- приёмка ---
-  async function openReceive(id) {
-    const d = await api('/orders/' + id);
-    const inputs = {};
-    const table = el('table', { class: 'dict-table oe-table' }, [
-      el('thead', {}, el('tr', {}, ['Наименование', 'Заказано', 'Факт кол-во', 'Факт цена'].map((h) => el('th', {}, h)))),
-      el('tbody', {}, d.items.map((i) => {
-        const fq = el('input', { type: 'number', step: 'any', min: '0', class: 'oe-num', value: Number(i.qty) });
-        const fp = el('input', { type: 'number', step: 'any', min: '0', class: 'oe-num', value: Number(i.price) });
-        inputs[i.id] = { fq, fp };
-        return el('tr', {}, [
-          el('td', { style: 'font-weight:600' }, i.item_name),
-          el('td', { class: 'tnum' }, fmt.format(Number(i.qty)) + ' ' + (i.unit || '') + ' × ' + fmtMoney(i.price)),
-          el('td', {}, fq),
-          el('td', {}, fp),
-        ]);
-      })),
-    ]);
-    const body = el('div', {}, [
-      el('p', { class: 'muted' }, 'Проверьте фактически привезённое количество и цены. Поставьте 0, если позицию не привезли. После подтверждения поставка попадёт в долг поставщика и в историю цен.'),
-      table,
-    ]);
-    const m = modal('📥 Приёмка — ' + d.order.number + ' · ' + d.order.supplier_name, body, [
-      el('button', { onclick: () => m.close() }, 'Отмена'),
-      el('button', {
-        class: 'btn-primary',
-        onclick: async (ev) => {
-          ev.target.disabled = true;
-          try {
-            await api('/orders/' + id + '/receive', {
-              method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ items: Object.entries(inputs).map(([iid, v]) => ({ id: iid, fact_qty: v.fq.value, fact_price: v.fp.value })) }),
-            });
-            toast('Поставка принята ✅');
-            m.close(); loadOrders();
-          } catch (e) { toast(e.message, true); ev.target.disabled = false; }
-        },
-      }, 'Подтвердить приёмку'),
-    ]);
-  }
+  // приёмка перенесена в блок «Склад сырья» — закупщик заявку только создаёт
 
   // ================= ПОСТАВЩИКИ =================
   async function viewSuppliers() {
