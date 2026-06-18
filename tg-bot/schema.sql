@@ -33,3 +33,40 @@ CREATE TABLE IF NOT EXISTS api_tokens (
   token      TEXT,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Контакты из Hub (плитка «Бот HoReCa»): Hub записывает, бот читает.
+CREATE TABLE IF NOT EXISTS point_contacts (
+  sd_id          TEXT PRIMARY KEY,
+  point_name     TEXT,
+  firm_name      TEXT,
+  inn            TEXT,
+  zavsklad_phone TEXT,
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_by     TEXT
+);
+CREATE TABLE IF NOT EXISTS chain_managers (
+  inn           TEXT PRIMARY KEY,
+  firm_name     TEXT,
+  manager_phone TEXT,
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_by    TEXT
+);
+
+-- Кто подключился к боту: завсклад точки и менеджер сети.
+CREATE TABLE IF NOT EXISTS point_links (
+  sd_id       TEXT PRIMARY KEY,
+  telegram_id BIGINT,
+  chat_id     BIGINT,
+  phone       TEXT,
+  point_name  TEXT,
+  firm_name   TEXT,
+  linked_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS manager_links (
+  inn         TEXT PRIMARY KEY,
+  telegram_id BIGINT,
+  chat_id     BIGINT,
+  phone       TEXT,
+  firm_name   TEXT,
+  linked_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
