@@ -45,7 +45,10 @@ const STR = {
   draft_confirm_hint: { ru: "Подтвердить?", uz: "Tasdiqlaysizmi?" },
   btn_confirm: { ru: "✅ Подтвердить", uz: "✅ Tasdiqlash" },
   btn_repeat: { ru: "♻️ Как в прошлый раз", uz: "♻️ O‘tgan safargidek" },
-  btn_cancel: { ru: "Не сегодня", uz: "Bugun emas" },
+  btn_new: { ru: "🆕 Новый заказ", uz: "🆕 Yangi buyurtma" },
+  btn_order: { ru: "✅ Оформить", uz: "✅ Rasmiylashtirish" },
+  btn_cancel: { ru: "🔴 Не сегодня", uz: "🔴 Bugun emas" },
+  cart_title: { ru: "Соберите заказ кнопками ➖/➕, затем «Оформить»:", uz: "Buyurtmani ➖/➕ tugmalari bilan yig‘ing, so‘ng «Rasmiylashtirish»:" },
   sending: { ru: "Отправляю заказ…", uz: "Buyurtma yuborilmoqda…" },
   order_ok: { ru: "✅ Заказ оформлен. Доставка завтра.", uz: "✅ Buyurtma rasmiylashtirildi. Yetkazib berish — ertaga." },
   order_err: { ru: (e) => `Не удалось оформить заказ: ${e}\nПопробуйте позже или свяжитесь с агентом.`, uz: (e) => `Buyurtma rasmiylashtirilmadi: ${e}` },
@@ -132,7 +135,7 @@ async function getPointDraft(sdId, mode) {
     // ровно как в последнем заказе
     items = (last.orderProducts || [])
       .filter((op) => op.product && op.product.SD_id && Number(op.quantity) > 0)
-      .map((op) => ({ productSdId: op.product.SD_id, name: op.product.name || op.product.SD_id, qty: Number(op.quantity) }));
+      .map((op) => ({ productSdId: op.product.SD_id, name: op.product.name || op.product.SD_id, qty: Math.max(1, Math.round(Number(op.quantity))) }));
   } else {
     // средняя дневная заявка по окну
     const agg = {};
@@ -143,8 +146,8 @@ async function getPointDraft(sdId, mode) {
     }
     const days = mine.length;
     items = Object.entries(agg)
-      .map(([id, v]) => ({ productSdId: id, name: v.name, qty: Math.round((v.sum / days) * 10) / 10 }))
-      .filter((it) => it.qty > 0).sort((a, b) => b.qty - a.qty);
+      .map(([id, v]) => ({ productSdId: id, name: v.name, qty: Math.round(v.sum / days) }))
+      .filter((it) => it.qty >= 1).sort((a, b) => b.qty - a.qty);
   }
   return Object.assign({ items }, meta);
 }
@@ -178,11 +181,25 @@ async function sendDraft(bot, chatId, tgId, sdId, pointName, lang, mode) {
   draftCache.set(tgId + "|" + sdId, draft);
   const list = draft.items.map((it) => `• ${it.name}: ${it.qty}`).join("\n");
   bot.sendMessage(chatId, t(lang, "draft_title", pointName) + "\n\n" + list + "\n\n" + t(lang, "draft_confirm_hint"), {
-    reply_markup: { inline_keyboard: [[
-      { text: t(lang, "btn_confirm"), callback_data: `ord:${sdId}` },
-      { text: t(lang, "btn_repeat"), callback_data: `rep:${sdId}` },
-    ], [{ text: t(lang, "btn_cancel"), callback_data: `no:${sdId}` }]] },
+    reply_markup: { inline_keyboard: [
+      [{ text: t(lang, "btn_confirm"), callback_data: `ord:${sdId}` }],
+      [{ text: t(lang, "btn_repeat"), callback_data: `rep:${sdId}` }, { text: t(lang, "btn_new"), callback_data: `new:${sdId}` }],
+      [{ text: t(lang, "btn_cancel"), callback_data: `no:${sdId}` }],
+    ] },
   });
+}
+
+// Сборка заказа кнопками ➖/➕ (режим «Новый заказ»).
+function renderCart(sdId, cart, lang) {
+  const rows = cart.items.map((it, i) => ([
+    { text: "➖", callback_data: `dec:${sdId}:${i}` },
+    { text: `${it.name}: ${it.qty}`, callback_data: "noop" },
+    { text: "➕", callback_data: `inc:${sdId}:${i}` },
+  ]));
+  rows.push([{ text: t(lang, "btn_order"), callback_data: `done:${sdId}` }]);
+  rows.push([{ text: t(lang, "btn_cancel"), callback_data: `no:${sdId}` }]);
+  const lines = cart.items.map((it) => `• ${it.name}: ${it.qty}`).join("\n");
+  return { text: t(lang, "cart_title") + "\n\n" + lines, reply_markup: { inline_keyboard: rows } };
 }
 
 async function main() {
@@ -273,6 +290,42 @@ async function main() {
       if (act === "rep") { // повторить как в прошлый раз
         await bot.answerCallbackQuery(q.id);
         await sendDraft(bot, chatId, q.from.id, val, "", lang, "repeat");
+        return;
+      }
+      if (act === "noop") { await bot.answerCallbackQuery(q.id); return; }
+      if (act === "new") { // собрать заказ вручную (➖/➕)
+        await bot.answerCallbackQuery(q.id);
+        const base = draftCache.get(q.from.id + "|" + val) || (await getPointDraft(val, "avg"));
+        if (!base) { await bot.sendMessage(chatId, t(lang, "order_err", "нет данных")); return; }
+        const cart = { items: base.items.map((it) => ({ ...it })), agent: base.agent, priceType: base.priceType, warehouse: base.warehouse };
+        draftCache.set(q.from.id + "|" + val, cart);
+        const v = renderCart(val, cart, lang);
+        await bot.editMessageText(v.text, { chat_id: chatId, message_id: q.message.message_id, reply_markup: v.reply_markup });
+        return;
+      }
+      if (act === "inc" || act === "dec") {
+        await bot.answerCallbackQuery(q.id);
+        const idx = Number(String(q.data).split(":")[2]);
+        const cart = draftCache.get(q.from.id + "|" + val);
+        if (!cart || !cart.items[idx]) return;
+        cart.items[idx].qty = Math.max(0, cart.items[idx].qty + (act === "inc" ? 1 : -1));
+        const v = renderCart(val, cart, lang);
+        try { await bot.editMessageText(v.text, { chat_id: chatId, message_id: q.message.message_id, reply_markup: v.reply_markup }); } catch (_) {}
+        return;
+      }
+      if (act === "done") {
+        await bot.answerCallbackQuery(q.id, { text: t(lang, "sending") });
+        const cart = draftCache.get(q.from.id + "|" + val);
+        if (!cart) { await bot.editMessageText(t(lang, "order_err", "нет данных"), { chat_id: chatId, message_id: q.message.message_id }); return; }
+        const items = cart.items.filter((it) => it.qty > 0);
+        try {
+          await createOrderFromDraft(val, { items, agent: cart.agent, priceType: cart.priceType, warehouse: cart.warehouse });
+          await db.logEvent("order_created", chatId, { sdId: val, mode: "new" });
+          await bot.editMessageText(t(lang, "order_ok"), { chat_id: chatId, message_id: q.message.message_id });
+        } catch (e) {
+          console.error("[ЗАКАЗ] Ошибка:", e.message);
+          await bot.editMessageText(t(lang, "order_err", e.message), { chat_id: chatId, message_id: q.message.message_id });
+        }
         return;
       }
       if (act === "ord") {
