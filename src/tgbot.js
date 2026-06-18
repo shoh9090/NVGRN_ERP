@@ -1,12 +1,15 @@
-// src/tgbot.js — плитка «Бот HoReCa»: контакты точек и менеджеров для Telegram-бота.
-// 4a: страница + экспорт готовой формы (только чтение). Импорт добавим в 4b.
+// src/tgbot.js — плитка «Бот HoReCa».
+// 4a: экспорт формы (HoReCa-точки + столбцы для номеров).
+// 4b: импорт заполненной формы → превью с проверкой → запись в базу бота (схема tgbot).
 
 const express = require('express');
+const multer = require('multer');
 const XLSX = require('xlsx');
 const db = require('./db');
 const integrations = require('./integrations');
 
 const router = express.Router();
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } });
 
 // Доступ: администратор или роль «Руководитель продаж».
 function requireSalesAccess(req, res, next) {
@@ -17,13 +20,38 @@ function requireSalesAccess(req, res, next) {
 }
 router.use(requireSalesAccess);
 
+// Таблицы контактов живут в схеме бота (tgbot). Создаём, если их ещё нет.
+async function ensureTables() {
+  await db.pool.query('CREATE SCHEMA IF NOT EXISTS tgbot');
+  await db.pool.query(`CREATE TABLE IF NOT EXISTS tgbot.point_contacts (
+    sd_id          TEXT PRIMARY KEY,
+    point_name     TEXT,
+    firm_name      TEXT,
+    inn            TEXT,
+    zavsklad_phone TEXT,
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by     TEXT
+  )`);
+  await db.pool.query(`CREATE TABLE IF NOT EXISTS tgbot.chain_managers (
+    inn           TEXT PRIMARY KEY,
+    firm_name     TEXT,
+    manager_phone TEXT,
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by    TEXT
+  )`);
+}
+
+const cleanPhone = (v) => String(v || '').replace(/[^\d+]/g, '').trim();
+const render = (res, req, settings, extra) =>
+  res.render('tgbot', Object.assign({ settings, user: req.user, preview: null, result: null, error: null }, extra));
+
 // Страница плитки.
 router.get('/', async (req, res) => {
   const settings = await db.getSettings();
-  res.render('tgbot', { settings, user: req.user });
+  render(res, req, settings, {});
 });
 
-// Экспорт готовой формы: все активные HoReCa-точки + два пустых столбца для номеров.
+// Экспорт готовой формы: активные HoReCa-точки + два столбца для номеров.
 router.get('/export', async (req, res) => {
   try {
     const points = await integrations.getHorecaPoints();
@@ -35,19 +63,9 @@ router.get('/export', async (req, res) => {
       'Телефон завсклада (для бота)': p.tel || '',
       'Телефон менеджера сети': '',
     }));
-    const ws = XLSX.utils.json_to_sheet(rows, {
-      header: [
-        'SD_id',
-        'Название точки',
-        'Контрагент (юр. название)',
-        'ИНН',
-        'Телефон завсклада (для бота)',
-        'Телефон менеджера сети',
-      ],
-    });
-    ws['!cols'] = [
-      { wch: 10 }, { wch: 28 }, { wch: 26 }, { wch: 14 }, { wch: 24 }, { wch: 24 },
-    ];
+    const header = ['SD_id', 'Название точки', 'Контрагент (юр. название)', 'ИНН', 'Телефон завсклада (для бота)', 'Телефон менеджера сети'];
+    const ws = XLSX.utils.json_to_sheet(rows, { header });
+    ws['!cols'] = [{ wch: 10 }, { wch: 28 }, { wch: 26 }, { wch: 14 }, { wch: 24 }, { wch: 24 }];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'HoReCa');
     const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
@@ -58,6 +76,94 @@ router.get('/export', async (req, res) => {
     await db.log(req.user.id, 'tgbot_export_form', String(points.length));
   } catch (e) {
     res.status(500).send('Не удалось выгрузить форму: ' + e.message);
+  }
+});
+
+// Импорт: читаем файл, проверяем, показываем превью (НИЧЕГО не сохраняем).
+router.post('/import', upload.single('file'), async (req, res) => {
+  const settings = await db.getSettings();
+  try {
+    if (!req.file) throw new Error('Файл не выбран.');
+    const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
+
+    const parsed = rows.map((r) => ({
+      sd_id: String(r['SD_id'] || '').trim(),
+      point_name: String(r['Название точки'] || '').trim(),
+      firm_name: String(r['Контрагент (юр. название)'] || '').trim(),
+      inn: String(r['ИНН'] || '').trim(),
+      zavsklad_phone: cleanPhone(r['Телефон завсклада (для бота)']),
+      manager_phone: cleanPhone(r['Телефон менеджера сети']),
+    }));
+
+    const errors = [];
+    const valid = [];
+    parsed.forEach((p, i) => {
+      const line = i + 2; // +2: строка 1 — заголовки
+      if (!p.sd_id) { errors.push(`Строка ${line}: пустой SD_id — пропущена.`); return; }
+      if (!p.inn) { errors.push(`Строка ${line} (${p.point_name || '—'}): пустой ИНН — заполни в SalesDoctor. Пропущена.`); return; }
+      valid.push(p);
+    });
+
+    // Менеджеры сети: группируем по ИНН, ловим конфликты разных номеров.
+    const byInn = {};
+    for (const p of valid) {
+      if (!p.manager_phone) continue;
+      byInn[p.inn] = byInn[p.inn] || { firm: p.firm_name, phones: new Set() };
+      byInn[p.inn].phones.add(p.manager_phone);
+    }
+    const conflicts = [];
+    const managers = [];
+    for (const [inn, m] of Object.entries(byInn)) {
+      if (m.phones.size > 1) conflicts.push(`${m.firm || 'ИНН ' + inn}: разные номера менеджера — ${[...m.phones].join(', ')}. Возьму первый, поправь форму при необходимости.`);
+      managers.push({ inn, firm_name: m.firm, manager_phone: [...m.phones][0] });
+    }
+
+    const summary = {
+      totalRows: parsed.length,
+      validPoints: valid.length,
+      withZavsklad: valid.filter((p) => p.zavsklad_phone).length,
+      managers: managers.length,
+    };
+    const payload = Buffer.from(JSON.stringify({ valid, managers })).toString('base64');
+    render(res, req, settings, { preview: { summary, errors, conflicts, sample: valid.slice(0, 20), payload } });
+  } catch (e) {
+    render(res, req, settings, { error: 'Не удалось прочитать файл: ' + e.message });
+  }
+});
+
+// Подтверждение: записываем проверенные данные в базу.
+router.post('/import/commit', async (req, res) => {
+  const settings = await db.getSettings();
+  try {
+    await ensureTables();
+    const data = JSON.parse(Buffer.from(String(req.body.payload || ''), 'base64').toString('utf8'));
+    let pts = 0, mgrs = 0;
+    for (const p of data.valid || []) {
+      await db.pool.query(
+        `INSERT INTO tgbot.point_contacts (sd_id, point_name, firm_name, inn, zavsklad_phone, updated_at, updated_by)
+         VALUES ($1,$2,$3,$4,$5,now(),$6)
+         ON CONFLICT (sd_id) DO UPDATE SET point_name=$2, firm_name=$3, inn=$4,
+           zavsklad_phone=COALESCE(NULLIF($5,''), tgbot.point_contacts.zavsklad_phone),
+           updated_at=now(), updated_by=$6`,
+        [p.sd_id, p.point_name, p.firm_name, p.inn, p.zavsklad_phone, String(req.user.id)]
+      );
+      pts++;
+    }
+    for (const m of data.managers || []) {
+      await db.pool.query(
+        `INSERT INTO tgbot.chain_managers (inn, firm_name, manager_phone, updated_at, updated_by)
+         VALUES ($1,$2,$3,now(),$4)
+         ON CONFLICT (inn) DO UPDATE SET firm_name=$2, manager_phone=$3, updated_at=now(), updated_by=$4`,
+        [m.inn, m.firm_name, m.manager_phone, String(req.user.id)]
+      );
+      mgrs++;
+    }
+    await db.log(req.user.id, 'tgbot_import', `точек ${pts}, менеджеров ${mgrs}`);
+    render(res, req, settings, { result: { points: pts, managers: mgrs } });
+  } catch (e) {
+    render(res, req, settings, { error: 'Не удалось сохранить: ' + e.message });
   }
 });
 
