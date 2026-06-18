@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Справочники — <%= settings.company_name %></title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/dicts.css">
+  <style>:root { --brand: <%= settings.brand_color || '#2E7D32' %>; }</style>
+</head>
+<body class="admin-body dicts-body">
+  <header class="topbar admin-topbar">
+    <div class="topbar-left">
+      <a class="btn-ghost" href="/">← На главную</a>
+      <span class="company">Справочники</span>
+    </div>
+    <div class="topbar-right">
+      <span style="color:#fff; font-size:14px"><%= user.name %></span>
+    </div>
+  </header>
+
+  <div class="dicts-layout">
+    <aside class="dicts-sidebar">
+      <nav id="dict-nav"></nav>
+    </aside>
+
+    <section class="dicts-content">
+      <div class="dicts-toolbar">
+        <h2 id="dict-title"></h2>
+        <span id="dict-count" class="muted"></span>
+        <div class="dicts-toolbar-right">
+          <input id="dict-search" placeholder="Поиск...">
+          <select id="dict-status">
+            <option value="active">Активные</option>
+            <option value="archived">Архив</option>
+            <option value="all">Все</option>
+          </select>
+          <button id="dict-sync-prices" style="display:none" title="Загрузить прайс-листы и цены из SalesDoctor">⟳ Синхр. SD</button>
+          <button id="dict-sync-sd" style="display:none" title="Загрузить готовую продукцию из SalesDoctor">⟳ Синхр. SD</button>
+          <button id="dict-recode" style="display:none" title="Заменить старые артикулы nvXX на формат RM-XX-000">Перекодировка</button>
+          <button id="dict-export" title="Выгрузить текущий справочник с учётом фильтров">Экспорт</button>
+          <button id="dict-import" title="Импорт из Excel: колонка A — название, B — код">Импорт</button>
+          <input id="dict-import-input" type="file" accept=".xlsx,.xls,.csv" style="display:none">
+          <button id="dict-create" class="btn-primary">+ Создать</button>
+        </div>
+      </div>
+      <div id="dict-filters" class="dicts-filters"></div>
+      <div id="dict-bulkbar" class="dicts-bulkbar" style="display:none"></div>
+      <div id="dict-table-wrap" class="dicts-table-wrap"></div>
+      <div id="dict-pagination" class="dicts-pagination"></div>
+    </section>
+
+    <aside id="dict-card" class="dict-card">
+      <div class="dict-card-head">
+        <h3 id="dict-card-title"></h3>
+        <button id="dict-card-close" class="card-close" title="Закрыть">✕</button>
+      </div>
+      <div id="dict-card-body" class="dict-card-body"></div>
+    </aside>
+  </div>
+
+  <script>window.HUB_USER = { isAdmin: <%= user.isAdmin ? "true" : "false" %>, name: "<%= user.name %>" };</script>
+  <script src="/static/dicts.js"></script>
+</body>
+</html>

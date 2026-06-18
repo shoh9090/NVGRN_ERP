@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Закуп — <%= settings.company_name %></title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/dicts.css">
+  <link rel="stylesheet" href="/static/purchase.css">
+  <link rel="stylesheet" href="/static/stock.css">
+  <style>:root { --brand: <%= settings.brand_color || '#2E7D32' %>; }</style>
+</head>
+<body class="admin-body pur-body">
+  <header class="topbar admin-topbar">
+    <div class="topbar-left">
+      <a class="btn-ghost" href="/">← На главную</a>
+      <span class="company">🛒 Закуп</span>
+    </div>
+    <div class="topbar-right">
+      <div id="bell-root" class="bell-root"></div>
+      <span style="font-size:13px; font-weight:700"><%= user.name %></span>
+    </div>
+  </header>
+
+  <nav class="pur-tabs">
+    <a href="#orders" data-tab="orders" class="pur-tab">🧾 Заявки</a>
+    <a href="#suppliers" data-tab="suppliers" class="pur-tab">🤝 Поставщики</a>
+    <a href="#settlements" data-tab="settlements" class="pur-tab">💳 Взаиморасчёты</a>
+    <a href="#prices" data-tab="prices" class="pur-tab">📈 Цены</a>
+    <a href="#specs" data-tab="specs" class="pur-tab">📋 Спецификации</a>
+  </nav>
+
+  <main class="pur-main" id="pur-main"></main>
+
+  <div id="pur-modal-root"></div>
+
+  <script>window.HUB_USER = { isAdmin: <%= user.isAdmin ? "true" : "false" %>, name: "<%= user.name %>" };</script>
+  <script src="/static/bell.js"></script>
+  <script src="/static/purchase.js"></script>
+</body>
+</html>

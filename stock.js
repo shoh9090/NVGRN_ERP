@@ -1,0 +1,211 @@
+/* Hub — дизайн-система Novagreen (перенесена из приложения «Счета-фактуры»). */
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Lora:wght@500;600;700&display=swap');
+
+:root{
+  --ink:#14241b; --ink-soft:#52605a; --ink-faint:#8a958f;
+  --paper:#f4f2ea; --surface:#ffffff; --surface-2:#fbfaf4;
+  --line:#e6e2d6; --line-soft:#efece2;
+  --forest:#163a28; --forest-2:#1f5038; --forest-deep:#102a1d;
+  --lime:#8cc63f; --lime-d:#6aa82f; --lime-soft:#eef6df;
+  --amber:#c98306; --amber-soft:#fbf0d8;
+  --red:#bf3f28; --red-soft:#f8e3dd;
+  --blue:#2f6fb0; --blue-soft:#e3eef8;
+  --radius:14px; --radius-s:9px;
+  --shadow:0 1px 2px rgba(20,36,27,.04), 0 8px 28px -12px rgba(20,36,27,.18);
+  --shadow-lg:0 24px 70px -22px rgba(16,42,29,.45);
+  --brand: var(--forest); /* фирменный цвет из настроек подменяет это значение */
+}
+
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--paper); color:var(--ink);
+  font-family:'Manrope',sans-serif; font-size:14px; line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+  background-image:radial-gradient(circle at 12% -8%, rgba(140,198,63,.07), transparent 42%),
+                   radial-gradient(circle at 100% 0%, rgba(22,58,40,.04), transparent 38%);
+  min-height:100vh;
+}
+.tnum{font-variant-numeric:tabular-nums;font-feature-settings:"tnum"}
+::-webkit-scrollbar{width:11px;height:11px}
+::-webkit-scrollbar-thumb{background:#cfcabb;border-radius:20px;border:3px solid var(--paper)}
+::-webkit-scrollbar-thumb:hover{background:#b9b3a1}
+
+h1,h2,h3{margin:0 0 12px;font-weight:700;letter-spacing:-.01em}
+.muted{color:var(--ink-soft);font-size:13px}
+a{color:var(--forest-2)}
+
+/* ---------- Кнопки ---------- */
+button,.btn-primary{
+  font-family:inherit;font-weight:700;font-size:13.5px;cursor:pointer;
+  display:inline-flex;align-items:center;gap:8px;
+  padding:10px 18px;border-radius:11px;border:1px solid var(--line);
+  background:var(--surface);color:var(--ink);transition:.16s;letter-spacing:.1px;
+}
+button:hover{border-color:#cfc9b9;background:var(--surface-2)}
+.btn-primary{
+  background:linear-gradient(180deg,#9ad24f,var(--lime-d));color:#10260a;
+  border:none;box-shadow:0 8px 18px -8px rgba(106,168,47,.7);
+}
+.btn-primary:hover{filter:brightness(1.05);transform:translateY(-1px);background:linear-gradient(180deg,#9ad24f,var(--lime-d))}
+button:disabled{opacity:.5;cursor:not-allowed;transform:none}
+.btn-ghost{
+  text-decoration:none;color:#eef3ec;border:1px solid rgba(255,255,255,.35);
+  padding:8px 16px;border-radius:11px;font-size:13px;font-weight:700;transition:.15s;
+}
+.btn-ghost:hover{background:rgba(255,255,255,.12)}
+.btn-danger-link{border:none;background:none;color:var(--red);padding:4px 0;text-decoration:underline;box-shadow:none!important}
+.btn-danger-link:hover{background:none;border:none}
+
+/* ---------- Поля ---------- */
+input,select,textarea{
+  font-family:inherit;font-size:13.5px;padding:10px 12px;
+  border:1px solid var(--line);border-radius:var(--radius-s);
+  background:var(--surface);width:100%;color:var(--ink);transition:.15s;
+}
+input:focus,select:focus,textarea:focus{
+  outline:none;border-color:var(--lime-d);box-shadow:0 0 0 3px rgba(140,198,63,.18);
+}
+label{display:block;font-size:11px;font-weight:700;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.04em}
+label input,label select{margin-top:5px;font-weight:500;text-transform:none;letter-spacing:0}
+
+.form-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.form-row input,.form-row select{width:auto;flex:1 1 180px}
+.form-col{display:flex;flex-direction:column;gap:16px;max-width:480px}
+.inline-form{display:flex;gap:8px;margin:6px 0}
+.checks{display:flex;flex-wrap:wrap;gap:10px;border:none;padding:8px 0;margin:0;align-items:center}
+.check{display:inline-flex;gap:7px;align-items:center;font-weight:600;font-size:13px;text-transform:none;letter-spacing:0}
+.check input{width:16px;height:16px;margin:0;accent-color:var(--lime-d)}
+.error{
+  background:var(--red-soft);color:var(--red);border:1px solid #e8c7bd;
+  padding:11px 14px;border-radius:var(--radius-s);margin-bottom:12px;font-size:13px;font-weight:600;
+}
+.badge{
+  display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:700;
+  padding:4px 12px;border-radius:30px;white-space:nowrap;
+  background:var(--lime-soft);color:#3f6a16;border:1px solid #d3e8b4;
+}
+
+/* ---------- Вход ---------- */
+.login-body{
+  display:flex;align-items:center;justify-content:center;padding:24px;
+  background:var(--forest-deep);
+  background-image:radial-gradient(circle at 20% 10%, rgba(140,198,63,.16), transparent 45%),
+                   radial-gradient(circle at 90% 90%, rgba(31,80,56,.55), transparent 55%);
+  background-size:cover;background-position:center;
+}
+.login-card{
+  background:var(--surface);border-radius:18px;box-shadow:0 20px 60px rgba(0,0,0,.28);
+  padding:36px 32px;width:100%;max-width:370px;text-align:center;
+}
+.login-card h1{font-family:'Lora',serif;font-size:24px;font-weight:600}
+.login-card form{text-align:left;display:flex;flex-direction:column;gap:13px;margin-top:20px}
+.login-logo{max-height:56px;max-width:200px;margin-bottom:10px}
+
+/* ---------- Шапка (светлая, как в счетах-фактурах) ---------- */
+.topbar{
+  display:flex;justify-content:space-between;align-items:center;
+  padding:13px 26px;background:var(--surface);color:var(--ink);
+  border-bottom:1px solid var(--line);position:sticky;top:0;z-index:40;
+  box-shadow:0 6px 20px -16px rgba(16,42,29,.5);
+}
+.topbar::before{
+  content:'';position:absolute;top:0;left:0;right:0;height:4px;
+  background:linear-gradient(90deg,var(--lime),var(--forest-2) 70%,var(--forest));
+}
+.topbar-left,.topbar-right{display:flex;align-items:center;gap:14px}
+.topbar-logo{height:40px;border-radius:8px}
+.company{font-family:'Lora',serif;font-weight:600;font-size:17px;letter-spacing:.2px;color:var(--ink)}
+.topbar .btn-ghost{color:var(--ink-soft);border:1px solid var(--line);background:var(--surface)}
+.topbar .btn-ghost:hover{background:var(--surface-2);border-color:#cfc9b9}
+.topbar .muted{color:var(--ink-soft)}
+.user-menu{position:relative}
+.user-menu summary{
+  cursor:pointer;list-style:none;padding:8px 16px;font-weight:700;font-size:13px;
+  border:1px solid var(--line);border-radius:11px;background:var(--surface);color:var(--ink);
+}
+.user-menu summary::-webkit-details-marker{display:none}
+.user-menu[open] summary{background:var(--lime-soft);border-color:#d3e8b4;color:#3f6a16}
+.user-menu-body{
+  position:absolute;right:0;top:calc(100% + 10px);z-index:50;
+  background:var(--surface);color:var(--ink);border-radius:var(--radius);padding:16px;
+  box-shadow:var(--shadow-lg);min-width:270px;border:1px solid var(--line);
+}
+
+/* ---------- Лаунчер ---------- */
+.launcher-body{
+  background:var(--paper);
+  background-image:radial-gradient(circle at 12% -8%, rgba(140,198,63,.10), transparent 42%),
+                   radial-gradient(circle at 100% 0%, rgba(22,58,40,.06), transparent 38%);
+  background-size:cover;background-position:center;background-attachment:fixed;
+}
+.launcher{max-width:1140px;margin:0 auto;padding:42px 24px 90px}
+.greeting{
+  font-family:'Lora',serif;font-weight:600;color:var(--ink);
+  font-size:28px;margin-bottom:26px;
+}
+.launcher-body[style*="background-image"] .greeting{color:#fff;text-shadow:0 2px 12px rgba(0,0,0,.4)}
+.empty{color:var(--ink-soft)}
+
+.grid{display:grid;gap:16px;grid-template-columns:repeat(4,1fr)}
+.tile{
+  display:block;text-decoration:none;color:var(--ink);
+  background:var(--surface);border:1px solid var(--line);
+  border-radius:var(--radius);padding:22px 19px 20px;
+  box-shadow:var(--shadow);transition:.16s;position:relative;overflow:hidden;
+}
+.tile::after{
+  content:'';position:absolute;inset:0 0 auto 0;height:4px;
+  background:linear-gradient(90deg,var(--lime),var(--forest-2) 70%,var(--forest));
+  opacity:0;transition:.16s;
+}
+.tile:hover{transform:translateY(-3px);box-shadow:0 18px 40px -14px rgba(16,42,29,.35);border-color:#d3e8b4}
+.tile:hover::after{opacity:1}
+.tile-icon{
+  width:52px;height:52px;border-radius:13px;
+  background:var(--lime-soft);border:1px solid #d3e8b4;
+  display:flex;align-items:center;justify-content:center;
+  font-size:26px;margin-bottom:13px;
+}
+.tile-title{font-weight:800;font-size:16px;margin-bottom:4px;letter-spacing:-.01em}
+.tile-desc{font-size:12.5px;color:var(--ink-soft);line-height:1.45}
+
+@media (max-width:960px){.grid{grid-template-columns:repeat(3,1fr)}}
+@media (max-width:660px){
+  .grid{grid-template-columns:repeat(2,1fr);gap:12px}
+  .greeting{font-size:22px}
+  .company{font-size:15px}
+  .tile{padding:17px 14px}
+  .tile-icon{width:44px;height:44px;font-size:22px}
+}
+
+/* ---------- Админка ---------- */
+.admin-body{background:var(--paper)}
+.admin-topbar{background:var(--surface)}
+.admin-nav{
+  display:flex;gap:5px;padding:10px 24px;background:transparent;
+  border-bottom:none;overflow-x:auto;max-width:1060px;margin:0 auto;width:100%;
+}
+.admin-nav a{
+  text-decoration:none;color:var(--ink-soft);padding:8px 15px;font-size:13px;
+  font-weight:700;border-radius:10px;border:1px solid transparent;white-space:nowrap;transition:.15s;
+}
+.admin-nav a:hover{background:var(--surface-2)}
+.admin-nav a.active{background:var(--lime-soft);color:#3f6a16;border-color:#d3e8b4}
+.admin-main{max-width:1020px;margin:0 auto;padding:14px 24px 90px}
+.card{
+  background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
+  padding:20px;margin-bottom:16px;box-shadow:var(--shadow);
+}
+.row-inactive{opacity:.55}
+.actions{display:flex;gap:12px;align-items:center;margin-top:12px;flex-wrap:wrap}
+.preview{display:flex;gap:16px;align-items:center}
+
+table{width:100%;border-collapse:collapse;font-size:13.5px}
+th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--line-soft);vertical-align:top}
+th{color:var(--ink-faint);font-weight:800;font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+tr:last-child td{border-bottom:none}
+
+details>summary{cursor:pointer;color:var(--forest-2);font-size:13px;font-weight:700}
+
+@media (prefers-reduced-motion:reduce){.tile,button{transition:none}}

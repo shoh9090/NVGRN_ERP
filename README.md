@@ -1,53 +1,64 @@
-# Hub — универсальная блочная ERP-платформа (ядро, Этап 1)
+// src/tgbot.js — плитка «Бот HoReCa»: контакты точек и менеджеров для Telegram-бота.
+// 4a: страница + экспорт готовой формы (только чтение). Импорт добавим в 4b.
 
-Стартовая страница-лаунчер «единое окно»: вход по паролю, плитки модулей по ролям,
-админ-панель (пользователи, роли, плитки, оформление, справочники).
+const express = require('express');
+const XLSX = require('xlsx');
+const db = require('./db');
+const integrations = require('./integrations');
 
-## Что внутри
+const router = express.Router();
 
-- **Вход** — логин/пароль, сессия 12 часов.
-- **Лаунчер** — сетка плиток (4 колонки на компьютере, 2 на телефоне), фоновая картинка, логотип.
-- **Админ-панель** (только для роли с правами администратора):
-  - Пользователи: создание, роли, сброс пароля, отключение.
-  - Роли: создаются свободно, к каждой назначаются доступные плитки.
-  - Плитки: название, иконка, ссылка, порядок, скрытие.
-  - Оформление: логотип, фон, фирменный цвет, название компании.
-  - Справочники: контрагенты, номенклатура, единицы измерения (общие для всех будущих блоков).
+// Доступ: администратор или роль «Руководитель продаж».
+function requireSalesAccess(req, res, next) {
+  if (!req.user) return res.redirect('/login');
+  const roles = req.user.roles || [];
+  if (req.user.isAdmin || roles.includes('Руководитель продаж')) return next();
+  return res.status(403).send('Доступ к этому разделу только у администратора и руководителя продаж.');
+}
+router.use(requireSalesAccess);
 
-## Развёртывание на Railway (по шагам)
+// Страница плитки.
+router.get('/', async (req, res) => {
+  const settings = await db.getSettings();
+  res.render('tgbot', { settings, user: req.user });
+});
 
-1. Создайте новый репозиторий на GitHub и загрузите туда все файлы этой папки.
-2. В Railway: **New Project → Deploy from GitHub repo** → выберите репозиторий.
-3. В этом же проекте Railway: **New → Database → PostgreSQL**. Railway сам создаст базу.
-4. Откройте сервис приложения → вкладка **Variables** → добавьте:
-   - `DATABASE_URL` — нажмите «Add Reference» и выберите `DATABASE_URL` из созданного PostgreSQL
-     (или скопируйте значение вручную из вкладки Variables базы).
-   - `JWT_SECRET` — любая длинная случайная строка (40+ символов).
-   - `ADMIN_LOGIN` — логин первого администратора (например, `admin`).
-   - `ADMIN_PASSWORD` — пароль первого администратора (придумайте надёжный).
-   - `COMPANY_NAME` — название компании (например, `Novagreen Hub`). Необязательно.
-5. Railway соберёт и запустит приложение автоматически. Откройте выданный домен
-   (Settings → Networking → Generate Domain).
-6. Войдите под админом → **Админ-панель → Оформление** — загрузите логотип и фон.
-7. **Админ-панель → Плитки** — поменяйте адрес плитки «Счета-фактуры» на реальный адрес
-   вашего приложения на Railway.
-8. Создайте роли (Бухгалтер, Производственник, Продажник...) и пользователей.
+// Экспорт готовой формы: все активные HoReCa-точки + два пустых столбца для номеров.
+router.get('/export', async (req, res) => {
+  try {
+    const points = await integrations.getHorecaPoints();
+    const rows = points.map((p) => ({
+      SD_id: p.SD_id,
+      'Название точки': p.name || '',
+      'Контрагент (юр. название)': p.firmName || '',
+      'ИНН': p.inn || '',
+      'Телефон завсклада (для бота)': p.tel || '',
+      'Телефон менеджера сети': '',
+    }));
+    const ws = XLSX.utils.json_to_sheet(rows, {
+      header: [
+        'SD_id',
+        'Название точки',
+        'Контрагент (юр. название)',
+        'ИНН',
+        'Телефон завсклада (для бота)',
+        'Телефон менеджера сети',
+      ],
+    });
+    ws['!cols'] = [
+      { wch: 10 }, { wch: 28 }, { wch: 26 }, { wch: 14 }, { wch: 24 }, { wch: 24 },
+    ];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'HoReCa');
+    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    const today = new Date().toISOString().slice(0, 10);
+    res.set('Content-Disposition', `attachment; filename="horeca_form_${today}.xlsx"`);
+    res.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.send(buf);
+    await db.log(req.user.id, 'tgbot_export_form', String(points.length));
+  } catch (e) {
+    res.status(500).send('Не удалось выгрузить форму: ' + e.message);
+  }
+});
 
-## Локальный запуск (для разработки)
-
-```bash
-npm install
-DATABASE_URL=postgres://user:pass@localhost:5432/hub JWT_SECRET=dev node server.js
-```
-
-## Важно про безопасность
-
-- Если переменные `ADMIN_LOGIN`/`ADMIN_PASSWORD` не заданы, при первом запуске создаётся
-  администратор `admin / admin123` — обязательно смените пароль.
-- Пароли хранятся только в виде хэшей (bcrypt).
-- Все изменения через админку пишутся в журнал `audit_log`.
-
-## Что дальше (по дорожной карте ТЗ)
-
-- Этап 2: единый вход (SSO) — модули принимают токен ядра.
-- Этап 3+: блоки «Договора», «Себестоимость», «Финансы», интеграции CRM и 1С.
+module.exports = router;
