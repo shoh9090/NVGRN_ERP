@@ -529,6 +529,15 @@ async function seed() {
     );
   }
 
+  // Плитка «Бот HoReCa» — контакты точек и менеджеров для Telegram-бота
+  const bt = await pool.query("SELECT id FROM tiles WHERE url = '/tgbot' LIMIT 1");
+  if (bt.rows.length === 0) {
+    await pool.query(
+      `INSERT INTO tiles (title, description, icon, url, open_new_tab, sort_order)
+       VALUES ('Бот HoReCa', 'Контакты точек и менеджеров для Telegram-бота', '🤖', '/tgbot', FALSE, 80)`
+    );
+  }
+
   // Плитка «Закуп» — модуль ядра
   const pt = await pool.query("SELECT id FROM tiles WHERE url = '/purchase' LIMIT 1");
   if (pt.rows.length === 0) {

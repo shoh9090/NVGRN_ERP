@@ -460,4 +460,18 @@ async function diagSD() {
   return out;
 }
 
-module.exports = { getSdConfig, saveSdConfig, testConnection, syncFinishedGoods, syncPrices, diagSD };
+// --- Для Telegram-бота: список активных HoReCa-точек (только чтение) ---
+async function getHorecaPoints() {
+  const cfg = await getSdConfig();
+  if (!cfg.url || !cfg.login || !cfg.password) {
+    throw new Error('Сначала заполните доступ к SalesDoctor в разделе «Интеграции».');
+  }
+  const auth = await sdLogin(cfg);
+  const cats = await sdGetAll(cfg, auth, 'getClientCategory', 'clientCategory', { filter: { include: 'all' } });
+  const horeca = cats.find((c) => String(c.name || '').trim().toLowerCase() === 'horeca');
+  if (!horeca) throw new Error('В SalesDoctor не найдена категория «Horeca».');
+  const clients = await sdGetAll(cfg, auth, 'getClient', 'client', {});
+  return clients.filter((c) => c.active === 'Y' && c.category && c.category.SD_id === horeca.SD_id);
+}
+
+module.exports = { getSdConfig, saveSdConfig, testConnection, syncFinishedGoods, syncPrices, diagSD, getHorecaPoints };
