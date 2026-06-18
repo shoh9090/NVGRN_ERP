@@ -1,4 +1,4 @@
-// Бот Novagreen. Подключение по номеру, заказ из черновика, меню, каталог, кэш.
+// Бот Novagreen. Подключение, заказ из черновика, меню, каталог, остатки, дедуп, RU/UZ.
 
 require("dotenv").config();
 const TelegramBot = require("node-telegram-bot-api");
@@ -8,16 +8,20 @@ const sd = require("./salesdoctor");
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const ADMIN_TG_ID = process.env.ADMIN_TG_ID;
 const WINDOW_DAYS = Number(process.env.AVG_WINDOW_DAYS || 14);
+const TZ_OFFSET_MS = 5 * 3600 * 1000; // Asia/Tashkent = UTC+5, без перевода часов
 
 if (!TOKEN) { console.error("[СТАРТ] Нет TELEGRAM_BOT_TOKEN."); process.exit(1); }
 if (!process.env.DATABASE_URL) { console.error("[СТАРТ] Нет DATABASE_URL."); process.exit(1); }
 
 const isAdmin = (id) => ADMIN_TG_ID && String(id) === String(ADMIN_TG_ID);
-const todayStr = () => new Date().toISOString().slice(0, 10);
-const tomorrowStr = () => new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+// Даты считаем по Ташкенту, иначе ночью «сегодня» уезжает на вчера.
+const tzNow = () => new Date(Date.now() + TZ_OFFSET_MS);
+const tzToday = () => tzNow().toISOString().slice(0, 10);
+const tzTomorrow = () => new Date(Date.now() + TZ_OFFSET_MS + 86400000).toISOString().slice(0, 10);
+const tzHHMM = () => tzNow().toISOString().slice(11, 16).replace(":", "");
 function normPhone(v) { const d = String(v || "").replace(/\D/g, ""); return d.length > 9 ? d.slice(-9) : d; }
 
-// ---------- Кэш (скорость): тяжёлые запросы к SD держим в памяти на время TTL ----------
+// ---------- Кэш ----------
 const _cache = new Map();
 async function cached(key, ttlMs, fn) {
   const hit = _cache.get(key);
@@ -26,41 +30,57 @@ async function cached(key, ttlMs, fn) {
   _cache.set(key, { at: Date.now(), val });
   return val;
 }
-const getCatalog = () => cached("catalog", 3600000, async () => {
-  const all = await sd.fetchAll("getProduct", {});
-  return all.filter((p) => p.active === "Y" && p.SD_id && p.name)
-    .map((p) => ({ SD_id: p.SD_id, name: p.name })).sort((a, b) => a.name.localeCompare(b.name));
+const getHorecaProdCat = () => cached("prodcat_horeca", 3600000, async () => {
+  const cats = await sd.fetchAll("getProductCategory", {});
+  const h = cats.find((c) => String(c.name || "").trim().toLowerCase() === "horeca");
+  if (!h) console.warn("[КАТАЛОГ] Товарная категория «Horeca» не найдена — каталог будет общим.");
+  return h ? h.SD_id : null;
 });
+// Остатки + каталог (только Horeca, только то, что есть на складе).
+const getStockData = () => cached("stock", 300000, async () => {
+  const catId = await getHorecaProdCat();
+  const whs = await sd.fetchAll("getStock", catId ? { category: { SD_id: catId } } : {});
+  const map = {}, names = {};
+  for (const w of whs) for (const p of (w.products || [])) {
+    if (!p.SD_id) continue;
+    map[p.SD_id] = (map[p.SD_id] || 0) + (Number(p.quantity) || 0);
+    names[p.SD_id] = p.name || p.SD_id;
+  }
+  const catalog = Object.keys(map).filter((id) => map[id] > 0)
+    .map((id) => ({ SD_id: id, name: names[id], qty: map[id] })).sort((a, b) => a.name.localeCompare(b.name));
+  return { map, catalog };
+});
+const getCatalog = async () => (await getStockData()).catalog;
+const getStockMap = async () => (await getStockData()).map;
 const getOrders14 = () => cached("orders14", 600000, () => {
-  const to = todayStr(), from = new Date(Date.now() - WINDOW_DAYS * 86400000).toISOString().slice(0, 10);
+  const to = tzToday(), from = new Date(Date.now() + TZ_OFFSET_MS - WINDOW_DAYS * 86400000).toISOString().slice(0, 10);
   return sd.fetchAll("getOrder", { filter: { period: { date: { from, to } }, status: [1, 2, 3, 4] } });
 });
 const getOrdersToday = () => cached("ordersToday", 120000, () => {
-  const d = todayStr();
+  const d = tzToday();
   return sd.fetchAll("getOrder", { filter: { period: { date: { from: d, to: d } }, status: [1, 2, 3, 4, 5] } });
 });
+const freshOrdersToday = () => { _cache.delete("ordersToday"); return getOrdersToday(); };
 const getClientsAll = () => cached("clients", 600000, () => sd.fetchAll("getClient", {}));
 
 // ---------- Языки ----------
 const STR = {
   choose_lang: { ru: "Выберите язык / Tilni tanlang:", uz: "Tilni tanlang / Выберите язык:" },
-  hello: {
-    ru: "Здравствуйте! Это бот Novagreen Foods.\n\nЧтобы подключиться, поделитесь своим номером телефона кнопкой ниже.",
-    uz: "Assalomu alaykum! Bu Novagreen Foods boti.\n\nUlanish uchun pastdagi tugma orqali telefon raqamingizni yuboring.",
-  },
+  hello: { ru: "Здравствуйте! Это бот Novagreen Foods.\n\nЧтобы подключиться, поделитесь своим номером телефона кнопкой ниже.", uz: "Assalomu alaykum! Bu Novagreen Foods boti.\n\nUlanish uchun pastdagi tugma orqali raqamingizni yuboring." },
   share_btn: { ru: "📱 Поделиться номером", uz: "📱 Raqamni yuborish" },
   share_own: { ru: "Поделитесь, пожалуйста, своим номером (кнопкой).", uz: "Iltimos, o‘z raqamingizni (tugma orqali) yuboring." },
   bad_phone: { ru: "Не удалось разобрать номер. Попробуйте ещё раз.", uz: "Raqamni o‘qib bo‘lmadi. Yana urinib ko‘ring." },
   no_match: { ru: "Ваш номер не найден в списке. Обратитесь к вашему агенту Novagreen, затем /start.", uz: "Raqamingiz ro‘yxatda yo‘q. Novagreen agentingizga murojaat qiling, so‘ng /start." },
-  linked: { ru: "Готово, вы подключены: ", uz: "Tayyor, ulandingiz: " },
-  linked_tail: { ru: "\nИспользуйте меню внизу.", uz: "\nPastdagi menyudan foydalaning." },
-  as_zav_one: { ru: (p) => `завсклад точки «${p}»`, uz: (p) => `«${p}» omborchisi` },
-  as_zav_many: { ru: (n, l) => `завсклад ${n} точек: ${l}`, uz: (n, l) => `${n} ta nuqta omborchisi: ${l}` },
-  as_mgr: { ru: (f, n) => `менеджер сети ${f} (${n} точек)`, uz: (f, n) => `${f} menejeri (${n} ta nuqta)` },
+  welcome: { ru: (n) => `Спасибо, что подключились к нашему чат-боту, «${n}». Рады, что вы с нами!`, uz: (n) => `Chat-botimizga ulanganingiz uchun rahmat, «${n}». Siz bilan ekanimizdan xursandmiz!` },
   not_linked: { ru: "Вы ещё не подключены. Отправьте /start.", uz: "Siz ulanmagansiz. /start yuboring." },
-  no_history: { ru: (p) => `По точке «${p}» нет истории заказов — черновик не из чего собрать. Соберите вручную: «🆕 Новый заказ».`, uz: (p) => `«${p}» bo‘yicha tarix yo‘q. Qo‘lda yig‘ing: «🆕 Yangi buyurtma».` },
+  no_history: { ru: (p) => `По точке «${p}» нет истории — соберите заказ вручную: «🆕 Новый заказ».`, uz: (p) => `«${p}» bo‘yicha tarix yo‘q. Qo‘lda yig‘ing: «🆕 Yangi buyurtma».` },
+  all_oos: { ru: (l) => `Сегодня ваших обычных позиций нет в наличии: ${l}.\nМожно собрать вручную:`, uz: (l) => `Bugun odatdagi mahsulotlaringiz yo‘q: ${l}.\nQo‘lda yig‘ish mumkin:` },
   draft_title: { ru: (p) => `Заказ на завтра для «${p}». Обычно вы заказываете:`, uz: (p) => `«${p}» uchun ertangi buyurtma. Odatda:` },
-  draft_confirm_hint: { ru: "Подтвердить?", uz: "Tasdiqlaysizmi?" },
+  oos_note: { ru: (l) => `⚠️ Сегодня нет в наличии: ${l}`, uz: (l) => `⚠️ Bugun mavjud emas: ${l}` },
+  confirm_hint: { ru: "Подтвердить?", uz: "Tasdiqlaysizmi?" },
+  already_ordered: { ru: (p) => `На сегодня по точке «${p}» заказ уже есть:`, uz: (p) => `«${p}» uchun bugun buyurtma allaqachon bor:` },
+  btn_dop: { ru: "➕ Дополнительный заказ", uz: "➕ Qo‘shimcha buyurtma" },
+  dop_title: { ru: "Дополнительный заказ. Добавьте позиции:", uz: "Qo‘shimcha buyurtma. Mahsulot qo‘shing:" },
   btn_confirm: { ru: "✅ Подтвердить", uz: "✅ Tasdiqlash" },
   btn_repeat: { ru: "♻️ Как в прошлый раз", uz: "♻️ O‘tgan safargidek" },
   btn_new: { ru: "🆕 Новый заказ", uz: "🆕 Yangi buyurtma" },
@@ -68,9 +88,10 @@ const STR = {
   btn_add: { ru: "➕ Добавить позицию", uz: "➕ Mahsulot qo‘shish" },
   btn_back: { ru: "↩ Назад к заказу", uz: "↩ Buyurtmaga qaytish" },
   btn_cancel: { ru: "🔴 Не сегодня", uz: "🔴 Bugun emas" },
-  cart_title: { ru: "Соберите заказ кнопками ➖/➕, добавляйте позиции, затем «Оформить»:", uz: "Buyurtmani ➖/➕ bilan yig‘ing, mahsulot qo‘shing, so‘ng «Rasmiylashtirish»:" },
-  cat_title: { ru: "Выберите позицию для добавления:", uz: "Qo‘shish uchun mahsulotni tanlang:" },
-  sending: { ru: "Отправляю заказ…", uz: "Buyurtma yuborilmoqda…" },
+  cart_title: { ru: "Соберите заказ: ➖/➕, «➕ Добавить позицию», затем «Оформить».", uz: "Buyurtmani yig‘ing: ➖/➕, «➕ Mahsulot qo‘shish», so‘ng «Rasmiylashtirish»." },
+  cat_title: { ru: "Выберите позицию (показаны только в наличии):", uz: "Mahsulotni tanlang (faqat mavjudlari):" },
+  empty_cart: { ru: "Корзина пуста — добавьте позиции.", uz: "Savat bo‘sh — mahsulot qo‘shing." },
+  sending: { ru: "Отправляю…", uz: "Yuborilmoqda…" },
   order_ok: { ru: "✅ Заказ оформлен. Доставка завтра.", uz: "✅ Buyurtma qabul qilindi. Yetkazish — ertaga." },
   order_err: { ru: (e) => `Не удалось оформить заказ: ${e}`, uz: (e) => `Buyurtma rasmiylashtirilmadi: ${e}` },
   cancelled: { ru: "Хорошо, сегодня без заказа.", uz: "Yaxshi, bugun buyurtmasiz." },
@@ -86,7 +107,7 @@ async function setLang(chatId, lang) { await db.query(`INSERT INTO user_prefs (c
 const askContact = (lang) => ({ reply_markup: { keyboard: [[{ text: t(lang, "share_btn"), request_contact: true }]], resize_keyboard: true, one_time_keyboard: true } });
 const mainMenu = (lang) => ({ reply_markup: { keyboard: [[{ text: t(lang, "menu_order") }], [{ text: t(lang, "menu_myorder") }]], resize_keyboard: true } });
 
-// ---------- Подключение по номеру ----------
+// ---------- Подключение ----------
 async function linkByPhone(chatId, from, phone9, rawPhone, lang) {
   const pts = await db.query("SELECT sd_id, point_name, firm_name, inn, zavsklad_phone FROM point_contacts");
   const myPoints = pts.rows.filter((r) => r.zavsklad_phone && normPhone(r.zavsklad_phone) === phone9);
@@ -102,14 +123,11 @@ async function linkByPhone(chatId, from, phone9, rawPhone, lang) {
      ON CONFLICT (inn) DO UPDATE SET telegram_id=$2,chat_id=$3,phone=$4,firm_name=$5,linked_at=now()`,
     [c.inn, from.id, chatId, rawPhone, c.firm_name]);
   await db.logEvent("onboard_ok", chatId, { points: myPoints.length, chains: myChains.length });
-  const parts = [];
-  if (myPoints.length === 1) parts.push(t(lang, "as_zav_one", myPoints[0].point_name));
-  else if (myPoints.length > 1) parts.push(t(lang, "as_zav_many", myPoints.length, myPoints.map((p) => p.point_name).join(", ")));
-  if (myChains.length) { const inns = myChains.map((c) => c.inn); const cnt = pts.rows.filter((r) => inns.includes(r.inn)).length; parts.push(t(lang, "as_mgr", myChains.map((c) => c.firm_name).join(", "), cnt)); }
-  return { text: t(lang, "linked") + parts.join("; ") + "." + t(lang, "linked_tail"), linked: true };
+  const name = (myPoints[0] && myPoints[0].point_name) || (myChains[0] && myChains[0].firm_name) || "Novagreen";
+  return { text: t(lang, "welcome", name), linked: true };
 }
 
-// ---------- Черновик / каталог / заказ ----------
+// ---------- Черновик / остатки / заказ ----------
 const draftCache = new Map();
 
 async function getPointDraft(sdId, mode) {
@@ -119,30 +137,39 @@ async function getPointDraft(sdId, mode) {
   mine.sort((a, b) => String(b.dateCreate || "").localeCompare(String(a.dateCreate || "")));
   const last = mine[0];
   const meta = { agent: last.agent && last.agent.SD_id, priceType: last.priceType && last.priceType.SD_id, warehouse: (last.store && last.store.SD_id) || (last.warehouse && last.warehouse.SD_id) };
-  let items;
+  let raw;
   if (mode === "repeat") {
-    items = (last.orderProducts || []).filter((op) => op.product && op.product.SD_id && Number(op.quantity) > 0)
+    raw = (last.orderProducts || []).filter((op) => op.product && op.product.SD_id && Number(op.quantity) > 0)
       .map((op) => ({ productSdId: op.product.SD_id, name: op.product.name || op.product.SD_id, qty: Math.max(1, Math.round(Number(op.quantity))) }));
   } else {
     const agg = {};
     for (const o of mine) for (const op of (o.orderProducts || [])) { const p = op.product || {}; if (!p.SD_id) continue; agg[p.SD_id] = agg[p.SD_id] || { name: p.name || p.SD_id, sum: 0 }; agg[p.SD_id].sum += Number(op.quantity) || 0; }
     const days = mine.length;
-    items = Object.entries(agg).map(([id, v]) => ({ productSdId: id, name: v.name, qty: Math.round(v.sum / days) })).filter((it) => it.qty >= 1).sort((a, b) => b.qty - a.qty);
+    raw = Object.entries(agg).map(([id, v]) => ({ productSdId: id, name: v.name, qty: Math.round(v.sum / days) })).filter((it) => it.qty >= 1).sort((a, b) => b.qty - a.qty);
   }
-  return Object.assign({ items }, meta);
+  // Убираем то, чего нет на складе; названия — в примечание.
+  const stock = await getStockMap();
+  const items = [], oos = [];
+  for (const it of raw) { if ((stock[it.productSdId] || 0) > 0) items.push(it); else oos.push(it.name); }
+  return Object.assign({ items, oos }, meta);
 }
 
-async function createOrderFromDraft(sdId, draft) {
-  if (!draft.items.length) throw new Error("пустой список товаров");
-  if (!draft.agent || !draft.priceType || !draft.warehouse) throw new Error("нет агента/прайса/склада в истории — нужен прошлый заказ точки");
+async function createOrderFromDraft(sdId, draft, code) {
+  if (!draft.items.length) throw new Error("список товаров пуст");
+  if (!draft.agent || !draft.priceType || !draft.warehouse) throw new Error("нет агента/прайса/склада — нужен прошлый заказ точки");
   const order = {
-    code_1C: `TGBOT-${sdId}-${todayStr()}`, status: 1, dateShipment: tomorrowStr(),
+    code_1C: code || `TGBOT-${sdId}-${tzToday()}`, status: 1, dateShipment: tzTomorrow(),
     comment: "Заказ оформлен через Telegram-бот",
     client: { SD_id: sdId }, agent: { SD_id: draft.agent }, priceType: { SD_id: draft.priceType }, warehouse: { SD_id: draft.warehouse },
-    orderProducts: draft.items.map((it) => ({ product: { SD_id: it.productSdId }, quantity: Math.max(1, Math.round(it.qty)) })),
+    orderProducts: draft.items.filter((it) => it.qty > 0).map((it) => ({ product: { SD_id: it.productSdId }, quantity: Math.max(1, Math.round(it.qty)) })),
   };
   const resp = await sd.setOrder(order);
-  if (!resp || resp.status !== true) throw new Error((resp && resp.error && resp.error.message) || JSON.stringify(resp || {}).slice(0, 300));
+  if (!resp || resp.status !== true) {
+    console.error("[ЗАКАЗ] Ответ SD:", JSON.stringify(resp));
+    const m = (resp && (resp.error && (resp.error.message || resp.error)) || resp.message || (resp.errors && resp.errors[0] && (resp.errors[0].message || resp.errors[0]))) || "SD отклонил заказ";
+    throw new Error(typeof m === "string" ? m : JSON.stringify(m).slice(0, 200));
+  }
+  _cache.delete("ordersToday");
   return resp;
 }
 
@@ -155,10 +182,17 @@ function draftKeyboard(sdId, lang) {
 }
 async function sendDraft(bot, chatId, tgId, sdId, pointName, lang, mode) {
   const draft = await getPointDraft(sdId, mode);
-  if (!draft || !draft.items.length) { bot.sendMessage(chatId, t(lang, "no_history", pointName || "")); return; }
+  if (!draft) { bot.sendMessage(chatId, t(lang, "no_history", pointName || "")); return; }
+  if (!draft.items.length) {
+    bot.sendMessage(chatId, t(lang, "all_oos", (draft.oos || []).join(", ") || "—"), { reply_markup: { inline_keyboard: [[{ text: t(lang, "btn_new"), callback_data: `new:${sdId}` }]] } });
+    return;
+  }
   draftCache.set(tgId + "|" + sdId, draft);
   const list = draft.items.map((it) => `• ${it.name}: ${it.qty}`).join("\n");
-  bot.sendMessage(chatId, t(lang, "draft_title", pointName || "") + "\n\n" + list + "\n\n" + t(lang, "draft_confirm_hint"), { reply_markup: draftKeyboard(sdId, lang) });
+  let text = t(lang, "draft_title", pointName || "") + "\n\n" + list;
+  if (draft.oos && draft.oos.length) text += "\n\n" + t(lang, "oos_note", draft.oos.join(", "));
+  text += "\n\n" + t(lang, "confirm_hint");
+  bot.sendMessage(chatId, text, { reply_markup: draftKeyboard(sdId, lang) });
 }
 function renderCart(sdId, cart, lang) {
   const rows = cart.items.map((it, i) => ([
@@ -184,6 +218,7 @@ function renderCatalog(sdId, page, lang, catalog) {
   rows.push([{ text: t(lang, "btn_back"), callback_data: `back:${sdId}` }]);
   return { text: t(lang, "cat_title"), reply_markup: { inline_keyboard: rows } };
 }
+const orderItemsText = (o) => (o.orderProducts || []).map((op) => `• ${(op.product && op.product.name) || "?"}: ${op.quantity}`).join("\n") || "—";
 
 async function main() {
   await db.migrate();
@@ -200,7 +235,17 @@ async function main() {
     const links = await db.query("SELECT sd_id, point_name FROM point_links WHERE telegram_id=$1", [fromId]);
     if (!links.rows.length) { bot.sendMessage(chatId, t(lang, "not_linked")); return; }
     bot.sendChatAction(chatId, "typing");
-    for (const l of links.rows) await sendDraft(bot, chatId, fromId, l.sd_id, l.point_name, lang, "avg");
+    const orders = await freshOrdersToday(); // свежо, чтобы поймать заказ агента
+    for (const l of links.rows) {
+      const existing = orders.filter((o) => o.client && o.client.SD_id === l.sd_id && o.status !== 5);
+      if (existing.length) {
+        bot.sendMessage(chatId, t(lang, "already_ordered", l.point_name) + "\n\n" + orderItemsText(existing[0]), {
+          reply_markup: { inline_keyboard: [[{ text: t(lang, "btn_dop"), callback_data: `dop:${l.sd_id}` }], [{ text: t(lang, "btn_cancel"), callback_data: `no:${l.sd_id}` }]] },
+        });
+      } else {
+        await sendDraft(bot, chatId, fromId, l.sd_id, l.point_name, lang, "avg");
+      }
+    }
   }
   async function doMyOrder(chatId, fromId, lang) {
     const links = await db.query("SELECT sd_id, point_name FROM point_links WHERE telegram_id=$1", [fromId]);
@@ -242,6 +287,7 @@ async function main() {
   bot.on("callback_query", async (q) => {
     const chatId = q.message.chat.id;
     const [act, val] = String(q.data || "").split(":");
+    const key = q.from.id + "|" + val;
     try {
       if (act === "lang") { await setLang(chatId, val === "uz" ? "uz" : "ru"); await bot.answerCallbackQuery(q.id); const lang = await getLang(chatId); await bot.sendMessage(chatId, t(lang, "hello"), askContact(lang)); return; }
       const lang = await getLang(chatId);
@@ -250,17 +296,29 @@ async function main() {
       if (act === "rep") { await bot.answerCallbackQuery(q.id); bot.sendChatAction(chatId, "typing"); await sendDraft(bot, chatId, q.from.id, val, "", lang, "repeat"); return; }
       if (act === "new") {
         await bot.answerCallbackQuery(q.id); bot.sendChatAction(chatId, "typing");
-        const base = draftCache.get(q.from.id + "|" + val) || (await getPointDraft(val, "avg"));
-        const cart = base ? { items: base.items.map((it) => ({ ...it })), agent: base.agent, priceType: base.priceType, warehouse: base.warehouse } : null;
-        if (!cart) { await bot.sendMessage(chatId, t(lang, "no_history", "")); return; }
-        draftCache.set(q.from.id + "|" + val, cart);
+        const base = draftCache.get(key) || (await getPointDraft(val, "avg"));
+        if (!base) { await bot.sendMessage(chatId, t(lang, "no_history", "")); return; }
+        const cart = { items: base.items.map((it) => ({ ...it })), agent: base.agent, priceType: base.priceType, warehouse: base.warehouse };
+        draftCache.set(key, cart);
         const v = renderCart(val, cart, lang);
         await bot.editMessageText(v.text, { chat_id: chatId, message_id: q.message.message_id, reply_markup: v.reply_markup });
         return;
       }
+      if (act === "dop") { // дополнительный заказ к уже существующему
+        await bot.answerCallbackQuery(q.id); bot.sendChatAction(chatId, "typing");
+        const orders = await freshOrdersToday();
+        const o = orders.find((x) => x.client && x.client.SD_id === val && x.status !== 5);
+        let meta = o ? { agent: o.agent && o.agent.SD_id, priceType: o.priceType && o.priceType.SD_id, warehouse: (o.store && o.store.SD_id) || (o.warehouse && o.warehouse.SD_id) } : null;
+        if (!meta || !meta.agent) { const d = await getPointDraft(val, "avg"); if (d) meta = { agent: d.agent, priceType: d.priceType, warehouse: d.warehouse }; }
+        const cart = { items: [], agent: meta && meta.agent, priceType: meta && meta.priceType, warehouse: meta && meta.warehouse, code: `TGBOT-${val}-${tzToday()}-${tzHHMM()}` };
+        draftCache.set(key, cart);
+        const v = renderCart(val, cart, lang);
+        await bot.editMessageText(t(lang, "dop_title") + "\n\n" + v.text, { chat_id: chatId, message_id: q.message.message_id, reply_markup: v.reply_markup });
+        return;
+      }
       if (act === "inc" || act === "dec") {
         await bot.answerCallbackQuery(q.id);
-        const idx = Number(String(q.data).split(":")[2]); const cart = draftCache.get(q.from.id + "|" + val);
+        const idx = Number(String(q.data).split(":")[2]); const cart = draftCache.get(key);
         if (!cart || !cart.items[idx]) return;
         cart.items[idx].qty = Math.max(0, cart.items[idx].qty + (act === "inc" ? 1 : -1));
         const v = renderCart(val, cart, lang);
@@ -269,22 +327,21 @@ async function main() {
       }
       if (act === "add") {
         await bot.answerCallbackQuery(q.id); bot.sendChatAction(chatId, "typing");
-        const catalog = await getCatalog();
-        const v = renderCatalog(val, 0, lang, catalog);
+        const v = renderCatalog(val, 0, lang, await getCatalog());
         await bot.editMessageText(v.text, { chat_id: chatId, message_id: q.message.message_id, reply_markup: v.reply_markup });
         return;
       }
       if (act === "cat") {
         await bot.answerCallbackQuery(q.id);
-        const page = Number(String(q.data).split(":")[2]) || 0; const catalog = await getCatalog();
-        const v = renderCatalog(val, page, lang, catalog);
+        const page = Number(String(q.data).split(":")[2]) || 0;
+        const v = renderCatalog(val, page, lang, await getCatalog());
         try { await bot.editMessageText(v.text, { chat_id: chatId, message_id: q.message.message_id, reply_markup: v.reply_markup }); } catch (_) {}
         return;
       }
       if (act === "padd") {
         await bot.answerCallbackQuery(q.id);
         const idx = Number(String(q.data).split(":")[2]); const catalog = await getCatalog(); const prod = catalog[idx];
-        const cart = draftCache.get(q.from.id + "|" + val);
+        const cart = draftCache.get(key);
         if (cart && prod) { const ex = cart.items.find((it) => it.productSdId === prod.SD_id); if (ex) ex.qty += 1; else cart.items.push({ productSdId: prod.SD_id, name: prod.name, qty: 1 }); }
         const v = renderCart(val, cart || { items: [] }, lang);
         await bot.editMessageText(v.text, { chat_id: chatId, message_id: q.message.message_id, reply_markup: v.reply_markup });
@@ -292,20 +349,19 @@ async function main() {
       }
       if (act === "back") {
         await bot.answerCallbackQuery(q.id);
-        const cart = draftCache.get(q.from.id + "|" + val) || { items: [] };
-        const v = renderCart(val, cart, lang);
+        const v = renderCart(val, draftCache.get(key) || { items: [] }, lang);
         await bot.editMessageText(v.text, { chat_id: chatId, message_id: q.message.message_id, reply_markup: v.reply_markup });
         return;
       }
       if (act === "done" || act === "ord") {
         await bot.answerCallbackQuery(q.id, { text: t(lang, "sending") }); bot.sendChatAction(chatId, "typing");
-        let draft = draftCache.get(q.from.id + "|" + val) || (await getPointDraft(val, "avg"));
-        if (act === "done" && draft) draft = { items: draft.items.filter((it) => it.qty > 0), agent: draft.agent, priceType: draft.priceType, warehouse: draft.warehouse };
+        let draft = draftCache.get(key) || (await getPointDraft(val, "avg"));
+        if (act === "done" && draft) draft = { items: draft.items.filter((it) => it.qty > 0), agent: draft.agent, priceType: draft.priceType, warehouse: draft.warehouse, code: draft.code };
         if (!draft) { await bot.editMessageText(t(lang, "order_err", "нет данных"), { chat_id: chatId, message_id: q.message.message_id }); return; }
+        if (!draft.items.length) { await bot.editMessageText(t(lang, "empty_cart"), { chat_id: chatId, message_id: q.message.message_id }); return; }
         try {
-          await createOrderFromDraft(val, draft);
-          await db.logEvent("order_created", chatId, { sdId: val, mode: act });
-          _cache.delete("ordersToday"); // чтобы /myorder сразу увидел заказ
+          await createOrderFromDraft(val, draft, draft.code);
+          await db.logEvent("order_created", chatId, { sdId: val, mode: act, dop: !!draft.code });
           await bot.editMessageText(t(lang, "order_ok"), { chat_id: chatId, message_id: q.message.message_id });
         } catch (e) { console.error("[ЗАКАЗ]", e.message); await bot.editMessageText(t(lang, "order_err", e.message), { chat_id: chatId, message_id: q.message.message_id }); }
         return;
