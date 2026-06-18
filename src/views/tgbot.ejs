@@ -7,13 +7,24 @@
   <link rel="stylesheet" href="/static/style.css">
   <style>
     :root { --brand: <%= settings.brand_color || '#2E7D32' %>; }
-    .wrap { max-width: 820px; margin: 0 auto; padding: 24px; }
+    .wrap { max-width: 860px; margin: 0 auto; padding: 24px; }
     .card { background:#fff; border:1px solid #e3e3e3; border-radius:12px; padding:20px 24px; margin-top:16px; }
     .steps { line-height:1.7; }
-    .btn-dl { display:inline-block; background:var(--brand); color:#fff; text-decoration:none;
-              padding:12px 20px; border-radius:8px; font-weight:600; margin-top:8px; }
+    .btn-dl, .btn-go { display:inline-block; background:var(--brand); color:#fff; text-decoration:none; border:none; cursor:pointer;
+              padding:12px 20px; border-radius:8px; font-weight:600; margin-top:8px; font-size:15px; }
     .muted { color:#666; }
     .note { background:#f6f8f6; border-left:4px solid var(--brand); padding:10px 14px; border-radius:6px; margin-top:14px; }
+    .banner { padding:12px 16px; border-radius:8px; margin-top:16px; }
+    .banner.err { background:#fff2f2; border-left:4px solid #d33; color:#a11; }
+    .banner.ok  { background:#f1f8f1; border-left:4px solid var(--brand); }
+    .warn { background:#fff8e6; border-left:4px solid #e0a800; padding:10px 14px; border-radius:6px; margin-top:12px; }
+    table { width:100%; border-collapse:collapse; margin-top:12px; font-size:14px; }
+    th,td { text-align:left; padding:6px 8px; border-bottom:1px solid #eee; }
+    th { color:#555; font-weight:600; }
+    ul.compact { margin:8px 0 0; padding-left:20px; line-height:1.6; }
+    .stat { display:inline-block; margin-right:18px; }
+    .stat b { font-size:20px; color:var(--brand); }
+    input[type=file] { margin-top:8px; }
   </style>
 </head>
 <body>
@@ -22,34 +33,89 @@
       <% if (settings.logo_file_id) { %><img class="topbar-logo" src="/file/<%= settings.logo_file_id %>" alt=""><% } %>
       <span class="company"><%= settings.company_name %></span>
     </div>
-    <div class="topbar-right">
-      <a class="btn-ghost" href="/">← На главную</a>
-    </div>
+    <div class="topbar-right"><a class="btn-ghost" href="/">← На главную</a></div>
   </header>
 
   <main class="wrap">
     <h2>Бот HoReCa — контакты для напоминаний</h2>
-    <p class="muted">Здесь готовится список номеров, по которым Telegram-бот будет узнавать завскладов точек и менеджеров сетей.</p>
+    <p class="muted">Список номеров, по которым Telegram-бот узнаёт завскладов точек и менеджеров сетей.</p>
 
+    <% if (error) { %><div class="banner err"><%= error %></div><% } %>
+    <% if (result) { %>
+      <div class="banner ok">
+        Сохранено. Точек: <b><%= result.points %></b>, менеджеров сетей: <b><%= result.managers %></b>.
+      </div>
+    <% } %>
+
+    <!-- Шаг 1 -->
     <div class="card">
       <h3>Шаг 1. Скачать форму</h3>
-      <p class="steps">
-        Форма уже заполнена всеми активными HoReCa-точками из SalesDoctor: SD_id, название, контрагент, ИНН и телефон из CRM.
-        Агентам остаётся вписать два номера: <b>телефон завсклада</b> (по точке) и <b>телефон менеджера сети</b> (по контрагенту).
-      </p>
+      <p class="steps">Форма заполнена всеми активными HoReCa-точками. Агентам нужно вписать два номера: телефон завсклада (по точке) и телефон менеджера сети (по контрагенту).</p>
       <a class="btn-dl" href="/tgbot/export">⬇ Скачать форму (Excel)</a>
-      <div class="note">
-        Столбец <b>SD_id</b> не трогать — по нему строки сопоставляются с базой.
-        Менеджер сети у всех точек одного контрагента один и тот же — номер можно повторять, бот сам схлопнет в одну сводку.
-      </div>
+      <div class="note">Столбец <b>SD_id</b> не трогать. Номер менеджера сети у всех точек одного контрагента одинаковый — бот сам схлопнет в одну сводку.</div>
     </div>
 
+    <!-- Шаг 2 -->
     <div class="card">
-      <h3>Шаг 2. Импорт <span class="muted">(скоро)</span></h3>
-      <p class="steps muted">
-        Загрузка заполненного файла с предпросмотром и проверкой появится следующим обновлением.
-      </p>
+      <h3>Шаг 2. Загрузить заполненную форму</h3>
+      <form method="POST" action="/tgbot/import" enctype="multipart/form-data">
+        <input type="file" name="file" accept=".xlsx,.xls" required>
+        <br>
+        <button class="btn-go" type="submit">Проверить файл</button>
+      </form>
+      <p class="muted" style="margin-top:10px;">Сначала покажу, что получится, — сохранение только после подтверждения.</p>
     </div>
+
+    <!-- Превью -->
+    <% if (preview) { %>
+      <div class="card">
+        <h3>Предпросмотр</h3>
+        <div>
+          <span class="stat">Строк в файле: <b><%= preview.summary.totalRows %></b></span>
+          <span class="stat">Точек к записи: <b><%= preview.summary.validPoints %></b></span>
+          <span class="stat">С номером завсклада: <b><%= preview.summary.withZavsklad %></b></span>
+          <span class="stat">Менеджеров сетей: <b><%= preview.summary.managers %></b></span>
+        </div>
+
+        <% if (preview.errors.length) { %>
+          <div class="warn">
+            Пропущено строк: <%= preview.errors.length %> (нет SD_id или ИНН).
+            <ul class="compact"><% preview.errors.slice(0,15).forEach(function(e){ %><li><%= e %></li><% }) %></ul>
+            <% if (preview.errors.length > 15) { %><div class="muted">…и ещё <%= preview.errors.length - 15 %></div><% } %>
+          </div>
+        <% } %>
+
+        <% if (preview.conflicts.length) { %>
+          <div class="warn">
+            Конфликты номеров менеджера:
+            <ul class="compact"><% preview.conflicts.forEach(function(c){ %><li><%= c %></li><% }) %></ul>
+          </div>
+        <% } %>
+
+        <% if (preview.sample.length) { %>
+          <table>
+            <tr><th>Точка</th><th>Контрагент</th><th>ИНН</th><th>Завсклад</th><th>Менеджер сети</th></tr>
+            <% preview.sample.forEach(function(r){ %>
+              <tr>
+                <td><%= r.point_name %></td>
+                <td><%= r.firm_name %></td>
+                <td><%= r.inn %></td>
+                <td><%= r.zavsklad_phone || '—' %></td>
+                <td><%= r.manager_phone || '—' %></td>
+              </tr>
+            <% }) %>
+          </table>
+          <% if (preview.summary.validPoints > preview.sample.length) { %>
+            <p class="muted">Показаны первые <%= preview.sample.length %> из <%= preview.summary.validPoints %>.</p>
+          <% } %>
+        <% } %>
+
+        <form method="POST" action="/tgbot/import/commit" style="margin-top:16px;">
+          <input type="hidden" name="payload" value="<%= preview.payload %>">
+          <button class="btn-go" type="submit">✓ Подтвердить и сохранить</button>
+        </form>
+      </div>
+    <% } %>
   </main>
 </body>
 </html>
