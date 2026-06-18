@@ -118,4 +118,9 @@ async function resolveCategoryId(name) {
   return found ? found.SD_id : null;
 }
 
-module.exports = { login, call, post, getAuth, listFrom, fetchAll, resolveCategoryId, SD_URL };
+// Создать/обновить заказ (заявку). orderObj — один заказ.
+async function setOrder(orderObj) {
+  return call("setOrder", undefined, { order: [orderObj] });
+}
+
+module.exports = { login, call, post, getAuth, listFrom, fetchAll, resolveCategoryId, setOrder, SD_URL };

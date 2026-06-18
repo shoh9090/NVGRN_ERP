@@ -70,3 +70,10 @@ CREATE TABLE IF NOT EXISTS manager_links (
   firm_name   TEXT,
   linked_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Язык пользователя бота (ru / uz).
+CREATE TABLE IF NOT EXISTS user_prefs (
+  chat_id    BIGINT PRIMARY KEY,
+  lang       TEXT NOT NULL DEFAULT 'ru',
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
