@@ -39,16 +39,64 @@ async function ensureTables() {
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_by    TEXT
   )`);
+  await db.pool.query(`CREATE TABLE IF NOT EXISTS tgbot.bot_settings (
+    id              INT PRIMARY KEY DEFAULT 1,
+    reminder_times  TEXT NOT NULL DEFAULT '18:00,21:00,23:00',
+    deadline        TEXT NOT NULL DEFAULT '00:00',
+    avg_window_days INT NOT NULL DEFAULT 14,
+    enabled         BOOLEAN NOT NULL DEFAULT true,
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by      TEXT
+  )`);
+  await db.pool.query(`INSERT INTO tgbot.bot_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING`);
+}
+
+const DEFAULT_BOT_SETTINGS = { reminder_times: '18:00,21:00,23:00', deadline: '00:00', avg_window_days: 14, enabled: true };
+async function getBotSettings() {
+  await ensureTables();
+  const r = await db.pool.query('SELECT reminder_times, deadline, avg_window_days, enabled FROM tgbot.bot_settings WHERE id=1');
+  return r.rows[0] || DEFAULT_BOT_SETTINGS;
+}
+function normTimes(str) {
+  return String(str || '').split(',').map((x) => x.trim()).filter(Boolean).map((x) => {
+    const m = x.match(/^(\d{1,2}):(\d{2})$/); if (!m) return null;
+    const h = Math.min(23, Number(m[1])), mi = Math.min(59, Number(m[2]));
+    return String(h).padStart(2, '0') + ':' + String(mi).padStart(2, '0');
+  }).filter(Boolean);
 }
 
 const cleanPhone = (v) => String(v || '').replace(/[^\d+]/g, '').trim();
 const render = (res, req, settings, extra) =>
-  res.render('tgbot', Object.assign({ settings, user: req.user, preview: null, result: null, error: null }, extra));
+  res.render('tgbot', Object.assign({ settings, user: req.user, preview: null, result: null, error: null,
+    botSettings: DEFAULT_BOT_SETTINGS, settingsSaved: false }, extra));
 
 // Страница плитки.
 router.get('/', async (req, res) => {
   const settings = await db.getSettings();
-  render(res, req, settings, {});
+  const botSettings = await getBotSettings();
+  render(res, req, settings, { botSettings });
+});
+
+// Сохранение настроек напоминаний (только РОП/админ).
+router.post('/settings', async (req, res) => {
+  const settings = await db.getSettings();
+  try {
+    await ensureTables();
+    const times = normTimes(req.body.reminder_times).join(',');
+    const deadline = normTimes(req.body.deadline)[0] || '00:00';
+    let win = parseInt(req.body.avg_window_days, 10); if (!(win >= 1 && win <= 60)) win = 14;
+    const enabled = ['on', 'true', '1'].includes(String(req.body.enabled));
+    await db.pool.query(
+      `UPDATE tgbot.bot_settings SET reminder_times=$1, deadline=$2, avg_window_days=$3, enabled=$4, updated_at=now(), updated_by=$5 WHERE id=1`,
+      [times, deadline, win, enabled, String(req.user.id)]
+    );
+    await db.log(req.user.id, 'tgbot_settings', `times=${times} deadline=${deadline} window=${win} enabled=${enabled}`);
+    const botSettings = await getBotSettings();
+    render(res, req, settings, { botSettings, settingsSaved: true });
+  } catch (e) {
+    const botSettings = await getBotSettings().catch(() => DEFAULT_BOT_SETTINGS);
+    render(res, req, settings, { botSettings, error: 'Не удалось сохранить настройки: ' + e.message });
+  }
 });
 
 // Экспорт готовой формы: активные HoReCa-точки + два столбца для номеров.
@@ -127,7 +175,8 @@ router.post('/import', upload.single('file'), async (req, res) => {
       managers: managers.length,
     };
     const payload = Buffer.from(JSON.stringify({ valid, managers })).toString('base64');
-    render(res, req, settings, { preview: { summary, errors, conflicts, sample: valid.slice(0, 20), payload } });
+    const botSettings = await getBotSettings();
+    render(res, req, settings, { botSettings, preview: { summary, errors, conflicts, sample: valid.slice(0, 20), payload } });
   } catch (e) {
     render(res, req, settings, { error: 'Не удалось прочитать файл: ' + e.message });
   }
@@ -145,7 +194,7 @@ router.post('/import/commit', async (req, res) => {
         `INSERT INTO tgbot.point_contacts (sd_id, point_name, firm_name, inn, zavsklad_phone, updated_at, updated_by)
          VALUES ($1,$2,$3,$4,$5,now(),$6)
          ON CONFLICT (sd_id) DO UPDATE SET point_name=$2, firm_name=$3, inn=$4,
-           zavsklad_phone=COALESCE(NULLIF($5,''), tgbot.point_contacts.zavsklad_phone),
+           zavsklad_phone=$5,
            updated_at=now(), updated_by=$6`,
         [p.sd_id, p.point_name, p.firm_name, p.inn, p.zavsklad_phone, String(req.user.id)]
       );
@@ -161,7 +210,8 @@ router.post('/import/commit', async (req, res) => {
       mgrs++;
     }
     await db.log(req.user.id, 'tgbot_import', `точек ${pts}, менеджеров ${mgrs}`);
-    render(res, req, settings, { result: { points: pts, managers: mgrs } });
+    const botSettings = await getBotSettings();
+    render(res, req, settings, { botSettings, result: { points: pts, managers: mgrs } });
   } catch (e) {
     render(res, req, settings, { error: 'Не удалось сохранить: ' + e.message });
   }
