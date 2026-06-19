@@ -47,6 +47,23 @@
       </div>
     <% } %>
 
+    <!-- Настройки напоминаний (РОП) -->
+    <div class="card">
+      <h3>Настройки напоминаний</h3>
+      <% if (settingsSaved) { %><div class="banner ok">Настройки сохранены. Бот применит их в течение минуты.</div><% } %>
+      <form method="POST" action="/tgbot/settings">
+        <p>Времена напоминаний (через запятую, по Ташкенту):<br>
+          <input type="text" name="reminder_times" value="<%= botSettings.reminder_times %>" style="width:260px" placeholder="18:00,21:00,23:00"></p>
+        <p>Дедлайн — после этого времени не напоминать:<br>
+          <input type="text" name="deadline" value="<%= botSettings.deadline %>" style="width:120px" placeholder="00:00"></p>
+        <p>Окно усреднения заказа (дней):<br>
+          <input type="number" name="avg_window_days" min="1" max="60" value="<%= botSettings.avg_window_days %>" style="width:90px"></p>
+        <p><label><input type="checkbox" name="enabled" <%= botSettings.enabled ? 'checked' : '' %>> Напоминания включены</label></p>
+        <button class="btn-go" type="submit">Сохранить настройки</button>
+      </form>
+      <div class="note">Формат времени — ЧЧ:ММ. Заказ сегодня → доставка завтра. Дедлайн 00:00 = без отдельного ограничения, напоминают только в указанные времена.</div>
+    </div>
+
     <!-- Шаг 1 -->
     <div class="card">
       <h3>Шаг 1. Скачать форму</h3>
