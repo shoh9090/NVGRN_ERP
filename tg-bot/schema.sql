@@ -94,3 +94,30 @@ FROM point_links
 WHERE telegram_id IS NOT NULL
 ORDER BY telegram_id, linked_at DESC NULLS LAST
 ON CONFLICT (telegram_id) DO NOTHING;
+
+-- Настройки напоминаний (РОП меняет в плитке; бот читает отсюда).
+CREATE TABLE IF NOT EXISTS bot_settings (
+  id              INT PRIMARY KEY DEFAULT 1,
+  reminder_times  TEXT NOT NULL DEFAULT '18:00,21:00,23:00',
+  deadline        TEXT NOT NULL DEFAULT '00:00',
+  avg_window_days INT NOT NULL DEFAULT 14,
+  enabled         BOOLEAN NOT NULL DEFAULT true,
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_by      TEXT
+);
+INSERT INTO bot_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
+-- «Не сегодня»: глушим напоминания по точке до конца дня.
+CREATE TABLE IF NOT EXISTS reminder_skips (
+  sd_id TEXT NOT NULL,
+  rdate DATE NOT NULL,
+  PRIMARY KEY (sd_id, rdate)
+);
+-- Чтобы не слать одно и то же напоминание дважды в один слот.
+CREATE TABLE IF NOT EXISTS reminder_log (
+  sd_id   TEXT NOT NULL,
+  rdate   DATE NOT NULL,
+  slot    TEXT NOT NULL,
+  sent_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (sd_id, rdate, slot)
+);

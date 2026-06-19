@@ -10,6 +10,7 @@ const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const ADMIN_TG_ID = process.env.ADMIN_TG_ID;
 const WINDOW_DAYS = Number(process.env.AVG_WINDOW_DAYS || 14);
 const TZ_OFFSET_MS = 5 * 3600 * 1000; // Asia/Tashkent = UTC+5
+let botCfg = { times: ["18:00", "21:00", "23:00"], deadline: "00:00", window: WINDOW_DAYS, enabled: true };
 
 if (!TOKEN) { console.error("[СТАРТ] Нет TELEGRAM_BOT_TOKEN."); process.exit(1); }
 if (!process.env.DATABASE_URL) { console.error("[СТАРТ] Нет DATABASE_URL."); process.exit(1); }
@@ -53,7 +54,7 @@ const getStockData = () => cached("stock", 300000, async () => {
 const getCatalog = async () => (await getStockData()).catalog;
 const getStockMap = async () => (await getStockData()).map;
 const getOrders14 = () => cached("orders14", 600000, () => {
-  const to = tzToday(), from = new Date(Date.now() + TZ_OFFSET_MS - WINDOW_DAYS * 86400000).toISOString().slice(0, 10);
+  const to = tzToday(), from = new Date(Date.now() + TZ_OFFSET_MS - botCfg.window * 86400000).toISOString().slice(0, 10);
   return sd.fetchAll("getOrder", { filter: { period: { date: { from, to } }, status: [1, 2, 3, 4] } });
 });
 const getOrdersToday = () => cached("ordersToday", 120000, () => {
@@ -62,6 +63,18 @@ const getOrdersToday = () => cached("ordersToday", 120000, () => {
 });
 const freshOrdersToday = () => { _cache.delete("ordersToday"); return getOrdersToday(); };
 const getClientsAll = () => cached("clients", 600000, () => sd.fetchAll("getClient", {}));
+async function reloadCfg() {
+  try {
+    const r = await db.query("SELECT reminder_times, deadline, avg_window_days, enabled FROM bot_settings WHERE id=1");
+    if (r.rows[0]) {
+      const s = r.rows[0];
+      const times = String(s.reminder_times || "").split(",").map((x) => x.trim()).filter(Boolean);
+      const win = Number(s.avg_window_days) || WINDOW_DAYS;
+      if (win !== botCfg.window) _cache.delete("orders14");
+      botCfg = { times, deadline: s.deadline || "00:00", window: win, enabled: s.enabled !== false };
+    }
+  } catch (e) { console.warn("[НАСТРОЙКИ]", e.message); }
+}
 
 // ---------- Личность по номеру (Вариант Б) ----------
 async function phone9OfUser(tgId) { const r = await db.query("SELECT phone9 FROM tg_users WHERE telegram_id=$1", [tgId]); return r.rows[0] && r.rows[0].phone9; }
@@ -105,6 +118,7 @@ const STR = {
   myorder_head: { ru: "Ваш заказ на сегодня:", uz: "Bugungi buyurtmangiz:" },
   menu_order: { ru: "🛒 Заказать", uz: "🛒 Buyurtma berish" },
   menu_myorder: { ru: "📦 Мой заказ", uz: "📦 Buyurtmam" },
+  reminder_lead: { ru: "🔔 Напоминание: вы ещё не оформили заказ на завтра.", uz: "🔔 Eslatma: ertangi buyurtmani hali bermadingiz." },
   status_names: { ru: { 1: "Новый", 2: "Отправлен", 3: "Доставлен", 4: "Закрыт", 5: "Отменён" }, uz: { 1: "Yangi", 2: "Jo‘natildi", 3: "Yetkazildi", 4: "Yopildi", 5: "Bekor qilindi" } },
 };
 function t(lang, key, ...a) { const e = STR[key] && (STR[key][lang] || STR[key].ru); return typeof e === "function" ? e(...a) : e; }
@@ -236,6 +250,59 @@ async function main() {
   setInterval(warmStock, 240000); // каждые 4 мин (TTL 5 мин)
   setInterval(() => { _cache.delete("orders14"); getOrders14().catch(() => {}); }, 540000); // каждые 9 мин
 
+  // ---- Планировщик напоминаний (времена берём из настроек плитки) ----
+  await reloadCfg();
+  let lastSlot = "";
+  async function runReminderPass(slot) {
+    const orders = await freshOrdersToday();
+    const ordered = new Set(orders.filter((o) => o.status !== 5).map((o) => o.client && o.client.SD_id).filter(Boolean));
+    const date = tzToday();
+    const users = (await db.query("SELECT telegram_id, chat_id, phone9 FROM tg_users WHERE chat_id IS NOT NULL AND coalesce(phone9,'') <> ''")).rows;
+    let sent = 0;
+    for (const u of users) {
+      const points = await pointsByPhone9(u.phone9);
+      if (!points.length) continue;
+      const lang = await getLang(u.chat_id);
+      for (const pt of points) {
+        if (ordered.has(pt.sd_id)) continue;
+        const sk = await db.query("SELECT 1 FROM reminder_skips WHERE sd_id=$1 AND rdate=$2", [pt.sd_id, date]);
+        if (sk.rows.length) continue;
+        const lg = await db.query("SELECT 1 FROM reminder_log WHERE sd_id=$1 AND rdate=$2 AND slot=$3", [pt.sd_id, date, slot]);
+        if (lg.rows.length) continue;
+        try {
+          await bot.sendMessage(u.chat_id, t(lang, "reminder_lead"));
+          await sendDraft(bot, u.chat_id, u.telegram_id, pt.sd_id, pt.point_name || pt.firm_name || "", lang, "avg");
+          await db.query("INSERT INTO reminder_log (sd_id,rdate,slot) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING", [pt.sd_id, date, slot]);
+          sent++;
+        } catch (e) { console.warn("[НАПОМИНАНИЕ→]", u.chat_id, e.message); }
+        await new Promise((r) => setTimeout(r, 120));
+      }
+    }
+    return sent;
+  }
+  async function schedulerTick() {
+    try {
+      await reloadCfg();
+      if (!botCfg.enabled || !botCfg.times.length) return;
+      const hhmm = tzNow().toISOString().slice(11, 16);
+      if (botCfg.deadline && botCfg.deadline !== "00:00" && hhmm >= botCfg.deadline) return;
+      if (!botCfg.times.includes(hhmm)) return;
+      const slotKey = tzToday() + " " + hhmm;
+      if (lastSlot === slotKey) return;
+      lastSlot = slotKey;
+      const n = await runReminderPass(hhmm);
+      console.log(`[НАПОМИНАНИЕ] Слот ${hhmm}: отправлено ${n}.`);
+    } catch (e) { console.error("[ПЛАНИРОВЩИК]", e.message); }
+  }
+  setInterval(schedulerTick, 60000);
+
+  bot.onText(/\/remindnow/, async (msg) => {
+    if (!isAdmin(msg.chat.id)) { bot.sendMessage(msg.chat.id, "Только админ."); return; }
+    bot.sendMessage(msg.chat.id, "Запускаю рассылку напоминаний…");
+    try { const n = await runReminderPass("manual-" + tzHHMM()); bot.sendMessage(msg.chat.id, `Готово, отправлено: ${n}.`); }
+    catch (e) { bot.sendMessage(msg.chat.id, "Ошибка: " + e.message); }
+  });
+
   async function doZakaz(chatId, fromId, lang) {
     const points = await pointsOfUser(fromId);
     if (!points.length) { bot.sendMessage(chatId, t(lang, "not_linked")); return; }
@@ -298,7 +365,12 @@ async function main() {
       if (act === "lang") { await setLang(chatId, val === "uz" ? "uz" : "ru"); await bot.answerCallbackQuery(q.id); const lang = await getLang(chatId); await bot.sendMessage(chatId, t(lang, "hello"), askContact(lang)); return; }
       const lang = await getLang(chatId);
       if (act === "noop") { await bot.answerCallbackQuery(q.id); return; }
-      if (act === "no") { await bot.answerCallbackQuery(q.id); await bot.editMessageText(t(lang, "cancelled"), { chat_id: chatId, message_id: q.message.message_id }); return; }
+      if (act === "no") {
+        await bot.answerCallbackQuery(q.id);
+        try { await db.query("INSERT INTO reminder_skips (sd_id,rdate) VALUES ($1,$2) ON CONFLICT DO NOTHING", [val, tzToday()]); } catch (_) {}
+        await bot.editMessageText(t(lang, "cancelled"), { chat_id: chatId, message_id: q.message.message_id });
+        return;
+      }
       if (act === "rep") { await bot.answerCallbackQuery(q.id); bot.sendChatAction(chatId, "typing"); await sendDraft(bot, chatId, q.from.id, val, "", lang, "repeat"); return; }
       if (act === "new") {
         await bot.answerCallbackQuery(q.id); bot.sendChatAction(chatId, "typing");
