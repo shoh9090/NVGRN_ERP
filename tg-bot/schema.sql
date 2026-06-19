@@ -77,3 +77,20 @@ CREATE TABLE IF NOT EXISTS user_prefs (
   lang       TEXT NOT NULL DEFAULT 'ru',
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Вариант Б: личность пользователя = его номер; точки определяем на лету из point_contacts.
+CREATE TABLE IF NOT EXISTS tg_users (
+  telegram_id BIGINT PRIMARY KEY,
+  chat_id     BIGINT,
+  phone       TEXT,
+  phone9      TEXT,
+  linked_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- Бэкфилл из старых привязок, чтобы уже подключённые тестеры не переподключались.
+INSERT INTO tg_users (telegram_id, chat_id, phone, phone9)
+SELECT DISTINCT ON (telegram_id) telegram_id, chat_id, phone,
+       right(regexp_replace(coalesce(phone,''),'[^0-9]','','g'),9)
+FROM point_links
+WHERE telegram_id IS NOT NULL
+ORDER BY telegram_id, linked_at DESC NULLS LAST
+ON CONFLICT (telegram_id) DO NOTHING;

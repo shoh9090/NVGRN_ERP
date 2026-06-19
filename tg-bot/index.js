@@ -1,4 +1,5 @@
-// Бот Novagreen. Подключение, заказ из черновика, меню, каталог, остатки, дедуп, RU/UZ.
+// Бот Novagreen. Личность = номер (точки определяются на лету из point_contacts).
+// Заказ из черновика, меню, каталог по остаткам, дедуп + доп.заказ, RU/UZ, прогрев кэша.
 
 require("dotenv").config();
 const TelegramBot = require("node-telegram-bot-api");
@@ -8,18 +9,18 @@ const sd = require("./salesdoctor");
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const ADMIN_TG_ID = process.env.ADMIN_TG_ID;
 const WINDOW_DAYS = Number(process.env.AVG_WINDOW_DAYS || 14);
-const TZ_OFFSET_MS = 5 * 3600 * 1000; // Asia/Tashkent = UTC+5, без перевода часов
+const TZ_OFFSET_MS = 5 * 3600 * 1000; // Asia/Tashkent = UTC+5
 
 if (!TOKEN) { console.error("[СТАРТ] Нет TELEGRAM_BOT_TOKEN."); process.exit(1); }
 if (!process.env.DATABASE_URL) { console.error("[СТАРТ] Нет DATABASE_URL."); process.exit(1); }
 
 const isAdmin = (id) => ADMIN_TG_ID && String(id) === String(ADMIN_TG_ID);
-// Даты считаем по Ташкенту, иначе ночью «сегодня» уезжает на вчера.
 const tzNow = () => new Date(Date.now() + TZ_OFFSET_MS);
 const tzToday = () => tzNow().toISOString().slice(0, 10);
 const tzTomorrow = () => new Date(Date.now() + TZ_OFFSET_MS + 86400000).toISOString().slice(0, 10);
 const tzHHMM = () => tzNow().toISOString().slice(11, 16).replace(":", "");
 function normPhone(v) { const d = String(v || "").replace(/\D/g, ""); return d.length > 9 ? d.slice(-9) : d; }
+const PH9 = (col) => `right(regexp_replace(coalesce(${col},''),'[^0-9]','','g'),9)`;
 
 // ---------- Кэш ----------
 const _cache = new Map();
@@ -36,7 +37,6 @@ const getHorecaProdCat = () => cached("prodcat_horeca", 3600000, async () => {
   if (!h) console.warn("[КАТАЛОГ] Товарная категория «Horeca» не найдена — каталог будет общим.");
   return h ? h.SD_id : null;
 });
-// Остатки + каталог (только Horeca, только то, что есть на складе).
 const getStockData = () => cached("stock", 300000, async () => {
   const catId = await getHorecaProdCat();
   const whs = await sd.fetchAll("getStock", catId ? { category: { SD_id: catId } } : {});
@@ -63,6 +63,12 @@ const getOrdersToday = () => cached("ordersToday", 120000, () => {
 const freshOrdersToday = () => { _cache.delete("ordersToday"); return getOrdersToday(); };
 const getClientsAll = () => cached("clients", 600000, () => sd.fetchAll("getClient", {}));
 
+// ---------- Личность по номеру (Вариант Б) ----------
+async function phone9OfUser(tgId) { const r = await db.query("SELECT phone9 FROM tg_users WHERE telegram_id=$1", [tgId]); return r.rows[0] && r.rows[0].phone9; }
+async function pointsByPhone9(p9) { if (!p9) return []; const r = await db.query(`SELECT sd_id, point_name, firm_name FROM point_contacts WHERE ${PH9("zavsklad_phone")}=$1`, [p9]); return r.rows; }
+async function chainsByPhone9(p9) { if (!p9) return []; const r = await db.query(`SELECT inn, firm_name FROM chain_managers WHERE ${PH9("manager_phone")}=$1`, [p9]); return r.rows; }
+async function pointsOfUser(tgId) { return pointsByPhone9(await phone9OfUser(tgId)); }
+
 // ---------- Языки ----------
 const STR = {
   choose_lang: { ru: "Выберите язык / Tilni tanlang:", uz: "Tilni tanlang / Выберите язык:" },
@@ -74,7 +80,7 @@ const STR = {
   welcome: { ru: (n) => `Спасибо, что подключились к нашему чат-боту, «${n}». Рады, что вы с нами!`, uz: (n) => `Chat-botimizga ulanganingiz uchun rahmat, «${n}». Siz bilan ekanimizdan xursandmiz!` },
   not_linked: { ru: "Вы ещё не подключены. Отправьте /start.", uz: "Siz ulanmagansiz. /start yuboring." },
   no_history: { ru: (p) => `По точке «${p}» нет истории — соберите заказ вручную: «🆕 Новый заказ».`, uz: (p) => `«${p}» bo‘yicha tarix yo‘q. Qo‘lda yig‘ing: «🆕 Yangi buyurtma».` },
-  all_oos: { ru: (l) => `Сегодня ваших обычных позиций нет в наличии: ${l}.\nМожно собрать вручную:`, uz: (l) => `Bugun odatdagi mahsulotlaringiz yo‘q: ${l}.\nQo‘lda yig‘ish mumkin:` },
+  all_oos: { ru: (l) => `Сегодня ваших обычных позиций нет в наличии: ${l}.\nМожно собрать вручную:`, uz: (l) => `Bugun odatdagi mahsulotlar yo‘q: ${l}.\nQo‘lda yig‘ish mumkin:` },
   draft_title: { ru: (p) => `Заказ на завтра для «${p}». Обычно вы заказываете:`, uz: (p) => `«${p}» uchun ertangi buyurtma. Odatda:` },
   oos_note: { ru: (l) => `⚠️ Сегодня нет в наличии: ${l}`, uz: (l) => `⚠️ Bugun mavjud emas: ${l}` },
   confirm_hint: { ru: "Подтвердить?", uz: "Tasdiqlaysizmi?" },
@@ -92,7 +98,7 @@ const STR = {
   cat_title: { ru: "Выберите позицию (показаны только в наличии):", uz: "Mahsulotni tanlang (faqat mavjudlari):" },
   empty_cart: { ru: "Корзина пуста — добавьте позиции.", uz: "Savat bo‘sh — mahsulot qo‘shing." },
   sending: { ru: "Отправляю…", uz: "Yuborilmoqda…" },
-  order_ok: { ru: "✅ Заказ оформлен. Доставка завтра.", uz: "✅ Buyurtma qabul qilindi. Yetkazish — ertaga." },
+  order_ok: { ru: "Спасибо за сотрудничество с нами! 🌿\nВаш заказ принят и будет доставлен завтра.\nЕсли есть вопросы — свяжитесь с вашим менеджером.", uz: "Hamkorligingiz uchun rahmat! 🌿\nBuyurtmangiz qabul qilindi va ertaga yetkaziladi.\nSavollaringiz bo‘lsa — menejeringizga murojaat qiling." },
   order_err: { ru: (e) => `Не удалось оформить заказ: ${e}`, uz: (e) => `Buyurtma rasmiylashtirilmadi: ${e}` },
   cancelled: { ru: "Хорошо, сегодня без заказа.", uz: "Yaxshi, bugun buyurtmasiz." },
   myorder_none: { ru: "На сегодня заказа пока нет.", uz: "Bugun buyurtma yo‘q." },
@@ -106,24 +112,17 @@ async function getLang(chatId) { const r = await db.query("SELECT lang FROM user
 async function setLang(chatId, lang) { await db.query(`INSERT INTO user_prefs (chat_id,lang,updated_at) VALUES ($1,$2,now()) ON CONFLICT (chat_id) DO UPDATE SET lang=$2, updated_at=now()`, [chatId, lang]); }
 const askContact = (lang) => ({ reply_markup: { keyboard: [[{ text: t(lang, "share_btn"), request_contact: true }]], resize_keyboard: true, one_time_keyboard: true } });
 const mainMenu = (lang) => ({ reply_markup: { keyboard: [[{ text: t(lang, "menu_order") }], [{ text: t(lang, "menu_myorder") }]], resize_keyboard: true } });
+const statusName = (s, lang) => (STR.status_names[lang] || STR.status_names.ru)[s] || s;
 
-// ---------- Подключение ----------
-async function linkByPhone(chatId, from, phone9, rawPhone, lang) {
-  const pts = await db.query("SELECT sd_id, point_name, firm_name, inn, zavsklad_phone FROM point_contacts");
-  const myPoints = pts.rows.filter((r) => r.zavsklad_phone && normPhone(r.zavsklad_phone) === phone9);
-  const mgr = await db.query("SELECT inn, firm_name, manager_phone FROM chain_managers");
-  const myChains = mgr.rows.filter((r) => r.manager_phone && normPhone(r.manager_phone) === phone9);
-  if (!myPoints.length && !myChains.length) { await db.logEvent("onboard_nomatch", chatId, { phone: phone9 }); return { text: t(lang, "no_match"), linked: false }; }
-  for (const p of myPoints) await db.query(
-    `INSERT INTO point_links (sd_id,telegram_id,chat_id,phone,point_name,firm_name,linked_at) VALUES ($1,$2,$3,$4,$5,$6,now())
-     ON CONFLICT (sd_id) DO UPDATE SET telegram_id=$2,chat_id=$3,phone=$4,point_name=$5,firm_name=$6,linked_at=now()`,
-    [p.sd_id, from.id, chatId, rawPhone, p.point_name, p.firm_name]);
-  for (const c of myChains) await db.query(
-    `INSERT INTO manager_links (inn,telegram_id,chat_id,phone,firm_name,linked_at) VALUES ($1,$2,$3,$4,$5,now())
-     ON CONFLICT (inn) DO UPDATE SET telegram_id=$2,chat_id=$3,phone=$4,firm_name=$5,linked_at=now()`,
-    [c.inn, from.id, chatId, rawPhone, c.firm_name]);
-  await db.logEvent("onboard_ok", chatId, { points: myPoints.length, chains: myChains.length });
-  const name = (myPoints[0] && myPoints[0].point_name) || (myChains[0] && myChains[0].firm_name) || "Novagreen";
+// ---------- Онбординг (Вариант Б): запоминаем номер, точки выводим на лету ----------
+async function onboard(chatId, from, phone9, rawPhone, lang) {
+  await db.query(`INSERT INTO tg_users (telegram_id,chat_id,phone,phone9,linked_at) VALUES ($1,$2,$3,$4,now())
+    ON CONFLICT (telegram_id) DO UPDATE SET chat_id=$2, phone=$3, phone9=$4, linked_at=now()`, [from.id, chatId, rawPhone, phone9]);
+  const points = await pointsByPhone9(phone9);
+  const chains = await chainsByPhone9(phone9);
+  if (!points.length && !chains.length) { await db.logEvent("onboard_nomatch", chatId, { phone: phone9 }); return { text: t(lang, "no_match"), linked: false }; }
+  await db.logEvent("onboard_ok", chatId, { points: points.length, chains: chains.length });
+  const name = (points[0] && (points[0].point_name || points[0].firm_name)) || (chains[0] && chains[0].firm_name) || "Novagreen";
   return { text: t(lang, "welcome", name), linked: true };
 }
 
@@ -147,7 +146,6 @@ async function getPointDraft(sdId, mode) {
     const days = mine.length;
     raw = Object.entries(agg).map(([id, v]) => ({ productSdId: id, name: v.name, qty: Math.round(v.sum / days) })).filter((it) => it.qty >= 1).sort((a, b) => b.qty - a.qty);
   }
-  // Убираем то, чего нет на складе; названия — в примечание.
   const stock = await getStockMap();
   const items = [], oos = [];
   for (const it of raw) { if ((stock[it.productSdId] || 0) > 0) items.push(it); else oos.push(it.name); }
@@ -231,36 +229,44 @@ async function main() {
     { command: "start", description: "Старт / язык" },
   ]).catch(() => {});
 
+  // Прогрев кэша: каталог/остатки и история всегда «горячие», чтобы «Добавить» открывалось мгновенно.
+  const warmStock = async () => { try { _cache.delete("stock"); await getStockData(); } catch (e) { console.warn("[ПРОГРЕВ stock]", e.message); } };
+  getHorecaProdCat().catch(() => {});
+  warmStock(); getOrders14().catch(() => {});
+  setInterval(warmStock, 240000); // каждые 4 мин (TTL 5 мин)
+  setInterval(() => { _cache.delete("orders14"); getOrders14().catch(() => {}); }, 540000); // каждые 9 мин
+
   async function doZakaz(chatId, fromId, lang) {
-    const links = await db.query("SELECT sd_id, point_name FROM point_links WHERE telegram_id=$1", [fromId]);
-    if (!links.rows.length) { bot.sendMessage(chatId, t(lang, "not_linked")); return; }
+    const points = await pointsOfUser(fromId);
+    if (!points.length) { bot.sendMessage(chatId, t(lang, "not_linked")); return; }
     bot.sendChatAction(chatId, "typing");
-    const orders = await freshOrdersToday(); // свежо, чтобы поймать заказ агента
-    for (const l of links.rows) {
+    const orders = await freshOrdersToday();
+    for (const l of points) {
+      const name = l.point_name || l.firm_name || "";
       const existing = orders.filter((o) => o.client && o.client.SD_id === l.sd_id && o.status !== 5);
       if (existing.length) {
-        bot.sendMessage(chatId, t(lang, "already_ordered", l.point_name) + "\n\n" + orderItemsText(existing[0]), {
+        bot.sendMessage(chatId, t(lang, "already_ordered", name) + "\n\n" + orderItemsText(existing[0]), {
           reply_markup: { inline_keyboard: [[{ text: t(lang, "btn_dop"), callback_data: `dop:${l.sd_id}` }], [{ text: t(lang, "btn_cancel"), callback_data: `no:${l.sd_id}` }]] },
         });
       } else {
-        await sendDraft(bot, chatId, fromId, l.sd_id, l.point_name, lang, "avg");
+        await sendDraft(bot, chatId, fromId, l.sd_id, name, lang, "avg");
       }
     }
   }
   async function doMyOrder(chatId, fromId, lang) {
-    const links = await db.query("SELECT sd_id, point_name FROM point_links WHERE telegram_id=$1", [fromId]);
-    if (!links.rows.length) { bot.sendMessage(chatId, t(lang, "not_linked")); return; }
+    const points = await pointsOfUser(fromId);
+    if (!points.length) { bot.sendMessage(chatId, t(lang, "not_linked")); return; }
     bot.sendChatAction(chatId, "typing");
     try {
       const orders = await getOrdersToday();
-      const lines = links.rows.map((l) => {
+      const blocks = [];
+      for (const l of points) {
+        const name = l.point_name || l.firm_name || "";
         const mine = orders.filter((o) => o.client && o.client.SD_id === l.sd_id);
-        if (!mine.length) return `• ${l.point_name}: —`;
-        const st = (STR.status_names[lang] || STR.status_names.ru)[mine[0].status] || mine[0].status;
-        return `• ${l.point_name}: ${st}`;
-      });
-      const any = lines.some((x) => !x.endsWith(": —"));
-      bot.sendMessage(chatId, any ? t(lang, "myorder_head") + "\n" + lines.join("\n") : t(lang, "myorder_none"));
+        if (!mine.length) continue;
+        for (const o of mine) blocks.push(`📍 ${name} — ${statusName(o.status, lang)}\n${orderItemsText(o)}`);
+      }
+      bot.sendMessage(chatId, blocks.length ? t(lang, "myorder_head") + "\n\n" + blocks.join("\n\n") : t(lang, "myorder_none"));
     } catch (e) { bot.sendMessage(chatId, "Ошибка: " + e.message); }
   }
 
@@ -279,7 +285,7 @@ async function main() {
     const phone9 = normPhone(c.phone_number);
     if (!phone9) { bot.sendMessage(chatId, t(lang, "bad_phone"), askContact(lang)); return; }
     try {
-      const res = await linkByPhone(chatId, msg.from, phone9, c.phone_number, lang);
+      const res = await onboard(chatId, msg.from, phone9, c.phone_number, lang);
       bot.sendMessage(chatId, res.text, res.linked ? mainMenu(lang) : { reply_markup: { remove_keyboard: true } });
     } catch (e) { console.error("[ОНБОРДИНГ]", e.message); bot.sendMessage(chatId, "Ошибка при подключении."); }
   });
@@ -304,7 +310,7 @@ async function main() {
         await bot.editMessageText(v.text, { chat_id: chatId, message_id: q.message.message_id, reply_markup: v.reply_markup });
         return;
       }
-      if (act === "dop") { // дополнительный заказ к уже существующему
+      if (act === "dop") {
         await bot.answerCallbackQuery(q.id); bot.sendChatAction(chatId, "typing");
         const orders = await freshOrdersToday();
         const o = orders.find((x) => x.client && x.client.SD_id === val && x.status !== 5);
