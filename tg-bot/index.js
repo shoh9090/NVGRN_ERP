@@ -55,6 +55,7 @@ const getStockData = () => cached("stock", 300000, async () => {
 });
 const getCatalog = async () => (await getStockData()).catalog;
 const getStockMap = async () => (await getStockData()).map;
+const freshStockMap = () => { _cache.delete("stock"); return getStockMap(); };
 const getOrders14 = () => cached("orders14", 600000, () => {
   const to = tzToday(), from = new Date(Date.now() + TZ_OFFSET_MS - botCfg.window * 86400000).toISOString().slice(0, 10);
   return sd.fetchAll("getOrder", { filter: { period: { date: { from, to } }, status: [1, 2, 3, 4] } });
@@ -149,6 +150,13 @@ const STR = {
   already_ordered: { ru: (p) => `На сегодня по точке «${p}» заказ уже есть:`, uz: (p) => `«${p}» uchun bugun buyurtma allaqachon bor:` },
   btn_dop: { ru: "➕ Дополнительный заказ", uz: "➕ Qo‘shimcha buyurtma" },
   dop_title: { ru: "Дополнительный заказ. Добавьте позиции:", uz: "Qo‘shimcha buyurtma. Mahsulot qo‘shing:" },
+  btn_comment: { ru: "✍️ Комментарий", uz: "✍️ Izoh" },
+  cmt_ask: { ru: "Напишите комментарий к заказу одним сообщением (до 500 символов). Отмена — /skip.", uz: "Buyurtmaga izoh yozing (500 belgigacha). Bekor qilish — /skip." },
+  cmt_saved: { ru: "✍️ Комментарий сохранён. Теперь нажмите «Заказать» / «Подтвердить».", uz: "✍️ Izoh saqlandi. Endi «Buyurtma» / «Tasdiqlash» tugmasini bosing." },
+  cmt_skip: { ru: "Окей, без комментария.", uz: "Mayli, izohsiz." },
+  cart_stale: { ru: "Корзина устарела — начните заказ заново.", uz: "Savat eskirdi — qaytadan boshlang." },
+  none_now: { ru: "Сейчас этих позиций нет в наличии. Попробуйте позже.", uz: "Hozir bu mahsulotlar mavjud emas. Keyinroq urinib ko‘ring." },
+  only_avail: { ru: "В наличии только", uz: "Mavjud faqat" },
   btn_confirm: { ru: "✅ Подтвердить", uz: "✅ Tasdiqlash" },
   btn_repeat: { ru: "♻️ Как в прошлый раз", uz: "♻️ O‘tgan safargidek" },
   btn_new: { ru: "🆕 Новый заказ", uz: "🆕 Yangi buyurtma" },
@@ -191,6 +199,18 @@ async function onboard(chatId, from, phone9, rawPhone, lang) {
 
 // ---------- Черновик / остатки / заказ ----------
 const draftCache = new Map();
+const awaitComment = new Map(); // chatId -> { key, sdId } — ждём текст комментария
+function capItemsToStock(items, stock) {
+  const capped = [], removed = [], out = [];
+  for (const it of items) {
+    if (!(it.qty > 0)) continue;
+    const avail = stock[it.productSdId] || 0;
+    if (avail <= 0) { removed.push(it.name); continue; }
+    if (it.qty > avail) { capped.push(`${it.name}: ${avail}`); out.push({ ...it, qty: avail }); }
+    else out.push(it);
+  }
+  return { items: out, capped, removed };
+}
 
 async function getPointDraft(sdId, mode) {
   const orders = await getOrders14();
@@ -211,7 +231,7 @@ async function getPointDraft(sdId, mode) {
   }
   const stock = await getStockMap();
   const items = [], oos = [];
-  for (const it of raw) { if ((stock[it.productSdId] || 0) > 0) items.push(it); else oos.push(it.name); }
+  for (const it of raw) { const av = stock[it.productSdId] || 0; if (av > 0) items.push({ ...it, qty: Math.min(it.qty, av) }); else oos.push(it.name); }
   return Object.assign({ items, oos }, meta);
 }
 
@@ -220,7 +240,7 @@ async function createOrderFromDraft(sdId, draft, code) {
   if (!draft.agent || !draft.priceType || !draft.warehouse) throw new Error("нет агента/прайса/склада — нужен прошлый заказ точки");
   const order = {
     code_1C: code || `TGBOT-${sdId}-${tzToday()}`, status: 1, dateShipment: tzTomorrow(),
-    comment: "Заказ оформлен через Telegram-бот",
+    comment: "Заказ оформлен через Telegram-бот" + (draft.comment ? "\nКомментарий клиента: " + draft.comment : ""),
     client: { SD_id: sdId }, agent: { SD_id: draft.agent }, priceType: { SD_id: draft.priceType }, warehouse: { SD_id: draft.warehouse },
     orderProducts: draft.items.filter((it) => it.qty > 0).map((it) => ({ product: { SD_id: it.productSdId }, quantity: Math.max(1, Math.round(it.qty)) })),
   };
@@ -238,6 +258,7 @@ function draftKeyboard(sdId, lang) {
   return { inline_keyboard: [
     [{ text: t(lang, "btn_confirm"), callback_data: `ord:${sdId}` }],
     [{ text: t(lang, "btn_repeat"), callback_data: `rep:${sdId}` }, { text: t(lang, "btn_new"), callback_data: `new:${sdId}` }],
+    [{ text: t(lang, "btn_comment"), callback_data: `cmt:${sdId}` }],
     [{ text: t(lang, "btn_cancel"), callback_data: `no:${sdId}` }],
   ] };
 }
@@ -261,10 +282,11 @@ function renderCart(sdId, cart, lang) {
     { text: `${it.name}: ${it.qty}`, callback_data: "noop" },
     { text: "➕", callback_data: `inc:${sdId}:${i}` },
   ]));
-  rows.push([{ text: t(lang, "btn_add"), callback_data: `add:${sdId}` }]);
+  rows.push([{ text: t(lang, "btn_add"), callback_data: `add:${sdId}` }, { text: t(lang, "btn_comment"), callback_data: `cmt:${sdId}` }]);
   rows.push([{ text: t(lang, "btn_order"), callback_data: `done:${sdId}` }, { text: t(lang, "btn_cancel"), callback_data: `no:${sdId}` }]);
   const lines = cart.items.length ? cart.items.map((it) => `• ${it.name}: ${it.qty}`).join("\n") : "—";
-  return { text: t(lang, "cart_title") + "\n\n" + lines, reply_markup: { inline_keyboard: rows } };
+  const cmt = cart.comment ? "\n\n✍️ " + cart.comment : "";
+  return { text: t(lang, "cart_title") + "\n\n" + lines + cmt, reply_markup: { inline_keyboard: rows } };
 }
 function renderCatalog(sdId, page, lang, catalog) {
   const PER = 8;
@@ -646,11 +668,23 @@ async function main() {
         await bot.editMessageText(t(lang, "dop_title") + "\n\n" + v.text, { chat_id: chatId, message_id: q.message.message_id, reply_markup: v.reply_markup });
         return;
       }
-      if (act === "inc" || act === "dec") {
+      if (act === "cmt") {
         await bot.answerCallbackQuery(q.id);
+        awaitComment.set(chatId, { key, sdId: val });
+        await bot.sendMessage(chatId, t(lang, "cmt_ask"));
+        return;
+      }
+      if (act === "inc" || act === "dec") {
         const idx = Number(String(q.data).split(":")[2]); const cart = draftCache.get(key);
-        if (!cart || !cart.items[idx]) return;
-        cart.items[idx].qty = Math.max(0, cart.items[idx].qty + (act === "inc" ? 1 : -1));
+        if (!cart || !cart.items[idx]) { await bot.answerCallbackQuery(q.id); return; }
+        if (act === "inc") {
+          const avail = (await getStockMap())[cart.items[idx].productSdId] || 0;
+          if (cart.items[idx].qty + 1 > avail) { await bot.answerCallbackQuery(q.id, { text: `${t(lang, "only_avail") || "В наличии только"} ${avail}` }); return; }
+          cart.items[idx].qty += 1;
+        } else {
+          cart.items[idx].qty = Math.max(0, cart.items[idx].qty - 1);
+        }
+        await bot.answerCallbackQuery(q.id);
         const v = renderCart(val, cart, lang);
         try { await bot.editMessageText(v.text, { chat_id: chatId, message_id: q.message.message_id, reply_markup: v.reply_markup }); } catch (_) {}
         return;
@@ -682,7 +716,12 @@ async function main() {
         await bot.answerCallbackQuery(q.id);
         const idx = Number(String(q.data).split(":")[2]); const catalog = await getCatalog(); const prod = catalog[idx];
         const cart = draftCache.get(key);
-        if (cart && prod) { const ex = cart.items.find((it) => it.productSdId === prod.SD_id); if (ex) ex.qty += 1; else cart.items.push({ productSdId: prod.SD_id, name: prod.name, qty: 1 }); }
+        if (cart && prod) {
+          const avail = (await getStockMap())[prod.SD_id] || 0;
+          const ex = cart.items.find((it) => it.productSdId === prod.SD_id);
+          if (ex) { if (ex.qty + 1 <= avail) ex.qty += 1; }
+          else if (avail >= 1) cart.items.push({ productSdId: prod.SD_id, name: prod.name, qty: 1 });
+        }
         const v = renderCart(val, cart || { items: [] }, lang);
         await bot.editMessageText(v.text, { chat_id: chatId, message_id: q.message.message_id, reply_markup: v.reply_markup });
         return;
@@ -696,13 +735,22 @@ async function main() {
       if (act === "done" || act === "ord") {
         await bot.answerCallbackQuery(q.id, { text: t(lang, "sending") }); bot.sendChatAction(chatId, "typing");
         let draft = draftCache.get(key) || (await getPointDraft(val, "avg"));
-        if (act === "done" && draft) draft = { items: draft.items.filter((it) => it.qty > 0), agent: draft.agent, priceType: draft.priceType, warehouse: draft.warehouse, code: draft.code };
+        if (act === "done" && draft) draft = { items: draft.items.filter((it) => it.qty > 0), agent: draft.agent, priceType: draft.priceType, warehouse: draft.warehouse, code: draft.code, comment: draft.comment };
         if (!draft) { await bot.editMessageText(t(lang, "order_err", "нет данных"), { chat_id: chatId, message_id: q.message.message_id }); return; }
         if (!draft.items.length) { await bot.editMessageText(t(lang, "empty_cart"), { chat_id: chatId, message_id: q.message.message_id }); return; }
         try {
+          const cap = capItemsToStock(draft.items, await freshStockMap());
+          draft.items = cap.items;
+          if (!draft.items.length) { await bot.editMessageText(t(lang, "none_now"), { chat_id: chatId, message_id: q.message.message_id }); return; }
           await createOrderFromDraft(val, draft, draft.code);
           await db.logEvent("order_created", chatId, { sdId: val, mode: act, dop: !!draft.code });
-          await bot.editMessageText(t(lang, "order_ok"), { chat_id: chatId, message_id: q.message.message_id });
+          let okText = t(lang, "order_ok");
+          if (cap.capped.length || cap.removed.length) {
+            okText += "\n\n⚠️ Скорректировано по остаткам:";
+            if (cap.capped.length) okText += "\n• " + cap.capped.join("\n• ");
+            if (cap.removed.length) okText += "\nУбрано (нет в наличии): " + cap.removed.join(", ");
+          }
+          await bot.editMessageText(okText, { chat_id: chatId, message_id: q.message.message_id });
           if (draft.code) {
             const n = draft.items.filter((it) => it.qty > 0).length;
             notifyClientAgent(val, `➕ Доп.заказ через бот\nКлиент: {name}\nПозиций: ${n} · ${tzHHMM()}`, draft.code).catch(() => {});
@@ -732,8 +780,18 @@ async function main() {
   });
 
   bot.on("message", async (msg) => {
-    if (msg.contact || (msg.text && msg.text.startsWith("/"))) return;
     const chatId = msg.chat.id; const txt = (msg.text || "").trim();
+    const pend = awaitComment.get(chatId);
+    if (pend && !msg.contact) {
+      awaitComment.delete(chatId);
+      const lang0 = await getLang(chatId);
+      if (txt === "/skip" || txt === "/cancel") { await bot.sendMessage(chatId, t(lang0, "cmt_skip")); return; }
+      const cart = draftCache.get(pend.key);
+      if (cart) { cart.comment = txt.slice(0, 500); await bot.sendMessage(chatId, t(lang0, "cmt_saved")); }
+      else { await bot.sendMessage(chatId, t(lang0, "cart_stale")); }
+      return;
+    }
+    if (msg.contact || (msg.text && msg.text.startsWith("/"))) return;
     const stf = await getStaff(msg.from.id);
     if (stf) return handleStaffText(chatId, msg.from.id, stf, txt);
     const lang = await getLang(chatId);
