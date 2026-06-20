@@ -31,8 +31,7 @@
     .tgm-iconrow{display:flex;gap:10px;align-items:center;margin:16px 0 6px;flex-wrap:wrap}
     .tgm-icon{display:inline-flex;align-items:center;justify-content:center;width:40px;height:40px;border-radius:11px;color:#52605a;background:#fbfaf4;border:1px solid #e6e2d6;transition:.18s;cursor:pointer;text-decoration:none}
     .tgm-icon:hover{background:#f0ede3;color:#14241b}
-    .tgm-icon svg{width:19px;height:19px}
-    .tgm-cap{font-size:13px;color:#52605a}
+    .tgm-icon svg{width:19px;height:19px;display:block}
     .tgm-overlay{display:none;position:fixed;inset:0;background:rgba(16,42,29,.45);z-index:100;align-items:center;justify-content:center;padding:20px}
     .tgm-overlay.on{display:flex}
     .tgm-modal{background:#f4f2ea;border-radius:18px;width:100%;max-width:900px;max-height:92vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 30px 80px -20px rgba(16,42,29,.6)}
@@ -65,6 +64,11 @@
     .tgm-bn.ok{background:#eef6df;border-left:4px solid #6aa82f;color:#3f6a16}
     .tgm-bn.err{background:#fbece5;border-left:4px solid #c0492f;color:#a53d24}
     .tgm-add{margin-top:18px;padding-top:14px;border-top:1px dashed #d8d3c4}
+    .tgm-btn svg{width:16px;height:16px}
+    .tgm-trash{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:8px;border:1px solid #e6e2d6;background:#fff;color:#b5462c;cursor:pointer}
+    .tgm-trash:hover{background:#fbece5;border-color:#e6c2b8}
+    .tgm-assign{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:0}
+    .tgm-assign select{min-width:118px}
   </style>
 </head>
 <body>
@@ -80,9 +84,8 @@
     <h2>Бот HoReCa — контакты для напоминаний</h2>
     <p class="muted">Список номеров, по которым Telegram-бот узнаёт завскладов точек и менеджеров сетей.</p>
     <div class="tgm-iconrow">
-      <a class="tgm-icon" href="/tgbot/analytics" title="Аналитика АКБ/ОКБ по агентам"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M7 14l3-3 3 3 5-6"/></svg></a>
-      <button class="tgm-icon" id="openStaff" type="button" title="Telegram-агенты"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9.5" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></button>
-      <span class="tgm-cap">Аналитика по агентам · Telegram-агенты (сотрудники и роли)</span>
+      <a class="tgm-icon" href="/tgbot/analytics" title="Аналитика по агентам (АКБ/ОКБ)"><svg width="19" height="19" viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="12" width="4.2" height="8" rx="1.2"/><rect x="9.9" y="6" width="4.2" height="14" rx="1.2"/><rect x="16.8" y="3" width="4.2" height="17" rx="1.2"/></svg></a>
+      <button class="tgm-icon" id="openStaff" type="button" title="Telegram-агенты (сотрудники и роли)"><svg width="19" height="19" viewBox="0 0 24 24" fill="currentColor"><path d="M9.04 15.47 8.7 20.2c.49 0 .7-.21.96-.46l2.3-2.2 4.77 3.49c.87.48 1.5.23 1.73-.81l3.14-14.7c.28-1.3-.47-1.81-1.32-1.5L2.2 9.6c-1.27.5-1.25 1.2-.22 1.52l4.7 1.46L17.6 6.1c.5-.33.96-.15.58.18L9.04 15.47z"/></svg></button>
     </div>
 
     <% if (error) { %><div class="banner err"><%= error %></div><% } %>
@@ -192,39 +195,38 @@
         <% if (staffErr) { %><div class="tgm-bn err"><%= staffErr %></div><% } %>
         <div class="tgm-note">Сначала нажмите <b>«Загрузить агентов из CRM»</b> — программа подтянет список из SalesDoctor. Когда сотрудник пишет боту и делится номером, он <b>сам привязывается по телефону</b>. Если автопривязки нет — выберите агента из списка вручную и нажмите «Подтвердить».</div>
         <table>
-          <thead><tr><th>Телефон</th><th>Имя в Telegram</th><th>Агент в CRM (имя/код)</th><th>Роль</th><th>Статус</th><th>Действия</th></tr></thead>
+          <thead><tr><th>Телефон</th><th>Имя в Telegram</th><th>Агент в CRM (имя/код) и роль</th><th>Статус</th><th></th></tr></thead>
           <tbody>
             <% if (!staff.length) { %>
-              <tr><td colspan="6" class="tgm-note" style="margin:0">Пока нет ни заявок, ни подтверждённых сотрудников. Нажмите «Загрузить агентов из CRM», затем пусть сотрудник напишет боту и поделится номером.</td></tr>
+              <tr><td colspan="5" class="tgm-note" style="margin:0">Пока нет ни заявок, ни подтверждённых сотрудников. Нажмите «Загрузить агентов из CRM», затем пусть сотрудник напишет боту и поделится номером.</td></tr>
             <% } %>
             <% staff.forEach(function(s){
                  var tgname=[s.telegram_first_name,s.telegram_last_name].filter(Boolean).join(' ')+(s.telegram_username?' (@'+s.telegram_username+')':'');
-                 var st=s.status; var cls=st==='confirmed'?'on':((st==='disabled'||st==='rejected')?'off':'');
-                 var stLabel=({new_request:'новая заявка',auto_matched:'найден по телефону',manual_selected:'выбран вручную',confirmed:'подтверждён',rejected:'отклонён',disabled:'отключён'})[st]||st;
+                 var on=s.status==='confirmed';
             %>
             <tr>
               <td><%= s.phone_original||s.phone_normalized||'—' %></td>
               <td><%= tgname||'—' %></td>
-              <td><%= s.sd_agent_name||(s.crm_agent_id||'—') %></td>
-              <td><%= s.role||'—' %></td>
-              <td><span class="tgm-chip <%= cls %>"><span class="d"></span><%= stLabel %></span></td>
               <td>
-                <% if (st!=='confirmed') { %>
-                  <form method="POST" action="/tgbot/staff/confirm" class="tgm-rowform">
-                    <input type="hidden" name="id" value="<%= s.id %>">
-                    <select name="role"><option value="agent">Агент</option><option value="head_of_sales">Руководитель</option><option value="admin">Админ</option></select>
-                    <select name="crm_agent_id"><option value="">— агент CRM —</option><% agents.forEach(function(a){ %><option value="<%= a.sd_agent_id %>" <%= s.crm_agent_id===a.sd_agent_id?'selected':'' %>><%= a.sd_agent_name %><%= a.sd_agent_code?(' / '+a.sd_agent_code):'' %></option><% }); %></select>
-                    <button class="tgm-sm go" type="submit">Подтвердить</button>
-                  </form>
-                  <form method="POST" action="/tgbot/staff/reject" style="margin-top:6px"><input type="hidden" name="id" value="<%= s.id %>"><button class="tgm-sm danger" type="submit">Отклонить</button></form>
-                <% } else { %>
-                  <form method="POST" action="/tgbot/staff/role" class="tgm-rowform">
-                    <input type="hidden" name="id" value="<%= s.id %>">
-                    <select name="role"><option value="agent" <%= s.role==='agent'?'selected':'' %>>Агент</option><option value="head_of_sales" <%= s.role==='head_of_sales'?'selected':'' %>>Руководитель</option><option value="admin" <%= s.role==='admin'?'selected':'' %>>Админ</option></select>
-                    <button class="tgm-sm" type="submit">Изменить роль</button>
-                  </form>
-                  <form method="POST" action="/tgbot/staff/disable" style="margin-top:6px"><input type="hidden" name="id" value="<%= s.id %>"><button class="tgm-sm danger" type="submit">Отключить</button></form>
-                <% } %>
+                <form method="POST" action="/tgbot/staff/assign" class="tgm-assign">
+                  <input type="hidden" name="id" value="<%= s.id %>">
+                  <select name="crm_agent_id" onchange="this.form.submit()">
+                    <option value="">— не привязан —</option>
+                    <% agents.forEach(function(a){ %><option value="<%= a.sd_agent_id %>" <%= s.crm_agent_id===a.sd_agent_id?'selected':'' %>><%= a.sd_agent_name %><%= a.sd_agent_code?(' / '+a.sd_agent_code):'' %></option><% }); %>
+                  </select>
+                  <select name="role" onchange="this.form.submit()" title="Роль">
+                    <option value="agent" <%= s.role==='agent'?'selected':'' %>>Агент</option>
+                    <option value="head_of_sales" <%= s.role==='head_of_sales'?'selected':'' %>>Руководитель</option>
+                    <option value="admin" <%= s.role==='admin'?'selected':'' %>>Админ</option>
+                  </select>
+                </form>
+              </td>
+              <td><span class="tgm-chip <%= on?'on':'' %>"><span class="d"></span><%= on?'подтверждён':'ожидает' %></span></td>
+              <td style="text-align:right">
+                <form method="POST" action="/tgbot/staff/delete" onsubmit="return confirm('Удалить сотрудника из списка?')">
+                  <input type="hidden" name="id" value="<%= s.id %>">
+                  <button class="tgm-trash" type="submit" title="Удалить"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg></button>
+                </form>
               </td>
             </tr>
             <% }); %>
@@ -242,8 +244,10 @@
         </div>
       </div>
       <div class="tgm-ft">
-        <form method="POST" action="/tgbot/staff/load-agents"><button class="tgm-btn tgm-blue" type="submit">🔄 Загрузить агентов из CRM</button></form>
-        <form method="POST" action="/tgbot/staff/sync-clients"><button class="tgm-btn tgm-green" type="submit">Синхронизировать клиентов</button></form>
+        <form method="POST" action="/tgbot/staff/load-agents"><button class="tgm-btn tgm-blue" type="submit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7M21 4v4h-4"/></svg> Загрузить агентов из CRM</button></form>
+        <a class="tgm-btn tgm-ghost" href="/tgbot?staff=1">Обновить</a>
+        <% var syncTxt='',syncOn=false; if (typeof syncedAt!=='undefined' && syncedAt){ var sd2=new Date(syncedAt); syncOn=(Date.now()-sd2.getTime())<3*3600000; syncTxt=sd2.toLocaleString('ru-RU',{timeZone:'Asia/Tashkent',hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit'}); } %>
+        <span class="tgm-chip <%= syncOn?'on':'' %>" title="Клиенты синхронизируются автоматически каждые ~45 минут"><span class="d"></span><%= syncedAt ? ('Синхронизировано · '+syncTxt) : 'Ещё не синхронизировано' %></span>
         <div class="grow"></div>
         <button class="tgm-btn tgm-ghost" data-close-staff type="button">Закрыть</button>
       </div>
