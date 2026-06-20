@@ -474,4 +474,52 @@ async function getHorecaPoints() {
   return clients.filter((c) => c.active === 'Y' && c.category && c.category.SD_id === horeca.SD_id);
 }
 
-module.exports = { getSdConfig, saveSdConfig, testConnection, syncFinishedGoods, syncPrices, diagSD, getHorecaPoints };
+// --- Аналитика для РОПа: покрытие АКБ/ОКБ по торговым агентам ---
+async function getAgentCoverage(days = 14) {
+  const cfg = await getSdConfig();
+  if (!cfg.url || !cfg.login || !cfg.password) {
+    throw new Error('Сначала заполните доступ к SalesDoctor в разделе «Интеграции».');
+  }
+  const auth = await sdLogin(cfg);
+  const cats = await sdGetAll(cfg, auth, 'getClientCategory', 'clientCategory', { filter: { include: 'all' } });
+  const horeca = cats.find((c) => String(c.name || '').trim().toLowerCase() === 'horeca');
+  if (!horeca) throw new Error('В SalesDoctor не найдена категория «Horeca».');
+
+  const clients = (await sdGetAll(cfg, auth, 'getClient', 'client', {}))
+    .filter((c) => c.active === 'Y' && c.category && c.category.SD_id === horeca.SD_id);
+
+  let agentsList = [];
+  try { agentsList = await sdGetAll(cfg, auth, 'getAgent', 'agent', {}); } catch (e) { agentsList = []; }
+  const agentName = {};
+  for (const a of agentsList) {
+    if (a.SD_id) agentName[a.SD_id] = a.name || a.SD_id;
+    if (a.code_1C) agentName['c:' + a.code_1C] = a.name || a.code_1C;
+  }
+
+  const TZ = 5 * 3600 * 1000; // Ташкент
+  const to = new Date(Date.now() + TZ).toISOString().slice(0, 10);
+  const from = new Date(Date.now() + TZ - days * 86400000).toISOString().slice(0, 10);
+  const orders = await sdGetAll(cfg, auth, 'getOrder', 'order', { filter: { period: { date: { from, to } }, status: [1, 2, 3, 4] } });
+  const orderedClient = new Set(orders.map((o) => o.client && o.client.SD_id).filter(Boolean));
+
+  const byAgent = {};
+  for (const c of clients) {
+    const ags = (c.agents && c.agents.length) ? c.agents : [{ id: '—', code: '' }];
+    for (const ag of ags) {
+      const id = ag.id || '—';
+      const name = agentName[id] || agentName['c:' + (ag.code || '')] || id;
+      byAgent[id] = byAgent[id] || { agentId: id, name, okb: 0, akb: 0, inactive: [] };
+      byAgent[id].okb++;
+      if (orderedClient.has(c.SD_id)) byAgent[id].akb++;
+      else byAgent[id].inactive.push({ name: c.name || c.SD_id, sd_id: c.SD_id, tel: c.tel || '' });
+    }
+  }
+  const rows = Object.values(byAgent)
+    .map((r) => ({ ...r, pct: r.okb ? Math.round((r.akb * 100) / r.okb) : 0 }))
+    .sort((a, b) => b.okb - a.okb || a.name.localeCompare(b.name));
+  const totals = rows.reduce((t, r) => ({ okb: t.okb + r.okb, akb: t.akb + r.akb }), { okb: 0, akb: 0 });
+  totals.pct = totals.okb ? Math.round((totals.akb * 100) / totals.okb) : 0;
+  return { from, to, days, rows, totals };
+}
+
+module.exports = { getSdConfig, saveSdConfig, testConnection, syncFinishedGoods, syncPrices, diagSD, getHorecaPoints, getAgentCoverage };

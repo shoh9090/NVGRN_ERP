@@ -77,6 +77,15 @@ router.get('/', async (req, res) => {
   render(res, req, settings, { botSettings });
 });
 
+// Дашборд АКБ/ОКБ по агентам (для РОПа). Позже переедет в плитку «Продажи».
+router.get('/analytics', async (req, res) => {
+  const settings = await db.getSettings();
+  let data = null, error = null;
+  try { data = await integrations.getAgentCoverage(14); }
+  catch (e) { error = e.message; }
+  res.render('analytics', { settings, user: req.user, data, error });
+});
+
 // Сохранение настроек напоминаний (только РОП/админ).
 router.post('/settings', async (req, res) => {
   const settings = await db.getSettings();
