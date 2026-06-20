@@ -209,3 +209,15 @@ CREATE TABLE IF NOT EXISTS pending_orders (
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_pending_due ON pending_orders(status, next_attempt_at);
+
+-- ===== Бандл 3 (шаг 3): замены товара =====
+CREATE TABLE IF NOT EXISTS product_replacements (
+  id                SERIAL PRIMARY KEY,
+  product_sd_id     TEXT,
+  product_name      TEXT,
+  replacement_sd_id TEXT,
+  replacement_name  TEXT,
+  active            BOOLEAN NOT NULL DEFAULT true,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (product_sd_id, replacement_sd_id)
+);

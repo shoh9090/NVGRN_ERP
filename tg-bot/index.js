@@ -56,6 +56,12 @@ const getStockData = () => cached("stock", 300000, async () => {
 const getCatalog = async () => (await getStockData()).catalog;
 const getStockMap = async () => (await getStockData()).map;
 const freshStockMap = () => { _cache.delete("stock"); return getStockMap(); };
+const getReplacements = () => cached("repls", 300000, async () => {
+  const rows = (await db.query("SELECT product_sd_id, replacement_sd_id, replacement_name FROM product_replacements WHERE active")).rows;
+  const map = {};
+  for (const r of rows) (map[r.product_sd_id] = map[r.product_sd_id] || []).push({ sd: r.replacement_sd_id, name: r.replacement_name });
+  return map;
+});
 const getOrders14 = () => cached("orders14", 600000, () => {
   const to = tzToday(), from = new Date(Date.now() + TZ_OFFSET_MS - botCfg.window * 86400000).toISOString().slice(0, 10);
   return sd.fetchAll("getOrder", { filter: { period: { date: { from, to } }, status: [1, 2, 3, 4] } });
@@ -230,9 +236,19 @@ async function getPointDraft(sdId, mode) {
     raw = Object.entries(agg).map(([id, v]) => ({ productSdId: id, name: v.name, qty: Math.round(v.sum / days) })).filter((it) => it.qty >= 1).sort((a, b) => b.qty - a.qty);
   }
   const stock = await getStockMap();
-  const items = [], oos = [];
-  for (const it of raw) { const av = stock[it.productSdId] || 0; if (av > 0) items.push({ ...it, qty: Math.min(it.qty, av) }); else oos.push(it.name); }
-  return Object.assign({ items, oos }, meta);
+  const replMap = await getReplacements();
+  const items = [], oos = [], repls = [];
+  for (const it of raw) {
+    const av = stock[it.productSdId] || 0;
+    if (av > 0) { items.push({ ...it, qty: Math.min(it.qty, av) }); continue; }
+    let replaced = false;
+    for (const o of (replMap[it.productSdId] || [])) {
+      const ra = stock[o.sd] || 0;
+      if (ra > 0) { repls.push({ from: it.name, toSd: o.sd, toName: o.name, qty: Math.max(1, Math.min(Math.round(it.qty), ra)) }); replaced = true; break; }
+    }
+    if (!replaced) oos.push(it.name);
+  }
+  return Object.assign({ items, oos, repls }, meta);
 }
 
 function buildOrder(sdId, draft, code) {
@@ -278,19 +294,27 @@ function draftKeyboard(sdId, lang) {
     [{ text: t(lang, "btn_cancel"), callback_data: `no:${sdId}` }],
   ] };
 }
+function draftMessage(sdId, draft, lang) {
+  const list = draft.items.length ? draft.items.map((it) => `• ${it.name}: ${it.qty}`).join("\n") : "—";
+  let text = t(lang, "draft_title", draft.pointName || "") + "\n\n" + list;
+  if (draft.oos && draft.oos.length) text += "\n\n" + t(lang, "oos_note", draft.oos.join(", "));
+  if (draft.repls && draft.repls.length) text += "\n\n🔁 Нет в наличии, но можно заменить:\n" + draft.repls.map((r) => `• ${r.from} → ${r.toName}`).join("\n");
+  text += "\n\n" + t(lang, "confirm_hint");
+  const base = draftKeyboard(sdId, lang).inline_keyboard;
+  const replRows = (draft.repls || []).map((r, i) => [{ text: `🔁 Заменить на «${r.toName}»`, callback_data: `repl:${sdId}:${i}` }]);
+  return { text, reply_markup: { inline_keyboard: [base[0], ...replRows, ...base.slice(1)] } };
+}
 async function sendDraft(bot, chatId, tgId, sdId, pointName, lang, mode) {
   const draft = await getPointDraft(sdId, mode);
   if (!draft) { bot.sendMessage(chatId, t(lang, "no_history", pointName || "")); return; }
-  if (!draft.items.length) {
+  if (!draft.items.length && !(draft.repls && draft.repls.length)) {
     bot.sendMessage(chatId, t(lang, "all_oos", (draft.oos || []).join(", ") || "—"), { reply_markup: { inline_keyboard: [[{ text: t(lang, "btn_new"), callback_data: `new:${sdId}` }]] } });
     return;
   }
+  draft.pointName = pointName;
   draftCache.set(tgId + "|" + sdId, draft);
-  const list = draft.items.map((it) => `• ${it.name}: ${it.qty}`).join("\n");
-  let text = t(lang, "draft_title", pointName || "") + "\n\n" + list;
-  if (draft.oos && draft.oos.length) text += "\n\n" + t(lang, "oos_note", draft.oos.join(", "));
-  text += "\n\n" + t(lang, "confirm_hint");
-  bot.sendMessage(chatId, text, { reply_markup: draftKeyboard(sdId, lang) });
+  const m = draftMessage(sdId, draft, lang);
+  bot.sendMessage(chatId, m.text, { reply_markup: m.reply_markup });
 }
 function renderCart(sdId, cart, lang) {
   const rows = cart.items.map((it, i) => ([
@@ -745,6 +769,19 @@ async function main() {
         draftCache.set(key, cart);
         const v = renderCart(val, cart, lang);
         await bot.editMessageText(t(lang, "dop_title") + "\n\n" + v.text, { chat_id: chatId, message_id: q.message.message_id, reply_markup: v.reply_markup });
+        return;
+      }
+      if (act === "repl") {
+        await bot.answerCallbackQuery(q.id);
+        const idx = Number(String(q.data).split(":")[2]);
+        const draft = draftCache.get(key);
+        if (!draft || !draft.repls || !draft.repls[idx]) return;
+        const r = draft.repls[idx];
+        const ex = draft.items.find((x) => x.productSdId === r.toSd);
+        if (ex) ex.qty += r.qty; else draft.items.push({ productSdId: r.toSd, name: r.toName, qty: r.qty });
+        draft.repls.splice(idx, 1);
+        const m = draftMessage(val, draft, lang);
+        try { await bot.editMessageText(m.text, { chat_id: chatId, message_id: q.message.message_id, reply_markup: m.reply_markup }); } catch (_) {}
         return;
       }
       if (act === "cmt") {
