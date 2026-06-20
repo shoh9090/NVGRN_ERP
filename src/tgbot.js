@@ -51,6 +51,12 @@ async function ensureTables() {
     updated_by      TEXT
   )`);
   await db.pool.query(`INSERT INTO tgbot.bot_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING`);
+  await db.pool.query(`ALTER TABLE tgbot.bot_settings ADD COLUMN IF NOT EXISTS digest_time TEXT NOT NULL DEFAULT '08:30'`);
+  await db.pool.query(`ALTER TABLE tgbot.bot_settings ADD COLUMN IF NOT EXISTS digest_enabled BOOLEAN NOT NULL DEFAULT true`);
+  await db.pool.query(`ALTER TABLE tgbot.bot_settings ADD COLUMN IF NOT EXISTS signals_enabled BOOLEAN NOT NULL DEFAULT true`);
+  await db.pool.query(`ALTER TABLE tgbot.bot_settings ADD COLUMN IF NOT EXISTS signal1_days INT NOT NULL DEFAULT 3`);
+  await db.pool.query(`ALTER TABLE tgbot.bot_settings ADD COLUMN IF NOT EXISTS signal2_pct INT NOT NULL DEFAULT 40`);
+  await db.pool.query(`ALTER TABLE tgbot.bot_settings ADD COLUMN IF NOT EXISTS signal2_window INT NOT NULL DEFAULT 7`);
   await db.pool.query(`CREATE TABLE IF NOT EXISTS tgbot.crm_agents (
     sd_agent_id TEXT PRIMARY KEY, sd_agent_code TEXT, sd_agent_name TEXT,
     is_active BOOLEAN NOT NULL DEFAULT true, last_synced_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -77,11 +83,11 @@ async function ensureTables() {
 function normPhone9(v) { const d = String(v || '').replace(/\D/g, ''); return d.length > 9 ? d.slice(-9) : d; }
 const ROLES = ['agent', 'head_of_sales', 'admin'];
 
-const DEFAULT_BOT_SETTINGS = { reminder_times: '18:00,21:00,23:00', deadline: '00:00', avg_window_days: 14, enabled: true };
+const DEFAULT_BOT_SETTINGS = { reminder_times: '18:00,21:00,23:00', deadline: '00:00', avg_window_days: 14, enabled: true, digest_time: '08:30', digest_enabled: true, signals_enabled: true, signal1_days: 3, signal2_pct: 40, signal2_window: 7 };
 async function getBotSettings() {
   await ensureTables();
-  const r = await db.pool.query('SELECT reminder_times, deadline, avg_window_days, enabled FROM tgbot.bot_settings WHERE id=1');
-  return r.rows[0] || DEFAULT_BOT_SETTINGS;
+  const r = await db.pool.query('SELECT * FROM tgbot.bot_settings WHERE id=1');
+  return Object.assign({}, DEFAULT_BOT_SETTINGS, r.rows[0] || {});
 }
 function normTimes(str) {
   return String(str || '').split(',').map((x) => x.trim()).filter(Boolean).map((x) => {
@@ -107,14 +113,14 @@ async function render(res, req, settings, extra) {
   try { sd = await loadStaffData(); } catch (e) { /* модалка будет пустой, не падаем */ }
   res.render('tgbot', Object.assign({ settings, user: req.user, preview: null, result: null, error: null,
     botSettings: DEFAULT_BOT_SETTINGS, settingsSaved: false,
-    agents: sd.agents, staff: sd.staff, syncedAt: sd.syncedAt || null, staffMsg: null, staffErr: null, openStaff: false, openSettings: false, openImport: false }, extra));
+    agents: sd.agents, staff: sd.staff, syncedAt: sd.syncedAt || null, staffMsg: null, staffErr: null, openStaff: false, openSettings: false, openImport: false, openAgent: false }, extra));
 }
 
 // Страница плитки.
 router.get('/', async (req, res) => {
   const settings = await db.getSettings();
   const botSettings = await getBotSettings();
-  await render(res, req, settings, { botSettings, staffMsg: req.query.msg || null, staffErr: req.query.err || null, openStaff: req.query.staff === '1', openSettings: req.query.settings === '1', openImport: req.query.import === '1' });
+  await render(res, req, settings, { botSettings, staffMsg: req.query.msg || null, staffErr: req.query.err || null, openStaff: req.query.staff === '1', openSettings: req.query.settings === '1', openImport: req.query.import === '1', openAgent: req.query.agent === '1' });
 });
 
 // ---- Бандл 1: раздел «Telegram-агенты» ----
@@ -228,6 +234,28 @@ router.post('/settings', async (req, res) => {
   } catch (e) {
     const botSettings = await getBotSettings().catch(() => DEFAULT_BOT_SETTINGS);
     await render(res, req, settings, { botSettings, error: 'Не удалось сохранить настройки: ' + e.message, openSettings: true });
+  }
+});
+
+router.post('/settings/agent', async (req, res) => {
+  const settings = await db.getSettings();
+  try {
+    await ensureTables();
+    const dt = normTimes(req.body.digest_time)[0] || '08:30';
+    const de = ['on', 'true', '1'].includes(String(req.body.digest_enabled));
+    const se = ['on', 'true', '1'].includes(String(req.body.signals_enabled));
+    let s1 = parseInt(req.body.signal1_days, 10); if (!(s1 >= 1 && s1 <= 30)) s1 = 3;
+    let s2 = parseInt(req.body.signal2_pct, 10); if (!(s2 >= 5 && s2 <= 95)) s2 = 40;
+    let s2w = parseInt(req.body.signal2_window, 10); if (!(s2w >= 3 && s2w <= 30)) s2w = 7;
+    await db.pool.query(
+      `UPDATE tgbot.bot_settings SET digest_time=$1, digest_enabled=$2, signals_enabled=$3, signal1_days=$4, signal2_pct=$5, signal2_window=$6, updated_at=now(), updated_by=$7 WHERE id=1`,
+      [dt, de, se, s1, s2, s2w, String(req.user.id)]);
+    await db.log(req.user.id, 'tgbot_agent_settings', `digest=${dt} de=${de} se=${se} s1=${s1} s2=${s2} s2w=${s2w}`);
+    const botSettings = await getBotSettings();
+    await render(res, req, settings, { botSettings, settingsSaved: true, openAgent: true });
+  } catch (e) {
+    const botSettings = await getBotSettings().catch(() => DEFAULT_BOT_SETTINGS);
+    await render(res, req, settings, { botSettings, error: 'Не удалось сохранить: ' + e.message, openAgent: true });
   }
 });
 
