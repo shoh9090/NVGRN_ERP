@@ -49,7 +49,30 @@ async function ensureTables() {
     updated_by      TEXT
   )`);
   await db.pool.query(`INSERT INTO tgbot.bot_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING`);
+  await db.pool.query(`CREATE TABLE IF NOT EXISTS tgbot.crm_agents (
+    sd_agent_id TEXT PRIMARY KEY, sd_agent_code TEXT, sd_agent_name TEXT,
+    is_active BOOLEAN NOT NULL DEFAULT true, last_synced_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  await db.pool.query(`CREATE TABLE IF NOT EXISTS tgbot.telegram_staff (
+    id SERIAL PRIMARY KEY, telegram_user_id BIGINT UNIQUE, telegram_chat_id BIGINT,
+    telegram_username TEXT, telegram_first_name TEXT, telegram_last_name TEXT,
+    phone_original TEXT, phone_normalized TEXT, crm_agent_id TEXT, role TEXT,
+    status TEXT NOT NULL DEFAULT 'new_request', confirmed_by TEXT, confirmed_at TIMESTAMPTZ,
+    disabled_at TIMESTAMPTZ, comment TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  await db.pool.query(`CREATE INDEX IF NOT EXISTS idx_staff_phone ON tgbot.telegram_staff(phone_normalized)`);
+  await db.pool.query(`ALTER TABLE tgbot.point_contacts ADD COLUMN IF NOT EXISTS agent_sd_id TEXT`);
+  await db.pool.query(`ALTER TABLE tgbot.point_contacts ADD COLUMN IF NOT EXISTS active TEXT`);
+  await db.pool.query(`ALTER TABLE tgbot.point_contacts ADD COLUMN IF NOT EXISTS last_order_date DATE`);
+  await db.pool.query(`CREATE TABLE IF NOT EXISTS tgbot.salesdoctor_sync_log (
+    id SERIAL PRIMARY KEY, sync_type TEXT, created INT DEFAULT 0, updated INT DEFAULT 0,
+    conflicts INT DEFAULT 0, error TEXT, ran_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
 }
+
+function normPhone9(v) { const d = String(v || '').replace(/\D/g, ''); return d.length > 9 ? d.slice(-9) : d; }
+const ROLES = ['agent', 'head_of_sales', 'admin'];
 
 const DEFAULT_BOT_SETTINGS = { reminder_times: '18:00,21:00,23:00', deadline: '00:00', avg_window_days: 14, enabled: true };
 async function getBotSettings() {
@@ -75,6 +98,67 @@ router.get('/', async (req, res) => {
   const settings = await db.getSettings();
   const botSettings = await getBotSettings();
   render(res, req, settings, { botSettings });
+});
+
+// ---- Бандл 1: раздел «Telegram-агенты» ----
+async function renderStaff(res, req, extra = {}) {
+  await ensureTables();
+  const settings = await db.getSettings();
+  const agents = (await db.pool.query("SELECT sd_agent_id, sd_agent_name, sd_agent_code FROM tgbot.crm_agents WHERE is_active ORDER BY sd_agent_name")).rows;
+  const staff = (await db.pool.query(
+    `SELECT s.*, a.sd_agent_name FROM tgbot.telegram_staff s
+     LEFT JOIN tgbot.crm_agents a ON a.sd_agent_id = s.crm_agent_id
+     ORDER BY CASE s.status WHEN 'new_request' THEN 0 ELSE 1 END, s.created_at DESC`)).rows;
+  res.render('staff', Object.assign({ settings, user: req.user, agents, staff, msg: null, err: null }, extra));
+}
+router.get('/staff', async (req, res) => {
+  try { await renderStaff(res, req, { msg: req.query.msg || null, err: req.query.err || null }); }
+  catch (e) { res.status(500).send('Ошибка раздела: ' + e.message); }
+});
+router.post('/staff/load-agents', async (req, res) => {
+  try { const n = await integrations.syncCrmAgents(); res.redirect('/tgbot/staff?msg=' + encodeURIComponent('Загружено агентов из CRM: ' + n)); }
+  catch (e) { res.redirect('/tgbot/staff?err=' + encodeURIComponent(e.message)); }
+});
+router.post('/staff/sync-clients', async (req, res) => {
+  try { const n = await integrations.syncClientsToContacts(); res.redirect('/tgbot/staff?msg=' + encodeURIComponent('Синхронизировано клиентов: ' + n)); }
+  catch (e) { res.redirect('/tgbot/staff?err=' + encodeURIComponent(e.message)); }
+});
+router.post('/staff/confirm', async (req, res) => {
+  try {
+    const role = ROLES.includes(req.body.role) ? req.body.role : 'agent';
+    const agentId = req.body.crm_agent_id || null;
+    if (role === 'agent' && !agentId) return res.redirect('/tgbot/staff?err=' + encodeURIComponent('Для роли «агент» выберите агента из CRM.'));
+    await db.pool.query(
+      `UPDATE tgbot.telegram_staff SET crm_agent_id=$1, role=$2, status='confirmed', confirmed_by=$3, confirmed_at=now(), disabled_at=NULL, updated_at=now() WHERE id=$4`,
+      [agentId, role, String(req.user.id), req.body.id]);
+    res.redirect('/tgbot/staff?msg=' + encodeURIComponent('Сотрудник подтверждён.'));
+  } catch (e) { res.redirect('/tgbot/staff?err=' + encodeURIComponent(e.message)); }
+});
+router.post('/staff/reject', async (req, res) => {
+  await db.pool.query(`UPDATE tgbot.telegram_staff SET status='rejected', updated_at=now() WHERE id=$1`, [req.body.id]);
+  res.redirect('/tgbot/staff?msg=' + encodeURIComponent('Заявка отклонена.'));
+});
+router.post('/staff/disable', async (req, res) => {
+  await db.pool.query(`UPDATE tgbot.telegram_staff SET status='disabled', disabled_at=now(), updated_at=now() WHERE id=$1`, [req.body.id]);
+  res.redirect('/tgbot/staff?msg=' + encodeURIComponent('Сотрудник отключён.'));
+});
+router.post('/staff/role', async (req, res) => {
+  const role = ROLES.includes(req.body.role) ? req.body.role : 'agent';
+  await db.pool.query(`UPDATE tgbot.telegram_staff SET role=$1, updated_at=now() WHERE id=$2`, [role, req.body.id]);
+  res.redirect('/tgbot/staff?msg=' + encodeURIComponent('Роль изменена.'));
+});
+router.post('/staff/add-manual', async (req, res) => {
+  try {
+    const name = String(req.body.name || '').trim();
+    const phone = String(req.body.phone || '').trim();
+    const role = ROLES.includes(req.body.role) ? req.body.role : 'head_of_sales';
+    if (!name || !phone) return res.redirect('/tgbot/staff?err=' + encodeURIComponent('Укажите ФИО и телефон.'));
+    await db.pool.query(
+      `INSERT INTO tgbot.telegram_staff (telegram_first_name, phone_original, phone_normalized, crm_agent_id, role, status, confirmed_by, confirmed_at)
+       VALUES ($1,$2,$3,$4,$5,'confirmed',$6,now())`,
+      [name, phone, normPhone9(phone), req.body.crm_agent_id || null, role, String(req.user.id)]);
+    res.redirect('/tgbot/staff?msg=' + encodeURIComponent('Сотрудник добавлен. Пусть напишет боту и поделится номером.'));
+  } catch (e) { res.redirect('/tgbot/staff?err=' + encodeURIComponent(e.message)); }
 });
 
 // Дашборд АКБ/ОКБ по агентам (для РОПа). Позже переедет в плитку «Продажи».

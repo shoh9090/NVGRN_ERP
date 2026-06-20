@@ -522,4 +522,48 @@ async function getAgentCoverage(days = 14) {
   return { from, to, days, rows, totals };
 }
 
-module.exports = { getSdConfig, saveSdConfig, testConnection, syncFinishedGoods, syncPrices, diagSD, getHorecaPoints, getAgentCoverage };
+// --- Бандл 1: синхронизация агентов и клиентов из SalesDoctor ---
+async function syncCrmAgents() {
+  const cfg = await getSdConfig();
+  if (!cfg.url || !cfg.login || !cfg.password) throw new Error('Сначала заполните доступ к SalesDoctor в разделе «Интеграции».');
+  const auth = await sdLogin(cfg);
+  const agents = await sdGetAll(cfg, auth, 'getAgent', 'agent', {});
+  let n = 0;
+  for (const a of agents) {
+    if (!a.SD_id) continue;
+    await db.pool.query(
+      `INSERT INTO tgbot.crm_agents (sd_agent_id, sd_agent_code, sd_agent_name, is_active, last_synced_at)
+       VALUES ($1,$2,$3,$4,now())
+       ON CONFLICT (sd_agent_id) DO UPDATE SET sd_agent_code=$2, sd_agent_name=$3, is_active=$4, last_synced_at=now()`,
+      [a.SD_id, a.code_1C || null, a.name || a.SD_id, a.active !== 'N']);
+    n++;
+  }
+  await db.pool.query(`INSERT INTO tgbot.salesdoctor_sync_log (sync_type, created, updated) VALUES ('agents', 0, $1)`, [n]).catch(() => {});
+  return n;
+}
+
+async function syncClientsToContacts() {
+  const cfg = await getSdConfig();
+  if (!cfg.url || !cfg.login || !cfg.password) throw new Error('Сначала заполните доступ к SalesDoctor в разделе «Интеграции».');
+  const auth = await sdLogin(cfg);
+  const cats = await sdGetAll(cfg, auth, 'getClientCategory', 'clientCategory', { filter: { include: 'all' } });
+  const horeca = cats.find((c) => String(c.name || '').trim().toLowerCase() === 'horeca');
+  if (!horeca) throw new Error('В SalesDoctor не найдена категория «Horeca».');
+  const clients = (await sdGetAll(cfg, auth, 'getClient', 'client', {}))
+    .filter((c) => c.active === 'Y' && c.category && c.category.SD_id === horeca.SD_id);
+  let n = 0;
+  for (const c of clients) {
+    if (!c.SD_id) continue;
+    const agent = (c.agents && c.agents[0] && c.agents[0].id) || null;
+    await db.pool.query(
+      `INSERT INTO tgbot.point_contacts (sd_id, point_name, firm_name, inn, zavsklad_phone, agent_sd_id, active, updated_at, updated_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,now(),'sd_sync')
+       ON CONFLICT (sd_id) DO UPDATE SET point_name=$2, firm_name=$3, inn=$4, zavsklad_phone=$5, agent_sd_id=$6, active=$7, updated_at=now(), updated_by='sd_sync'`,
+      [c.SD_id, c.name || c.SD_id, c.firmName || null, c.inn || null, c.tel || null, agent, c.active || 'Y']);
+    n++;
+  }
+  await db.pool.query(`INSERT INTO tgbot.salesdoctor_sync_log (sync_type, created, updated) VALUES ('manual', 0, $1)`, [n]).catch(() => {});
+  return n;
+}
+
+module.exports = { getSdConfig, saveSdConfig, testConnection, syncFinishedGoods, syncPrices, diagSD, getHorecaPoints, getAgentCoverage, syncCrmAgents, syncClientsToContacts };
