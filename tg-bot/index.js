@@ -449,6 +449,21 @@ async function main() {
     bot.sendMessage(msg.chat.id, "Очередь обработана.");
   });
 
+  // Диагностика: чьё юр.лицо у точки в SD (только чтение)
+  bot.onText(/\/clientinfo (.+)/, async (msg, m) => {
+    if (!isAdmin(msg.chat.id)) { bot.sendMessage(msg.chat.id, "Только админ."); return; }
+    const qstr = String((m && m[1]) || "").trim().toLowerCase();
+    if (!qstr) { bot.sendMessage(msg.chat.id, "Укажите часть названия: /clientinfo benedict"); return; }
+    bot.sendChatAction(msg.chat.id, "typing");
+    try {
+      const clients = await getClientsAll();
+      const hits = clients.filter((c) => String(c.name || "").toLowerCase().includes(qstr) || String(c.firmName || "").toLowerCase().includes(qstr)).slice(0, 12);
+      if (!hits.length) { bot.sendMessage(msg.chat.id, "Ничего не найдено."); return; }
+      const lines = hits.map((c) => `SD_id: ${c.SD_id}\n  точка: ${c.name || "—"}\n  юр.лицо: ${c.firmName || "— ПУСТО —"}\n  ИНН: ${c.inn || "—"} · активен: ${c.active}\n  агент: ${(c.agents && c.agents[0] && c.agents[0].id) || "—"}`);
+      bot.sendMessage(msg.chat.id, `Найдено ${hits.length}:\n\n` + lines.join("\n\n"));
+    } catch (e) { bot.sendMessage(msg.chat.id, "Ошибка: " + e.message); }
+  });
+
   bot.onText(/\/remindnow/, async (msg) => {
     if (!isAdmin(msg.chat.id)) { bot.sendMessage(msg.chat.id, "Только админ."); return; }
     bot.sendMessage(msg.chat.id, "Запускаю рассылку напоминаний…");
