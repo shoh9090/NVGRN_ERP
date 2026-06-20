@@ -10,7 +10,7 @@ const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const ADMIN_TG_ID = process.env.ADMIN_TG_ID;
 const WINDOW_DAYS = Number(process.env.AVG_WINDOW_DAYS || 14);
 const TZ_OFFSET_MS = 5 * 3600 * 1000; // Asia/Tashkent = UTC+5
-let botCfg = { times: ["18:00", "21:00", "23:00"], deadline: "00:00", window: WINDOW_DAYS, enabled: true };
+let botCfg = { times: ["18:00", "21:00", "23:00"], deadline: "00:00", window: WINDOW_DAYS, enabled: true, digestTime: "08:30", digestEnabled: true, signalsEnabled: true, sig1Days: 3, sig2Pct: 40, sig2Win: 7 };
 
 if (!TOKEN) { console.error("[СТАРТ] Нет TELEGRAM_BOT_TOKEN."); process.exit(1); }
 if (!process.env.DATABASE_URL) { console.error("[СТАРТ] Нет DATABASE_URL."); process.exit(1); }
@@ -20,6 +20,8 @@ const tzNow = () => new Date(Date.now() + TZ_OFFSET_MS);
 const tzToday = () => tzNow().toISOString().slice(0, 10);
 const tzTomorrow = () => new Date(Date.now() + TZ_OFFSET_MS + 86400000).toISOString().slice(0, 10);
 const tzHHMM = () => tzNow().toISOString().slice(11, 16).replace(":", "");
+const tzDateAgo = (n) => new Date(Date.now() + TZ_OFFSET_MS - n * 86400000).toISOString().slice(0, 10);
+const daysBetween = (a, b) => Math.round((Date.parse(b) - Date.parse(a)) / 86400000);
 function normPhone(v) { const d = String(v || "").replace(/\D/g, ""); return d.length > 9 ? d.slice(-9) : d; }
 const PH9 = (col) => `right(regexp_replace(coalesce(${col},''),'[^0-9]','','g'),9)`;
 
@@ -65,13 +67,15 @@ const freshOrdersToday = () => { _cache.delete("ordersToday"); return getOrdersT
 const getClientsAll = () => cached("clients", 600000, () => sd.fetchAll("getClient", {}));
 async function reloadCfg() {
   try {
-    const r = await db.query("SELECT reminder_times, deadline, avg_window_days, enabled FROM bot_settings WHERE id=1");
+    const r = await db.query("SELECT * FROM bot_settings WHERE id=1");
     if (r.rows[0]) {
       const s = r.rows[0];
       const times = String(s.reminder_times || "").split(",").map((x) => x.trim()).filter(Boolean);
       const win = Number(s.avg_window_days) || WINDOW_DAYS;
       if (win !== botCfg.window) _cache.delete("orders14");
-      botCfg = { times, deadline: s.deadline || "00:00", window: win, enabled: s.enabled !== false };
+      botCfg = { times, deadline: s.deadline || "00:00", window: win, enabled: s.enabled !== false,
+        digestTime: s.digest_time || "08:30", digestEnabled: s.digest_enabled !== false, signalsEnabled: s.signals_enabled !== false,
+        sig1Days: Number(s.signal1_days) || 3, sig2Pct: Number(s.signal2_pct) || 40, sig2Win: Number(s.signal2_window) || 7 };
     }
   } catch (e) { console.warn("[НАСТРОЙКИ]", e.message); }
 }
@@ -350,6 +354,14 @@ async function main() {
     } catch (e) { console.error("[ПЛАНИРОВЩИК]", e.message); }
   }
   setInterval(schedulerTick, 60000);
+  setInterval(agentDailyTick, 60000); // сводка агентам + сигналы (раз в день в digestTime)
+
+  bot.onText(/\/digestnow/, async (msg) => {
+    if (!isAdmin(msg.chat.id)) { bot.sendMessage(msg.chat.id, "Только админ."); return; }
+    bot.sendMessage(msg.chat.id, "Шлю сводки агентам и считаю сигналы…");
+    try { await runAgentDigests(); const n = await runSignals(); bot.sendMessage(msg.chat.id, `Готово. Сигналов отправлено: ${n}.`); }
+    catch (e) { bot.sendMessage(msg.chat.id, "Ошибка: " + e.message); }
+  });
 
   bot.onText(/\/remindnow/, async (msg) => {
     if (!isAdmin(msg.chat.id)) { bot.sendMessage(msg.chat.id, "Только админ."); return; }
@@ -427,30 +439,115 @@ async function main() {
   }
 
   // --- Бандл 2 (шаг 1): уведомления ---
+  async function resolveAgentChat(agentSd) {
+    let chatId = null, role = null;
+    if (agentSd) {
+      const a = (await db.query("SELECT telegram_chat_id FROM telegram_staff WHERE crm_agent_id=$1 AND role='agent' AND status='confirmed' AND telegram_chat_id IS NOT NULL ORDER BY id DESC LIMIT 1", [agentSd])).rows[0];
+      if (a) { chatId = a.telegram_chat_id; role = "agent"; }
+    }
+    if (!chatId) {
+      const h = (await db.query("SELECT telegram_chat_id FROM telegram_staff WHERE role='head_of_sales' AND status='confirmed' AND telegram_chat_id IS NOT NULL ORDER BY id DESC LIMIT 1")).rows[0];
+      if (h) { chatId = h.telegram_chat_id; role = "head_of_sales"; }
+    }
+    if (!chatId && ADMIN_TG_ID) { chatId = ADMIN_TG_ID; role = "admin"; }
+    return { chatId, role };
+  }
+  const rolePrefix = (role) => role === "agent" ? "" : (role === "head_of_sales" ? "(агент не привязан — вам как РОП)\n" : "(агент/РОП не привязаны — вам как админу)\n");
+  async function notifyAgentBySd(agentSd, text) {
+    const { chatId, role } = await resolveAgentChat(agentSd);
+    if (!chatId) return false;
+    try { await bot.sendMessage(chatId, rolePrefix(role) + text); return true; } catch (e) { console.warn("[УВЕД-АГ]", e.message); return false; }
+  }
   async function notifyClientAgent(sdId, bodyText, dedupKey) {
     try {
-      if (dedupKey) {
-        const seen = await db.query("SELECT 1 FROM notification_log WHERE dedup_key=$1", [dedupKey]);
-        if (seen.rows.length) return false;
-      }
+      if (dedupKey) { const seen = await db.query("SELECT 1 FROM notification_log WHERE dedup_key=$1", [dedupKey]); if (seen.rows.length) return false; }
       const pc = (await db.query("SELECT agent_sd_id, point_name, firm_name FROM point_contacts WHERE sd_id=$1", [sdId])).rows[0] || {};
-      let chatId = null, role = null;
-      if (pc.agent_sd_id) {
-        const a = (await db.query("SELECT telegram_chat_id FROM telegram_staff WHERE crm_agent_id=$1 AND role='agent' AND status='confirmed' AND telegram_chat_id IS NOT NULL ORDER BY id DESC LIMIT 1", [pc.agent_sd_id])).rows[0];
-        if (a) { chatId = a.telegram_chat_id; role = "agent"; }
-      }
-      if (!chatId) {
-        const h = (await db.query("SELECT telegram_chat_id FROM telegram_staff WHERE role='head_of_sales' AND status='confirmed' AND telegram_chat_id IS NOT NULL ORDER BY id DESC LIMIT 1")).rows[0];
-        if (h) { chatId = h.telegram_chat_id; role = "head_of_sales"; }
-      }
-      if (!chatId && ADMIN_TG_ID) { chatId = ADMIN_TG_ID; role = "admin"; }
+      const { chatId, role } = await resolveAgentChat(pc.agent_sd_id);
       if (!chatId) return false;
       const name = pc.point_name || pc.firm_name || sdId;
-      const prefix = role === "agent" ? "" : (role === "head_of_sales" ? "(агент не привязан — вам как РОП)\n" : "(агент и РОП не привязаны — вам как админу)\n");
-      await bot.sendMessage(chatId, prefix + bodyText.replace("{name}", name));
+      await bot.sendMessage(chatId, rolePrefix(role) + bodyText.replace("{name}", name));
       await db.query("INSERT INTO notification_log (kind, dedup_key, target_chat_id, target_role, sd_id) VALUES ('dop_order',$1,$2,$3,$4) ON CONFLICT (dedup_key) DO NOTHING", [dedupKey || null, chatId, role, sdId]);
       return true;
     } catch (e) { console.warn("[УВЕД-АГЕНТ]", e.message); return false; }
+  }
+  // --- Бандл 2 (шаг 2): сводка агенту + сигналы ---
+  async function buildDigest(crmAgentId) {
+    if (!crmAgentId) return null;
+    const pts = await pointsOfAgent(crmAgentId);
+    if (!pts.length) return null;
+    const today = tzToday();
+    const deliv = (await getOrders14()).filter((o) => String(o.dateShipment || "").slice(0, 10) === today && o.status !== 5);
+    const ptSet = new Set(pts.map((p) => p.sd_id));
+    const agentOrders = deliv.filter((o) => o.client && ptSet.has(o.client.SD_id));
+    const orderedSet = new Set(agentOrders.map((o) => o.client.SD_id));
+    const skipSet = new Set((await db.query("SELECT sd_id FROM reminder_skips WHERE rdate=$1", [today])).rows.map((r) => r.sd_id));
+    const not = pts.filter((p) => !orderedSet.has(p.sd_id));
+    const notToday = pts.filter((p) => skipSet.has(p.sd_id) && !orderedSet.has(p.sd_id));
+    const dop = Math.max(0, agentOrders.length - orderedSet.size);
+    const notList = not.slice(0, 40).map((p, i) => `${i + 1}. ${p.point_name || p.firm_name || p.sd_id}${p.zavsklad_phone ? " — " + p.zavsklad_phone : ""}`);
+    const text = `📋 Сводка на ${today}\nВаших точек: ${pts.length}\n✅ Заказали (доставка сегодня): ${orderedSet.size}\n🚫 Не заказали: ${not.length}\n🔕 «Не сегодня»: ${notToday.length}\n➕ Доп.заказы: ${dop}` + (notList.length ? `\n\nНе заказали:\n` + notList.join("\n") : "");
+    const keyboard = { inline_keyboard: [[{ text: "🚫 Не заказали", callback_data: "dg:not" }, { text: "👥 Мои клиенты", callback_data: "dg:clients" }], [{ text: "🔄 Обновить", callback_data: "dg:refresh" }]] };
+    return { text, keyboard };
+  }
+  async function sendOneDigest(chatId, crmAgentId) {
+    const d = await buildDigest(crmAgentId);
+    if (d) await bot.sendMessage(chatId, d.text, { reply_markup: d.keyboard });
+  }
+  async function runAgentDigests() {
+    const agents = (await db.query("SELECT crm_agent_id, telegram_chat_id FROM telegram_staff WHERE role='agent' AND status='confirmed' AND telegram_chat_id IS NOT NULL AND crm_agent_id IS NOT NULL")).rows;
+    for (const ag of agents) {
+      try { await sendOneDigest(ag.telegram_chat_id, ag.crm_agent_id); } catch (e) { console.warn("[СВОДКА→]", e.message); }
+      await new Promise((r) => setTimeout(r, 120));
+    }
+  }
+  async function runSignals() {
+    const today = tzToday(); const d7 = tzDateAgo(7), d14 = tzDateAgo(14);
+    const all = await getOrders14();
+    const byClient = {};
+    for (const o of all) {
+      const cid = o.client && o.client.SD_id; if (!cid) continue;
+      const dc = String(o.dateCreate || "").slice(0, 10); if (!dc) continue;
+      const sum = Number(o.totalSummaAfterDiscount || o.totalSumma || 0);
+      const c = byClient[cid] || (byClient[cid] = { last: "", w1: 0, w2: 0 });
+      if (dc > c.last) c.last = dc;
+      if (dc >= d7) c.w1 += sum; else if (dc >= d14) c.w2 += sum;
+    }
+    const pts = (await db.query("SELECT sd_id, point_name, firm_name, agent_sd_id FROM point_contacts WHERE coalesce(active,'Y')<>'N'")).rows;
+    const perAgent = {};
+    for (const p of pts) {
+      const c = byClient[p.sd_id]; if (!c || !c.last) continue;
+      const daysSince = daysBetween(c.last, today);
+      const name = p.point_name || p.firm_name || p.sd_id;
+      let sig = null, txt = null;
+      if (daysSince >= botCfg.sig1Days) { sig = "no_orders"; txt = `🔕 ${name}: нет заказов ${daysSince} дн.`; }
+      else if (c.w2 > 0 && c.w1 <= c.w2 * (1 - botCfg.sig2Pct / 100)) { sig = "sum_drop"; const pct = Math.round((1 - c.w1 / c.w2) * 100); txt = `📉 ${name}: сумма ↓${pct}% за неделю`; }
+      if (!sig) continue;
+      const ins = await db.query("INSERT INTO client_signals_log (sd_id, signal_type, sig_date) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING RETURNING id", [p.sd_id, sig, today]);
+      if (!ins.rowCount) continue;
+      (perAgent[p.agent_sd_id || "_none"] = perAgent[p.agent_sd_id || "_none"] || []).push(txt);
+    }
+    let total = 0;
+    for (const [agentSd, lines] of Object.entries(perAgent)) {
+      if (!lines.length) continue;
+      await notifyAgentBySd(agentSd === "_none" ? null : agentSd, "⚠️ Сигналы по клиентам:\n" + lines.join("\n"));
+      total += lines.length;
+      await new Promise((r) => setTimeout(r, 120));
+    }
+    return total;
+  }
+  let lastAgentDay = "";
+  async function agentDailyTick() {
+    try {
+      await reloadCfg();
+      if (!botCfg.digestEnabled && !botCfg.signalsEnabled) return;
+      const hhmm = tzNow().toISOString().slice(11, 16);
+      if (hhmm !== (botCfg.digestTime || "08:30")) return;
+      const today = tzToday();
+      if (lastAgentDay === today) return;
+      lastAgentDay = today;
+      if (botCfg.digestEnabled) await runAgentDigests();
+      if (botCfg.signalsEnabled) { const n = await runSignals(); console.log(`[СИГНАЛЫ] отправлено ${n}`); }
+    } catch (e) { console.error("[ДЕНЬ-АГЕНТ]", e.message); }
   }
 
   async function notifyNewlyConfirmed() {
@@ -562,6 +659,16 @@ async function main() {
         await bot.answerCallbackQuery(q.id); bot.sendChatAction(chatId, "typing");
         const v = renderCatalog(val, 0, lang, await getCatalog());
         await bot.editMessageText(v.text, { chat_id: chatId, message_id: q.message.message_id, reply_markup: v.reply_markup });
+        return;
+      }
+      if (act === "dg") {
+        await bot.answerCallbackQuery(q.id);
+        const stf = await getStaff(q.from.id);
+        if (!stf) return;
+        const sub = String(q.data).split(":")[1];
+        if (sub === "not") return handleStaffText(chatId, q.from.id, stf, "🚫 Не заказали");
+        if (sub === "clients") return handleStaffText(chatId, q.from.id, stf, "👥 Мои клиенты");
+        if (sub === "refresh") { bot.sendChatAction(chatId, "typing"); return sendOneDigest(chatId, stf.crm_agent_id); }
         return;
       }
       if (act === "cat") {

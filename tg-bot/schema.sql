@@ -181,3 +181,13 @@ CREATE TABLE IF NOT EXISTS notification_log (
   sd_id          TEXT,
   created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- ===== Бандл 2 (шаг 2): журнал сигналов по клиентам =====
+CREATE TABLE IF NOT EXISTS client_signals_log (
+  id          SERIAL PRIMARY KEY,
+  sd_id       TEXT,
+  signal_type TEXT,
+  sig_date    DATE,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (sd_id, signal_type, sig_date)
+);
