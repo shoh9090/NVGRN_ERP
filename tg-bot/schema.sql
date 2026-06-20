@@ -170,3 +170,14 @@ CREATE TABLE IF NOT EXISTS salesdoctor_sync_log (
   error      TEXT,
   ran_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- ===== Бандл 2 (шаг 1): журнал уведомлений =====
+CREATE TABLE IF NOT EXISTS notification_log (
+  id             SERIAL PRIMARY KEY,
+  kind           TEXT,
+  dedup_key      TEXT UNIQUE,
+  target_chat_id BIGINT,
+  target_role    TEXT,
+  sd_id          TEXT,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);

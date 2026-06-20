@@ -295,6 +295,8 @@ async function main() {
   setInterval(warmStock, 240000); // каждые 4 мин (TTL 5 мин)
   syncClientsBot(); // живая синхронизация клиентов/агентов из SD
   setInterval(syncClientsBot, 45 * 60 * 1000);
+  notifyNewlyConfirmed(); // проактивное «вы подтверждены»
+  setInterval(notifyNewlyConfirmed, 60000);
   setInterval(() => { _cache.delete("orders14"); getOrders14().catch(() => {}); }, 540000); // каждые 9 мин
 
   // ---- Планировщик напоминаний (времена берём из настроек плитки) ----
@@ -424,6 +426,49 @@ async function main() {
     return bot.sendMessage(chatId, `Меню (${roleTitle(stf.role)}):`, staffMenu(stf.role));
   }
 
+  // --- Бандл 2 (шаг 1): уведомления ---
+  async function notifyClientAgent(sdId, bodyText, dedupKey) {
+    try {
+      if (dedupKey) {
+        const seen = await db.query("SELECT 1 FROM notification_log WHERE dedup_key=$1", [dedupKey]);
+        if (seen.rows.length) return false;
+      }
+      const pc = (await db.query("SELECT agent_sd_id, point_name, firm_name FROM point_contacts WHERE sd_id=$1", [sdId])).rows[0] || {};
+      let chatId = null, role = null;
+      if (pc.agent_sd_id) {
+        const a = (await db.query("SELECT telegram_chat_id FROM telegram_staff WHERE crm_agent_id=$1 AND role='agent' AND status='confirmed' AND telegram_chat_id IS NOT NULL ORDER BY id DESC LIMIT 1", [pc.agent_sd_id])).rows[0];
+        if (a) { chatId = a.telegram_chat_id; role = "agent"; }
+      }
+      if (!chatId) {
+        const h = (await db.query("SELECT telegram_chat_id FROM telegram_staff WHERE role='head_of_sales' AND status='confirmed' AND telegram_chat_id IS NOT NULL ORDER BY id DESC LIMIT 1")).rows[0];
+        if (h) { chatId = h.telegram_chat_id; role = "head_of_sales"; }
+      }
+      if (!chatId && ADMIN_TG_ID) { chatId = ADMIN_TG_ID; role = "admin"; }
+      if (!chatId) return false;
+      const name = pc.point_name || pc.firm_name || sdId;
+      const prefix = role === "agent" ? "" : (role === "head_of_sales" ? "(агент не привязан — вам как РОП)\n" : "(агент и РОП не привязаны — вам как админу)\n");
+      await bot.sendMessage(chatId, prefix + bodyText.replace("{name}", name));
+      await db.query("INSERT INTO notification_log (kind, dedup_key, target_chat_id, target_role, sd_id) VALUES ('dop_order',$1,$2,$3,$4) ON CONFLICT (dedup_key) DO NOTHING", [dedupKey || null, chatId, role, sdId]);
+      return true;
+    } catch (e) { console.warn("[УВЕД-АГЕНТ]", e.message); return false; }
+  }
+
+  async function notifyNewlyConfirmed() {
+    try {
+      const rows = (await db.query("SELECT id, role, telegram_chat_id FROM telegram_staff WHERE status='confirmed' AND role IS NOT NULL AND telegram_chat_id IS NOT NULL")).rows;
+      for (const st of rows) {
+        const key = `confirm:${st.id}`;
+        const seen = await db.query("SELECT 1 FROM notification_log WHERE dedup_key=$1", [key]);
+        if (seen.rows.length) continue;
+        try {
+          await bot.sendMessage(st.telegram_chat_id, `✅ Вам открыт доступ как ${roleTitle(st.role)}. Меню ниже.`, staffMenu(st.role));
+          await db.query("INSERT INTO notification_log (kind, dedup_key, target_chat_id, target_role) VALUES ('confirm',$1,$2,$3) ON CONFLICT (dedup_key) DO NOTHING", [key, st.telegram_chat_id, st.role]);
+        } catch (e) { console.warn("[ПОДТВ→]", e.message); }
+        await new Promise((r) => setTimeout(r, 80));
+      }
+    } catch (e) { console.warn("[ПОДТВ]", e.message); }
+  }
+
   bot.onText(/\/start/, async (msg) => {
     await db.logEvent("start", msg.chat.id, { from: msg.from });
     bot.sendMessage(msg.chat.id, STR.choose_lang.ru, { reply_markup: { inline_keyboard: [[{ text: "Русский", callback_data: "lang:ru" }, { text: "O‘zbekcha", callback_data: "lang:uz" }]] } });
@@ -451,6 +496,7 @@ async function main() {
           [msg.from.id, chatId, msg.from.username || null, msg.from.first_name || null, msg.from.last_name || null, c.phone_number, stf.id]);
         await db.logEvent("staff_auth", chatId, { role: stf.role });
         bot.sendMessage(chatId, `Здравствуйте! Вы подключены как ${roleTitle(stf.role)}.`, staffMenu(stf.role));
+        await db.query("INSERT INTO notification_log (kind, dedup_key, target_chat_id, target_role) VALUES ('confirm',$1,$2,$3) ON CONFLICT (dedup_key) DO NOTHING", [`confirm:${stf.id}`, chatId, stf.role]).catch(() => {});
         return;
       }
       // 2) Клиент?
@@ -550,6 +596,10 @@ async function main() {
           await createOrderFromDraft(val, draft, draft.code);
           await db.logEvent("order_created", chatId, { sdId: val, mode: act, dop: !!draft.code });
           await bot.editMessageText(t(lang, "order_ok"), { chat_id: chatId, message_id: q.message.message_id });
+          if (draft.code) {
+            const n = draft.items.filter((it) => it.qty > 0).length;
+            notifyClientAgent(val, `➕ Доп.заказ через бот\nКлиент: {name}\nПозиций: ${n} · ${tzHHMM()}`, draft.code).catch(() => {});
+          }
         } catch (e) { console.error("[ЗАКАЗ]", e.message); await bot.editMessageText(t(lang, "order_err", e.message), { chat_id: chatId, message_id: q.message.message_id }); }
         return;
       }
