@@ -69,6 +69,20 @@
     .tgm-trash:hover{background:#fbece5;border-color:#e6c2b8}
     .tgm-assign{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:0}
     .tgm-assign select{min-width:118px}
+
+    .tgm-iconrow .grow{flex:1}
+    .tgm-rem{display:flex;flex-direction:column;gap:8px;margin-bottom:16px}
+    .tgm-remrow{display:flex;align-items:center;justify-content:space-between;gap:14px;font-size:13.5px;color:#14241b}
+    .tgm-remrow span{color:#52605a}
+    .tgm-remrow input[type=time],.tgm-remrow input[type=number]{font-family:inherit;font-size:14px;padding:7px 10px;border:1px solid #e6e2d6;border-radius:9px;background:#fff}
+    .tgm-remrow input:focus{outline:none;border-color:#6aa82f;box-shadow:0 0 0 3px rgba(140,198,63,.18)}
+    .tgm-fields{display:flex;flex-direction:column;gap:10px;border-top:1px dashed #d8d3c4;padding-top:14px}
+    .tgm-check{display:flex;align-items:center;gap:8px;font-size:13.5px;color:#14241b;font-weight:600}
+    .tgm-step{background:#fff;border:1px solid #e6e2d6;border-radius:12px;padding:14px 16px;margin-bottom:12px}
+    .tgm-step .tgm-note{margin:6px 0 10px}
+    .tgm-modal table.tgm-prev{font-size:12px}
+    .tgm-warn{background:#fff7e8;border-left:4px solid #e0a93f;color:#7a5a17;padding:8px 12px;border-radius:8px;font-size:12.5px;margin:10px 0}
+    .tgm-stat{display:inline-block;margin-right:14px;font-size:12.5px;color:#52605a}
   </style>
 </head>
 <body>
@@ -83,105 +97,101 @@
   <main class="wrap">
     <h2>Бот HoReCa — контакты для напоминаний</h2>
     <p class="muted">Список номеров, по которым Telegram-бот узнаёт завскладов точек и менеджеров сетей.</p>
+    <% var syncTxt='',syncOn=false; if (typeof syncedAt!=='undefined' && syncedAt){ var sd0=new Date(syncedAt); syncOn=(Date.now()-sd0.getTime())<3*3600000; syncTxt=sd0.toLocaleString('ru-RU',{timeZone:'Asia/Tashkent',hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit'}); } %>
     <div class="tgm-iconrow">
       <a class="tgm-icon" href="/tgbot/analytics" title="Аналитика по агентам (АКБ/ОКБ)"><svg width="19" height="19" viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="12" width="4.2" height="8" rx="1.2"/><rect x="9.9" y="6" width="4.2" height="14" rx="1.2"/><rect x="16.8" y="3" width="4.2" height="17" rx="1.2"/></svg></a>
       <button class="tgm-icon" id="openStaff" type="button" title="Telegram-агенты (сотрудники и роли)"><svg width="19" height="19" viewBox="0 0 24 24" fill="currentColor"><path d="M9.04 15.47 8.7 20.2c.49 0 .7-.21.96-.46l2.3-2.2 4.77 3.49c.87.48 1.5.23 1.73-.81l3.14-14.7c.28-1.3-.47-1.81-1.32-1.5L2.2 9.6c-1.27.5-1.25 1.2-.22 1.52l4.7 1.46L17.6 6.1c.5-.33.96-.15.58.18L9.04 15.47z"/></svg></button>
+      <button class="tgm-icon" id="openSettings" type="button" title="Настройки напоминаний"><svg width="19" height="19" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a6 6 0 0 0-6 6c0 4-1.4 5.4-2 6.2-.4.5 0 .9.5.9h15c.5 0 .9-.4.5-.9-.6-.8-2-2.2-2-6.2a6 6 0 0 0-6-6zm-2 18a2 2 0 0 0 4 0z"/></svg></button>
+      <button class="tgm-icon" id="openImport" type="button" title="Excel-форма контактов (резервная загрузка)"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-6.7-3M3 12a9 9 0 0 1 9-9 9 9 0 0 1 6.7 3"/><path d="M21 3v5h-5M3 21v-5h5"/></svg></button>
+      <span class="grow"></span>
+      <span class="tgm-chip <%= syncOn?'on':'' %>" title="CRM синхронизируется автоматически: агенты и клиенты"><span class="d"></span><%= syncedAt ? ('CRM синхронизирована · '+syncTxt) : 'CRM ещё не синхронизирована' %></span>
     </div>
 
-    <% if (error) { %><div class="banner err"><%= error %></div><% } %>
-    <% if (result) { %>
-      <div class="banner ok">
-        Сохранено. Точек: <b><%= result.points %></b>, менеджеров сетей: <b><%= result.managers %></b>.
-      </div>
-    <% } %>
-
-    <!-- Настройки напоминаний (РОП) -->
-    <div class="card">
-      <h3>Настройки напоминаний</h3>
-      <% if (settingsSaved) { %><div class="banner ok">Настройки сохранены. Бот применит их в течение минуты.</div><% } %>
-      <form method="POST" action="/tgbot/settings">
-        <p>Времена напоминаний (через запятую, по Ташкенту):<br>
-          <input type="text" name="reminder_times" value="<%= botSettings.reminder_times %>" style="width:260px" placeholder="18:00,21:00,23:00"></p>
-        <p>Дедлайн — после этого времени не напоминать:<br>
-          <input type="text" name="deadline" value="<%= botSettings.deadline %>" style="width:120px" placeholder="00:00"></p>
-        <p>Окно усреднения заказа (дней):<br>
-          <input type="number" name="avg_window_days" min="1" max="60" value="<%= botSettings.avg_window_days %>" style="width:90px"></p>
-        <p><label><input type="checkbox" name="enabled" <%= botSettings.enabled ? 'checked' : '' %>> Напоминания включены</label></p>
-        <button class="btn-go" type="submit">Сохранить настройки</button>
-      </form>
-      <div class="note">Формат времени — ЧЧ:ММ. Заказ сегодня → доставка завтра. Дедлайн 00:00 = без отдельного ограничения, напоминают только в указанные времена.</div>
-    </div>
-
-    <!-- Шаг 1 -->
-    <div class="card">
-      <h3>Шаг 1. Скачать форму</h3>
-      <p class="steps">Форма заполнена всеми активными HoReCa-точками. Агентам нужно вписать два номера: телефон завсклада (по точке) и телефон менеджера сети (по контрагенту).</p>
-      <a class="btn-dl" href="/tgbot/export">⬇ Скачать форму (Excel)</a>
-      <div class="note">Столбец <b>SD_id</b> не трогать. Номер менеджера сети у всех точек одного контрагента одинаковый — бот сам схлопнет в одну сводку.</div>
-    </div>
-
-    <!-- Шаг 2 -->
-    <div class="card">
-      <h3>Шаг 2. Загрузить заполненную форму</h3>
-      <form method="POST" action="/tgbot/import" enctype="multipart/form-data">
-        <input type="file" name="file" accept=".xlsx,.xls" required>
-        <br>
-        <button class="btn-go" type="submit">Проверить файл</button>
-      </form>
-      <p class="muted" style="margin-top:10px;">Сначала покажу, что получится, — сохранение только после подтверждения.</p>
-    </div>
-
-    <!-- Превью -->
-    <% if (preview) { %>
-      <div class="card">
-        <h3>Предпросмотр</h3>
-        <div>
-          <span class="stat">Строк в файле: <b><%= preview.summary.totalRows %></b></span>
-          <span class="stat">Точек к записи: <b><%= preview.summary.validPoints %></b></span>
-          <span class="stat">С номером завсклада: <b><%= preview.summary.withZavsklad %></b></span>
-          <span class="stat">Менеджеров сетей: <b><%= preview.summary.managers %></b></span>
-        </div>
-
-        <% if (preview.errors.length) { %>
-          <div class="warn">
-            Пропущено строк: <%= preview.errors.length %> (нет SD_id или ИНН).
-            <ul class="compact"><% preview.errors.slice(0,15).forEach(function(e){ %><li><%= e %></li><% }) %></ul>
-            <% if (preview.errors.length > 15) { %><div class="muted">…и ещё <%= preview.errors.length - 15 %></div><% } %>
-          </div>
-        <% } %>
-
-        <% if (preview.conflicts.length) { %>
-          <div class="warn">
-            Конфликты номеров менеджера:
-            <ul class="compact"><% preview.conflicts.forEach(function(c){ %><li><%= c %></li><% }) %></ul>
-          </div>
-        <% } %>
-
-        <% if (preview.sample.length) { %>
-          <table>
-            <tr><th>Точка</th><th>Контрагент</th><th>ИНН</th><th>Завсклад</th><th>Менеджер сети</th></tr>
-            <% preview.sample.forEach(function(r){ %>
-              <tr>
-                <td><%= r.point_name %></td>
-                <td><%= r.firm_name %></td>
-                <td><%= r.inn %></td>
-                <td><%= r.zavsklad_phone || '—' %></td>
-                <td><%= r.manager_phone || '—' %></td>
-              </tr>
-            <% }) %>
-          </table>
-          <% if (preview.summary.validPoints > preview.sample.length) { %>
-            <p class="muted">Показаны первые <%= preview.sample.length %> из <%= preview.summary.validPoints %>.</p>
-          <% } %>
-        <% } %>
-
-        <form method="POST" action="/tgbot/import/commit" style="margin-top:16px;">
-          <input type="hidden" name="payload" value="<%= preview.payload %>">
-          <button class="btn-go" type="submit">✓ Подтвердить и сохранить</button>
-        </form>
-      </div>
-    <% } %>
   </main>
+
+  <!-- Модалка «Настройки напоминаний» -->
+  <div class="tgm-overlay <%= openSettings ? 'on' : '' %>" id="settingsOverlay">
+    <div class="tgm-modal" style="max-width:560px">
+      <div class="tgm-hd">
+        <div style="flex:1"><div class="tgm-t">Настройки напоминаний</div><div class="tgm-s">Во сколько бот напоминает завскладам (по Ташкенту)</div></div>
+        <button class="tgm-icon" data-close-settings type="button"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+      </div>
+      <div class="tgm-body">
+        <% if (settingsSaved) { %><div class="tgm-bn ok">Сохранено. Бот применит в течение минуты.</div><% } %>
+        <% if (typeof error!=='undefined' && error && openSettings) { %><div class="tgm-bn err"><%= error %></div><% } %>
+        <% var slots=(botSettings.reminder_times||'').split(',').map(function(x){return x.trim();}).filter(Boolean); %>
+        <form method="POST" action="/tgbot/settings" id="remForm">
+          <div class="tgm-rem">
+            <% for (var i=0;i<5;i++){ %>
+              <label class="tgm-remrow"><span>Напоминание <%= i+1 %></span><input type="time" name="reminder_<%= i+1 %>" value="<%= slots[i]||'' %>"></label>
+            <% } %>
+          </div>
+          <div class="tgm-fields">
+            <label class="tgm-remrow"><span>Дедлайн — после не напоминать</span><input type="time" name="deadline" value="<%= botSettings.deadline||'00:00' %>"></label>
+            <label class="tgm-remrow"><span>Окно усреднения заказа (дней)</span><input type="number" name="avg_window_days" min="1" max="60" value="<%= botSettings.avg_window_days %>"></label>
+            <label class="tgm-check"><input type="checkbox" name="enabled" <%= botSettings.enabled ? 'checked' : '' %>> Напоминания включены</label>
+          </div>
+        </form>
+        <div class="tgm-note" style="margin-top:12px">Пустые поля времени пропускаются. Заказ сегодня → доставка завтра.</div>
+      </div>
+      <div class="tgm-ft">
+        <button class="tgm-btn tgm-green" type="submit" form="remForm">Сохранить</button>
+        <div class="grow"></div>
+        <button class="tgm-btn tgm-ghost" data-close-settings type="button">Закрыть</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Модалка «Excel-форма контактов» (резерв) -->
+  <div class="tgm-overlay <%= openImport ? 'on' : '' %>" id="importOverlay">
+    <div class="tgm-modal" style="max-width:780px">
+      <div class="tgm-hd">
+        <div style="flex:1"><div class="tgm-t">Excel-форма контактов</div><div class="tgm-s">Резервная загрузка — обычно клиенты приходят из SD автоматически</div></div>
+        <button class="tgm-icon" data-close-import type="button"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+      </div>
+      <div class="tgm-body">
+        <% if (result) { %><div class="tgm-bn ok">Сохранено. Точек: <b><%= result.points %></b>, менеджеров сетей: <b><%= result.managers %></b>.</div><% } %>
+        <% if (typeof error!=='undefined' && error && openImport) { %><div class="tgm-bn err"><%= error %></div><% } %>
+        <div class="tgm-step">
+          <div class="tgm-t" style="font-size:14px">Шаг 1. Скачать форму</div>
+          <div class="tgm-note">Форма заполнена активными HoReCa-точками. Агентам вписать телефон завсклада (по точке) и телефон менеджера сети (по контрагенту). Столбец <b>SD_id</b> не трогать.</div>
+          <a class="tgm-btn tgm-green" href="/tgbot/export"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M8 11l4 4 4-4M5 21h14"/></svg> Скачать форму (Excel)</a>
+        </div>
+        <div class="tgm-step">
+          <div class="tgm-t" style="font-size:14px">Шаг 2. Загрузить заполненную</div>
+          <form method="POST" action="/tgbot/import" enctype="multipart/form-data" class="tgm-rowform" style="margin-top:8px">
+            <input type="file" name="file" accept=".xlsx,.xls" required>
+            <button class="tgm-btn tgm-blue" type="submit">Проверить файл</button>
+          </form>
+          <div class="tgm-note">Сначала покажу превью — сохранение только после подтверждения.</div>
+        </div>
+        <% if (preview) { %>
+          <div class="tgm-step">
+            <div class="tgm-t" style="font-size:14px">Предпросмотр</div>
+            <div style="margin:8px 0">
+              <span class="tgm-stat">Строк: <b><%= preview.summary.totalRows %></b></span>
+              <span class="tgm-stat">К записи: <b><%= preview.summary.validPoints %></b></span>
+              <span class="tgm-stat">С завскладом: <b><%= preview.summary.withZavsklad %></b></span>
+              <span class="tgm-stat">Менеджеров: <b><%= preview.summary.managers %></b></span>
+            </div>
+            <% if (preview.errors.length) { %><div class="tgm-warn">Пропущено строк: <%= preview.errors.length %> (нет SD_id или ИНН).</div><% } %>
+            <% if (preview.conflicts.length) { %><div class="tgm-warn">Конфликты номеров менеджера: <%= preview.conflicts.length %> — возьму первый.</div><% } %>
+            <% if (preview.sample.length) { %>
+              <table class="tgm-prev"><thead><tr><th>Точка</th><th>Контрагент</th><th>ИНН</th><th>Завсклад</th><th>Менеджер</th></tr></thead><tbody>
+                <% preview.sample.forEach(function(r){ %><tr><td><%= r.point_name %></td><td><%= r.firm_name %></td><td><%= r.inn %></td><td><%= r.zavsklad_phone || '—' %></td><td><%= r.manager_phone || '—' %></td></tr><% }) %>
+              </tbody></table>
+              <% if (preview.summary.validPoints > preview.sample.length) { %><div class="tgm-note">Показаны первые <%= preview.sample.length %> из <%= preview.summary.validPoints %>.</div><% } %>
+            <% } %>
+            <form method="POST" action="/tgbot/import/commit" style="margin-top:14px">
+              <input type="hidden" name="payload" value="<%= preview.payload %>">
+              <button class="tgm-btn tgm-green" type="submit">✓ Подтвердить и сохранить</button>
+            </form>
+          </div>
+        <% } %>
+      </div>
+      <div class="tgm-ft"><div class="grow"></div><button class="tgm-btn tgm-ghost" data-close-import type="button">Закрыть</button></div>
+    </div>
+  </div>
 
   <!-- Модалка «Telegram-агенты» -->
   <div class="tgm-overlay <%= openStaff ? 'on' : '' %>" id="staffOverlay">
@@ -246,8 +256,6 @@
       <div class="tgm-ft">
         <form method="POST" action="/tgbot/staff/load-agents"><button class="tgm-btn tgm-blue" type="submit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7M21 4v4h-4"/></svg> Загрузить агентов из CRM</button></form>
         <a class="tgm-btn tgm-ghost" href="/tgbot?staff=1">Обновить</a>
-        <% var syncTxt='',syncOn=false; if (typeof syncedAt!=='undefined' && syncedAt){ var sd2=new Date(syncedAt); syncOn=(Date.now()-sd2.getTime())<3*3600000; syncTxt=sd2.toLocaleString('ru-RU',{timeZone:'Asia/Tashkent',hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit'}); } %>
-        <span class="tgm-chip <%= syncOn?'on':'' %>" title="Клиенты синхронизируются автоматически каждые ~45 минут"><span class="d"></span><%= syncedAt ? ('Синхронизировано · '+syncTxt) : 'Ещё не синхронизировано' %></span>
         <div class="grow"></div>
         <button class="tgm-btn tgm-ghost" data-close-staff type="button">Закрыть</button>
       </div>
@@ -256,12 +264,17 @@
 
   <script>
     (function(){
-      var ov=document.getElementById('staffOverlay');
-      var open=document.getElementById('openStaff');
-      if(open) open.addEventListener('click',function(){ov.classList.add('on');});
-      Array.prototype.forEach.call(document.querySelectorAll('[data-close-staff]'),function(b){b.addEventListener('click',function(){ov.classList.remove('on');});});
-      ov.addEventListener('click',function(e){if(e.target===ov)ov.classList.remove('on');});
-      document.addEventListener('keydown',function(e){if(e.key==='Escape')ov.classList.remove('on');});
+      function wire(ovId, openId, closeAttr){
+        var ov=document.getElementById(ovId); if(!ov) return;
+        var op=openId?document.getElementById(openId):null;
+        if(op) op.addEventListener('click',function(){ov.classList.add('on');});
+        Array.prototype.forEach.call(document.querySelectorAll('['+closeAttr+']'),function(b){b.addEventListener('click',function(){ov.classList.remove('on');});});
+        ov.addEventListener('click',function(e){if(e.target===ov)ov.classList.remove('on');});
+      }
+      wire('staffOverlay','openStaff','data-close-staff');
+      wire('settingsOverlay','openSettings','data-close-settings');
+      wire('importOverlay','openImport','data-close-import');
+      document.addEventListener('keydown',function(e){if(e.key==='Escape'){['staffOverlay','settingsOverlay','importOverlay'].forEach(function(id){var o=document.getElementById(id);if(o)o.classList.remove('on');});}});
     })();
   </script>
 </body>
