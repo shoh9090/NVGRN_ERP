@@ -21,7 +21,9 @@ function requireSalesAccess(req, res, next) {
 router.use(requireSalesAccess);
 
 // Таблицы контактов живут в схеме бота (tgbot). Создаём, если их ещё нет.
+let _tablesReady = false;
 async function ensureTables() {
+  if (_tablesReady) return;
   await db.pool.query('CREATE SCHEMA IF NOT EXISTS tgbot');
   await db.pool.query(`CREATE TABLE IF NOT EXISTS tgbot.point_contacts (
     sd_id          TEXT PRIMARY KEY,
@@ -69,6 +71,7 @@ async function ensureTables() {
     id SERIAL PRIMARY KEY, sync_type TEXT, created INT DEFAULT 0, updated INT DEFAULT 0,
     conflicts INT DEFAULT 0, error TEXT, ran_at TIMESTAMPTZ NOT NULL DEFAULT now()
   )`);
+  _tablesReady = true;
 }
 
 function normPhone9(v) { const d = String(v || '').replace(/\D/g, ''); return d.length > 9 ? d.slice(-9) : d; }
@@ -89,15 +92,28 @@ function normTimes(str) {
 }
 
 const cleanPhone = (v) => String(v || '').replace(/[^\d+]/g, '').trim();
-const render = (res, req, settings, extra) =>
+async function loadStaffData() {
+  await ensureTables();
+  const agents = (await db.pool.query("SELECT sd_agent_id, sd_agent_name, sd_agent_code FROM tgbot.crm_agents WHERE is_active ORDER BY sd_agent_name")).rows;
+  const staff = (await db.pool.query(
+    `SELECT s.*, a.sd_agent_name FROM tgbot.telegram_staff s
+     LEFT JOIN tgbot.crm_agents a ON a.sd_agent_id = s.crm_agent_id
+     ORDER BY CASE s.status WHEN 'new_request' THEN 0 ELSE 1 END, s.created_at DESC`)).rows;
+  return { agents, staff };
+}
+async function render(res, req, settings, extra) {
+  let sd = { agents: [], staff: [] };
+  try { sd = await loadStaffData(); } catch (e) { /* модалка будет пустой, не падаем */ }
   res.render('tgbot', Object.assign({ settings, user: req.user, preview: null, result: null, error: null,
-    botSettings: DEFAULT_BOT_SETTINGS, settingsSaved: false }, extra));
+    botSettings: DEFAULT_BOT_SETTINGS, settingsSaved: false,
+    agents: sd.agents, staff: sd.staff, staffMsg: null, staffErr: null, openStaff: false }, extra));
+}
 
 // Страница плитки.
 router.get('/', async (req, res) => {
   const settings = await db.getSettings();
   const botSettings = await getBotSettings();
-  render(res, req, settings, { botSettings });
+  await render(res, req, settings, { botSettings, staffMsg: req.query.msg || null, staffErr: req.query.err || null, openStaff: req.query.staff === '1' });
 });
 
 // ---- Бандл 1: раздел «Telegram-агенты» ----
@@ -116,49 +132,49 @@ router.get('/staff', async (req, res) => {
   catch (e) { res.status(500).send('Ошибка раздела: ' + e.message); }
 });
 router.post('/staff/load-agents', async (req, res) => {
-  try { const n = await integrations.syncCrmAgents(); res.redirect('/tgbot/staff?msg=' + encodeURIComponent('Загружено агентов из CRM: ' + n)); }
-  catch (e) { res.redirect('/tgbot/staff?err=' + encodeURIComponent(e.message)); }
+  try { const n = await integrations.syncCrmAgents(); res.redirect('/tgbot?staff=1&msg=' + encodeURIComponent('Загружено агентов из CRM: ' + n)); }
+  catch (e) { res.redirect('/tgbot?staff=1&err=' + encodeURIComponent(e.message)); }
 });
 router.post('/staff/sync-clients', async (req, res) => {
-  try { const n = await integrations.syncClientsToContacts(); res.redirect('/tgbot/staff?msg=' + encodeURIComponent('Синхронизировано клиентов: ' + n)); }
-  catch (e) { res.redirect('/tgbot/staff?err=' + encodeURIComponent(e.message)); }
+  try { const n = await integrations.syncClientsToContacts(); res.redirect('/tgbot?staff=1&msg=' + encodeURIComponent('Синхронизировано клиентов: ' + n)); }
+  catch (e) { res.redirect('/tgbot?staff=1&err=' + encodeURIComponent(e.message)); }
 });
 router.post('/staff/confirm', async (req, res) => {
   try {
     const role = ROLES.includes(req.body.role) ? req.body.role : 'agent';
     const agentId = req.body.crm_agent_id || null;
-    if (role === 'agent' && !agentId) return res.redirect('/tgbot/staff?err=' + encodeURIComponent('Для роли «агент» выберите агента из CRM.'));
+    if (role === 'agent' && !agentId) return res.redirect('/tgbot?staff=1&err=' + encodeURIComponent('Для роли «агент» выберите агента из CRM.'));
     await db.pool.query(
       `UPDATE tgbot.telegram_staff SET crm_agent_id=$1, role=$2, status='confirmed', confirmed_by=$3, confirmed_at=now(), disabled_at=NULL, updated_at=now() WHERE id=$4`,
       [agentId, role, String(req.user.id), req.body.id]);
-    res.redirect('/tgbot/staff?msg=' + encodeURIComponent('Сотрудник подтверждён.'));
-  } catch (e) { res.redirect('/tgbot/staff?err=' + encodeURIComponent(e.message)); }
+    res.redirect('/tgbot?staff=1&msg=' + encodeURIComponent('Сотрудник подтверждён.'));
+  } catch (e) { res.redirect('/tgbot?staff=1&err=' + encodeURIComponent(e.message)); }
 });
 router.post('/staff/reject', async (req, res) => {
   await db.pool.query(`UPDATE tgbot.telegram_staff SET status='rejected', updated_at=now() WHERE id=$1`, [req.body.id]);
-  res.redirect('/tgbot/staff?msg=' + encodeURIComponent('Заявка отклонена.'));
+  res.redirect('/tgbot?staff=1&msg=' + encodeURIComponent('Заявка отклонена.'));
 });
 router.post('/staff/disable', async (req, res) => {
   await db.pool.query(`UPDATE tgbot.telegram_staff SET status='disabled', disabled_at=now(), updated_at=now() WHERE id=$1`, [req.body.id]);
-  res.redirect('/tgbot/staff?msg=' + encodeURIComponent('Сотрудник отключён.'));
+  res.redirect('/tgbot?staff=1&msg=' + encodeURIComponent('Сотрудник отключён.'));
 });
 router.post('/staff/role', async (req, res) => {
   const role = ROLES.includes(req.body.role) ? req.body.role : 'agent';
   await db.pool.query(`UPDATE tgbot.telegram_staff SET role=$1, updated_at=now() WHERE id=$2`, [role, req.body.id]);
-  res.redirect('/tgbot/staff?msg=' + encodeURIComponent('Роль изменена.'));
+  res.redirect('/tgbot?staff=1&msg=' + encodeURIComponent('Роль изменена.'));
 });
 router.post('/staff/add-manual', async (req, res) => {
   try {
     const name = String(req.body.name || '').trim();
     const phone = String(req.body.phone || '').trim();
     const role = ROLES.includes(req.body.role) ? req.body.role : 'head_of_sales';
-    if (!name || !phone) return res.redirect('/tgbot/staff?err=' + encodeURIComponent('Укажите ФИО и телефон.'));
+    if (!name || !phone) return res.redirect('/tgbot?staff=1&err=' + encodeURIComponent('Укажите ФИО и телефон.'));
     await db.pool.query(
       `INSERT INTO tgbot.telegram_staff (telegram_first_name, phone_original, phone_normalized, crm_agent_id, role, status, confirmed_by, confirmed_at)
        VALUES ($1,$2,$3,$4,$5,'confirmed',$6,now())`,
       [name, phone, normPhone9(phone), req.body.crm_agent_id || null, role, String(req.user.id)]);
-    res.redirect('/tgbot/staff?msg=' + encodeURIComponent('Сотрудник добавлен. Пусть напишет боту и поделится номером.'));
-  } catch (e) { res.redirect('/tgbot/staff?err=' + encodeURIComponent(e.message)); }
+    res.redirect('/tgbot?staff=1&msg=' + encodeURIComponent('Сотрудник добавлен. Пусть напишет боту и поделится номером.'));
+  } catch (e) { res.redirect('/tgbot?staff=1&err=' + encodeURIComponent(e.message)); }
 });
 
 // Дашборд АКБ/ОКБ по агентам (для РОПа). Позже переедет в плитку «Продажи».
@@ -185,10 +201,10 @@ router.post('/settings', async (req, res) => {
     );
     await db.log(req.user.id, 'tgbot_settings', `times=${times} deadline=${deadline} window=${win} enabled=${enabled}`);
     const botSettings = await getBotSettings();
-    render(res, req, settings, { botSettings, settingsSaved: true });
+    await render(res, req, settings, { botSettings, settingsSaved: true });
   } catch (e) {
     const botSettings = await getBotSettings().catch(() => DEFAULT_BOT_SETTINGS);
-    render(res, req, settings, { botSettings, error: 'Не удалось сохранить настройки: ' + e.message });
+    await render(res, req, settings, { botSettings, error: 'Не удалось сохранить настройки: ' + e.message });
   }
 });
 
@@ -269,9 +285,9 @@ router.post('/import', upload.single('file'), async (req, res) => {
     };
     const payload = Buffer.from(JSON.stringify({ valid, managers })).toString('base64');
     const botSettings = await getBotSettings();
-    render(res, req, settings, { botSettings, preview: { summary, errors, conflicts, sample: valid.slice(0, 20), payload } });
+    await render(res, req, settings, { botSettings, preview: { summary, errors, conflicts, sample: valid.slice(0, 20), payload } });
   } catch (e) {
-    render(res, req, settings, { error: 'Не удалось прочитать файл: ' + e.message });
+    await render(res, req, settings, { error: 'Не удалось прочитать файл: ' + e.message });
   }
 });
 
@@ -304,9 +320,9 @@ router.post('/import/commit', async (req, res) => {
     }
     await db.log(req.user.id, 'tgbot_import', `точек ${pts}, менеджеров ${mgrs}`);
     const botSettings = await getBotSettings();
-    render(res, req, settings, { botSettings, result: { points: pts, managers: mgrs } });
+    await render(res, req, settings, { botSettings, result: { points: pts, managers: mgrs } });
   } catch (e) {
-    render(res, req, settings, { error: 'Не удалось сохранить: ' + e.message });
+    await render(res, req, settings, { error: 'Не удалось сохранить: ' + e.message });
   }
 });
 
