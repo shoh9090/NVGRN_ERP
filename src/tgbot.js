@@ -107,14 +107,14 @@ async function render(res, req, settings, extra) {
   try { sd = await loadStaffData(); } catch (e) { /* модалка будет пустой, не падаем */ }
   res.render('tgbot', Object.assign({ settings, user: req.user, preview: null, result: null, error: null,
     botSettings: DEFAULT_BOT_SETTINGS, settingsSaved: false,
-    agents: sd.agents, staff: sd.staff, syncedAt: sd.syncedAt || null, staffMsg: null, staffErr: null, openStaff: false }, extra));
+    agents: sd.agents, staff: sd.staff, syncedAt: sd.syncedAt || null, staffMsg: null, staffErr: null, openStaff: false, openSettings: false, openImport: false }, extra));
 }
 
 // Страница плитки.
 router.get('/', async (req, res) => {
   const settings = await db.getSettings();
   const botSettings = await getBotSettings();
-  await render(res, req, settings, { botSettings, staffMsg: req.query.msg || null, staffErr: req.query.err || null, openStaff: req.query.staff === '1' });
+  await render(res, req, settings, { botSettings, staffMsg: req.query.msg || null, staffErr: req.query.err || null, openStaff: req.query.staff === '1', openSettings: req.query.settings === '1', openImport: req.query.import === '1' });
 });
 
 // ---- Бандл 1: раздел «Telegram-агенты» ----
@@ -212,7 +212,9 @@ router.post('/settings', async (req, res) => {
   const settings = await db.getSettings();
   try {
     await ensureTables();
-    const times = normTimes(req.body.reminder_times).join(',');
+    const slots = [];
+    for (let i = 1; i <= 5; i++) { const v = normTimes(req.body['reminder_' + i])[0]; if (v) slots.push(v); }
+    const times = slots.join(',');
     const deadline = normTimes(req.body.deadline)[0] || '00:00';
     let win = parseInt(req.body.avg_window_days, 10); if (!(win >= 1 && win <= 60)) win = 14;
     const enabled = ['on', 'true', '1'].includes(String(req.body.enabled));
@@ -222,10 +224,10 @@ router.post('/settings', async (req, res) => {
     );
     await db.log(req.user.id, 'tgbot_settings', `times=${times} deadline=${deadline} window=${win} enabled=${enabled}`);
     const botSettings = await getBotSettings();
-    await render(res, req, settings, { botSettings, settingsSaved: true });
+    await render(res, req, settings, { botSettings, settingsSaved: true, openSettings: true });
   } catch (e) {
     const botSettings = await getBotSettings().catch(() => DEFAULT_BOT_SETTINGS);
-    await render(res, req, settings, { botSettings, error: 'Не удалось сохранить настройки: ' + e.message });
+    await render(res, req, settings, { botSettings, error: 'Не удалось сохранить настройки: ' + e.message, openSettings: true });
   }
 });
 
@@ -306,9 +308,9 @@ router.post('/import', upload.single('file'), async (req, res) => {
     };
     const payload = Buffer.from(JSON.stringify({ valid, managers })).toString('base64');
     const botSettings = await getBotSettings();
-    await render(res, req, settings, { botSettings, preview: { summary, errors, conflicts, sample: valid.slice(0, 20), payload } });
+    await render(res, req, settings, { botSettings, preview: { summary, errors, conflicts, sample: valid.slice(0, 20), payload }, openImport: true });
   } catch (e) {
-    await render(res, req, settings, { error: 'Не удалось прочитать файл: ' + e.message });
+    await render(res, req, settings, { error: 'Не удалось прочитать файл: ' + e.message, openImport: true });
   }
 });
 
@@ -341,9 +343,9 @@ router.post('/import/commit', async (req, res) => {
     }
     await db.log(req.user.id, 'tgbot_import', `точек ${pts}, менеджеров ${mgrs}`);
     const botSettings = await getBotSettings();
-    await render(res, req, settings, { botSettings, result: { points: pts, managers: mgrs } });
+    await render(res, req, settings, { botSettings, result: { points: pts, managers: mgrs }, openImport: true });
   } catch (e) {
-    await render(res, req, settings, { error: 'Не удалось сохранить: ' + e.message });
+    await render(res, req, settings, { error: 'Не удалось сохранить: ' + e.message, openImport: true });
   }
 });
 
