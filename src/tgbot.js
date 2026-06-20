@@ -99,14 +99,15 @@ async function loadStaffData() {
     `SELECT s.*, a.sd_agent_name FROM tgbot.telegram_staff s
      LEFT JOIN tgbot.crm_agents a ON a.sd_agent_id = s.crm_agent_id
      ORDER BY CASE s.status WHEN 'new_request' THEN 0 ELSE 1 END, s.created_at DESC`)).rows;
-  return { agents, staff };
+  const sync = (await db.pool.query("SELECT ran_at FROM tgbot.salesdoctor_sync_log WHERE sync_type <> 'agents' ORDER BY ran_at DESC LIMIT 1")).rows[0];
+  return { agents, staff, syncedAt: sync ? sync.ran_at : null };
 }
 async function render(res, req, settings, extra) {
-  let sd = { agents: [], staff: [] };
+  let sd = { agents: [], staff: [], syncedAt: null };
   try { sd = await loadStaffData(); } catch (e) { /* модалка будет пустой, не падаем */ }
   res.render('tgbot', Object.assign({ settings, user: req.user, preview: null, result: null, error: null,
     botSettings: DEFAULT_BOT_SETTINGS, settingsSaved: false,
-    agents: sd.agents, staff: sd.staff, staffMsg: null, staffErr: null, openStaff: false }, extra));
+    agents: sd.agents, staff: sd.staff, syncedAt: sd.syncedAt || null, staffMsg: null, staffErr: null, openStaff: false }, extra));
 }
 
 // Страница плитки.
@@ -137,6 +138,26 @@ router.post('/staff/load-agents', async (req, res) => {
 });
 router.post('/staff/sync-clients', async (req, res) => {
   try { const n = await integrations.syncClientsToContacts(); res.redirect('/tgbot?staff=1&msg=' + encodeURIComponent('Синхронизировано клиентов: ' + n)); }
+  catch (e) { res.redirect('/tgbot?staff=1&err=' + encodeURIComponent(e.message)); }
+});
+router.post('/staff/assign', async (req, res) => {
+  try {
+    const id = req.body.id;
+    let role = ROLES.includes(req.body.role) ? req.body.role : null;
+    const agentId = req.body.crm_agent_id || null;
+    if (agentId && !role) role = 'agent';
+    const confirmed = !!(role && (role !== 'agent' || agentId));
+    await db.pool.query(
+      `UPDATE tgbot.telegram_staff SET crm_agent_id=$1, role=$2, status=$3,
+        confirmed_by=CASE WHEN $3='confirmed' THEN $4 ELSE confirmed_by END,
+        confirmed_at=CASE WHEN $3='confirmed' THEN now() ELSE confirmed_at END,
+        updated_at=now() WHERE id=$5`,
+      [agentId, role, confirmed ? 'confirmed' : 'new_request', String(req.user.id), id]);
+    res.redirect('/tgbot?staff=1');
+  } catch (e) { res.redirect('/tgbot?staff=1&err=' + encodeURIComponent(e.message)); }
+});
+router.post('/staff/delete', async (req, res) => {
+  try { await db.pool.query('DELETE FROM tgbot.telegram_staff WHERE id=$1', [req.body.id]); res.redirect('/tgbot?staff=1&msg=' + encodeURIComponent('Сотрудник удалён.')); }
   catch (e) { res.redirect('/tgbot?staff=1&err=' + encodeURIComponent(e.message)); }
 });
 router.post('/staff/confirm', async (req, res) => {
