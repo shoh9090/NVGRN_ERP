@@ -103,6 +103,7 @@
       <button class="tgm-icon" id="openStaff" type="button" title="Telegram-агенты (сотрудники и роли)"><svg width="19" height="19" viewBox="0 0 24 24" fill="currentColor"><path d="M9.04 15.47 8.7 20.2c.49 0 .7-.21.96-.46l2.3-2.2 4.77 3.49c.87.48 1.5.23 1.73-.81l3.14-14.7c.28-1.3-.47-1.81-1.32-1.5L2.2 9.6c-1.27.5-1.25 1.2-.22 1.52l4.7 1.46L17.6 6.1c.5-.33.96-.15.58.18L9.04 15.47z"/></svg></button>
       <button class="tgm-icon" id="openSettings" type="button" title="Настройки напоминаний"><svg width="19" height="19" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a6 6 0 0 0-6 6c0 4-1.4 5.4-2 6.2-.4.5 0 .9.5.9h15c.5 0 .9-.4.5-.9-.6-.8-2-2.2-2-6.2a6 6 0 0 0-6-6zm-2 18a2 2 0 0 0 4 0z"/></svg></button>
       <button class="tgm-icon" id="openAgent" type="button" title="Сводки и сигналы (для агентов)"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4h6v2.5H9z"/><path d="M8.5 11h7M8.5 15h5"/></svg></button>
+      <a class="tgm-icon" href="/tgbot?repl=1" title="Замены товара (нет в наличии → предложить замену)"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h13l-3-3M4 7l3 3M20 17H7l3 3M20 17l-3-3"/></svg></a>
       <button class="tgm-icon" id="openImport" type="button" title="Excel-форма контактов (резервная загрузка)"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-6.7-3M3 12a9 9 0 0 1 9-9 9 9 0 0 1 6.7 3"/><path d="M21 3v5h-5M3 21v-5h5"/></svg></button>
       <span class="grow"></span>
       <span class="tgm-chip <%= syncOn?'on':'' %>" title="CRM синхронизируется автоматически: агенты и клиенты"><span class="d"></span><%= syncedAt ? ('CRM синхронизирована · '+syncTxt) : 'CRM ещё не синхронизирована' %></span>
@@ -139,6 +140,49 @@
         <div class="grow"></div>
         <button class="tgm-btn tgm-ghost" data-close-agent type="button">Закрыть</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Модалка «Замены товара» -->
+  <div class="tgm-overlay <%= openRepl ? 'on' : '' %>" id="replOverlay">
+    <div class="tgm-modal" style="max-width:680px">
+      <div class="tgm-hd">
+        <div style="flex:1"><div class="tgm-t">Замены товара</div><div class="tgm-s">Нет в наличии → бот предложит замену (не подставляет сам)</div></div>
+        <button class="tgm-icon" data-close-repl type="button"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+      </div>
+      <div class="tgm-body">
+        <% if (msg && openRepl) { %><div class="tgm-bn ok"><%= msg %></div><% } %>
+        <% if (typeof err!=='undefined' && err && openRepl) { %><div class="tgm-bn err"><%= err %></div><% } %>
+        <div class="tgm-step">
+          <div class="tgm-t" style="font-size:14px">Добавить замену</div>
+          <% if (!products.length) { %><div class="tgm-note">Список товаров не загрузился. Нажмите иконку «Замены товара» ещё раз.</div><% } %>
+          <form method="POST" action="/tgbot/replacements/add" class="tgm-rowform" style="margin-top:8px">
+            <select name="product_sd_id" required style="max-width:240px"><option value="">— которого нет —</option><% products.forEach(function(pr){ %><option value="<%= pr.SD_id %>"><%= pr.name %></option><% }) %></select>
+            <span style="font-weight:700">→</span>
+            <select name="replacement_sd_id" required style="max-width:240px"><option value="">— заменить на —</option><% products.forEach(function(pr){ %><option value="<%= pr.SD_id %>"><%= pr.name %></option><% }) %></select>
+            <button class="tgm-sm go" type="submit">Добавить</button>
+          </form>
+        </div>
+        <table>
+          <thead><tr><th>Нет в наличии</th><th>Замена</th><th></th></tr></thead>
+          <tbody>
+            <% if (!replacements.length) { %><tr><td colspan="3" class="tgm-note" style="margin:0">Замен пока нет. Добавьте первую — бот будет предлагать её, когда товара нет на складе.</td></tr><% } %>
+            <% replacements.forEach(function(rp){ %>
+            <tr>
+              <td><%= rp.product_name || rp.product_sd_id %></td>
+              <td>→ <%= rp.replacement_name || rp.replacement_sd_id %></td>
+              <td style="text-align:right">
+                <form method="POST" action="/tgbot/replacements/delete" onsubmit="return confirm('Удалить замену?')">
+                  <input type="hidden" name="id" value="<%= rp.id %>">
+                  <button class="tgm-trash" type="submit" title="Удалить"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg></button>
+                </form>
+              </td>
+            </tr>
+            <% }) %>
+          </tbody>
+        </table>
+      </div>
+      <div class="tgm-ft"><div class="grow"></div><button class="tgm-btn tgm-ghost" data-close-repl type="button">Закрыть</button></div>
     </div>
   </div>
 
@@ -308,7 +352,8 @@
       wire('settingsOverlay','openSettings','data-close-settings');
       wire('importOverlay','openImport','data-close-import');
       wire('agentOverlay','openAgent','data-close-agent');
-      document.addEventListener('keydown',function(e){if(e.key==='Escape'){['staffOverlay','settingsOverlay','importOverlay','agentOverlay'].forEach(function(id){var o=document.getElementById(id);if(o)o.classList.remove('on');});}});
+      wire('replOverlay',null,'data-close-repl');
+      document.addEventListener('keydown',function(e){if(e.key==='Escape'){['staffOverlay','settingsOverlay','importOverlay','agentOverlay','replOverlay'].forEach(function(id){var o=document.getElementById(id);if(o)o.classList.remove('on');});}});
     })();
   </script>
 </body>
