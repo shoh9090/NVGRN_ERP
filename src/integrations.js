@@ -566,4 +566,18 @@ async function syncClientsToContacts() {
   return n;
 }
 
-module.exports = { getSdConfig, saveSdConfig, testConnection, syncFinishedGoods, syncPrices, diagSD, getHorecaPoints, getAgentCoverage, syncCrmAgents, syncClientsToContacts };
+// --- Бандл 3: список товаров для замен (кэш 10 мин) ---
+let _prodCache = null, _prodAt = 0;
+async function getSdProducts() {
+  if (_prodCache && Date.now() - _prodAt < 600000) return _prodCache;
+  const cfg = await getSdConfig();
+  if (!cfg.url || !cfg.login || !cfg.password) throw new Error('Сначала заполните доступ к SalesDoctor.');
+  const auth = await sdLogin(cfg);
+  const prods = await sdGetAll(cfg, auth, 'getProduct', 'product', {});
+  const out = prods.filter((p) => p.SD_id && p.name).map((p) => ({ SD_id: String(p.SD_id), name: String(p.name) }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  _prodCache = out; _prodAt = Date.now();
+  return out;
+}
+
+module.exports = { getSdConfig, saveSdConfig, testConnection, syncFinishedGoods, syncPrices, diagSD, getHorecaPoints, getAgentCoverage, syncCrmAgents, syncClientsToContacts, getSdProducts };

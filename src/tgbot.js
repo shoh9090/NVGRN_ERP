@@ -77,6 +77,11 @@ async function ensureTables() {
     id SERIAL PRIMARY KEY, sync_type TEXT, created INT DEFAULT 0, updated INT DEFAULT 0,
     conflicts INT DEFAULT 0, error TEXT, ran_at TIMESTAMPTZ NOT NULL DEFAULT now()
   )`);
+  await db.pool.query(`CREATE TABLE IF NOT EXISTS tgbot.product_replacements (
+    id SERIAL PRIMARY KEY, product_sd_id TEXT, product_name TEXT,
+    replacement_sd_id TEXT, replacement_name TEXT, active BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(), UNIQUE (product_sd_id, replacement_sd_id)
+  )`);
   _tablesReady = true;
 }
 
@@ -106,21 +111,24 @@ async function loadStaffData() {
      LEFT JOIN tgbot.crm_agents a ON a.sd_agent_id = s.crm_agent_id
      ORDER BY CASE s.status WHEN 'new_request' THEN 0 ELSE 1 END, s.created_at DESC`)).rows;
   const sync = (await db.pool.query("SELECT ran_at FROM tgbot.salesdoctor_sync_log WHERE sync_type <> 'agents' ORDER BY ran_at DESC LIMIT 1")).rows[0];
-  return { agents, staff, syncedAt: sync ? sync.ran_at : null };
+  const replacements = (await db.pool.query('SELECT * FROM tgbot.product_replacements ORDER BY product_name')).rows;
+  return { agents, staff, syncedAt: sync ? sync.ran_at : null, replacements };
 }
 async function render(res, req, settings, extra) {
-  let sd = { agents: [], staff: [], syncedAt: null };
+  let sd = { agents: [], staff: [], syncedAt: null, replacements: [] };
   try { sd = await loadStaffData(); } catch (e) { /* модалка будет пустой, не падаем */ }
+  let products = [];
+  if (extra && extra.openRepl) { try { products = await integrations.getSdProducts(); } catch (e) { /* список пуст */ } }
   res.render('tgbot', Object.assign({ settings, user: req.user, preview: null, result: null, error: null,
     botSettings: DEFAULT_BOT_SETTINGS, settingsSaved: false,
-    agents: sd.agents, staff: sd.staff, syncedAt: sd.syncedAt || null, staffMsg: null, staffErr: null, openStaff: false, openSettings: false, openImport: false, openAgent: false }, extra));
+    agents: sd.agents, staff: sd.staff, syncedAt: sd.syncedAt || null, replacements: sd.replacements || [], products, staffMsg: null, staffErr: null, openStaff: false, openSettings: false, openImport: false, openAgent: false, openRepl: false }, extra));
 }
 
 // Страница плитки.
 router.get('/', async (req, res) => {
   const settings = await db.getSettings();
   const botSettings = await getBotSettings();
-  await render(res, req, settings, { botSettings, staffMsg: req.query.msg || null, staffErr: req.query.err || null, openStaff: req.query.staff === '1', openSettings: req.query.settings === '1', openImport: req.query.import === '1', openAgent: req.query.agent === '1' });
+  await render(res, req, settings, { botSettings, staffMsg: req.query.msg || null, staffErr: req.query.err || null, openStaff: req.query.staff === '1', openSettings: req.query.settings === '1', openImport: req.query.import === '1', openAgent: req.query.agent === '1', openRepl: req.query.repl === '1' });
 });
 
 // ---- Бандл 1: раздел «Telegram-агенты» ----
@@ -202,6 +210,26 @@ router.post('/staff/add-manual', async (req, res) => {
       [name, phone, normPhone9(phone), req.body.crm_agent_id || null, role, String(req.user.id)]);
     res.redirect('/tgbot?staff=1&msg=' + encodeURIComponent('Сотрудник добавлен. Пусть напишет боту и поделится номером.'));
   } catch (e) { res.redirect('/tgbot?staff=1&err=' + encodeURIComponent(e.message)); }
+});
+
+router.post('/replacements/add', async (req, res) => {
+  try {
+    await ensureTables();
+    const ps = req.body.product_sd_id, rs = req.body.replacement_sd_id;
+    if (!ps || !rs) return res.redirect('/tgbot?repl=1&err=' + encodeURIComponent('Выберите оба товара.'));
+    if (ps === rs) return res.redirect('/tgbot?repl=1&err=' + encodeURIComponent('Товар и замена не могут совпадать.'));
+    let pn = '', rn = '';
+    try { const prods = await integrations.getSdProducts(); const m = {}; prods.forEach((p) => { m[p.SD_id] = p.name; }); pn = m[ps] || ps; rn = m[rs] || rs; } catch (e) { pn = ps; rn = rs; }
+    await db.pool.query(
+      `INSERT INTO tgbot.product_replacements (product_sd_id, product_name, replacement_sd_id, replacement_name, active)
+       VALUES ($1,$2,$3,$4,true) ON CONFLICT (product_sd_id, replacement_sd_id) DO UPDATE SET active=true, product_name=$2, replacement_name=$4`,
+      [ps, pn, rs, rn]);
+    res.redirect('/tgbot?repl=1&msg=' + encodeURIComponent('Замена добавлена.'));
+  } catch (e) { res.redirect('/tgbot?repl=1&err=' + encodeURIComponent(e.message)); }
+});
+router.post('/replacements/delete', async (req, res) => {
+  try { await db.pool.query('DELETE FROM tgbot.product_replacements WHERE id=$1', [req.body.id]); res.redirect('/tgbot?repl=1&msg=' + encodeURIComponent('Замена удалена.')); }
+  catch (e) { res.redirect('/tgbot?repl=1&err=' + encodeURIComponent(e.message)); }
 });
 
 // Дашборд АКБ/ОКБ по агентам (для РОПа). Позже переедет в плитку «Продажи».
