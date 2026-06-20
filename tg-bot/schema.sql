@@ -121,3 +121,52 @@ CREATE TABLE IF NOT EXISTS reminder_log (
   sent_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (sd_id, rdate, slot)
 );
+
+-- ===== Бандл 1: сотрудники, роли, синхронизация из SalesDoctor =====
+
+-- Агенты, подтянутые из SalesDoctor (getAgent). У агентов в SD телефона нет.
+CREATE TABLE IF NOT EXISTS crm_agents (
+  sd_agent_id    TEXT PRIMARY KEY,
+  sd_agent_code  TEXT,
+  sd_agent_name  TEXT,
+  is_active      BOOLEAN NOT NULL DEFAULT true,
+  last_synced_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Telegram-сотрудники (агент / РОП / админ). Связка номер -> агент -> роль.
+CREATE TABLE IF NOT EXISTS telegram_staff (
+  id                  SERIAL PRIMARY KEY,
+  telegram_user_id    BIGINT UNIQUE,
+  telegram_chat_id    BIGINT,
+  telegram_username   TEXT,
+  telegram_first_name TEXT,
+  telegram_last_name  TEXT,
+  phone_original      TEXT,
+  phone_normalized    TEXT,
+  crm_agent_id        TEXT,
+  role                TEXT,                         -- agent / head_of_sales / admin
+  status              TEXT NOT NULL DEFAULT 'new_request',
+  confirmed_by        TEXT,
+  confirmed_at        TIMESTAMPTZ,
+  disabled_at         TIMESTAMPTZ,
+  comment             TEXT,
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_staff_phone ON telegram_staff(phone_normalized);
+
+-- Живая синхронизация: к точке добавляем агента, активность, дату последнего заказа.
+ALTER TABLE point_contacts ADD COLUMN IF NOT EXISTS agent_sd_id     TEXT;
+ALTER TABLE point_contacts ADD COLUMN IF NOT EXISTS active          TEXT;
+ALTER TABLE point_contacts ADD COLUMN IF NOT EXISTS last_order_date DATE;
+
+-- Лог синхронизации с SalesDoctor.
+CREATE TABLE IF NOT EXISTS salesdoctor_sync_log (
+  id         SERIAL PRIMARY KEY,
+  sync_type  TEXT,            -- full / quick / manual / agents
+  created    INT DEFAULT 0,
+  updated    INT DEFAULT 0,
+  conflicts  INT DEFAULT 0,
+  error      TEXT,
+  ran_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);

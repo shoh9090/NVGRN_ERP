@@ -82,6 +82,51 @@ async function pointsByPhone9(p9) { if (!p9) return []; const r = await db.query
 async function chainsByPhone9(p9) { if (!p9) return []; const r = await db.query(`SELECT inn, firm_name FROM chain_managers WHERE ${PH9("manager_phone")}=$1`, [p9]); return r.rows; }
 async function pointsOfUser(tgId) { return pointsByPhone9(await phone9OfUser(tgId)); }
 
+// ---------- Бандл 1: сотрудники, роли, синхронизация ----------
+async function getStaff(tgId) {
+  const r = await db.query("SELECT role, crm_agent_id, status FROM telegram_staff WHERE telegram_user_id=$1", [tgId]);
+  const s = r.rows[0];
+  return (s && s.status === "confirmed" && s.role) ? s : null;
+}
+async function staffByPhone9(p9) {
+  if (!p9) return null;
+  const r = await db.query("SELECT * FROM telegram_staff WHERE phone_normalized=$1 ORDER BY (status='confirmed') DESC, id DESC LIMIT 1", [p9]);
+  return r.rows[0] || null;
+}
+async function pointsOfAgent(agentSdId) {
+  if (!agentSdId) return [];
+  const r = await db.query("SELECT sd_id, point_name, firm_name, zavsklad_phone FROM point_contacts WHERE agent_sd_id=$1 AND coalesce(active,'Y')<>'N' ORDER BY point_name", [agentSdId]);
+  return r.rows;
+}
+async function allActivePoints() {
+  const r = await db.query("SELECT sd_id, point_name, firm_name, zavsklad_phone FROM point_contacts WHERE coalesce(active,'Y')<>'N' ORDER BY point_name");
+  return r.rows;
+}
+async function syncClientsBot() {
+  try {
+    const catId = await sd.resolveCategoryId("Horeca"); if (!catId) return 0;
+    const clients = (await sd.fetchAll("getClient", {})).filter((c) => c.active === "Y" && c.category && c.category.SD_id === catId);
+    for (const c of clients) {
+      if (!c.SD_id) continue;
+      const agent = (c.agents && c.agents[0] && c.agents[0].id) || null;
+      await db.query(`INSERT INTO point_contacts (sd_id, point_name, firm_name, inn, zavsklad_phone, agent_sd_id, active, updated_at, updated_by)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,now(),'bot_sync')
+        ON CONFLICT (sd_id) DO UPDATE SET point_name=$2, firm_name=$3, inn=$4, zavsklad_phone=$5, agent_sd_id=$6, active=$7, updated_at=now(), updated_by='bot_sync'`,
+        [c.SD_id, c.name || c.SD_id, c.firmName || null, c.inn || null, c.tel || null, agent, c.active || "Y"]);
+    }
+    await db.query("INSERT INTO salesdoctor_sync_log (sync_type, updated) VALUES ('quick',$1)", [clients.length]).catch(() => {});
+    console.log(`[СИНХРОНИЗАЦИЯ] клиентов: ${clients.length}`);
+    return clients.length;
+  } catch (e) { console.warn("[СИНХРОНИЗАЦИЯ]", e.message); return 0; }
+}
+const STAFF_MENU = {
+  agent: [["👥 Мои клиенты"], ["🚫 Не заказали"], ["📊 Моя сводка"], ["➕ Доп. заказы"], ["📉 Сигналы"]],
+  head_of_sales: [["📊 Сводка отдела"], ["👥 По агентам"], ["🚫 Не заказали"], ["➕ Доп. заказы"], ["📉 Сигналы"], ["⚠️ Ошибки", "🔄 Синхронизация"]],
+  admin: [["🔄 Синхронизация"], ["👤 Telegram-сотрудники"], ["⚠️ Ошибки"], ["📦 Очередь заказов"], ["⚙️ Настройки"]],
+};
+const staffMenu = (role) => ({ reply_markup: { keyboard: STAFF_MENU[role] || [], resize_keyboard: true } });
+const roleTitle = (role) => role === "admin" ? "админ" : role === "head_of_sales" ? "руководитель продаж" : "торговый агент";
+
 // ---------- Языки ----------
 const STR = {
   choose_lang: { ru: "Выберите язык / Tilni tanlang:", uz: "Tilni tanlang / Выберите язык:" },
@@ -248,6 +293,8 @@ async function main() {
   getHorecaProdCat().catch(() => {});
   warmStock(); getOrders14().catch(() => {});
   setInterval(warmStock, 240000); // каждые 4 мин (TTL 5 мин)
+  syncClientsBot(); // живая синхронизация клиентов/агентов из SD
+  setInterval(syncClientsBot, 45 * 60 * 1000);
   setInterval(() => { _cache.delete("orders14"); getOrders14().catch(() => {}); }, 540000); // каждые 9 мин
 
   // ---- Планировщик напоминаний (времена берём из настроек плитки) ----
@@ -263,15 +310,21 @@ async function main() {
       const points = await pointsByPhone9(u.phone9);
       if (!points.length) continue;
       const lang = await getLang(u.chat_id);
+      const logSkip = (sdId, reason) => db.logEvent("reminder_skip", u.chat_id, { sd_id: sdId, reason, date, slot }).catch(() => {});
       for (const pt of points) {
-        if (ordered.has(pt.sd_id)) continue;
+        const nm = pt.point_name || pt.firm_name || "";
+        if (ordered.has(pt.sd_id)) { await logSkip(pt.sd_id, "CLIENT_ALREADY_ORDERED"); continue; }
         const sk = await db.query("SELECT 1 FROM reminder_skips WHERE sd_id=$1 AND rdate=$2", [pt.sd_id, date]);
-        if (sk.rows.length) continue;
+        if (sk.rows.length) { await logSkip(pt.sd_id, "CLIENT_CLICKED_NOT_TODAY"); continue; }
         const lg = await db.query("SELECT 1 FROM reminder_log WHERE sd_id=$1 AND rdate=$2 AND slot=$3", [pt.sd_id, date, slot]);
-        if (lg.rows.length) continue;
+        if (lg.rows.length) continue; // уже слали в этот слот
+        // Не шлём тупиковые напоминания: нет истории или нечего предложить из наличия.
+        const draft = await getPointDraft(pt.sd_id, "avg");
+        if (!draft) { await logSkip(pt.sd_id, "NO_ORDER_HISTORY"); continue; }
+        if (!draft.items.length) { await logSkip(pt.sd_id, "NO_AVAILABLE_PRODUCTS"); continue; }
         try {
           await bot.sendMessage(u.chat_id, t(lang, "reminder_lead"));
-          await sendDraft(bot, u.chat_id, u.telegram_id, pt.sd_id, pt.point_name || pt.firm_name || "", lang, "avg");
+          await sendDraft(bot, u.chat_id, u.telegram_id, pt.sd_id, nm, lang, "avg");
           await db.query("INSERT INTO reminder_log (sd_id,rdate,slot) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING", [pt.sd_id, date, slot]);
           sent++;
         } catch (e) { console.warn("[НАПОМИНАНИЕ→]", u.chat_id, e.message); }
@@ -337,12 +390,51 @@ async function main() {
     } catch (e) { bot.sendMessage(chatId, "Ошибка: " + e.message); }
   }
 
+  async function handleStaffText(chatId, tgId, stf, txt) {
+    const soon = () => bot.sendMessage(chatId, "🔜 Скоро — в следующем обновлении.");
+    if (txt === "🚫 Не заказали") {
+      bot.sendChatAction(chatId, "typing");
+      const pts = stf.role === "agent" ? await pointsOfAgent(stf.crm_agent_id) : await allActivePoints();
+      const orders = await getOrdersToday();
+      const ordered = new Set(orders.filter((o) => o.status !== 5).map((o) => o.client && o.client.SD_id).filter(Boolean));
+      const no = pts.filter((pt) => !ordered.has(pt.sd_id));
+      if (!no.length) return bot.sendMessage(chatId, "Все клиенты уже заказали на сегодня. 👍");
+      const lines = no.slice(0, 60).map((pt, i) => `${i + 1}. ${pt.point_name || pt.firm_name || pt.sd_id}${pt.zavsklad_phone ? " — " + pt.zavsklad_phone : ""}`);
+      return bot.sendMessage(chatId, `Не заказали на сегодня (${no.length}):\n` + lines.join("\n"));
+    }
+    if (stf.role === "agent") {
+      if (txt === "👥 Мои клиенты") {
+        const pts = await pointsOfAgent(stf.crm_agent_id);
+        if (!pts.length) return bot.sendMessage(chatId, "За вами пока не закреплено точек. Проверьте синхронизацию в Hub.");
+        const lines = pts.slice(0, 80).map((pt, i) => `${i + 1}. ${pt.point_name || pt.firm_name || pt.sd_id}`);
+        return bot.sendMessage(chatId, `Ваши клиенты (${pts.length}):\n` + lines.join("\n"));
+      }
+      return soon();
+    }
+    if (stf.role === "head_of_sales") {
+      if (txt === "👥 По агентам") return bot.sendMessage(chatId, "Дашборд по агентам: Hub → плитка «Бот HoReCa» → «Аналитика АКБ/ОКБ».");
+      if (txt === "🔄 Синхронизация") { bot.sendMessage(chatId, "Запускаю синхронизацию…"); const n = await syncClientsBot(); return bot.sendMessage(chatId, `Готово. Клиентов обновлено: ${n}.`); }
+      return soon();
+    }
+    if (stf.role === "admin") {
+      if (txt === "👤 Telegram-сотрудники") return bot.sendMessage(chatId, "Управление сотрудниками: Hub → плитка «Бот HoReCa» → «Telegram-агенты».");
+      if (txt === "🔄 Синхронизация") { bot.sendMessage(chatId, "Запускаю синхронизацию…"); const n = await syncClientsBot(); return bot.sendMessage(chatId, `Готово. Клиентов обновлено: ${n}.`); }
+      return soon();
+    }
+    return bot.sendMessage(chatId, `Меню (${roleTitle(stf.role)}):`, staffMenu(stf.role));
+  }
+
   bot.onText(/\/start/, async (msg) => {
     await db.logEvent("start", msg.chat.id, { from: msg.from });
     bot.sendMessage(msg.chat.id, STR.choose_lang.ru, { reply_markup: { inline_keyboard: [[{ text: "Русский", callback_data: "lang:ru" }, { text: "O‘zbekcha", callback_data: "lang:uz" }]] } });
   });
   bot.onText(/\/whoami/, (msg) => bot.sendMessage(msg.chat.id, "Ваш Telegram ID: " + msg.chat.id));
-  bot.onText(/\/menu/, async (msg) => { const lang = await getLang(msg.chat.id); bot.sendMessage(msg.chat.id, lang === "uz" ? "Menyu:" : "Меню:", mainMenu(lang)); });
+  bot.onText(/\/menu/, async (msg) => {
+    const stf = await getStaff(msg.from.id);
+    if (stf) { bot.sendMessage(msg.chat.id, `Меню (${roleTitle(stf.role)}):`, staffMenu(stf.role)); return; }
+    const lang = await getLang(msg.chat.id);
+    bot.sendMessage(msg.chat.id, lang === "uz" ? "Menyu:" : "Меню:", mainMenu(lang));
+  });
   bot.onText(/\/zakaz|\/order|\/заказ/i, async (msg) => doZakaz(msg.chat.id, msg.from.id, await getLang(msg.chat.id)));
   bot.onText(/\/myorder|\/status|\/мойзаказ/i, async (msg) => doMyOrder(msg.chat.id, msg.from.id, await getLang(msg.chat.id)));
 
@@ -352,8 +444,25 @@ async function main() {
     const phone9 = normPhone(c.phone_number);
     if (!phone9) { bot.sendMessage(chatId, t(lang, "bad_phone"), askContact(lang)); return; }
     try {
+      // 1) Подтверждённый сотрудник — авторизуем и показываем внутреннее меню.
+      const stf = await staffByPhone9(phone9);
+      if (stf && stf.status === "confirmed" && stf.role) {
+        await db.query(`UPDATE telegram_staff SET telegram_user_id=$1, telegram_chat_id=$2, telegram_username=$3, telegram_first_name=$4, telegram_last_name=$5, phone_original=COALESCE(phone_original,$6), updated_at=now() WHERE id=$7`,
+          [msg.from.id, chatId, msg.from.username || null, msg.from.first_name || null, msg.from.last_name || null, c.phone_number, stf.id]);
+        await db.logEvent("staff_auth", chatId, { role: stf.role });
+        bot.sendMessage(chatId, `Здравствуйте! Вы подключены как ${roleTitle(stf.role)}.`, staffMenu(stf.role));
+        return;
+      }
+      // 2) Клиент?
       const res = await onboard(chatId, msg.from, phone9, c.phone_number, lang);
-      bot.sendMessage(chatId, res.text, res.linked ? mainMenu(lang) : { reply_markup: { remove_keyboard: true } });
+      if (res.linked) { bot.sendMessage(chatId, res.text, mainMenu(lang)); return; }
+      // 3) Неизвестный — создаём заявку сотрудника (админ подтвердит, если это сотрудник).
+      await db.query(`INSERT INTO telegram_staff (telegram_user_id, telegram_chat_id, telegram_username, telegram_first_name, telegram_last_name, phone_original, phone_normalized, status)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,'new_request')
+        ON CONFLICT (telegram_user_id) DO UPDATE SET telegram_chat_id=$2, telegram_username=$3, telegram_first_name=$4, telegram_last_name=$5, phone_original=$6, phone_normalized=$7, updated_at=now()`,
+        [msg.from.id, chatId, msg.from.username || null, msg.from.first_name || null, msg.from.last_name || null, c.phone_number, phone9]);
+      await db.logEvent("staff_request", chatId, { phone: phone9 });
+      bot.sendMessage(chatId, "Ваш номер пока не найден.\nЕсли вы клиент — обратитесь к вашему агенту Novagreen.\nЕсли вы сотрудник — заявка на доступ отправлена администратору.", { reply_markup: { remove_keyboard: true } });
     } catch (e) { console.error("[ОНБОРДИНГ]", e.message); bot.sendMessage(chatId, "Ошибка при подключении."); }
   });
 
@@ -467,7 +576,10 @@ async function main() {
 
   bot.on("message", async (msg) => {
     if (msg.contact || (msg.text && msg.text.startsWith("/"))) return;
-    const chatId = msg.chat.id; const lang = await getLang(chatId); const txt = (msg.text || "").trim();
+    const chatId = msg.chat.id; const txt = (msg.text || "").trim();
+    const stf = await getStaff(msg.from.id);
+    if (stf) return handleStaffText(chatId, msg.from.id, stf, txt);
+    const lang = await getLang(chatId);
     if (txt === STR.menu_order.ru || txt === STR.menu_order.uz) return doZakaz(chatId, msg.from.id, lang);
     if (txt === STR.menu_myorder.ru || txt === STR.menu_myorder.uz) return doMyOrder(chatId, msg.from.id, lang);
     await db.logEvent("message", chatId, { text: msg.text });
