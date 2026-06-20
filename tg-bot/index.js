@@ -218,7 +218,7 @@ async function getPointDraft(sdId, mode) {
   if (!mine.length) return null;
   mine.sort((a, b) => String(b.dateCreate || "").localeCompare(String(a.dateCreate || "")));
   const last = mine[0];
-  const meta = { agent: last.agent && last.agent.SD_id, priceType: last.priceType && last.priceType.SD_id, warehouse: (last.store && last.store.SD_id) || (last.warehouse && last.warehouse.SD_id) };
+  const meta = { agent: last.agent && last.agent.SD_id, priceType: last.priceType && last.priceType.SD_id, warehouse: (last.store && last.store.SD_id) || (last.warehouse && last.warehouse.SD_id), clientCode: last.client && last.client.code_1C };
   let raw;
   if (mode === "repeat") {
     raw = (last.orderProducts || []).filter((op) => op.product && op.product.SD_id && Number(op.quantity) > 0)
@@ -239,7 +239,7 @@ function buildOrder(sdId, draft, code) {
   return {
     code_1C: code || `TGBOT-${sdId}-${tzToday()}`, status: 1, dateShipment: tzTomorrow(),
     comment: "Заказ оформлен через Telegram-бот" + (draft.comment ? "\nКомментарий клиента: " + draft.comment : ""),
-    client: { SD_id: sdId }, agent: { SD_id: draft.agent }, priceType: { SD_id: draft.priceType }, warehouse: { SD_id: draft.warehouse },
+    client: draft.clientCode ? { SD_id: sdId, code_1C: draft.clientCode } : { SD_id: sdId }, agent: { SD_id: draft.agent }, priceType: { SD_id: draft.priceType }, warehouse: { SD_id: draft.warehouse },
     orderProducts: draft.items.filter((it) => it.qty > 0).map((it) => ({ product: { SD_id: it.productSdId }, quantity: Math.max(1, Math.round(it.qty)) })),
   };
 }
@@ -729,7 +729,7 @@ async function main() {
         await bot.answerCallbackQuery(q.id); bot.sendChatAction(chatId, "typing");
         const base = draftCache.get(key) || (await getPointDraft(val, "avg"));
         if (!base) { await bot.sendMessage(chatId, t(lang, "no_history", "")); return; }
-        const cart = { items: base.items.map((it) => ({ ...it })), agent: base.agent, priceType: base.priceType, warehouse: base.warehouse };
+        const cart = { items: base.items.map((it) => ({ ...it })), agent: base.agent, priceType: base.priceType, warehouse: base.warehouse, clientCode: base.clientCode };
         draftCache.set(key, cart);
         const v = renderCart(val, cart, lang);
         await bot.editMessageText(v.text, { chat_id: chatId, message_id: q.message.message_id, reply_markup: v.reply_markup });
@@ -739,9 +739,9 @@ async function main() {
         await bot.answerCallbackQuery(q.id); bot.sendChatAction(chatId, "typing");
         const orders = await freshOrdersToday();
         const o = orders.find((x) => x.client && x.client.SD_id === val && x.status !== 5);
-        let meta = o ? { agent: o.agent && o.agent.SD_id, priceType: o.priceType && o.priceType.SD_id, warehouse: (o.store && o.store.SD_id) || (o.warehouse && o.warehouse.SD_id) } : null;
-        if (!meta || !meta.agent) { const d = await getPointDraft(val, "avg"); if (d) meta = { agent: d.agent, priceType: d.priceType, warehouse: d.warehouse }; }
-        const cart = { items: [], agent: meta && meta.agent, priceType: meta && meta.priceType, warehouse: meta && meta.warehouse, code: `TGBOT-${val}-${tzToday()}-${tzHHMM()}` };
+        let meta = o ? { agent: o.agent && o.agent.SD_id, priceType: o.priceType && o.priceType.SD_id, warehouse: (o.store && o.store.SD_id) || (o.warehouse && o.warehouse.SD_id), clientCode: o.client && o.client.code_1C } : null;
+        if (!meta || !meta.agent) { const d = await getPointDraft(val, "avg"); if (d) meta = { agent: d.agent, priceType: d.priceType, warehouse: d.warehouse, clientCode: d.clientCode }; }
+        const cart = { items: [], agent: meta && meta.agent, priceType: meta && meta.priceType, warehouse: meta && meta.warehouse, clientCode: meta && meta.clientCode, code: `TGBOT-${val}-${tzToday()}-${tzHHMM()}` };
         draftCache.set(key, cart);
         const v = renderCart(val, cart, lang);
         await bot.editMessageText(t(lang, "dop_title") + "\n\n" + v.text, { chat_id: chatId, message_id: q.message.message_id, reply_markup: v.reply_markup });
