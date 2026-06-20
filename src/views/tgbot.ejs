@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Бот HoReCa — <%= settings.company_name %></title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Lora:wght@500;600&family=Manrope:wght@600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/style.css">
   <style>
     :root { --brand: <%= settings.brand_color || '#2E7D32' %>; }
@@ -25,6 +26,45 @@
     .stat { display:inline-block; margin-right:18px; }
     .stat b { font-size:20px; color:var(--brand); }
     input[type=file] { margin-top:8px; }
+
+    /* ===== Модалка «Telegram-агенты» в стиле счёт-фактур ===== */
+    .tgm-iconrow{display:flex;gap:10px;align-items:center;margin:16px 0 6px;flex-wrap:wrap}
+    .tgm-icon{display:inline-flex;align-items:center;justify-content:center;width:40px;height:40px;border-radius:11px;color:#52605a;background:#fbfaf4;border:1px solid #e6e2d6;transition:.18s;cursor:pointer;text-decoration:none}
+    .tgm-icon:hover{background:#f0ede3;color:#14241b}
+    .tgm-icon svg{width:19px;height:19px}
+    .tgm-cap{font-size:13px;color:#52605a}
+    .tgm-overlay{display:none;position:fixed;inset:0;background:rgba(16,42,29,.45);z-index:100;align-items:center;justify-content:center;padding:20px}
+    .tgm-overlay.on{display:flex}
+    .tgm-modal{background:#f4f2ea;border-radius:18px;width:100%;max-width:900px;max-height:92vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 30px 80px -20px rgba(16,42,29,.6)}
+    .tgm-hd{display:flex;align-items:center;gap:14px;padding:16px 20px;background:#fff;border-bottom:1px solid #e6e2d6}
+    .tgm-t{font-family:'Lora',serif;font-size:18px;font-weight:600;color:#14241b}
+    .tgm-s{font-size:12px;color:#8a958f;font-weight:600}
+    .tgm-body{padding:20px 22px;overflow:auto;background:#f4f2ea}
+    .tgm-ft{display:flex;gap:10px;align-items:center;padding:14px 20px;border-top:1px solid #e6e2d6;background:#fff;flex-wrap:wrap}
+    .tgm-ft .grow{flex:1}
+    .tgm-btn{display:inline-flex;align-items:center;gap:8px;font-weight:700;font-size:13.5px;padding:10px 18px;border-radius:11px;transition:.16s;cursor:pointer;border:none;font-family:inherit}
+    .tgm-blue{background:#2f6fb0;color:#fff}.tgm-blue:hover{filter:brightness(1.06)}
+    .tgm-green{background:linear-gradient(180deg,#9ad24f,#6aa82f);color:#10260a}.tgm-green:hover{filter:brightness(1.05)}
+    .tgm-ghost{background:#fff;border:1px solid #e6e2d6;color:#52605a}.tgm-ghost:hover{background:#f0ede3}
+    .tgm-modal table{width:100%;border-collapse:collapse;font-size:13px;background:#fff;border-radius:12px;overflow:hidden}
+    .tgm-modal th{text-transform:uppercase;font-size:11px;letter-spacing:.4px;color:#8a958f;font-weight:700;text-align:left;padding:11px 12px;border-bottom:1px solid #e6e2d6;background:#fbfaf4}
+    .tgm-modal td{padding:10px 12px;border-bottom:1px solid #efece2;vertical-align:top}
+    .tgm-chip{display:inline-flex;align-items:center;gap:7px;font-size:11.5px;font-weight:700;padding:5px 11px;border-radius:30px;border:1px solid #e6e2d6;background:#fbfaf4;color:#8a958f}
+    .tgm-chip .d{width:7px;height:7px;border-radius:50%;background:#b9b9b9}
+    .tgm-chip.on{background:#eef6df;color:#3f6a16;border-color:#d3e8b4}
+    .tgm-chip.on .d{background:#6aa82f;box-shadow:0 0 0 3px rgba(140,198,63,.2)}
+    .tgm-chip.off{background:#f3f3f3;color:#999}
+    .tgm-modal select,.tgm-modal input[type=text]{font-family:inherit;font-size:13px;padding:6px 9px;border:1px solid #e6e2d6;border-radius:8px;background:#fff}
+    .tgm-modal select:focus,.tgm-modal input:focus{outline:none;border-color:#6aa82f;box-shadow:0 0 0 3px rgba(140,198,63,.18)}
+    .tgm-rowform{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+    .tgm-sm{padding:5px 11px;font-size:12.5px;border-radius:8px;font-weight:700;cursor:pointer;border:1px solid #e6e2d6;background:#fff}
+    .tgm-sm.go{background:#163a28;color:#fff;border-color:#163a28}
+    .tgm-sm.danger{color:#b5462c;border-color:#e6c2b8;background:#fff}
+    .tgm-note{font-size:12.5px;color:#52605a;margin-bottom:14px;line-height:1.55}
+    .tgm-bn{padding:10px 14px;border-radius:8px;margin-bottom:14px;font-size:13px}
+    .tgm-bn.ok{background:#eef6df;border-left:4px solid #6aa82f;color:#3f6a16}
+    .tgm-bn.err{background:#fbece5;border-left:4px solid #c0492f;color:#a53d24}
+    .tgm-add{margin-top:18px;padding-top:14px;border-top:1px dashed #d8d3c4}
   </style>
 </head>
 <body>
@@ -39,8 +79,11 @@
   <main class="wrap">
     <h2>Бот HoReCa — контакты для напоминаний</h2>
     <p class="muted">Список номеров, по которым Telegram-бот узнаёт завскладов точек и менеджеров сетей.</p>
-    <p><a class="btn-go" href="/tgbot/analytics">📊 Аналитика АКБ/ОКБ по агентам</a></p>
-    <p><a class="btn-go" href="/tgbot/staff">👥 Telegram-агенты (сотрудники и роли)</a></p>
+    <div class="tgm-iconrow">
+      <a class="tgm-icon" href="/tgbot/analytics" title="Аналитика АКБ/ОКБ по агентам"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M7 14l3-3 3 3 5-6"/></svg></a>
+      <button class="tgm-icon" id="openStaff" type="button" title="Telegram-агенты"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9.5" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></button>
+      <span class="tgm-cap">Аналитика по агентам · Telegram-агенты (сотрудники и роли)</span>
+    </div>
 
     <% if (error) { %><div class="banner err"><%= error %></div><% } %>
     <% if (result) { %>
@@ -136,5 +179,86 @@
       </div>
     <% } %>
   </main>
+
+  <!-- Модалка «Telegram-агенты» -->
+  <div class="tgm-overlay <%= openStaff ? 'on' : '' %>" id="staffOverlay">
+    <div class="tgm-modal">
+      <div class="tgm-hd">
+        <div style="flex:1"><div class="tgm-t">Telegram-агенты</div><div class="tgm-s">Заявки на доступ к боту и подтверждённые сотрудники</div></div>
+        <button class="tgm-icon" data-close-staff type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
+      </div>
+      <div class="tgm-body">
+        <% if (staffMsg) { %><div class="tgm-bn ok"><%= staffMsg %></div><% } %>
+        <% if (staffErr) { %><div class="tgm-bn err"><%= staffErr %></div><% } %>
+        <div class="tgm-note">Сначала нажмите <b>«Загрузить агентов из CRM»</b> — программа подтянет список из SalesDoctor. Когда сотрудник пишет боту и делится номером, он <b>сам привязывается по телефону</b>. Если автопривязки нет — выберите агента из списка вручную и нажмите «Подтвердить».</div>
+        <table>
+          <thead><tr><th>Телефон</th><th>Имя в Telegram</th><th>Агент в CRM (имя/код)</th><th>Роль</th><th>Статус</th><th>Действия</th></tr></thead>
+          <tbody>
+            <% if (!staff.length) { %>
+              <tr><td colspan="6" class="tgm-note" style="margin:0">Пока нет ни заявок, ни подтверждённых сотрудников. Нажмите «Загрузить агентов из CRM», затем пусть сотрудник напишет боту и поделится номером.</td></tr>
+            <% } %>
+            <% staff.forEach(function(s){
+                 var tgname=[s.telegram_first_name,s.telegram_last_name].filter(Boolean).join(' ')+(s.telegram_username?' (@'+s.telegram_username+')':'');
+                 var st=s.status; var cls=st==='confirmed'?'on':((st==='disabled'||st==='rejected')?'off':'');
+                 var stLabel=({new_request:'новая заявка',auto_matched:'найден по телефону',manual_selected:'выбран вручную',confirmed:'подтверждён',rejected:'отклонён',disabled:'отключён'})[st]||st;
+            %>
+            <tr>
+              <td><%= s.phone_original||s.phone_normalized||'—' %></td>
+              <td><%= tgname||'—' %></td>
+              <td><%= s.sd_agent_name||(s.crm_agent_id||'—') %></td>
+              <td><%= s.role||'—' %></td>
+              <td><span class="tgm-chip <%= cls %>"><span class="d"></span><%= stLabel %></span></td>
+              <td>
+                <% if (st!=='confirmed') { %>
+                  <form method="POST" action="/tgbot/staff/confirm" class="tgm-rowform">
+                    <input type="hidden" name="id" value="<%= s.id %>">
+                    <select name="role"><option value="agent">Агент</option><option value="head_of_sales">Руководитель</option><option value="admin">Админ</option></select>
+                    <select name="crm_agent_id"><option value="">— агент CRM —</option><% agents.forEach(function(a){ %><option value="<%= a.sd_agent_id %>" <%= s.crm_agent_id===a.sd_agent_id?'selected':'' %>><%= a.sd_agent_name %><%= a.sd_agent_code?(' / '+a.sd_agent_code):'' %></option><% }); %></select>
+                    <button class="tgm-sm go" type="submit">Подтвердить</button>
+                  </form>
+                  <form method="POST" action="/tgbot/staff/reject" style="margin-top:6px"><input type="hidden" name="id" value="<%= s.id %>"><button class="tgm-sm danger" type="submit">Отклонить</button></form>
+                <% } else { %>
+                  <form method="POST" action="/tgbot/staff/role" class="tgm-rowform">
+                    <input type="hidden" name="id" value="<%= s.id %>">
+                    <select name="role"><option value="agent" <%= s.role==='agent'?'selected':'' %>>Агент</option><option value="head_of_sales" <%= s.role==='head_of_sales'?'selected':'' %>>Руководитель</option><option value="admin" <%= s.role==='admin'?'selected':'' %>>Админ</option></select>
+                    <button class="tgm-sm" type="submit">Изменить роль</button>
+                  </form>
+                  <form method="POST" action="/tgbot/staff/disable" style="margin-top:6px"><input type="hidden" name="id" value="<%= s.id %>"><button class="tgm-sm danger" type="submit">Отключить</button></form>
+                <% } %>
+              </td>
+            </tr>
+            <% }); %>
+          </tbody>
+        </table>
+        <div class="tgm-add">
+          <div class="tgm-t" style="font-size:14px">Добавить вручную (РОП / админ)</div>
+          <div class="tgm-note" style="margin:4px 0 8px">Для тех, кого нет среди агентов SalesDoctor. Затем пусть напишет боту и поделится номером.</div>
+          <form method="POST" action="/tgbot/staff/add-manual" class="tgm-rowform">
+            <input type="text" name="name" placeholder="ФИО" style="width:190px" required>
+            <input type="text" name="phone" placeholder="998.." style="width:150px" required>
+            <select name="role"><option value="head_of_sales">Руководитель</option><option value="admin">Админ</option><option value="agent">Агент</option></select>
+            <button class="tgm-sm go" type="submit">Добавить</button>
+          </form>
+        </div>
+      </div>
+      <div class="tgm-ft">
+        <form method="POST" action="/tgbot/staff/load-agents"><button class="tgm-btn tgm-blue" type="submit">🔄 Загрузить агентов из CRM</button></form>
+        <form method="POST" action="/tgbot/staff/sync-clients"><button class="tgm-btn tgm-green" type="submit">Синхронизировать клиентов</button></form>
+        <div class="grow"></div>
+        <button class="tgm-btn tgm-ghost" data-close-staff type="button">Закрыть</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function(){
+      var ov=document.getElementById('staffOverlay');
+      var open=document.getElementById('openStaff');
+      if(open) open.addEventListener('click',function(){ov.classList.add('on');});
+      Array.prototype.forEach.call(document.querySelectorAll('[data-close-staff]'),function(b){b.addEventListener('click',function(){ov.classList.remove('on');});});
+      ov.addEventListener('click',function(e){if(e.target===ov)ov.classList.remove('on');});
+      document.addEventListener('keydown',function(e){if(e.key==='Escape')ov.classList.remove('on');});
+    })();
+  </script>
 </body>
 </html>
