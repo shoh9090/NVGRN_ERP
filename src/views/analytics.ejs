@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Аналитика продаж — <%= settings.company_name %></title>
+  <link rel="stylesheet" href="/static/style.css">
+  <style>
+    :root { --brand: <%= settings.brand_color || '#2E7D32' %>; }
+    .wrap { max-width: 980px; margin: 0 auto; padding: 24px; }
+    .card { background:#fff; border:1px solid #e3e3e3; border-radius:12px; padding:20px 24px; margin-top:16px; }
+    .muted { color:#666; }
+    .note { background:#f6f8f6; border-left:4px solid var(--brand); padding:10px 14px; border-radius:6px; margin-top:14px; }
+    .banner { padding:12px 16px; border-radius:8px; margin-top:16px; }
+    .banner.err { background:#fff2f2; border-left:4px solid #d33; color:#a11; }
+    .stat { display:inline-block; margin-right:24px; }
+    .stat b { font-size:22px; color:var(--brand); display:block; }
+    .stat span { color:#666; font-size:13px; }
+    table { width:100%; border-collapse:collapse; margin-top:12px; font-size:14px; }
+    th,td { text-align:left; padding:8px 10px; border-bottom:1px solid #eee; }
+    th { color:#555; font-weight:600; }
+    td.num, th.num { text-align:right; }
+    .pill { display:inline-block; min-width:46px; text-align:center; padding:2px 8px; border-radius:20px; font-weight:600; color:#fff; }
+    .pill.hi { background:#2e9c4a; } .pill.mid { background:#e0a800; } .pill.lo { background:#d33; }
+    details { margin-top:6px; }
+    summary { cursor:pointer; color:var(--brand); }
+    ul.compact { margin:8px 0 0; padding-left:20px; line-height:1.7; }
+    tr.total td { font-weight:700; border-top:2px solid #ddd; }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-left">
+      <% if (settings.logo_file_id) { %><img class="topbar-logo" src="/file/<%= settings.logo_file_id %>" alt=""><% } %>
+      <span class="company"><%= settings.company_name %></span>
+    </div>
+    <div class="topbar-right"><a class="btn-ghost" href="/">← На главную</a></div>
+  </header>
+
+  <main class="wrap">
+    <h2>Аналитика продаж — покрытие АКБ/ОКБ</h2>
+    <p class="muted">По торговым агентам. АКБ — точки с заказом за последние 14 дней. Позже переедет в плитку «Продажи».</p>
+
+    <% if (error) { %>
+      <div class="banner err"><%= error %></div>
+    <% } else if (data) { %>
+      <div class="card">
+        <div class="stat"><b><%= data.totals.okb %></b><span>ОКБ — всего точек</span></div>
+        <div class="stat"><b><%= data.totals.akb %></b><span>АКБ — заказали за 14 дней</span></div>
+        <div class="stat"><b><%= data.totals.pct %>%</b><span>Покрытие</span></div>
+        <div class="note">Период: <%= data.from %> — <%= data.to %>. Группировка по агенту, закреплённому за точкой в SalesDoctor.</div>
+      </div>
+
+      <div class="card">
+        <table>
+          <thead>
+            <tr><th>Агент</th><th class="num">ОКБ</th><th class="num">АКБ</th><th class="num">Покрытие</th><th class="num">Не заказали</th></tr>
+          </thead>
+          <tbody>
+            <% data.rows.forEach(function(r){ var cls = r.pct>=80?'hi':(r.pct>=50?'mid':'lo'); %>
+              <tr>
+                <td><%= r.name %></td>
+                <td class="num"><%= r.okb %></td>
+                <td class="num"><%= r.akb %></td>
+                <td class="num"><span class="pill <%= cls %>"><%= r.pct %>%</span></td>
+                <td class="num"><%= r.inactive.length %></td>
+              </tr>
+              <% if (r.inactive.length) { %>
+              <tr><td colspan="5">
+                <details>
+                  <summary>Показать неактивные (<%= r.inactive.length %>)</summary>
+                  <ul class="compact">
+                    <% r.inactive.forEach(function(p){ %>
+                      <li><%= p.name %><% if (p.tel) { %> — <%= p.tel %><% } %></li>
+                    <% }); %>
+                  </ul>
+                </details>
+              </td></tr>
+              <% } %>
+            <% }); %>
+            <tr class="total">
+              <td>Итого</td>
+              <td class="num"><%= data.totals.okb %></td>
+              <td class="num"><%= data.totals.akb %></td>
+              <td class="num"><%= data.totals.pct %>%</td>
+              <td class="num"><%= data.totals.okb - data.totals.akb %></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    <% } %>
+  </main>
+</body>
+</html>
