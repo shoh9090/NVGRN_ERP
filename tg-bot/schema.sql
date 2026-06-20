@@ -191,3 +191,21 @@ CREATE TABLE IF NOT EXISTS client_signals_log (
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (sd_id, signal_type, sig_date)
 );
+
+-- ===== Бандл 3 (шаг 2): очередь заказов с ретраями =====
+CREATE TABLE IF NOT EXISTS pending_orders (
+  id              SERIAL PRIMARY KEY,
+  code_1c         TEXT UNIQUE,
+  client_sd_id    TEXT,
+  chat_id         BIGINT,
+  payload         JSONB,
+  status          TEXT NOT NULL DEFAULT 'pending',   -- pending / done / failed
+  attempts        INT NOT NULL DEFAULT 0,
+  last_error      TEXT,
+  next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  notified_stuck  BOOLEAN NOT NULL DEFAULT false,
+  is_dop          BOOLEAN NOT NULL DEFAULT false,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_pending_due ON pending_orders(status, next_attempt_at);

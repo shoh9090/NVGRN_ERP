@@ -235,23 +235,39 @@ async function getPointDraft(sdId, mode) {
   return Object.assign({ items, oos }, meta);
 }
 
-async function createOrderFromDraft(sdId, draft, code) {
-  if (!draft.items.length) throw new Error("список товаров пуст");
-  if (!draft.agent || !draft.priceType || !draft.warehouse) throw new Error("нет агента/прайса/склада — нужен прошлый заказ точки");
-  const order = {
+function buildOrder(sdId, draft, code) {
+  return {
     code_1C: code || `TGBOT-${sdId}-${tzToday()}`, status: 1, dateShipment: tzTomorrow(),
     comment: "Заказ оформлен через Telegram-бот" + (draft.comment ? "\nКомментарий клиента: " + draft.comment : ""),
     client: { SD_id: sdId }, agent: { SD_id: draft.agent }, priceType: { SD_id: draft.priceType }, warehouse: { SD_id: draft.warehouse },
     orderProducts: draft.items.filter((it) => it.qty > 0).map((it) => ({ product: { SD_id: it.productSdId }, quantity: Math.max(1, Math.round(it.qty)) })),
   };
-  const resp = await sd.setOrder(order);
-  if (!resp || resp.status !== true) {
-    console.error("[ЗАКАЗ] Ответ SD:", JSON.stringify(resp));
+}
+async function submitOrderObj(order) {
+  try {
+    const resp = await sd.setOrder(order);
+    if (resp && resp.status === true) return { ok: true, resp };
     const m = (resp && (resp.error && (resp.error.message || resp.error)) || resp.message || (resp.errors && resp.errors[0] && (resp.errors[0].message || resp.errors[0]))) || "SD отклонил заказ";
-    throw new Error(typeof m === "string" ? m : JSON.stringify(m).slice(0, 200));
-  }
-  _cache.delete("ordersToday");
-  return resp;
+    return { ok: false, permanent: true, error: typeof m === "string" ? m : JSON.stringify(m).slice(0, 200) };
+  } catch (e) { return { ok: false, permanent: false, error: e.message }; }
+}
+const nextDelayMin = (attempts) => attempts <= 1 ? 1 : attempts === 2 ? 5 : attempts === 3 ? 15 : 60;
+async function enqueuePending(order, sdId, chatId, isDop, err) {
+  await db.query(`INSERT INTO pending_orders (code_1c, client_sd_id, chat_id, payload, status, attempts, last_error, next_attempt_at, is_dop)
+    VALUES ($1,$2,$3,$4,'pending',1,$5, now() + interval '1 minute', $6)
+    ON CONFLICT (code_1c) DO UPDATE SET payload=$4, last_error=$5, status='pending', updated_at=now()`,
+    [order.code_1C, sdId, chatId, JSON.stringify(order), err, !!isDop]);
+}
+async function createOrderFromDraft(sdId, draft, code, chatId, isDop) {
+  if (!draft.items.length) throw new Error("список товаров пуст");
+  if (!draft.agent || !draft.priceType || !draft.warehouse) throw new Error("нет агента/прайса/склада — нужен прошлый заказ точки");
+  const order = buildOrder(sdId, draft, code);
+  const r = await submitOrderObj(order);
+  if (r.ok) { _cache.delete("ordersToday"); return { ok: true }; }
+  if (r.permanent) { console.error("[ЗАКАЗ] SD отклонил:", r.error); throw new Error(r.error); }
+  console.warn("[ЗАКАЗ] SD недоступен — в очередь:", r.error);
+  await enqueuePending(order, sdId, chatId, isDop, r.error);
+  return { queued: true };
 }
 
 function draftKeyboard(sdId, lang) {
@@ -383,6 +399,54 @@ async function main() {
     bot.sendMessage(msg.chat.id, "Шлю сводки агентам и считаю сигналы…");
     try { await runAgentDigests(); const n = await runSignals(); bot.sendMessage(msg.chat.id, `Готово. Сигналов отправлено: ${n}.`); }
     catch (e) { bot.sendMessage(msg.chat.id, "Ошибка: " + e.message); }
+  });
+
+  // ---- Бандл 3 (шаг 2): очередь заказов с ретраями ----
+  async function retryPending() {
+    try {
+      const rows = (await db.query("SELECT * FROM pending_orders WHERE status='pending' AND next_attempt_at <= now() ORDER BY id LIMIT 20")).rows;
+      for (const row of rows) {
+        const order = typeof row.payload === "string" ? JSON.parse(row.payload) : row.payload;
+        const r = await submitOrderObj(order);
+        if (r.ok) {
+          await db.query("UPDATE pending_orders SET status='done', updated_at=now() WHERE id=$1", [row.id]);
+          _cache.delete("ordersToday");
+          if (row.chat_id) bot.sendMessage(row.chat_id, "✅ Ваш заказ оформлен.").catch(() => {});
+          if (row.is_dop) notifyClientAgent(row.client_sd_id, `➕ Доп.заказ через бот\nКлиент: {name}\n(оформлен из очереди)`, row.code_1c).catch(() => {});
+          continue;
+        }
+        const attempts = row.attempts + 1;
+        if (r.permanent || attempts >= 10) {
+          await db.query("UPDATE pending_orders SET status='failed', attempts=$2, last_error=$3, updated_at=now() WHERE id=$1", [row.id, attempts, r.error]);
+          if (row.chat_id) bot.sendMessage(row.chat_id, "⚠️ Не удалось оформить заказ автоматически. Свяжитесь с вашим агентом Novagreen.").catch(() => {});
+          notifyClientAgent(row.client_sd_id, `⚠️ Заказ клиента {name} не оформлен: ${r.error}`, "fail:" + row.code_1c).catch(() => {});
+          continue;
+        }
+        const delay = nextDelayMin(attempts);
+        await db.query("UPDATE pending_orders SET attempts=$2, last_error=$3, next_attempt_at = now() + make_interval(mins => $4), updated_at=now() WHERE id=$1", [row.id, attempts, r.error, delay]);
+        if (attempts >= 3 && !row.notified_stuck) {
+          await db.query("UPDATE pending_orders SET notified_stuck=true WHERE id=$1", [row.id]);
+          notifyClientAgent(row.client_sd_id, `⏳ Заказ клиента {name} пока не уходит в SD (попыток: ${attempts}). Бот продолжает пытаться.`, "stuck:" + row.code_1c).catch(() => {});
+        }
+        await new Promise((rr) => setTimeout(rr, 60));
+      }
+    } catch (e) { console.error("[ОЧЕРЕДЬ]", e.message); }
+  }
+  setInterval(retryPending, 60000);
+
+  bot.onText(/\/queue/, async (msg) => {
+    if (!isAdmin(msg.chat.id)) { bot.sendMessage(msg.chat.id, "Только админ."); return; }
+    const rows = (await db.query("SELECT status, count(*) c FROM pending_orders GROUP BY status")).rows;
+    const pend = (await db.query("SELECT code_1c, attempts, last_error FROM pending_orders WHERE status='pending' ORDER BY next_attempt_at LIMIT 15")).rows;
+    let txt = "Очередь заказов:\n" + (rows.length ? rows.map((r) => `${r.status}: ${r.c}`).join("\n") : "пусто");
+    if (pend.length) txt += "\n\nОжидают:\n" + pend.map((pp) => `• ${pp.code_1c} (попыток ${pp.attempts})${pp.last_error ? " — " + String(pp.last_error).slice(0, 60) : ""}`).join("\n");
+    bot.sendMessage(msg.chat.id, txt);
+  });
+  bot.onText(/\/retrynow/, async (msg) => {
+    if (!isAdmin(msg.chat.id)) { bot.sendMessage(msg.chat.id, "Только админ."); return; }
+    await db.query("UPDATE pending_orders SET next_attempt_at = now() WHERE status='pending'");
+    await retryPending();
+    bot.sendMessage(msg.chat.id, "Очередь обработана.");
   });
 
   bot.onText(/\/remindnow/, async (msg) => {
@@ -742,18 +806,22 @@ async function main() {
           const cap = capItemsToStock(draft.items, await freshStockMap());
           draft.items = cap.items;
           if (!draft.items.length) { await bot.editMessageText(t(lang, "none_now"), { chat_id: chatId, message_id: q.message.message_id }); return; }
-          await createOrderFromDraft(val, draft, draft.code);
-          await db.logEvent("order_created", chatId, { sdId: val, mode: act, dop: !!draft.code });
-          let okText = t(lang, "order_ok");
-          if (cap.capped.length || cap.removed.length) {
-            okText += "\n\n⚠️ Скорректировано по остаткам:";
-            if (cap.capped.length) okText += "\n• " + cap.capped.join("\n• ");
-            if (cap.removed.length) okText += "\nУбрано (нет в наличии): " + cap.removed.join(", ");
-          }
-          await bot.editMessageText(okText, { chat_id: chatId, message_id: q.message.message_id });
-          if (draft.code) {
-            const n = draft.items.filter((it) => it.qty > 0).length;
-            notifyClientAgent(val, `➕ Доп.заказ через бот\nКлиент: {name}\nПозиций: ${n} · ${tzHHMM()}`, draft.code).catch(() => {});
+          const res = await createOrderFromDraft(val, draft, draft.code, chatId, !!draft.code);
+          await db.logEvent("order_created", chatId, { sdId: val, mode: act, dop: !!draft.code, queued: !!res.queued });
+          if (res.queued) {
+            await bot.editMessageText("✅ Заказ принят. Отправляем в систему — подтверждение придёт автоматически.", { chat_id: chatId, message_id: q.message.message_id });
+          } else {
+            let okText = t(lang, "order_ok");
+            if (cap.capped.length || cap.removed.length) {
+              okText += "\n\n⚠️ Скорректировано по остаткам:";
+              if (cap.capped.length) okText += "\n• " + cap.capped.join("\n• ");
+              if (cap.removed.length) okText += "\nУбрано (нет в наличии): " + cap.removed.join(", ");
+            }
+            await bot.editMessageText(okText, { chat_id: chatId, message_id: q.message.message_id });
+            if (draft.code) {
+              const n = draft.items.filter((it) => it.qty > 0).length;
+              notifyClientAgent(val, `➕ Доп.заказ через бот\nКлиент: {name}\nПозиций: ${n} · ${tzHHMM()}`, draft.code).catch(() => {});
+            }
           }
         } catch (e) { console.error("[ЗАКАЗ]", e.message); await bot.editMessageText(t(lang, "order_err", e.message), { chat_id: chatId, message_id: q.message.message_id }); }
         return;
