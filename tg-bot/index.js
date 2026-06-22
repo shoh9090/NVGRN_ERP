@@ -259,13 +259,17 @@ function buildOrder(sdId, draft, code) {
     orderProducts: draft.items.filter((it) => it.qty > 0).map((it) => ({ product: { SD_id: it.productSdId }, quantity: Math.max(1, Math.round(it.qty)) })),
   };
 }
+let lastSetOrder = null;
 async function submitOrderObj(order) {
   try {
+    console.log("[ЗАКАЗ→SD] REQUEST:", JSON.stringify(order));
     const resp = await sd.setOrder(order);
+    console.log("[ЗАКАЗ→SD] RESPONSE:", JSON.stringify(resp));
+    lastSetOrder = { req: JSON.stringify(order), resp: JSON.stringify(resp), at: new Date().toISOString() };
     if (resp && resp.status === true) return { ok: true, resp };
     const m = (resp && (resp.error && (resp.error.message || resp.error)) || resp.message || (resp.errors && resp.errors[0] && (resp.errors[0].message || resp.errors[0]))) || "SD отклонил заказ";
     return { ok: false, permanent: true, error: typeof m === "string" ? m : JSON.stringify(m).slice(0, 200) };
-  } catch (e) { return { ok: false, permanent: false, error: e.message }; }
+  } catch (e) { lastSetOrder = { req: JSON.stringify(order), resp: "ERROR: " + e.message, at: new Date().toISOString() }; return { ok: false, permanent: false, error: e.message }; }
 }
 const nextDelayMin = (attempts) => attempts <= 1 ? 1 : attempts === 2 ? 5 : attempts === 3 ? 15 : 60;
 async function enqueuePending(order, sdId, chatId, isDop, err) {
@@ -471,6 +475,16 @@ async function main() {
     await db.query("UPDATE pending_orders SET next_attempt_at = now() WHERE status='pending'");
     await retryPending();
     bot.sendMessage(msg.chat.id, "Очередь обработана.");
+  });
+
+  // Последний запрос/ответ setOrder — для отправки разработчику SD
+  bot.onText(/\/lastreq/, async (msg) => {
+    if (!isAdmin(msg.chat.id)) { bot.sendMessage(msg.chat.id, "Только админ."); return; }
+    if (!lastSetOrder) { bot.sendMessage(msg.chat.id, "Заказов после перезапуска ещё не было. Оформите тестовый заказ и снова дайте /lastreq."); return; }
+    await bot.sendMessage(msg.chat.id, "🟢 setOrder REQUEST (" + lastSetOrder.at + "):");
+    await bot.sendMessage(msg.chat.id, lastSetOrder.req);
+    await bot.sendMessage(msg.chat.id, "🔵 SD RESPONSE:");
+    await bot.sendMessage(msg.chat.id, lastSetOrder.resp);
   });
 
   // Диагностика: чьё юр.лицо у точки в SD (только чтение)
