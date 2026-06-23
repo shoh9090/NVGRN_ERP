@@ -67,3 +67,7 @@
 /* приёмка: подсветка превышения плана (мягкий лимит) */
 .stk-fact.over{border-color:var(--amber-d,#b9770a);background:var(--amber-soft,#fff3df)}
 .stk-over{display:block;font-size:11px;font-weight:700;color:var(--amber-d,#b9770a);margin-top:3px}
+
+/* инвентаризация: мини-кнопки действий */
+.inv-mini{font-size:12px;padding:4px 8px;border:1px solid var(--line);background:var(--surface);border-radius:8px;cursor:pointer;white-space:nowrap}
+.inv-mini:hover{border-color:var(--lime-d);background:var(--lime-soft)}

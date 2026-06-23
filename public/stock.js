@@ -461,59 +461,161 @@
 
   // ================= ВКЛАДКА: РЕЗЮМЕ / ОСТАТКИ (инвентаризация) =================
   let invFilter = 'all'; // all | instock | nomove
+  let invPc = '', invCat = '';
+  let invData = null;
   async function viewInventory() {
     const main = $('#stk-main');
     main.innerHTML = '';
-    const data = await api('/inventory');
+    invData = await api('/inventory');
+    const data = invData;
     main.appendChild(el('div', { class: 'stk-head' }, [
       el('div', {}, [
         el('div', { class: 'stk-today' }, 'Резюме склада — остатки для инвентаризации'),
-        el('div', { class: 'stk-counts' }, [el('span', {}, 'Позиций всего: ' + data.items.length)]),
+        el('div', { class: 'stk-counts' }, [el('span', { id: 'inv-count' }, 'Позиций: ' + data.items.length)]),
       ]),
     ]));
 
-    const filterWrap = el('div', { class: 'pur-filters' }, [
-      el('label', {}, ['Показать', (() => {
-        const sel = el('select', { onchange: (e) => { invFilter = e.target.value; render(); } }, [
-          el('option', { value: 'all' }, 'Все позиции'),
-          el('option', { value: 'instock' }, '🟢 В наличии (есть остаток)'),
-          el('option', { value: 'nomove' }, '⚪ Пусто (нулевой остаток)'),
-        ]);
-        sel.value = invFilter;
-        return sel;
-      })()]),
-      el('label', { style: 'flex:1' }, ['Поиск', el('input', { id: 'inv-q', placeholder: '🔍 артикул, наименование...', oninput: () => render() })]),
+    // Задача 1: фильтр по родительской категории + категории (каскад)
+    const pcSel = el('select', { id: 'inv-pc' }, [
+      el('option', { value: '' }, 'Все родит. категории'),
+      ...data.parents.map((p) => el('option', { value: p.id }, p.name)),
     ]);
-    main.appendChild(filterWrap);
+    const catSel = el('select', { id: 'inv-cat' }, []);
+    function fillCats() {
+      catSel.innerHTML = '';
+      catSel.appendChild(el('option', { value: '' }, 'Все категории'));
+      data.categories
+        .filter((c) => !invPc || String(c.parent_id) === String(invPc))
+        .forEach((c) => catSel.appendChild(el('option', { value: c.id }, c.name)));
+    }
+    fillCats();
+    pcSel.addEventListener('change', () => { invPc = pcSel.value; invCat = ''; fillCats(); render(); });
+    catSel.addEventListener('change', () => { invCat = catSel.value; render(); });
+
+    const stockSel = el('select', { onchange: (e) => { invFilter = e.target.value; render(); } }, [
+      el('option', { value: 'all' }, 'Все позиции'),
+      el('option', { value: 'instock' }, '🟢 В наличии'),
+      el('option', { value: 'nomove' }, '⚪ Пусто'),
+    ]);
+    stockSel.value = invFilter;
+
+    main.appendChild(el('div', { class: 'pur-filters' }, [
+      el('label', {}, ['Родит. категория', pcSel]),
+      el('label', {}, ['Категория сырья', catSel]),
+      el('label', {}, ['Наличие', stockSel]),
+      el('label', { style: 'flex:1' }, ['Поиск', el('input', { id: 'inv-q', placeholder: '🔍 артикул, наименование...', oninput: () => render() })]),
+    ]));
     const box = el('div', { class: 'pur-content' });
     main.appendChild(box);
 
     function render() {
       const q = ($('#inv-q') ? $('#inv-q').value.trim().toLowerCase() : '');
-      let items = data.items.slice();
+      let items = invData.items.slice();
+      if (invPc) items = items.filter((m) => String(m.pc_id) === String(invPc));
+      if (invCat) items = items.filter((m) => String(m.category_id) === String(invCat));
       if (invFilter === 'instock') items = items.filter((m) => Number(m.balance) !== 0);
       else if (invFilter === 'nomove') items = items.filter((m) => Number(m.balance) === 0);
       if (q) items = items.filter((m) => m.name.toLowerCase().includes(q) || String(m.code || '').toLowerCase().includes(q));
+      if ($('#inv-count')) $('#inv-count').textContent = 'Позиций: ' + items.length;
       box.innerHTML = '';
       if (!items.length) { box.appendChild(el('p', { class: 'dict-empty' }, 'Нет позиций по фильтру.')); return; }
       box.appendChild(el('table', { class: 'dict-table' }, [
-        el('thead', {}, el('tr', {}, ['Артикул', 'Наименование', 'Остаток', 'В передаче', 'Приход сегодня', 'Передано сегодня', 'Ед.'].map((h, i) =>
-          el('th', { style: i >= 2 && i <= 5 ? 'text-align:right' : '' }, h)))),
+        el('thead', {}, el('tr', {}, ['Артикул', 'Наименование', 'Перв. остаток', 'Остаток', 'В передаче', 'Приход сег.', 'Передано сег.', 'Ед.', ''].map((h, i) =>
+          el('th', { style: i >= 2 && i <= 6 ? 'text-align:right' : '' }, h)))),
         el('tbody', {}, items.map((m) => {
           const bal = Number(m.balance);
+          const hasOpening = Number(m.opening_balance) !== 0;
           return el('tr', { title: m.characteristics || '' }, [
             el('td', { class: 'tnum muted' }, m.code || ''),
             el('td', { style: 'font-weight:600' }, m.name + (m.kind === 'packaging' ? ' 📦' : '')),
+            el('td', { class: 'tnum muted', style: 'text-align:right' }, hasOpening ? fmtQty(m.opening_balance) : '—'),
             el('td', { class: 'tnum', style: 'text-align:right;font-weight:800;color:' + (bal > 0 ? '#3f6a16' : bal < 0 ? 'var(--red)' : 'var(--ink-faint)') }, fmtQty(bal)),
             el('td', { class: 'tnum', style: 'text-align:right;color:var(--amber-d,#b9770a)' }, Number(m.reserved) ? fmtQty(m.reserved) : '—'),
             el('td', { class: 'tnum muted', style: 'text-align:right' }, Number(m.today_in) ? '+' + fmtQty(m.today_in) : '—'),
             el('td', { class: 'tnum muted', style: 'text-align:right' }, Number(m.today_out) ? '−' + fmtQty(m.today_out) : '—'),
             el('td', {}, m.unit || ''),
+            el('td', { style: 'text-align:right;white-space:nowrap' }, [
+              !hasOpening
+                ? el('button', { class: 'inv-mini', title: 'Задать первоначальный остаток', onclick: () => openOpening(m) }, '➕ старт')
+                : null,
+              el('button', { class: 'inv-mini', style: 'margin-left:4px', title: 'Корректировка (инвентаризация)', onclick: () => openAdjust(m) }, '✏️'),
+              el('button', { class: 'inv-mini', style: 'margin-left:4px', title: 'История корректировок', onclick: () => openInvLog(m) }, '🕘'),
+            ]),
           ]);
         })),
       ]));
     }
     render();
+  }
+
+  // задать первоначальный остаток (один раз)
+  function openOpening(m) {
+    const qty = el('input', { type: 'number', step: 'any', class: 'stk-fact', placeholder: '0' });
+    const comment = el('input', { placeholder: 'Комментарий (необязательно)' });
+    const body = el('div', { class: 'form-col', style: 'max-width:100%' }, [
+      el('p', { class: 'muted' }, 'Первоначальный остаток вносится один раз — это стартовое количество на складе на момент запуска. Дальше остаток считается автоматически.'),
+      el('label', {}, ['Стартовое количество, ' + (m.unit || 'ед.'), qty]),
+      el('label', {}, ['Комментарий', comment]),
+    ]);
+    const mm = modal('➕ Первоначальный остаток — ' + m.name, body, [
+      el('button', { onclick: () => mm.close() }, 'Отмена'),
+      el('button', { class: 'btn-primary', onclick: async (ev) => {
+        if (qty.value === '' || isNaN(Number(qty.value))) return toast('Укажите количество', true);
+        ev.target.disabled = true;
+        try {
+          await api('/inventory/opening', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ item_kind: m.kind, item_id: m.id, qty: Number(qty.value), comment: comment.value }) });
+          toast('Первоначальный остаток задан'); mm.close(); viewInventory();
+        } catch (e) { toast(e.message, true); ev.target.disabled = false; }
+      } }, 'Сохранить'),
+    ]);
+  }
+
+  // корректировка (инвентаризация)
+  function openAdjust(m) {
+    const factual = el('input', { type: 'number', step: 'any', class: 'stk-fact', value: Number(m.balance) });
+    const comment = el('input', { placeholder: 'Причина: пересчёт, усушка, бой...' });
+    const body = el('div', { class: 'form-col', style: 'max-width:100%' }, [
+      el('p', { class: 'muted' }, 'В системе сейчас: ' + fmtQty(m.balance) + ' ' + (m.unit || '') + '. Введите фактический остаток по пересчёту — система запишет разницу и сохранит след (кто, когда, причина).'),
+      el('label', {}, ['Фактический остаток, ' + (m.unit || 'ед.'), factual]),
+      el('label', {}, ['Причина корректировки *', comment]),
+    ]);
+    const mm = modal('✏️ Корректировка — ' + m.name, body, [
+      el('button', { onclick: () => mm.close() }, 'Отмена'),
+      el('button', { class: 'btn-primary', onclick: async (ev) => {
+        if (factual.value === '' || isNaN(Number(factual.value))) return toast('Укажите фактический остаток', true);
+        if (!comment.value.trim()) return toast('Укажите причину корректировки', true);
+        ev.target.disabled = true;
+        try {
+          const r = await api('/inventory/adjust', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ item_kind: m.kind, item_id: m.id, factual: Number(factual.value), comment: comment.value }) });
+          toast(r.note || ('Остаток скорректирован (Δ' + fmtQty(r.delta) + ')')); mm.close(); viewInventory();
+        } catch (e) { toast(e.message, true); ev.target.disabled = false; }
+      } }, 'Сохранить'),
+    ]);
+  }
+
+  // история корректировок (логи кто/что/когда)
+  async function openInvLog(m) {
+    const d = await api('/inventory/log/' + m.kind + '/' + m.id);
+    const reasonL = { opening: 'Первонач. остаток', adjust: 'Корректировка' };
+    const body = el('div', {}, [
+      d.items.length
+        ? el('table', { class: 'dict-table' }, [
+            el('thead', {}, el('tr', {}, ['Дата', 'Операция', 'Кол-во', 'Кто', 'Комментарий'].map((h) => el('th', {}, h)))),
+            el('tbody', {}, d.items.map((r) =>
+              el('tr', {}, [
+                el('td', {}, new Date(r.created_at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })),
+                el('td', {}, reasonL[r.reason] || r.reason),
+                el('td', { class: 'tnum', style: 'color:' + (Number(r.qty) >= 0 ? '#3f6a16' : 'var(--red)') }, (Number(r.qty) > 0 ? '+' : '') + fmtQty(r.qty)),
+                el('td', {}, r.user_name || '—'),
+                el('td', { class: 'muted' }, r.comment || ''),
+              ])
+            )),
+          ])
+        : el('p', { class: 'muted' }, 'Корректировок ещё не было.'),
+    ]);
+    const mm = modal('🕘 История — ' + m.name, body, [el('button', { onclick: () => mm.close() }, 'Закрыть')]);
   }
 
   // ================= Каркас =================

@@ -357,13 +357,24 @@ router.get('/api/inventory', async (req, res) => {
   const date = req.query.date || new Date().toISOString().slice(0, 10);
   const r = await db.pool.query(
     `WITH mats AS (
-       SELECT 'raw' AS kind, rm.id, rm.code, rm.name, u.short_name AS unit, rm.characteristics
-       FROM ref_raw_materials rm LEFT JOIN ref_units u ON u.id = rm.unit_id WHERE rm.status='active'
+       SELECT 'raw' AS kind, rm.id, rm.code, rm.name, u.short_name AS unit, rm.characteristics,
+              rm.category_id, c.name AS category_name, c.parent_id AS pc_id, pc.name AS pc_name
+       FROM ref_raw_materials rm
+       LEFT JOIN ref_units u ON u.id = rm.unit_id
+       LEFT JOIN ref_categories c ON c.id = rm.category_id
+       LEFT JOIN ref_parent_categories pc ON pc.id = c.parent_id
+       WHERE rm.status='active'
        UNION ALL
-       SELECT 'packaging', pk.id, pk.code, pk.name, u.short_name, NULL
-       FROM ref_packaging pk LEFT JOIN ref_units u ON u.id = pk.unit_id WHERE pk.status='active'
+       SELECT 'packaging', pk.id, pk.code, pk.name, u.short_name, NULL,
+              pk.category_id, c.name, c.parent_id, pc.name
+       FROM ref_packaging pk
+       LEFT JOIN ref_units u ON u.id = pk.unit_id
+       LEFT JOIN ref_categories c ON c.id = pk.category_id
+       LEFT JOIN ref_parent_categories pc ON pc.id = c.parent_id
+       WHERE pk.status='active'
      ),
      bal AS (SELECT item_kind, item_id, SUM(qty) AS balance FROM stock_movements GROUP BY item_kind, item_id),
+     opening AS (SELECT item_kind, item_id, SUM(qty) AS s FROM stock_movements WHERE reason='opening' GROUP BY item_kind, item_id),
      today_in AS (SELECT item_kind, item_id, SUM(qty) AS s FROM stock_movements WHERE reason='receive' AND moved_at=$1::date GROUP BY item_kind, item_id),
      today_out AS (SELECT item_kind, item_id, SUM(-qty) AS s FROM stock_movements WHERE reason='production' AND moved_at=$1::date GROUP BY item_kind, item_id),
      reserved AS (
@@ -372,19 +383,77 @@ router.get('/api/inventory', async (req, res) => {
        GROUP BY pii.item_kind, pii.item_id
      )
      SELECT m.kind, m.id, m.code, m.name, m.unit, m.characteristics,
+            m.category_id, m.category_name, m.pc_id, m.pc_name,
+            COALESCE(o.s,0) AS opening_balance,
             COALESCE(b.balance,0) AS balance,
             COALESCE(ti.s,0) AS today_in,
             COALESCE(to2.s,0) AS today_out,
             COALESCE(rv.s,0) AS reserved
      FROM mats m
      LEFT JOIN bal b ON b.item_kind=m.kind AND b.item_id=m.id
+     LEFT JOIN opening o ON o.item_kind=m.kind AND o.item_id=m.id
      LEFT JOIN today_in ti ON ti.item_kind=m.kind AND ti.item_id=m.id
      LEFT JOIN today_out to2 ON to2.item_kind=m.kind AND to2.item_id=m.id
      LEFT JOIN reserved rv ON rv.item_kind=m.kind AND rv.item_id=m.id
      ORDER BY m.name`,
     [date]
   );
-  res.json({ date, items: r.rows });
+  // справочники для фильтров
+  const parents = await db.pool.query("SELECT id, name FROM ref_parent_categories WHERE status='active' ORDER BY name");
+  const cats = await db.pool.query("SELECT id, name, parent_id FROM ref_categories WHERE kind='категория' AND (sd_sd_id IS NULL OR sd_sd_id='') ORDER BY name");
+  res.json({ date, items: r.rows, parents: parents.rows, categories: cats.rows });
+});
+
+
+// Задать первоначальный остаток (один раз на позицию) — движение reason='opening'
+router.post('/api/inventory/opening', express.json(), async (req, res) => {
+  const kind = req.body.item_kind === 'packaging' ? 'packaging' : 'raw';
+  const id = parseInt(req.body.item_id);
+  const qty = Number(req.body.qty);
+  if (!id || isNaN(qty)) return res.status(400).json({ error: 'Укажите позицию и количество' });
+  // запрет повторного стартового
+  const ex = await db.pool.query("SELECT 1 FROM stock_movements WHERE item_kind=$1 AND item_id=$2 AND reason='opening' LIMIT 1", [kind, id]);
+  if (ex.rows.length) return res.status(400).json({ error: 'Первоначальный остаток уже задан. Используйте корректировку.' });
+  await db.pool.query(
+    `INSERT INTO stock_movements (item_kind, item_id, qty, direction, reason, ref_type, comment, moved_at, created_by)
+     VALUES ($1,$2,$3,'in','opening','manual',$4,CURRENT_DATE,$5)`,
+    [kind, id, qty, req.body.comment || 'Первоначальный остаток', req.user.id]
+  );
+  await db.log(req.user.id, 'stock_opening', `${kind}#${id} = ${qty}`);
+  res.json({ ok: true });
+});
+
+// Корректировка остатка (инвентаризация) — вводим фактический, система пишет дельту, след в журнале
+router.post('/api/inventory/adjust', express.json(), async (req, res) => {
+  const kind = req.body.item_kind === 'packaging' ? 'packaging' : 'raw';
+  const id = parseInt(req.body.item_id);
+  const factual = Number(req.body.factual); // фактический остаток по пересчёту
+  if (!id || isNaN(factual)) return res.status(400).json({ error: 'Укажите позицию и фактический остаток' });
+  if (!req.body.comment || !String(req.body.comment).trim()) return res.status(400).json({ error: 'Укажите причину корректировки' });
+  const cur = await db.pool.query('SELECT COALESCE(SUM(qty),0) AS b FROM stock_movements WHERE item_kind=$1 AND item_id=$2', [kind, id]);
+  const delta = factual - Number(cur.rows[0].b);
+  if (delta === 0) return res.json({ ok: true, note: 'Остаток уже совпадает' });
+  await db.pool.query(
+    `INSERT INTO stock_movements (item_kind, item_id, qty, direction, reason, ref_type, comment, moved_at, created_by)
+     VALUES ($1,$2,$3,$4,'adjust','manual',$5,CURRENT_DATE,$6)`,
+    [kind, id, delta, delta >= 0 ? 'in' : 'out', req.body.comment, req.user.id]
+  );
+  await db.log(req.user.id, 'stock_adjust', `${kind}#${id}: ${cur.rows[0].b} → ${factual} (Δ${delta})`);
+  res.json({ ok: true, delta });
+});
+
+// Лог движений-корректировок по позиции (кто/что/когда)
+router.get('/api/inventory/log/:kind/:id(\\d+)', async (req, res) => {
+  const kind = req.params.kind === 'packaging' ? 'packaging' : 'raw';
+  const r = await db.pool.query(
+    `SELECT sm.qty, sm.reason, sm.comment, sm.moved_at, sm.created_at, u.full_name AS user_name
+     FROM stock_movements sm
+     LEFT JOIN users u ON u.id = sm.created_by
+     WHERE sm.item_kind=$1 AND sm.item_id=$2 AND sm.reason IN ('opening','adjust')
+     ORDER BY sm.created_at DESC`,
+    [kind, req.params.id]
+  );
+  res.json({ items: r.rows });
 });
 
 // ===== Вкладка 3: ИТОГИ ДНЯ =====
