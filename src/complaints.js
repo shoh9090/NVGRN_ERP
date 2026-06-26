@@ -180,6 +180,11 @@ router.post('/api/import', upload.single('file'), async (req, res) => {
     for (const n of names) { const k = keys.find((x) => x.toLowerCase().includes(n)); if (k) return obj[k]; }
     return null;
   };
+  // «Продукт» точно (исключаем «категория продукта», где тоже есть слово «продукт»).
+  const findProduct = (obj) => {
+    const k = Object.keys(obj).find((x) => x.toLowerCase().includes('продукт') && !x.toLowerCase().includes('категори'));
+    return k ? obj[k] : null;
+  };
 
   const client = await db.pool.connect();
   let inserted = 0;
@@ -189,7 +194,7 @@ router.post('/api/import', upload.single('file'), async (req, res) => {
     await client.query("DELETE FROM tgbot.complaints WHERE source = 'import'");
     for (const r of rows) {
       const typeLabel = norm(findCol(r, 'тип жалоб'));
-      if (!typeLabel && !norm(findCol(r, 'продукт'))) continue; // пустая строка
+      if (!typeLabel && !norm(findProduct(r))) continue; // пустая строка
       const typeCode = dict.type.get(typeLabel.toLowerCase()) || null;
       if (typeLabel && !typeCode) unmatchedTypes.add(typeLabel);
       const linkCode = typeCode ? (dict.typeLink.get(typeCode) || null) : null;
@@ -224,7 +229,7 @@ router.post('/api/import', upload.single('file'), async (req, res) => {
          VALUES ($1,'import',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
         [created || new Date(), norm(findCol(r, 'ресторан')) || null, norm(findCol(r, 'менеджер')) || null,
          volRaw || null, ship || null,
-         norm(findCol(r, 'продукт')) || null, dict.category.get(cat.toLowerCase()) || (cat || null),
+         norm(findProduct(r)) || null, dict.category.get(cat.toLowerCase()) || (cat || null),
          typeCode, linkCode, sevCode, resCode, noteParts.join('\n'),
          status, status === 'resolved' ? (created || new Date()) : null,
          norm(findCol(r, 'где хран')) || null, numOrNull(findCol(r, 'температур')), numOrNull(findCol(r, 'часов'))]
