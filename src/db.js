@@ -556,6 +556,15 @@ async function seed() {
     );
   }
 
+  // Плитка «Претензии» — жалобы клиентов, разбор, статистика
+  const cmt = await pool.query("SELECT id FROM tiles WHERE url = '/complaints' LIMIT 1");
+  if (cmt.rows.length === 0) {
+    await pool.query(
+      `INSERT INTO tiles (title, description, icon, url, open_new_tab, sort_order)
+       VALUES ('Претензии', 'Жалобы клиентов: разбор, решения, статистика', '📩', '/complaints', FALSE, 40)`
+    );
+  }
+
   // Первая плитка — Счета-фактуры (адрес меняется в админке)
   const t = await pool.query('SELECT id FROM tiles LIMIT 1');
   if (t.rows.length === 0) {
