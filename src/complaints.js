@@ -33,7 +33,7 @@ router.get('/api/dicts', async (req, res) => {
     `SELECT kind, code, label_ru, link_code, sort_order FROM tgbot.complaint_dicts
      WHERE active ORDER BY kind, sort_order`
   );
-  const out = { type: [], severity: [], resolution: [], category: [], link: [], usage: [] };
+  const out = { type: [], severity: [], resolution: [], category: [], link: [], usage: [], dish_form: [] };
   for (const row of r.rows) (out[row.kind] = out[row.kind] || []).push(row);
   out.status = Object.entries(STATUS).map(([code, label_ru]) => ({ code, label_ru }));
   res.json(out);
@@ -41,7 +41,7 @@ router.get('/api/dicts', async (req, res) => {
 
 // ----- Управление справочником (админ или РОП) -----
 // Редактируем только пользовательские разделы; служебные (link/category/resolution/status) не трогаем здесь.
-const EDITABLE_KINDS = ['type', 'severity', 'usage'];
+const EDITABLE_KINDS = ['type', 'severity', 'usage', 'dish_form'];
 function requireManager(req, res, next) {
   const roles = (req.user && req.user.roles) || [];
   if (req.user && (req.user.isAdmin || roles.includes('Руководитель продаж'))) return next();
@@ -112,7 +112,7 @@ router.post('/api/dict/:id(\\d+)/delete', requireManager, async (req, res) => {
 
 // ----- Список с фильтрами -----
 router.get('/api/list', async (req, res) => {
-  const { from, to, status, type, link, severity, q, product, usage } = req.query;
+  const { from, to, status, type, link, severity, q, product, usage, dish } = req.query;
 
   // Собираем условия. base[] — фильтры без статуса (для сводки), full[] — со статусом (для списка).
   function build(includeStatus) {
@@ -124,6 +124,7 @@ router.get('/api/list', async (req, res) => {
     if (type) add('c.complaint_type = $?', type);
     if (product) add('c.product_name = $?', product);
     if (usage) add('c.product_usage = $?', usage);
+    if (dish) add('c.dish_form = $?', dish);
     if (link) add('c.link_code = $?', link);
     if (severity) add('c.severity = $?', severity);
     if (q) { p.push('%' + String(q).trim() + '%'); const i = p.length;
@@ -358,6 +359,7 @@ router.get('/api/stats', async (req, res) => {
   const byType = await one(`SELECT complaint_type code, count(*)::int n FROM tgbot.complaints WHERE ${inP} AND complaint_type IS NOT NULL GROUP BY 1 ORDER BY n DESC LIMIT 8`, [from, to]);
   const byProduct = await one(`SELECT product_name name, count(*)::int n FROM tgbot.complaints WHERE ${inP} AND product_name IS NOT NULL AND product_name<>'' GROUP BY 1 ORDER BY n DESC LIMIT 8`, [from, to]);
   const byUsage = await one(`SELECT product_usage code, count(*)::int n FROM tgbot.complaints WHERE ${inP} AND product_usage IS NOT NULL AND product_usage<>'' GROUP BY 1 ORDER BY n DESC LIMIT 8`, [from, to]);
+  const byDish = await one(`SELECT dish_form code, count(*)::int n FROM tgbot.complaints WHERE ${inP} AND dish_form IS NOT NULL AND dish_form<>'' GROUP BY 1 ORDER BY n DESC LIMIT 8`, [from, to]);
   const byAgent = await one(`SELECT COALESCE(NULLIF(agent_name,''),'—') name, count(*)::int n FROM tgbot.complaints WHERE ${inP} GROUP BY 1 ORDER BY n DESC LIMIT 8`, [from, to]);
 
   // Тренд: последние 12 месяцев до конца выбранного
@@ -403,7 +405,7 @@ router.get('/api/stats', async (req, res) => {
       critical,
       topLink: byLink[0] || null, topProduct: byProduct[0] || null,
     },
-    byLink, byType, byProduct, byUsage, byAgent, trend, matrix,
+    byLink, byType, byProduct, byUsage, byDish, byAgent, trend, matrix,
   });
 });
 

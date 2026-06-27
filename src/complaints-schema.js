@@ -64,6 +64,8 @@ async function ensureComplaintSchema(pool) {
 
   // Назначение продукта (для чего клиент использует продукт) — код из справочника kind='usage'.
   await pool.query(`ALTER TABLE tgbot.complaints ADD COLUMN IF NOT EXISTS product_usage TEXT`);
+  // Финальный вид продукта в блюде — код из справочника kind='dish_form'.
+  await pool.query(`ALTER TABLE tgbot.complaints ADD COLUMN IF NOT EXISTS dish_form TEXT`);
 
   // Медиа претензии. Байты лежат в public.files (Hub отдаёт через /file/:id).
   await pool.query(`CREATE TABLE IF NOT EXISTS tgbot.complaint_files (
@@ -134,6 +136,29 @@ async function ensureComplaintSchema(pool) {
   for (const [code, label, sort] of SEVERITIES)  await seed('severity', code, label, sort, null);
   for (const [code, label, sort] of RESOLUTIONS) await seed('resolution', code, label, sort, null);
   for (const [code, label, sort] of CATEGORIES)  await seed('category', code, label, sort, null);
+
+  // Стартовые значения «Финального вида в блюде» — один раз, если справочник ещё пуст.
+  // Дальше Шох правит/удаляет вручную; повторный старт уже не воскрешает удалённое.
+  const dfExists = await pool.query("SELECT 1 FROM tgbot.complaint_dicts WHERE kind='dish_form' LIMIT 1");
+  if (!dfExists.rows.length) {
+    const DISH = [
+      ['tselnyy_list',   'Цельный лист',          1],
+      ['narezka',        'Нарезка',               2],
+      ['julienne',       'Жульен',                3],
+      ['kvadrat',        'Квадрат',               4],
+      ['term_obrabotka', 'Термическая обработка', 5],
+      ['pyurirovanie',   'Пюрирование',           6],
+      ['zamorozka',      'Заморозка',             7],
+      ['drugoe',         'другое',                8],
+    ];
+    for (const [code, label, sort] of DISH) {
+      await pool.query(
+        `INSERT INTO tgbot.complaint_dicts (kind, code, label_ru, sort_order, active)
+         VALUES ('dish_form', $1, $2, $3, true) ON CONFLICT (kind, code) DO NOTHING`,
+        [code, label, sort]
+      );
+    }
+  }
 
   _ready = true;
 }
