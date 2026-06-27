@@ -9,6 +9,7 @@
     <input name="description" placeholder="Короткое описание">
     <input name="icon" placeholder="Иконка-эмодзи, напр. 🧾" maxlength="8" style="max-width:140px">
     <input name="url" placeholder="https://адрес-модуля" required>
+    <input name="section" placeholder="Раздел (HoReCa, Склад и закуп...)" style="max-width:220px">
     <input name="sort_order" type="number" placeholder="Порядок (10, 20...)" style="max-width:160px">
     <label class="check"><input type="checkbox" name="open_new_tab" checked> Открывать в новой вкладке</label>
     <button type="submit" class="btn-primary">Добавить</button>
@@ -22,6 +23,7 @@
       <input name="description" value="<%= t.description %>">
       <input name="icon" value="<%= t.icon %>" maxlength="8" style="max-width:140px">
       <input name="url" value="<%= t.url %>" required>
+      <input name="section" value="<%= t.section || '' %>" placeholder="Раздел" style="max-width:220px">
       <input name="sort_order" type="number" value="<%= t.sort_order %>" style="max-width:160px">
       <label class="check"><input type="checkbox" name="open_new_tab" <%= t.open_new_tab ? 'checked' : '' %>> Новая вкладка</label>
       <button type="submit">Сохранить</button>

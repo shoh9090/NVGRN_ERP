@@ -520,6 +520,9 @@ async function seed() {
     }
   }
 
+  // Группировка плиток по разделам на лаунчере: колонка для раздела.
+  await pool.query("ALTER TABLE tiles ADD COLUMN IF NOT EXISTS section TEXT");
+
   // Плитка «Справочники» — внутренний модуль ядра
   const dt = await pool.query("SELECT id FROM tiles WHERE url = '/dictionaries' LIMIT 1");
   if (dt.rows.length === 0) {
@@ -577,6 +580,18 @@ async function seed() {
       adminRoleId,
       ins.rows[0].id,
     ]);
+  }
+
+  // Разделы плиток для группировки на лаунчере (не перетираем ручные правки админа).
+  const tileSections = [
+    ['/complaints', 'HoReCa'],
+    ['/tgbot', 'HoReCa'],
+    ['/purchase', 'Склад и закуп'],
+    ['/stock', 'Склад и закуп'],
+    ['/dictionaries', 'Справочники и настройки'],
+  ];
+  for (const [u, sec] of tileSections) {
+    await pool.query("UPDATE tiles SET section = $1 WHERE url = $2 AND (section IS NULL OR section = '')", [sec, u]);
   }
 }
 

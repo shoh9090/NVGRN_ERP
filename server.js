@@ -95,6 +95,25 @@ app.post('/logout', (req, res) => {
 
 // ---------- Лаунчер ----------
 
+// Группировка плиток по разделам. Порядок разделов — заданный, остальное по алфавиту, «Прочее» в конце.
+const SECTION_ORDER = ['HoReCa', 'Склад и закуп', 'Справочники и настройки'];
+function groupTiles(rows) {
+  const map = new Map();
+  for (const t of rows) {
+    const sec = (t.section && t.section.trim()) || 'Прочее';
+    if (!map.has(sec)) map.set(sec, []);
+    map.get(sec).push(t);
+  }
+  const keys = [...map.keys()].sort((a, b) => {
+    if (a === 'Прочее') return 1;
+    if (b === 'Прочее') return -1;
+    const ia = SECTION_ORDER.indexOf(a), ib = SECTION_ORDER.indexOf(b);
+    const wa = ia === -1 ? 900 : ia, wb = ib === -1 ? 900 : ib;
+    return wa !== wb ? wa - wb : a.localeCompare(b, 'ru');
+  });
+  return keys.map((k) => ({ section: k, tiles: map.get(k) }));
+}
+
 app.get('/', requireAuth, async (req, res) => {
   const settings = await db.getSettings();
   let tiles;
@@ -110,7 +129,7 @@ app.get('/', requireAuth, async (req, res) => {
       [req.user.id]
     );
   }
-  res.render('launcher', { settings, user: req.user, tiles: tiles.rows });
+  res.render('launcher', { settings, user: req.user, tiles: tiles.rows, groups: groupTiles(tiles.rows) });
 });
 
 // Выдача загруженных файлов (логотип, фон) из базы
@@ -272,12 +291,12 @@ admin.get('/tiles', async (req, res) => {
 });
 
 admin.post('/tiles', async (req, res) => {
-  const { title, description, icon, url, sort_order } = req.body;
+  const { title, description, icon, url, sort_order, section } = req.body;
   if (title && url) {
     await db.pool.query(
-      `INSERT INTO tiles (title, description, icon, url, open_new_tab, sort_order)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [title.trim(), description || '', icon || '🧩', url.trim(), !!req.body.open_new_tab, parseInt(sort_order) || 100]
+      `INSERT INTO tiles (title, description, icon, url, open_new_tab, sort_order, section)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [title.trim(), description || '', icon || '🧩', url.trim(), !!req.body.open_new_tab, parseInt(sort_order) || 100, (section || '').trim() || null]
     );
     await db.log(req.user.id, 'create_tile', title);
   }
@@ -285,10 +304,10 @@ admin.post('/tiles', async (req, res) => {
 });
 
 admin.post('/tiles/:id', async (req, res) => {
-  const { title, description, icon, url, sort_order } = req.body;
+  const { title, description, icon, url, sort_order, section } = req.body;
   await db.pool.query(
-    `UPDATE tiles SET title=$1, description=$2, icon=$3, url=$4, open_new_tab=$5, sort_order=$6 WHERE id=$7`,
-    [title.trim(), description || '', icon || '🧩', url.trim(), !!req.body.open_new_tab, parseInt(sort_order) || 100, req.params.id]
+    `UPDATE tiles SET title=$1, description=$2, icon=$3, url=$4, open_new_tab=$5, sort_order=$6, section=$7 WHERE id=$8`,
+    [title.trim(), description || '', icon || '🧩', url.trim(), !!req.body.open_new_tab, parseInt(sort_order) || 100, (section || '').trim() || null, req.params.id]
   );
   await db.log(req.user.id, 'update_tile', req.params.id);
   res.redirect('/admin/tiles');
