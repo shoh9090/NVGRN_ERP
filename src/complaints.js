@@ -247,6 +247,86 @@ router.post('/api/import', upload.single('file'), async (req, res) => {
   res.json({ ok: true, inserted, unmatchedTypes: [...unmatchedTypes] });
 });
 
+// ----- Сводка для дашборда (по месяцу, со сравнением месяц-к-месяцу) -----
+router.get('/api/stats', async (req, res) => {
+  // месяц вида YYYY-MM; по умолчанию — текущий
+  let ym = String(req.query.month || '').match(/^\d{4}-\d{2}$/) ? req.query.month : null;
+  const now = new Date();
+  if (!ym) ym = now.toISOString().slice(0, 7);
+  const [yy, mm] = ym.split('-').map(Number);
+  const from = `${ym}-01`;
+  const toD = new Date(Date.UTC(yy, mm, 1)); const to = toD.toISOString().slice(0, 10);          // первый день след. месяца
+  const prevFromD = new Date(Date.UTC(yy, mm - 2, 1)); const prevFrom = prevFromD.toISOString().slice(0, 10);
+  const prevTo = from;
+
+  const one = async (sql, p) => (await db.pool.query(sql, p)).rows;
+  const scalar = async (sql, p) => Number((await db.pool.query(sql, p)).rows[0]?.n || 0);
+
+  const inP = 'created_at >= $1 AND created_at < $2';
+  const total = await scalar(`SELECT count(*) n FROM tgbot.complaints WHERE ${inP}`, [from, to]);
+  const totalPrev = await scalar(`SELECT count(*) n FROM tgbot.complaints WHERE created_at >= $1 AND created_at < $2`, [prevFrom, prevTo]);
+  const zhiv = await scalar(`SELECT count(*) n FROM tgbot.complaints WHERE ${inP} AND complaint_type='zhivnost'`, [from, to]);
+  const zhivPrev = await scalar(`SELECT count(*) n FROM tgbot.complaints WHERE created_at >= $1 AND created_at < $2 AND complaint_type='zhivnost'`, [prevFrom, prevTo]);
+  const critical = await scalar(`SELECT count(*) n FROM tgbot.complaints WHERE ${inP} AND severity='critical'`, [from, to]);
+
+  const byLink = await one(`SELECT link_code code, count(*)::int n FROM tgbot.complaints WHERE ${inP} AND link_code IS NOT NULL GROUP BY 1 ORDER BY n DESC`, [from, to]);
+  const byType = await one(`SELECT complaint_type code, count(*)::int n FROM tgbot.complaints WHERE ${inP} AND complaint_type IS NOT NULL GROUP BY 1 ORDER BY n DESC LIMIT 8`, [from, to]);
+  const byProduct = await one(`SELECT product_name name, count(*)::int n FROM tgbot.complaints WHERE ${inP} AND product_name IS NOT NULL AND product_name<>'' GROUP BY 1 ORDER BY n DESC LIMIT 8`, [from, to]);
+  const byAgent = await one(`SELECT COALESCE(NULLIF(agent_name,''),'—') name, count(*)::int n FROM tgbot.complaints WHERE ${inP} GROUP BY 1 ORDER BY n DESC LIMIT 8`, [from, to]);
+
+  // Тренд: последние 12 месяцев до конца выбранного
+  const trendFrom = new Date(Date.UTC(yy, mm - 12, 1)).toISOString().slice(0, 10);
+  const trend = await one(
+    `SELECT to_char(date_trunc('month', created_at),'YYYY-MM') ym, count(*)::int n
+     FROM tgbot.complaints WHERE created_at >= $1 AND created_at < $2
+     GROUP BY 1 ORDER BY 1`, [trendFrom, to]);
+
+  // Матрица продукт×месяц: топ-6 продуктов за последние 6 месяцев
+  const mxFrom = new Date(Date.UTC(yy, mm - 6, 1)).toISOString().slice(0, 10);
+  const topProds = (await one(
+    `SELECT product_name FROM tgbot.complaints
+     WHERE created_at >= $1 AND created_at < $2 AND product_name IS NOT NULL AND product_name<>''
+     GROUP BY 1 ORDER BY count(*) DESC LIMIT 6`, [mxFrom, to])).map((r) => r.product_name);
+  let matrix = { months: [], rows: [] };
+  if (topProds.length) {
+    const cells = await one(
+      `SELECT product_name, to_char(date_trunc('month', created_at),'YYYY-MM') ym, count(*)::int n
+       FROM tgbot.complaints WHERE created_at >= $1 AND created_at < $2 AND product_name = ANY($3)
+       GROUP BY 1,2`, [mxFrom, to, topProds]);
+    const months = [];
+    for (let i = 6; i >= 1; i--) months.push(new Date(Date.UTC(yy, mm - i, 1)).toISOString().slice(0, 7));
+    const lut = {}; cells.forEach((c) => { (lut[c.product_name] = lut[c.product_name] || {})[c.ym] = c.n; });
+    matrix = {
+      months: months.map((m) => ({ ym: m, label: monthLabel(m) })),
+      rows: topProds.map((p) => { const vals = months.map((m) => (lut[p] && lut[p][m]) || 0); return { product: p, vals, tot: vals.reduce((a, b) => a + b, 0) }; }),
+    };
+  }
+
+  // Список доступных месяцев для селектора
+  const monthsAvail = (await one(
+    `SELECT DISTINCT to_char(date_trunc('month', created_at),'YYYY-MM') ym FROM tgbot.complaints ORDER BY ym DESC`)).map((r) => r.ym);
+  if (!monthsAvail.includes(ym)) monthsAvail.unshift(ym);
+
+  const pct = (a, b) => (b === 0 ? (a > 0 ? 100 : 0) : Math.round(((a - b) / b) * 100));
+  res.json({
+    month: ym, monthLabel: monthLabel(ym), prevLabel: monthLabel(prevTo.slice(0, 7)),
+    monthsAvail,
+    kpi: {
+      total, totalPrev, totalDelta: pct(total, totalPrev),
+      zhivnost: zhiv, zhivnostPrev: zhivPrev, zhivnostDelta: pct(zhiv, zhivPrev),
+      critical,
+      topLink: byLink[0] || null, topProduct: byProduct[0] || null,
+    },
+    byLink, byType, byProduct, byAgent, trend, matrix,
+  });
+});
+
+function monthLabel(ym) {
+  const names = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
+  const [y, m] = String(ym).split('-').map(Number);
+  return names[(m || 1) - 1] + ' ' + y;
+}
+
 // ---------- helpers ----------
 function fmtDate(d) { if (!d) return ''; const x = new Date(d); return isNaN(x) ? '' : x.toISOString().slice(0, 10); }
 function toDate(v) {
