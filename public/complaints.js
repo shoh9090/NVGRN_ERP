@@ -394,9 +394,10 @@
       el('h2', { class: 'cmp-h2' }, 'Справочник претензий'),
       el('p', { class: 'cmp-hint' }, 'Меняйте названия, порядок и доступность пунктов. Бот подхватит изменения за пару минут. Технический код пункта не показываем — он сохраняется, история не ломается.'),
     ]));
-    c.appendChild(settingsSection('Типы жалоб', 'type', byKind.type || [], links, 'У каждого типа есть «звено» — на чью зону указывает косяк.'));
-    c.appendChild(settingsSection('Степень проблемы', 'severity', byKind.severity || [], null));
-    c.appendChild(settingsSection('Назначение продукта', 'usage', byKind.usage || [], null, 'Для чего используется продукт. Заполните под себя — список пока пустой.'));
+    const act = (arr) => (arr || []).filter((x) => x.active);
+    c.appendChild(settingsSection('Типы жалоб', 'type', act(byKind.type), links, 'У каждого типа есть «звено» — на чью зону указывает косяк.'));
+    c.appendChild(settingsSection('Степень проблемы', 'severity', act(byKind.severity), null));
+    c.appendChild(settingsSection('Назначение продукта', 'usage', act(byKind.usage), null, 'Для чего используется продукт. Заполните под себя — список пока пустой.'));
   }
 
   function settingsSection(title, kind, items, links, hint) {
@@ -424,28 +425,50 @@
         ...(links || []).map((l) => el('option', { value: l.code, selected: (it && it.link_code === l.code) || null }, l.label_ru)),
       ]);
     }
-    const activeChk = el('input', { type: 'checkbox' }); if (!it || it.active) activeChk.checked = true;
-    const row = el('div', { class: 'cmp-set-row' + (it && !it.active ? ' off' : '') });
-    const saveBtn = el('button', { class: 'btn-primary cmp-set-save', onclick: async () => {
-      const payload = { label_ru: labelInp.value.trim(), sort_order: parseInt(sortInp.value) || 0, active: activeChk.checked };
+    const row = el('div', { class: 'cmp-set-row' });
+    const flash = () => { row.classList.add('saved'); setTimeout(() => row.classList.remove('saved'), 700); };
+
+    // Существующий пункт: правки сохраняются сами при уходе из поля.
+    async function autosave() {
+      const label = labelInp.value.trim();
+      if (!label) return; // пустое имя не сохраняем
+      const payload = { label_ru: label, sort_order: parseInt(sortInp.value) || 0 };
       if (kind === 'type') payload.link_code = linkSel.value || null;
-      if (!payload.label_ru) return toast('Введите название', true);
-      saveBtn.disabled = true;
-      try {
-        if (isNew) {
-          payload.kind = kind;
-          await api('/dict', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-          toast('Добавлено'); await refreshDicts(); renderSettings();
-        } else {
-          await api('/dict/' + it.id, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-          toast('Сохранено'); row.classList.toggle('off', !payload.active); await refreshDicts();
-        }
-      } catch (e) { toast(e.message, true); }
-      saveBtn.disabled = false;
-    } }, isNew ? 'Добавить' : 'Сохранить');
+      try { await api('/dict/' + it.id, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); flash(); await refreshDicts(); }
+      catch (e) { toast(e.message, true); }
+    }
+    if (!isNew) {
+      labelInp.addEventListener('change', autosave);
+      sortInp.addEventListener('change', autosave);
+      if (linkSel) linkSel.addEventListener('change', autosave);
+    }
+
     const cells = [labelInp];
     if (linkSel) cells.push(linkSel);
-    cells.push(sortInp, el('label', { class: 'cmp-set-act' }, [activeChk, el('span', {}, 'вкл')]), saveBtn);
+    cells.push(sortInp);
+
+    if (isNew) {
+      const addBtn = el('button', { class: 'btn-primary cmp-set-save', onclick: async () => {
+        const label = labelInp.value.trim();
+        if (!label) return toast('Введите название', true);
+        const payload = { kind, label_ru: label, sort_order: parseInt(sortInp.value) || 0 };
+        if (kind === 'type') payload.link_code = linkSel.value || null;
+        addBtn.disabled = true;
+        try { await api('/dict', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); toast('Добавлено'); await refreshDicts(); renderSettings(); }
+        catch (e) { toast(e.message, true); addBtn.disabled = false; }
+      } }, 'Добавить');
+      cells.push(addBtn);
+    } else {
+      const delBtn = el('button', { class: 'cmp-set-del', title: 'Удалить пункт', onclick: async () => {
+        if (!confirm('Удалить пункт «' + it.label_ru + '»?')) return;
+        try {
+          const r = await api('/dict/' + it.id + '/delete', { method: 'POST' });
+          toast(r.soft ? 'Пункт использовался в претензиях — скрыт, история сохранена' : 'Удалено');
+          await refreshDicts(); renderSettings();
+        } catch (e) { toast(e.message, true); }
+      } }, '🗑');
+      cells.push(delBtn);
+    }
     cells.forEach((x) => row.appendChild(x));
     return row;
   }

@@ -168,6 +168,9 @@ tr.cmp-clk:hover td { background: #f3f6f1; }
 .cmp-set-sort { width: 72px; flex: none; }
 .cmp-set-act { display: flex; align-items: center; gap: 5px; font-size: 12px; color: #5a665c; white-space: nowrap; }
 .cmp-set-save { padding: 7px 14px; white-space: nowrap; }
+.cmp-set-del { background: #fff; border: 1px solid #e6c6c6; color: #c0392b; border-radius: 8px; padding: 7px 11px; cursor: pointer; font-size: 14px; line-height: 1; flex: none; }
+.cmp-set-del:hover { background: #fdeceb; border-color: #d99; }
+.cmp-set-row.saved { background: #eef7e6; border-radius: 8px; box-shadow: inset 0 0 0 1px #cfe6b3; transition: background .2s, box-shadow .2s; }
 .cmp-set-add { margin-top: 4px; }
 @media (max-width: 760px) {
   .cmp-set-lbl { min-width: 120px; }

@@ -92,6 +92,24 @@ router.post('/api/dict/:id(\\d+)', requireDictAdmin, express.json(), async (req,
   res.json({ ok: true });
 });
 
+// Удалить пункт. Если он уже встречается в претензиях — не теряем историю: прячем (active=false).
+router.post('/api/dict/:id(\\d+)/delete', requireDictAdmin, async (req, res) => {
+  const cur = (await db.pool.query('SELECT kind, code FROM tgbot.complaint_dicts WHERE id = $1', [req.params.id])).rows[0];
+  if (!cur) return res.status(404).json({ error: 'Пункт не найден' });
+  if (!EDITABLE_KINDS.includes(cur.kind)) return res.status(400).json({ error: 'Этот раздел нельзя менять здесь' });
+  let used = 0;
+  if (cur.kind === 'type') used = (await db.pool.query('SELECT 1 FROM tgbot.complaints WHERE complaint_type = $1 LIMIT 1', [cur.code])).rowCount;
+  else if (cur.kind === 'severity') used = (await db.pool.query('SELECT 1 FROM tgbot.complaints WHERE severity = $1 LIMIT 1', [cur.code])).rowCount;
+  if (used) {
+    await db.pool.query('UPDATE tgbot.complaint_dicts SET active = false WHERE id = $1', [req.params.id]);
+    await db.log(req.user.id, 'complaint_dict_hide', `#${req.params.id}`);
+    return res.json({ ok: true, soft: true });
+  }
+  await db.pool.query('DELETE FROM tgbot.complaint_dicts WHERE id = $1', [req.params.id]);
+  await db.log(req.user.id, 'complaint_dict_delete', `#${req.params.id}`);
+  res.json({ ok: true, soft: false });
+});
+
 // ----- Список с фильтрами -----
 router.get('/api/list', async (req, res) => {
   const { from, to, status, type, link, severity, q, product } = req.query;
