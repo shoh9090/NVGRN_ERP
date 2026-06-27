@@ -360,7 +360,7 @@ async function main() {
   ]).catch(() => {});
 
   // Мастер претензий: отдаём ему нужные помощники бота (логику заказов он не трогает).
-  complaints.init({ bot, db, getLang, pointsOfUser, phone9OfUser, getOrders14, mainMenu, notifyClientAgent });
+  complaints.init({ bot, db, getLang, pointsOfUser, phone9OfUser, getOrders14, mainMenu, notifyClientAgent, notifyAgentReact, notifyManagers });
 
   // Прогрев кэша: каталог/остатки и история всегда «горячие», чтобы «Добавить» открывалось мгновенно.
   const warmStock = async () => { try { _cache.delete("stock"); await getStockData(); } catch (e) { console.warn("[ПРОГРЕВ stock]", e.message); } };
@@ -612,6 +612,27 @@ async function main() {
       await db.query("INSERT INTO notification_log (kind, dedup_key, target_chat_id, target_role, sd_id) VALUES ('dop_order',$1,$2,$3,$4) ON CONFLICT (dedup_key) DO NOTHING", [dedupKey || null, chatId, role, sdId]);
       return true;
     } catch (e) { console.warn("[УВЕД-АГЕНТ]", e.message); return false; }
+  }
+  // Уведомление агенту о претензии с кнопкой «Принял в работу» (для мастера претензий).
+  async function notifyAgentReact(sdId, bodyText, complaintId) {
+    try {
+      const pc = (await db.query("SELECT agent_sd_id, point_name, firm_name FROM point_contacts WHERE sd_id=$1", [sdId])).rows[0] || {};
+      const { chatId, role } = await resolveAgentChat(pc.agent_sd_id);
+      if (!chatId) return false;
+      const name = pc.point_name || pc.firm_name || sdId;
+      const kb = { inline_keyboard: [[{ text: "✅ Принял в работу", callback_data: "cmpl:react:" + complaintId }]] };
+      await bot.sendMessage(chatId, rolePrefix(role) + bodyText.replace("{name}", name), { reply_markup: kb });
+      return true;
+    } catch (e) { console.warn("[УВЕД-РЕАКЦ]", e.message); return false; }
+  }
+  // Эскалация критической претензии — всем подтверждённым РОПам и админу.
+  async function notifyManagers(text) {
+    const seen = new Set();
+    try {
+      const rops = (await db.query("SELECT telegram_chat_id FROM telegram_staff WHERE role='head_of_sales' AND status='confirmed' AND telegram_chat_id IS NOT NULL")).rows;
+      for (const r of rops) { const c = r.telegram_chat_id; if (c && !seen.has(String(c))) { seen.add(String(c)); bot.sendMessage(c, text).catch(() => {}); } }
+    } catch (e) { console.warn("[ЭСКАЛАЦИЯ]", e.message); }
+    if (ADMIN_TG_ID && !seen.has(String(ADMIN_TG_ID))) bot.sendMessage(ADMIN_TG_ID, text).catch(() => {});
   }
   // --- Бандл 2 (шаг 2): сводка агенту + сигналы ---
   async function buildDigest(crmAgentId) {

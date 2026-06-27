@@ -10,6 +10,11 @@ let H = {}; // helpers из index.js: getLang, pointsOfUser, phone9OfUser, getOr
 // Состояние мастера по chatId. Живёт в памяти — как draftCache у заказов.
 const sessions = new Map();
 
+// Реакция агента: ждём текст комментария (chatId -> complaintId).
+const agentComment = new Map();
+// Типы жалоб, которые агент НЕ закрывает сам — только эскалация Шоху/РОПу.
+const CRITICAL_TYPES = new Set(["zhivnost"]);
+
 // Кнопки нижнего меню заказа: при нажатии посреди мастера — выходим из претензии.
 const EXIT_TEXTS = new Set(["🛒 Заказать", "🛒 Buyurtma berish", "📦 Мой заказ", "📦 Buyurtmam"]);
 
@@ -46,6 +51,14 @@ const STR = {
   btn_done:    { ru: "✅ Готово", uz: "✅ Tayyor" },
   btn_skip:    { ru: "Пропустить", uz: "O‘tkazib yuborish" },
   btn_cancel:  { ru: "Отмена", uz: "Bekor qilish" },
+  // --- Реакция агента ---
+  btn_ag_comment: { ru: "✍️ Комментарий", uz: "✍️ Izoh" },
+  react_already:  { ru: "Эта претензия уже в работе или закрыта.", uz: "Bu shikoyat allaqachon ishlovda yoki yopilgan." },
+  react_taken:    { ru: (id) => `Вы приняли претензию №${id} в работу. Выберите решение или добавьте комментарий:`, uz: (id) => `№${id} shikoyatni ishga oldingiz. Yechim tanlang yoki izoh qo‘shing:` },
+  res_closed:     { ru: (id) => `✅ Претензия №${id} закрыта. Спасибо за работу!`, uz: (id) => `✅ №${id} shikoyat yopildi. Rahmat!` },
+  res_escalated:  { ru: (id) => `Решение записано. Претензия №${id} критическая — её разберёт и закроет Шох/РОП.`, uz: (id) => `Yechim yozildi. №${id} shikoyat muhim — uni rahbariyat ko‘rib yopadi.` },
+  ag_comment_ask: { ru: "Напишите комментарий к претензии одним сообщением.", uz: "Shikoyatga izohni bitta xabar bilan yozing." },
+  ag_comment_saved: { ru: (id) => `✍️ Комментарий к №${id} сохранён.`, uz: (id) => `✍️ №${id} uchun izoh saqlandi.` },
 };
 function t(lang, key, ...a) { const e = STR[key] && (STR[key][lang] || STR[key].ru); return typeof e === "function" ? e(...a) : e; }
 function menuText(lang) { return STR.menu[lang] || STR.menu.ru; }
@@ -75,6 +88,15 @@ async function getDishes() {
   const r = await db.query("SELECT code, label_ru FROM tgbot.complaint_dicts WHERE kind='dish_form' AND active ORDER BY sort_order");
   _dishes = r.rows; _dishesAt = Date.now();
   return _dishes;
+}
+
+// ---------- Справочник решений (для реакции агента; кэш 10 мин) ----------
+let _resolutions = null, _resolutionsAt = 0;
+async function getResolutions() {
+  if (_resolutions && Date.now() - _resolutionsAt < 600000) return _resolutions;
+  const r = await db.query("SELECT code, label_ru FROM tgbot.complaint_dicts WHERE kind='resolution' AND active ORDER BY sort_order");
+  _resolutions = r.rows; _resolutionsAt = Date.now();
+  return _resolutions;
 }
 
 // ---------- Клавиатуры/хелперы ----------
@@ -261,15 +283,63 @@ async function finalize(chatId, s, lang) {
     await db.logEvent("complaint_created", chatId, { id, type: s.type.code, sd_id: s.point.sd_id });
     sessions.delete(chatId);
     await bot.sendMessage(chatId, t(lang, "thanks", id), H.mainMenu(lang));
-    // Уведомляем агента точки. Если агента нет — notifyClientAgent сам отправит РОПу/админу.
+    // Уведомляем агента точки с кнопкой «Принял в работу». Нет агента — уйдёт РОПу/админу.
     const note = `📩 Новая претензия №${id}\nКлиент: {name}\nТовар: ${s.product.name}\nТип: ${s.type.label}`
       + (s.client_comment ? `\nКомментарий: ${s.client_comment}` : "");
-    H.notifyClientAgent(s.point.sd_id, note, `complaint:${id}`).catch((e) => console.warn("[ПРЕТЕНЗИЯ notify]", e.message));
+    H.notifyAgentReact(s.point.sd_id, note, id).catch((e) => console.warn("[ПРЕТЕНЗИЯ notify]", e.message));
   } catch (e) {
     console.error("[ПРЕТЕНЗИЯ save]", e.message);
     sessions.delete(chatId);
     await bot.sendMessage(chatId, t(lang, "save_err"), H.mainMenu(lang));
   }
+}
+
+// ---------- Реакция агента ----------
+async function agentResolveKb(id, lang) {
+  const res = await getResolutions();
+  const rows = res.map((r) => [{ text: r.label_ru, callback_data: `cmpl:ares:${id}:${r.code}` }]);
+  rows.push([{ text: t(lang, "btn_ag_comment"), callback_data: `cmpl:acmt:${id}` }]);
+  return { inline_keyboard: rows };
+}
+
+// «Принял в работу» → статус agent_reacted, показываем выбор решения.
+async function agentReact(q, id, lang) {
+  const chatId = q.message.chat.id;
+  const c = (await db.query("SELECT status FROM tgbot.complaints WHERE id=$1", [id])).rows[0];
+  await bot.answerCallbackQuery(q.id);
+  if (!c) { await bot.sendMessage(chatId, "Претензия не найдена."); return true; }
+  if (c.status !== "new") { await bot.sendMessage(chatId, t(lang, "react_already")); return true; }
+  await db.query("UPDATE tgbot.complaints SET status='agent_reacted', agent_reacted_at=now(), agent_tg_id=$1, updated_at=now() WHERE id=$2 AND status='new'", [q.from.id, id]);
+  await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: q.message.message_id }).catch(() => {});
+  await bot.sendMessage(chatId, t(lang, "react_taken", id), { reply_markup: await agentResolveKb(id, lang) });
+  return true;
+}
+
+// Агент выбрал решение: простую закрываем, критическую эскалируем Шоху/РОПу.
+async function agentResolve(q, id, code, lang) {
+  const chatId = q.message.chat.id;
+  const c = (await db.query("SELECT complaint_type, point_name, firm_name FROM tgbot.complaints WHERE id=$1", [id])).rows[0];
+  await bot.answerCallbackQuery(q.id);
+  if (!c) { await bot.sendMessage(chatId, "Претензия не найдена."); return true; }
+  await db.query("UPDATE tgbot.complaints SET agent_resolution=$1, updated_at=now() WHERE id=$2", [code, id]);
+  const resLabel = ((await getResolutions()).find((r) => r.code === code) || {}).label_ru || code;
+  if (CRITICAL_TYPES.has(c.complaint_type)) {
+    const point = c.point_name || c.firm_name || "";
+    await H.notifyManagers(`🚨 Критическая претензия №${id}\nТочка: ${point}\nАгент принял в работу, предложил решение: ${resLabel}.\nНужен ваш разбор и закрытие в Hub.`);
+    await bot.editMessageText(t(lang, "res_escalated", id), { chat_id: chatId, message_id: q.message.message_id }).catch(() => bot.sendMessage(chatId, t(lang, "res_escalated", id)));
+  } else {
+    await db.query("UPDATE tgbot.complaints SET status='resolved', resolved_at=now(), resolved_by=$1, updated_at=now() WHERE id=$2", ["Агент (бот)", id]);
+    await bot.editMessageText(t(lang, "res_closed", id), { chat_id: chatId, message_id: q.message.message_id }).catch(() => bot.sendMessage(chatId, t(lang, "res_closed", id)));
+  }
+  return true;
+}
+
+async function agentAskComment(q, id, lang) {
+  const chatId = q.message.chat.id;
+  agentComment.set(chatId, id);
+  await bot.answerCallbackQuery(q.id);
+  await bot.sendMessage(chatId, t(lang, "ag_comment_ask"));
+  return true;
 }
 
 // ---------- Маршрутизация из index.js ----------
@@ -279,6 +349,15 @@ async function onMessage(msg) {
   const chatId = msg.chat.id;
   const txt = (msg.text || "").trim();
   const lang = await H.getLang(chatId);
+
+  // Комментарий агента к претензии (агентский поток, вне клиентского мастера).
+  if (agentComment.has(chatId) && txt && !txt.startsWith("/")) {
+    const id = agentComment.get(chatId); agentComment.delete(chatId);
+    try { await db.query("UPDATE tgbot.complaints SET agent_comment=$1, updated_at=now() WHERE id=$2", [txt.slice(0, 1000), id]); await bot.sendMessage(chatId, t(lang, "ag_comment_saved", id)); }
+    catch (e) { console.warn("[ПРЕТЕНЗИЯ ag_comment]", e.message); }
+    return true;
+  }
+
   const isMenu = txt === STR.menu.ru || txt === STR.menu.uz;
 
   // Выход из мастера по командам или кнопкам меню заказа — пусть index.js их обработает.
@@ -318,6 +397,10 @@ async function onCallback(q) {
   try {
     if (step === "noop") { await bot.answerCallbackQuery(q.id); return true; }
     if (step === "cancel") { sessions.delete(chatId); await bot.answerCallbackQuery(q.id); await bot.sendMessage(chatId, t(lang, "cancelled"), H.mainMenu(lang)); return true; }
+    // Реакция агента — не зависит от клиентской сессии (работает по complaintId из колбэка).
+    if (step === "react") return agentReact(q, arg, lang);
+    if (step === "ares")  return agentResolve(q, arg, parts[3], lang);
+    if (step === "acmt")  return agentAskComment(q, arg, lang);
     if (!s) { await bot.answerCallbackQuery(q.id, { text: t(lang, "expired") }); return true; }
 
     if (step === "pt") { await bot.answerCallbackQuery(q.id); s.point = s.points[Number(arg)]; if (!s.point) { sessions.delete(chatId); return true; } await askOrder(chatId, s, lang); return true; }
