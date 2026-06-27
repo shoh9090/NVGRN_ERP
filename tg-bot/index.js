@@ -5,6 +5,7 @@ require("dotenv").config();
 const TelegramBot = require("node-telegram-bot-api");
 const db = require("./db");
 const sd = require("./salesdoctor");
+const complaints = require("./complaints"); // мастер претензий (Этап 3)
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const ADMIN_TG_ID = process.env.ADMIN_TG_ID;
@@ -188,7 +189,7 @@ function t(lang, key, ...a) { const e = STR[key] && (STR[key][lang] || STR[key].
 async function getLang(chatId) { const r = await db.query("SELECT lang FROM user_prefs WHERE chat_id=$1", [chatId]); return (r.rows[0] && r.rows[0].lang) || "ru"; }
 async function setLang(chatId, lang) { await db.query(`INSERT INTO user_prefs (chat_id,lang,updated_at) VALUES ($1,$2,now()) ON CONFLICT (chat_id) DO UPDATE SET lang=$2, updated_at=now()`, [chatId, lang]); }
 const askContact = (lang) => ({ reply_markup: { keyboard: [[{ text: t(lang, "share_btn"), request_contact: true }]], resize_keyboard: true, one_time_keyboard: true } });
-const mainMenu = (lang) => ({ reply_markup: { keyboard: [[{ text: t(lang, "menu_order") }], [{ text: t(lang, "menu_myorder") }]], resize_keyboard: true } });
+const mainMenu = (lang) => ({ reply_markup: { keyboard: [[{ text: t(lang, "menu_order") }], [{ text: t(lang, "menu_myorder") }], [{ text: complaints.menuText(lang) }]], resize_keyboard: true } });
 const statusName = (s, lang) => (STR.status_names[lang] || STR.status_names.ru)[s] || s;
 
 // ---------- Онбординг (Вариант Б): запоминаем номер, точки выводим на лету ----------
@@ -357,6 +358,9 @@ async function main() {
     { command: "menu", description: "Меню" },
     { command: "start", description: "Старт / язык" },
   ]).catch(() => {});
+
+  // Мастер претензий: отдаём ему нужные помощники бота (логику заказов он не трогает).
+  complaints.init({ bot, db, getLang, pointsOfUser, phone9OfUser, getOrders14, mainMenu, notifyClientAgent });
 
   // Прогрев кэша: каталог/остатки и история всегда «горячие», чтобы «Добавить» открывалось мгновенно.
   const warmStock = async () => { try { _cache.delete("stock"); await getStockData(); } catch (e) { console.warn("[ПРОГРЕВ stock]", e.message); } };
@@ -753,6 +757,7 @@ async function main() {
     const [act, val] = String(q.data || "").split(":");
     const key = q.from.id + "|" + val;
     try {
+      if (await complaints.onCallback(q)) return; // колбэки мастера претензий (cmpl:*)
       if (act === "lang") { await setLang(chatId, val === "uz" ? "uz" : "ru"); await bot.answerCallbackQuery(q.id); const lang = await getLang(chatId); await bot.sendMessage(chatId, t(lang, "hello"), askContact(lang)); return; }
       const lang = await getLang(chatId);
       if (act === "noop") { await bot.answerCallbackQuery(q.id); return; }
@@ -915,6 +920,7 @@ async function main() {
 
   bot.on("message", async (msg) => {
     const chatId = msg.chat.id; const txt = (msg.text || "").trim();
+    if (await complaints.onMessage(msg)) return; // мастер претензий перехватывает свои сообщения/медиа
     const pend = awaitComment.get(chatId);
     if (pend && !msg.contact) {
       awaitComment.delete(chatId);
