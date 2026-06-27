@@ -28,6 +28,7 @@ const STR = {
   pick_product:{ ru: "На какой товар жалоба?", uz: "Qaysi mahsulotga shikoyat?" },
   pick_type:   { ru: "Что не так с товаром?", uz: "Mahsulotda nima muammo?" },
   pick_usage:  { ru: "Для чего используете этот продукт?", uz: "Bu mahsulotni nima uchun ishlatasiz?" },
+  pick_dish:   { ru: "Каким был финальный вид продукта в блюде?", uz: "Mahsulot taomda qanday ko‘rinishda bo‘ldi?" },
   no_orders:   { ru: "Не нашёл недавних заказов по этой точке. Обратитесь к вашему агенту Novagreen.", uz: "Bu nuqta bo‘yicha yaqin buyurtmalar topilmadi. Novagreen agentingizga murojaat qiling." },
   no_products: { ru: "В этом заказе нет позиций. Выберите другой заказ через «📩 Претензия».", uz: "Bu buyurtmada mahsulot yo‘q. «📩 Shikoyat» orqali boshqa buyurtmani tanlang." },
   send_media:  { ru: "Пришлите фото или видео проблемы (до 5). Когда закончите — нажмите «Готово».", uz: "Muammoning rasm yoki videosini yuboring (5 tagacha). Tugagach «Tayyor» tugmasini bosing." },
@@ -65,6 +66,15 @@ async function getUsages() {
   const r = await db.query("SELECT code, label_ru FROM tgbot.complaint_dicts WHERE kind='usage' AND active ORDER BY sort_order");
   _usages = r.rows; _usagesAt = Date.now();
   return _usages;
+}
+
+// ---------- Справочник «Финальный вид в блюде» (кэш 10 мин) ----------
+let _dishes = null, _dishesAt = 0;
+async function getDishes() {
+  if (_dishes && Date.now() - _dishesAt < 600000) return _dishes;
+  const r = await db.query("SELECT code, label_ru FROM tgbot.complaint_dicts WHERE kind='dish_form' AND active ORDER BY sort_order");
+  _dishes = r.rows; _dishesAt = Date.now();
+  return _dishes;
 }
 
 // ---------- Клавиатуры/хелперы ----------
@@ -168,6 +178,35 @@ async function askUsage(chatId, s, lang, page) {
   await bot.sendMessage(chatId, t(lang, "pick_usage"), { reply_markup: { inline_keyboard: rows } });
 }
 
+async function askDish(chatId, s, lang, page) {
+  const items = await getDishes();
+  const PER = 8;
+  const pages = Math.max(1, Math.ceil(items.length / PER));
+  const p = Math.min(Math.max(0, page || 0), pages - 1);
+  const rows = items.slice(p * PER, p * PER + PER).map((d) => [{ text: d.label_ru, callback_data: `cmpl:d:${d.code}` }]);
+  if (pages > 1) {
+    const nav = [];
+    if (p > 0) nav.push({ text: "◀", callback_data: `cmpl:dp:${p - 1}` });
+    nav.push({ text: `${p + 1}/${pages}`, callback_data: "cmpl:noop" });
+    if (p < pages - 1) nav.push({ text: "▶", callback_data: `cmpl:dp:${p + 1}` });
+    rows.push(nav);
+  }
+  rows.push([{ text: t(lang, "btn_skip"), callback_data: "cmpl:dskip" }]);
+  rows.push(cancelRow(lang));
+  s.stage = "dish";
+  await bot.sendMessage(chatId, t(lang, "pick_dish"), { reply_markup: { inline_keyboard: rows } });
+}
+
+// Переходы между шагами: назначение и финальный вид показываем, только если справочники не пусты.
+async function gotoAfterProduct(chatId, s, lang) {
+  if ((await getUsages()).length) return askUsage(chatId, s, lang, 0);
+  return gotoAfterUsage(chatId, s, lang);
+}
+async function gotoAfterUsage(chatId, s, lang) {
+  if ((await getDishes()).length) return askDish(chatId, s, lang, 0);
+  return askType(chatId, s, lang, 0);
+}
+
 async function askMedia(chatId, s, lang) {
   s.stage = "media"; s.media = [];
   await bot.sendMessage(chatId, t(lang, "send_media"), doneKb(lang));
@@ -211,6 +250,10 @@ async function finalize(chatId, s, lang) {
     if (s.usage) {
       try { await db.query("UPDATE tgbot.complaints SET product_usage = $1 WHERE id = $2", [s.usage, id]); }
       catch (e) { console.warn("[ПРЕТЕНЗИЯ usage]", e.message); }
+    }
+    if (s.dishForm) {
+      try { await db.query("UPDATE tgbot.complaints SET dish_form = $1 WHERE id = $2", [s.dishForm, id]); }
+      catch (e) { console.warn("[ПРЕТЕНЗИЯ dish]", e.message); }
     }
     for (const m of s.media) {
       await db.query("INSERT INTO tgbot.complaint_files (complaint_id, kind, file_ref, tg_file_id) VALUES ($1,$2,$3,$4)", [id, m.kind, m.fileRef, m.tgFileId]);
@@ -283,14 +326,15 @@ async function onCallback(q) {
       await bot.answerCallbackQuery(q.id);
       const op = s.products[Number(arg)]; if (!op) return true;
       s.product = { sdId: op.product.SD_id, name: op.product.name || op.product.SD_id, qty: Number(op.quantity) || 0 };
-      const usages = await getUsages();
-      if (usages.length) await askUsage(chatId, s, lang, 0);
-      else await askType(chatId, s, lang, 0);
+      await gotoAfterProduct(chatId, s, lang);
       return true;
     }
     if (step === "up") { await bot.answerCallbackQuery(q.id); await askUsage(chatId, s, lang, Number(arg) || 0); return true; }
-    if (step === "u")  { await bot.answerCallbackQuery(q.id); s.usage = arg; await askType(chatId, s, lang, 0); return true; }
-    if (step === "uskip") { await bot.answerCallbackQuery(q.id); s.usage = null; await askType(chatId, s, lang, 0); return true; }
+    if (step === "u")  { await bot.answerCallbackQuery(q.id); s.usage = arg; await gotoAfterUsage(chatId, s, lang); return true; }
+    if (step === "uskip") { await bot.answerCallbackQuery(q.id); s.usage = null; await gotoAfterUsage(chatId, s, lang); return true; }
+    if (step === "dp") { await bot.answerCallbackQuery(q.id); await askDish(chatId, s, lang, Number(arg) || 0); return true; }
+    if (step === "d")  { await bot.answerCallbackQuery(q.id); s.dishForm = arg; await askType(chatId, s, lang, 0); return true; }
+    if (step === "dskip") { await bot.answerCallbackQuery(q.id); s.dishForm = null; await askType(chatId, s, lang, 0); return true; }
     if (step === "tp") { await bot.answerCallbackQuery(q.id); await askType(chatId, s, lang, Number(arg) || 0); return true; }
     if (step === "t")  {
       await bot.answerCallbackQuery(q.id);
