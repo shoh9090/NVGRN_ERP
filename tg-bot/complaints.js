@@ -148,7 +148,10 @@ async function askOrder(chatId, s, lang) {
   try { orders = (await H.getOrders14()).filter((o) => o.client && o.client.SD_id === s.point.sd_id); }
   catch (e) { console.warn("[ПРЕТЕНЗИЯ orders]", e.message); }
   orders.sort((a, b) => String(b.dateCreate || "").localeCompare(String(a.dateCreate || "")));
-  const top = orders.slice(0, 8);
+  // Ультрафреш: срок годности 3-4 дня. Показываем только свежие заказы (≤7 дней), максимум 3.
+  const cutoff = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+  const recent = orders.filter((o) => String(o.dateShipment || o.dateCreate || "").slice(0, 10) >= cutoff);
+  const top = (recent.length ? recent : orders).slice(0, 3);
   if (!top.length) { await bot.sendMessage(chatId, t(lang, "no_orders"), H.mainMenu(lang)); sessions.delete(chatId); return; }
   s.orders = top; s.stage = "order";
   const rows = top.map((o, i) => [{ text: `📅 ${fmtD(o.dateShipment || o.dateCreate)} · ${(o.orderProducts || []).filter((x) => x.product).length} поз.`, callback_data: `cmpl:o:${i}` }]);
