@@ -80,16 +80,22 @@
     const monthSel = el('select', { class: 'cmp-f', onchange: (e) => { dashMonth = e.target.value; renderDashboard(); } },
       s.monthsAvail.map((m) => el('option', { value: m, selected: m === s.month || null }, monthLabelRu(m))));
     c.appendChild(el('div', { class: 'cmp-dash-top' }, [
-      el('div', {}, [el('div', { class: 'cmp-eyebrow' }, 'Контроль качества'), el('h2', { class: 'cmp-h2' }, 'Претензии — где течёт')]),
+      el('div', {}, [el('div', { class: 'cmp-eyebrow' }, 'Контроль качества'), el('h2', { class: 'cmp-h2' }, 'Претензии — где течёт'), el('div', { class: 'cmp-dash-hint' }, 'Кликните по цифре, типу, звену или ячейке — покажу сами претензии')]),
       el('div', { class: 'cmp-month' }, [el('span', {}, 'Месяц:'), monthSel]),
     ]));
 
     const k = s.kpi;
+    const mr = monthRange(s.month);
+    const mLabel = monthLabelRu(s.month);
     c.appendChild(el('div', { class: 'cmp-kpis' }, [
-      kpi('Всего за месяц', String(k.total), delta(k.totalDelta) + ' к ' + s.prevLabel),
-      kpi('живность', String(k.zhivnost), 'биоугроза · ' + delta(k.zhivnostDelta), true),
-      kpi('Главное звено', k.topLink ? lbl('link', k.topLink.code) : '—', k.topLink ? k.topLink.n + ' претензий' : '', false, true),
-      kpi('Проблемный продукт', k.topProduct ? k.topProduct.name : '—', k.topProduct ? k.topProduct.n + ' претензий' : '', false, true),
+      kpi('Всего за месяц', String(k.total), delta(k.totalDelta) + ' к ' + s.prevLabel, false, false,
+        () => drill('Все претензии · ' + mLabel, mr)),
+      kpi('живность', String(k.zhivnost), 'биоугроза · ' + delta(k.zhivnostDelta), true, false,
+        () => drill('Живность · ' + mLabel, Object.assign({ type: 'zhivnost' }, mr))),
+      kpi('Главное звено', k.topLink ? lbl('link', k.topLink.code) : '—', k.topLink ? k.topLink.n + ' претензий' : '', false, true,
+        k.topLink ? () => drill('Звено: ' + lbl('link', k.topLink.code) + ' · ' + mLabel, Object.assign({ link: k.topLink.code }, mr)) : null),
+      kpi('Проблемный продукт', k.topProduct ? k.topProduct.name : '—', k.topProduct ? k.topProduct.n + ' претензий' : '', false, true,
+        k.topProduct ? () => drill('Продукт: ' + k.topProduct.name + ' · ' + mLabel, Object.assign({ product: k.topProduct.name }, mr)) : null),
     ]));
 
     const row1 = el('div', { class: 'cmp-grid cmp-grid-2' });
@@ -107,8 +113,8 @@
 
   function delta(d) { if (d == null) return ''; const up = d > 0; const arr = d === 0 ? '→' : up ? '↑' : '↓'; return `${arr} ${Math.abs(d)}%`; }
 
-  function kpi(lab, num, sub, alert, small) {
-    return el('div', { class: 'cmp-kpi' + (alert ? ' alert' : '') }, [
+  function kpi(lab, num, sub, alert, small, onClick) {
+    return el('div', { class: 'cmp-kpi' + (alert ? ' alert' : '') + (onClick ? ' cmp-clk' : ''), onclick: onClick || null }, [
       alert ? el('span', { class: 'cmp-kpi-tag' }, 'критично') : null,
       el('div', { class: 'cmp-kpi-lab' }, lab),
       el('div', { class: 'cmp-kpi-num' + (small ? ' sm' : '') }, num),
@@ -119,6 +125,39 @@
     return el('div', { class: 'cmp-panel' + (full ? ' cmp-full' : '') }, [
       el('h3', {}, title), hint ? el('p', { class: 'cmp-hint' }, hint) : null, body,
     ]);
+  }
+
+  // ----- Drill-down: клик по элементу дашборда → модалка с самими претензиями -----
+  function monthRange(ym) {
+    const [y, m] = String(ym).split('-').map(Number);
+    const last = new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10);
+    return { from: ym + '-01', to: last };
+  }
+  function drillRow(c, n) {
+    return el('div', { class: 'cmp-drill-row', onclick: () => openCard(c.id) }, [
+      el('span', { class: 'cmp-drill-n' }, String(n)),
+      el('span', { class: 'cmp-drill-dt' }, ruDate(c.created_at)),
+      el('span', { class: 'cmp-drill-pr' }, [el('b', {}, c.product_name || '—'), c.product_category ? el('span', { class: 'cmp-cat' }, c.product_category) : null]),
+      el('span', { class: 'cmp-drill-ty' }, lbl('type', c.complaint_type) || '—'),
+      c.link_code ? el('span', { class: 'cmp-link ' + (LINK_CLASS[c.link_code] || '') }, lbl('link', c.link_code)) : el('span', {}, '—'),
+      el('span', { class: 'cmp-drill-pt' }, c.point_name || c.firm_name || '—'),
+      c.media_count ? el('span', { class: 'cmp-media' }, '📎 ' + c.media_count) : el('span', {}),
+      el('span', { class: 'cmp-badge ' + (STATUS_CLASS[c.status] || '') }, lbl('status', c.status)),
+    ]);
+  }
+  async function drill(title, params) {
+    const qs = new URLSearchParams();
+    Object.entries(params || {}).forEach(([k, v]) => { if (v) qs.set(k, v); });
+    let data;
+    try { data = await api('/list?' + qs.toString()); } catch (e) { return toast(e.message, true); }
+    const items = data.items || [];
+    const body = items.length
+      ? el('div', { class: 'cmp-drill' }, [
+          el('div', { class: 'cmp-drill-sum' }, 'Найдено претензий: ' + items.length),
+          el('div', { class: 'cmp-drill-list' }, items.map((c, i) => drillRow(c, i + 1))),
+        ])
+      : el('div', { class: 'cmp-empty' }, 'Нет претензий по этому срезу.');
+    modal(title, body);
   }
 
   function heatmap(mx) {
@@ -133,7 +172,11 @@
     const head = el('tr', {}, [el('th', {}, ''), ...mx.months.map((m) => el('th', {}, m.label.split(' ')[0])), el('th', {}, '')]);
     const rows = mx.rows.map((r) => el('tr', {}, [
       el('td', { class: 'cmp-hm-lbl' }, r.product),
-      ...r.vals.map((v) => el('td', { class: 'cmp-hm-cell', style: `background:${color(v)};color:${v / max > 0.62 ? '#fff' : '#26331f'}` }, v ? String(v) : '')),
+      ...r.vals.map((v, j) => el('td', {
+        class: 'cmp-hm-cell' + (v ? ' cmp-clk' : ''),
+        style: `background:${color(v)};color:${v / max > 0.62 ? '#fff' : '#26331f'}`,
+        onclick: v ? () => { const ym = mx.months[j].ym; drill(r.product + ' · ' + monthLabelRu(ym), Object.assign({ product: r.product }, monthRange(ym))); } : null,
+      }, v ? String(v) : '')),
       el('td', { class: 'cmp-hm-tot' }, String(r.tot)),
     ]));
     const table = el('table', { class: 'cmp-hm' }, [el('thead', {}, head), el('tbody', {}, rows)]);
@@ -154,7 +197,7 @@
     paths += `<text x="100" y="96" text-anchor="middle" font-family="Lora,serif" font-size="30" font-weight="600" fill="#163a28">${tot}</text><text x="100" y="116" text-anchor="middle" font-size="11" fill="#7c8579">всего</text>`;
     const donut = svgEl(paths, { vb: '0 0 200 200', style: 'max-height:185px' });
     const leg = el('div', { class: 'cmp-leg' }, byLink.map((z) =>
-      el('div', { class: 'cmp-leg-it' }, [
+      el('div', { class: 'cmp-leg-it cmp-clk', onclick: () => drill('Звено: ' + lbl('link', z.code) + ' · ' + monthLabelRu(dashMonth), Object.assign({ link: z.code }, monthRange(dashMonth))) }, [
         el('span', { class: 'cmp-leg-dot', style: 'background:' + (LINK_COLOR[z.code] || '#999') }),
         el('span', { class: 'cmp-leg-nm' }, lbl('link', z.code)),
         el('span', { class: 'cmp-leg-vl' }, String(z.n)),
@@ -186,7 +229,7 @@
     const max = Math.max(...byType.map((t) => t.n));
     return el('div', { class: 'cmp-bars' }, byType.map((t) => {
       const name = lbl('type', t.code);
-      return el('div', { class: 'cmp-bar' }, [
+      return el('div', { class: 'cmp-bar cmp-clk', onclick: () => drill('Тип: ' + name + ' · ' + monthLabelRu(dashMonth), Object.assign({ type: t.code }, monthRange(dashMonth))) }, [
         el('span', { class: 'cmp-bar-nm', title: name }, name),
         el('span', { class: 'cmp-bar-track' }, [el('span', { class: 'cmp-bar-fill', style: `width:${Math.round(t.n / max * 100)}%;${t.code === 'nepolozhili' ? 'background:#ad1457' : ''}` })]),
         el('span', { class: 'cmp-bar-vl' }, String(t.n)),
@@ -197,7 +240,10 @@
   function agentTable(byAgent) {
     if (!byAgent || !byAgent.length) return el('div', { class: 'cmp-empty' }, 'Нет данных за период.');
     const max = Math.max(...byAgent.map((a) => a.n));
-    const body = byAgent.map((a) => el('tr', {}, [
+    const body = byAgent.map((a) => el('tr', {
+      class: a.name && a.name !== '—' ? 'cmp-clk' : null,
+      onclick: a.name && a.name !== '—' ? () => drill('Агент: ' + a.name + ' · ' + monthLabelRu(dashMonth), Object.assign({ q: a.name }, monthRange(dashMonth))) : null,
+    }, [
       el('td', {}, a.name),
       el('td', { class: 'n' }, String(a.n)),
       el('td', {}, [el('span', { class: 'cmp-mini-track' }, [el('span', { class: 'cmp-mini-fill', style: `width:${Math.round(a.n / max * 100)}%` })])]),
@@ -233,8 +279,9 @@
     return el('div', { class: 'cmp-counts' }, order.map((s) =>
       el('span', { class: 'cmp-count ' + STATUS_CLASS[s] }, [lbl('status', s) + ': ', el('b', {}, String(map[s] || 0))])));
   }
-  function row(c) {
+  function row(c, n) {
     return el('div', { class: 'cmp-row', onclick: () => openCard(c.id) }, [
+      el('div', { class: 'cmp-c cmp-num' }, n != null ? String(n) : ''),
       el('div', { class: 'cmp-c cmp-date' }, ruDate(c.created_at)),
       el('div', { class: 'cmp-c cmp-prod' }, [el('b', {}, c.product_name || '—'), c.product_category ? el('span', { class: 'cmp-cat' }, c.product_category) : null]),
       el('div', { class: 'cmp-c cmp-type' }, lbl('type', c.complaint_type) || '—'),
@@ -260,8 +307,8 @@
     wrap.innerHTML = '';
     wrap.appendChild(listFilterBar());
     wrap.appendChild(countsBar(data.counts));
-    const head = el('div', { class: 'cmp-row cmp-head' }, ['Дата', 'Продукт', 'Тип жалобы', 'Звено', 'Точка', 'Агент', 'Степень', '', 'Статус'].map((h) => el('div', { class: 'cmp-c' }, h)));
-    wrap.appendChild(el('div', { class: 'cmp-list' }, [head, ...data.items.map(row)]));
+    const head = el('div', { class: 'cmp-row cmp-head' }, ['#', 'Дата', 'Продукт', 'Тип жалобы', 'Звено', 'Точка', 'Агент', 'Степень', '', 'Статус'].map((h) => el('div', { class: 'cmp-c' }, h)));
+    wrap.appendChild(el('div', { class: 'cmp-list' }, [head, ...data.items.map((c, i) => row(c, i + 1))]));
     if (!data.items.length) wrap.appendChild(el('div', { class: 'cmp-empty' }, 'Претензий по фильтру нет. Если база пустая — откройте «Импорт истории» или дождитесь подачи из бота.'));
   }
 

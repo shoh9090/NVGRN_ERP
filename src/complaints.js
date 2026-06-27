@@ -41,7 +41,7 @@ router.get('/api/dicts', async (req, res) => {
 
 // ----- Список с фильтрами -----
 router.get('/api/list', async (req, res) => {
-  const { from, to, status, type, link, severity, q } = req.query;
+  const { from, to, status, type, link, severity, q, product } = req.query;
 
   // Собираем условия. base[] — фильтры без статуса (для сводки), full[] — со статусом (для списка).
   function build(includeStatus) {
@@ -51,6 +51,7 @@ router.get('/api/list', async (req, res) => {
     if (to)   add('c.created_at < ($?::date + 1)', to);
     if (includeStatus && status) add('c.status = $?', status);
     if (type) add('c.complaint_type = $?', type);
+    if (product) add('c.product_name = $?', product);
     if (link) add('c.link_code = $?', link);
     if (severity) add('c.severity = $?', severity);
     if (q) { p.push('%' + String(q).trim() + '%'); const i = p.length;
