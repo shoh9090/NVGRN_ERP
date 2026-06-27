@@ -64,6 +64,8 @@
 .cmp-ok { color: #2e7d32; font-weight: 600; }
 .cmp-warn { color: #b25b00; margin-top: 6px; }
 .imp-x { background: none; border: none; font-size: 18px; cursor: pointer; color: #8a958b; }
+.cmp-del-btn { margin-right: auto; color: #c0392b; border-color: #e6c6c6; }
+.cmp-del-btn:hover { background: #fdeceb; border-color: #d99; }
 
 @media (max-width: 760px) {
   .cmp-row { grid-template-columns: 30px 64px 1.3fr 70px; }

@@ -2,6 +2,7 @@
 (function () {
   const $ = (s) => document.querySelector(s);
   const isAdmin = !!(window.HUB_USER && window.HUB_USER.isAdmin);
+  const canManage = !!(window.HUB_USER && (window.HUB_USER.canManage || window.HUB_USER.isAdmin));
   const ruDateTime = (s) => { if (!s) return ''; const d = new Date(s); return d.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' }); };
   const ruDate = (s) => { if (!s) return '—'; const d = new Date(s); return isNaN(d) ? '—' : d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' }); };
 
@@ -63,7 +64,7 @@
     const main = $('#cmp-main'); main.innerHTML = '';
     const tab = (id, label) => el('button', { class: 'cmp-tab' + (TAB === id ? ' on' : ''), onclick: () => { TAB = id; render(); } }, label);
     const tabs = [tab('dash', '📊 Дашборд'), tab('list', '📋 Список')];
-    if (isAdmin) tabs.push(tab('settings', '⚙️ Справочник'));
+    if (canManage) tabs.push(tab('settings', '⚙️ Справочник'));
     main.appendChild(el('div', { class: 'cmp-tabs' }, tabs));
     main.appendChild(el('div', { id: 'cmp-content' }));
   }
@@ -355,7 +356,16 @@
         toast('Сохранено'); m.close(); loadList();
       } catch (e) { toast(e.message, true); }
     } }, 'Сохранить');
-    const m = modal('Претензия #' + c.id, el('div', { class: 'cmp-card' }, [left, right]), [save]);
+    const actions = [];
+    if (canManage) {
+      actions.push(el('button', { class: 'btn-ghost cmp-del-btn', onclick: async () => {
+        if (!confirm('Удалить претензию #' + c.id + ' безвозвратно? Фото и видео тоже удалятся.')) return;
+        try { await api('/one/' + id + '/delete', { method: 'POST' }); toast('Претензия удалена'); m.close(); loadList(); }
+        catch (e) { toast(e.message, true); }
+      } }, '🗑 Удалить претензию'));
+    }
+    actions.push(save);
+    const m = modal('Претензия #' + c.id, el('div', { class: 'cmp-card' }, [left, right]), actions);
   }
 
   function exportXlsx() { window.location = '/complaints/api/export.xlsx'; }

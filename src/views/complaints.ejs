@@ -27,7 +27,7 @@
   <main class="pur-main" id="cmp-main"></main>
   <div id="cmp-modal-root"></div>
 
-  <script>window.HUB_USER = { isAdmin: <%= user.isAdmin ? "true" : "false" %>, name: "<%= user.name %>" };</script>
+  <script>window.HUB_USER = { isAdmin: <%= user.isAdmin ? "true" : "false" %>, canManage: <%= (user.isAdmin || (user.roles || []).includes('Руководитель продаж')) ? "true" : "false" %>, name: "<%= user.name %>" };</script>
   <script src="/static/bell.js"></script>
   <script src="/static/complaints.js"></script>
 </body>

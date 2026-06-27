@@ -42,10 +42,10 @@ router.get('/api/dicts', async (req, res) => {
 // ----- Управление справочником (админ или РОП) -----
 // Редактируем только пользовательские разделы; служебные (link/category/resolution/status) не трогаем здесь.
 const EDITABLE_KINDS = ['type', 'severity', 'usage'];
-function requireDictAdmin(req, res, next) {
+function requireManager(req, res, next) {
   const roles = (req.user && req.user.roles) || [];
   if (req.user && (req.user.isAdmin || roles.includes('Руководитель продаж'))) return next();
-  return res.status(403).json({ error: 'Изменять справочник может администратор или руководитель продаж' });
+  return res.status(403).json({ error: 'Действие доступно администратору или руководителю продаж' });
 }
 
 // Все записи справочника (включая выключенные) — для экрана настроек.
@@ -57,7 +57,7 @@ router.get('/api/dicts/all', async (req, res) => {
 });
 
 // Добавить пункт. Код генерируем сами (стабильный, человеку не показываем).
-router.post('/api/dict', requireDictAdmin, express.json(), async (req, res) => {
+router.post('/api/dict', requireManager, express.json(), async (req, res) => {
   const { kind, label_ru, link_code, sort_order } = req.body || {};
   if (!EDITABLE_KINDS.includes(kind)) return res.status(400).json({ error: 'Недопустимый раздел справочника' });
   const label = (label_ru || '').trim();
@@ -73,7 +73,7 @@ router.post('/api/dict', requireDictAdmin, express.json(), async (req, res) => {
 });
 
 // Изменить пункт: название, звено (для типов), порядок, вкл/выкл. Код и связи остаются.
-router.post('/api/dict/:id(\\d+)', requireDictAdmin, express.json(), async (req, res) => {
+router.post('/api/dict/:id(\\d+)', requireManager, express.json(), async (req, res) => {
   const { label_ru, link_code, sort_order, active } = req.body || {};
   const cur = (await db.pool.query('SELECT kind FROM tgbot.complaint_dicts WHERE id = $1', [req.params.id])).rows[0];
   if (!cur) return res.status(404).json({ error: 'Пункт не найден' });
@@ -93,7 +93,7 @@ router.post('/api/dict/:id(\\d+)', requireDictAdmin, express.json(), async (req,
 });
 
 // Удалить пункт. Если он уже встречается в претензиях — не теряем историю: прячем (active=false).
-router.post('/api/dict/:id(\\d+)/delete', requireDictAdmin, async (req, res) => {
+router.post('/api/dict/:id(\\d+)/delete', requireManager, async (req, res) => {
   const cur = (await db.pool.query('SELECT kind, code FROM tgbot.complaint_dicts WHERE id = $1', [req.params.id])).rows[0];
   if (!cur) return res.status(404).json({ error: 'Пункт не найден' });
   if (!EDITABLE_KINDS.includes(cur.kind)) return res.status(400).json({ error: 'Этот раздел нельзя менять здесь' });
@@ -182,6 +182,18 @@ router.post('/api/one/:id(\\d+)', express.json(), async (req, res) => {
      status || null, setResolved, req.user.name || req.user.login || 'web', req.params.id]
   );
   await db.log(req.user.id, 'complaint_update', `#${req.params.id} → ${status || ''}`);
+  res.json({ ok: true });
+});
+
+// ----- Удаление претензии целиком (админ/РОП). Чистим и медиа из public.files. -----
+router.post('/api/one/:id(\\d+)/delete', requireManager, async (req, res) => {
+  const id = req.params.id;
+  const files = (await db.pool.query(
+    'SELECT file_ref FROM tgbot.complaint_files WHERE complaint_id = $1 AND file_ref IS NOT NULL', [id]
+  )).rows;
+  await db.pool.query('DELETE FROM tgbot.complaints WHERE id = $1', [id]); // complaint_files уйдут каскадом
+  for (const f of files) { await db.pool.query('DELETE FROM public.files WHERE id = $1', [f.file_ref]).catch(() => {}); }
+  await db.log(req.user.id, 'complaint_delete', `#${id}`);
   res.json({ ok: true });
 });
 
