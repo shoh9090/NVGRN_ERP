@@ -62,10 +62,12 @@
   function shell() {
     const main = $('#cmp-main'); main.innerHTML = '';
     const tab = (id, label) => el('button', { class: 'cmp-tab' + (TAB === id ? ' on' : ''), onclick: () => { TAB = id; render(); } }, label);
-    main.appendChild(el('div', { class: 'cmp-tabs' }, [tab('dash', '📊 Дашборд'), tab('list', '📋 Список')]));
+    const tabs = [tab('dash', '📊 Дашборд'), tab('list', '📋 Список')];
+    if (isAdmin) tabs.push(tab('settings', '⚙️ Справочник'));
+    main.appendChild(el('div', { class: 'cmp-tabs' }, tabs));
     main.appendChild(el('div', { id: 'cmp-content' }));
   }
-  function render() { shell(); TAB === 'dash' ? renderDashboard() : renderList(); }
+  function render() { shell(); TAB === 'dash' ? renderDashboard() : TAB === 'settings' ? renderSettings() : renderList(); }
 
   // ================= ДАШБОРД =================
   async function renderDashboard() {
@@ -376,6 +378,76 @@
       go.disabled = false; go.textContent = 'Загрузить';
     } }, 'Загрузить');
     modal('Импорт истории претензий', el('div', { class: 'cmp-imp' }, [info, inp, out]), [go]);
+  }
+
+  // ================= СПРАВОЧНИК (настройки) =================
+  async function refreshDicts() { try { DICTS = await api('/dicts'); } catch (_) {} }
+
+  async function renderSettings() {
+    const c = $('#cmp-content'); c.innerHTML = '<div class="cmp-loading">Загрузка…</div>';
+    let data;
+    try { data = await api('/dicts/all'); } catch (e) { c.innerHTML = ''; c.appendChild(el('div', { class: 'cmp-empty' }, 'Не удалось загрузить: ' + e.message)); return; }
+    const byKind = {}; data.items.forEach((it) => { (byKind[it.kind] = byKind[it.kind] || []).push(it); });
+    const links = (byKind.link || []).filter((x) => x.active);
+    c.innerHTML = '';
+    c.appendChild(el('div', { class: 'cmp-set-intro' }, [
+      el('h2', { class: 'cmp-h2' }, 'Справочник претензий'),
+      el('p', { class: 'cmp-hint' }, 'Меняйте названия, порядок и доступность пунктов. Бот подхватит изменения за пару минут. Технический код пункта не показываем — он сохраняется, история не ломается.'),
+    ]));
+    c.appendChild(settingsSection('Типы жалоб', 'type', byKind.type || [], links, 'У каждого типа есть «звено» — на чью зону указывает косяк.'));
+    c.appendChild(settingsSection('Степень проблемы', 'severity', byKind.severity || [], null));
+    c.appendChild(settingsSection('Назначение продукта', 'usage', byKind.usage || [], null, 'Для чего используется продукт. Заполните под себя — список пока пустой.'));
+  }
+
+  function settingsSection(title, kind, items, links, hint) {
+    const list = el('div', { class: 'cmp-set-list' });
+    items.sort((a, b) => (a.sort_order - b.sort_order) || (a.id - b.id));
+    if (!items.length) list.appendChild(el('div', { class: 'cmp-set-empty' }, 'Пока пусто — добавьте первый пункт.'));
+    items.forEach((it) => list.appendChild(dictRow(kind, it, links)));
+    const addBtn = el('button', { class: 'btn-ghost cmp-btn', onclick: () => {
+      const empty = list.querySelector('.cmp-set-empty'); if (empty) empty.remove();
+      list.appendChild(dictRow(kind, null, links));
+    } }, '+ Добавить пункт');
+    return el('div', { class: 'cmp-panel cmp-set-panel' }, [
+      el('h3', {}, title), hint ? el('p', { class: 'cmp-hint' }, hint) : null, list, el('div', { class: 'cmp-set-add' }, [addBtn]),
+    ]);
+  }
+
+  function dictRow(kind, it, links) {
+    const isNew = !it;
+    const labelInp = el('input', { class: 'cmp-edit cmp-set-lbl', value: it ? it.label_ru : '', placeholder: 'Название пункта' });
+    const sortInp = el('input', { class: 'cmp-edit cmp-set-sort', type: 'number', value: it ? it.sort_order : 0, title: 'Порядок' });
+    let linkSel = null;
+    if (kind === 'type') {
+      linkSel = el('select', { class: 'cmp-edit cmp-set-link' }, [
+        el('option', { value: '' }, '— звено —'),
+        ...(links || []).map((l) => el('option', { value: l.code, selected: (it && it.link_code === l.code) || null }, l.label_ru)),
+      ]);
+    }
+    const activeChk = el('input', { type: 'checkbox' }); if (!it || it.active) activeChk.checked = true;
+    const row = el('div', { class: 'cmp-set-row' + (it && !it.active ? ' off' : '') });
+    const saveBtn = el('button', { class: 'btn-primary cmp-set-save', onclick: async () => {
+      const payload = { label_ru: labelInp.value.trim(), sort_order: parseInt(sortInp.value) || 0, active: activeChk.checked };
+      if (kind === 'type') payload.link_code = linkSel.value || null;
+      if (!payload.label_ru) return toast('Введите название', true);
+      saveBtn.disabled = true;
+      try {
+        if (isNew) {
+          payload.kind = kind;
+          await api('/dict', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+          toast('Добавлено'); await refreshDicts(); renderSettings();
+        } else {
+          await api('/dict/' + it.id, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+          toast('Сохранено'); row.classList.toggle('off', !payload.active); await refreshDicts();
+        }
+      } catch (e) { toast(e.message, true); }
+      saveBtn.disabled = false;
+    } }, isNew ? 'Добавить' : 'Сохранить');
+    const cells = [labelInp];
+    if (linkSel) cells.push(linkSel);
+    cells.push(sortInp, el('label', { class: 'cmp-set-act' }, [activeChk, el('span', {}, 'вкл')]), saveBtn);
+    cells.forEach((x) => row.appendChild(x));
+    return row;
   }
 
   (async function init() {

@@ -33,10 +33,63 @@ router.get('/api/dicts', async (req, res) => {
     `SELECT kind, code, label_ru, link_code, sort_order FROM tgbot.complaint_dicts
      WHERE active ORDER BY kind, sort_order`
   );
-  const out = { type: [], severity: [], resolution: [], category: [], link: [] };
+  const out = { type: [], severity: [], resolution: [], category: [], link: [], usage: [] };
   for (const row of r.rows) (out[row.kind] = out[row.kind] || []).push(row);
   out.status = Object.entries(STATUS).map(([code, label_ru]) => ({ code, label_ru }));
   res.json(out);
+});
+
+// ----- Управление справочником (админ или РОП) -----
+// Редактируем только пользовательские разделы; служебные (link/category/resolution/status) не трогаем здесь.
+const EDITABLE_KINDS = ['type', 'severity', 'usage'];
+function requireDictAdmin(req, res, next) {
+  const roles = (req.user && req.user.roles) || [];
+  if (req.user && (req.user.isAdmin || roles.includes('Руководитель продаж'))) return next();
+  return res.status(403).json({ error: 'Изменять справочник может администратор или руководитель продаж' });
+}
+
+// Все записи справочника (включая выключенные) — для экрана настроек.
+router.get('/api/dicts/all', async (req, res) => {
+  const r = await db.pool.query(
+    'SELECT id, kind, code, label_ru, link_code, sort_order, active FROM tgbot.complaint_dicts ORDER BY kind, sort_order, id'
+  );
+  res.json({ items: r.rows });
+});
+
+// Добавить пункт. Код генерируем сами (стабильный, человеку не показываем).
+router.post('/api/dict', requireDictAdmin, express.json(), async (req, res) => {
+  const { kind, label_ru, link_code, sort_order } = req.body || {};
+  if (!EDITABLE_KINDS.includes(kind)) return res.status(400).json({ error: 'Недопустимый раздел справочника' });
+  const label = (label_ru || '').trim();
+  if (!label) return res.status(400).json({ error: 'Введите название пункта' });
+  const code = `${kind}_${Date.now().toString(36)}`;
+  await db.pool.query(
+    `INSERT INTO tgbot.complaint_dicts (kind, code, label_ru, link_code, sort_order, active)
+     VALUES ($1, $2, $3, $4, $5, true)`,
+    [kind, code, label, kind === 'type' ? (link_code || null) : null, parseInt(sort_order) || 0]
+  );
+  await db.log(req.user.id, 'complaint_dict_add', `${kind}: ${label}`);
+  res.json({ ok: true, code });
+});
+
+// Изменить пункт: название, звено (для типов), порядок, вкл/выкл. Код и связи остаются.
+router.post('/api/dict/:id(\\d+)', requireDictAdmin, express.json(), async (req, res) => {
+  const { label_ru, link_code, sort_order, active } = req.body || {};
+  const cur = (await db.pool.query('SELECT kind FROM tgbot.complaint_dicts WHERE id = $1', [req.params.id])).rows[0];
+  if (!cur) return res.status(404).json({ error: 'Пункт не найден' });
+  if (!EDITABLE_KINDS.includes(cur.kind)) return res.status(400).json({ error: 'Этот раздел нельзя менять здесь' });
+  await db.pool.query(
+    `UPDATE tgbot.complaint_dicts SET
+       label_ru   = COALESCE($1, label_ru),
+       link_code  = CASE WHEN $2 = 'type' THEN $3 ELSE link_code END,
+       sort_order = COALESCE($4, sort_order),
+       active     = COALESCE($5, active)
+     WHERE id = $6`,
+    [label_ru != null ? String(label_ru).trim() : null, cur.kind, link_code || null,
+     sort_order != null ? parseInt(sort_order) : null, typeof active === 'boolean' ? active : null, req.params.id]
+  );
+  await db.log(req.user.id, 'complaint_dict_edit', `#${req.params.id}`);
+  res.json({ ok: true });
 });
 
 // ----- Список с фильтрами -----

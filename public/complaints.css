@@ -155,3 +155,21 @@ tr.cmp-clk:hover td { background: #f3f6f1; }
   .cmp-drill-row { grid-template-columns: 24px 56px 1.4fr 1fr; }
   .cmp-drill-row > *:nth-child(4), .cmp-drill-row > *:nth-child(5), .cmp-drill-row > *:nth-child(6), .cmp-drill-row > *:nth-child(7) { display: none; }
 }
+
+/* ===== Справочник (настройки) ===== */
+.cmp-set-intro { margin-bottom: 14px; }
+.cmp-set-panel { margin-bottom: 12px; }
+.cmp-set-list { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
+.cmp-set-empty { color: #8a958b; font-size: 13px; padding: 6px 2px; }
+.cmp-set-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.cmp-set-row.off { opacity: .5; }
+.cmp-set-lbl { flex: 1; min-width: 160px; }
+.cmp-set-link { width: 180px; flex: none; }
+.cmp-set-sort { width: 72px; flex: none; }
+.cmp-set-act { display: flex; align-items: center; gap: 5px; font-size: 12px; color: #5a665c; white-space: nowrap; }
+.cmp-set-save { padding: 7px 14px; white-space: nowrap; }
+.cmp-set-add { margin-top: 4px; }
+@media (max-width: 760px) {
+  .cmp-set-lbl { min-width: 120px; }
+  .cmp-set-link { width: 140px; }
+}
