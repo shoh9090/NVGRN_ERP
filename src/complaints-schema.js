@@ -62,6 +62,9 @@ async function ensureComplaintSchema(pool) {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_complaints_product ON tgbot.complaints (product_name)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_complaints_source  ON tgbot.complaints (source)`);
 
+  // Назначение продукта (для чего клиент использует продукт) — код из справочника kind='usage'.
+  await pool.query(`ALTER TABLE tgbot.complaints ADD COLUMN IF NOT EXISTS product_usage TEXT`);
+
   // Медиа претензии. Байты лежат в public.files (Hub отдаёт через /file/:id).
   await pool.query(`CREATE TABLE IF NOT EXISTS tgbot.complaint_files (
     id           BIGSERIAL PRIMARY KEY,

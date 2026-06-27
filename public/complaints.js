@@ -111,6 +111,7 @@
     row2.appendChild(panel('Топ типов жалоб', '«Неположили» — это комплектация, не качество.', typeBars(s.byType)));
     c.appendChild(row2);
 
+    c.appendChild(panel('По назначению продукта', 'Для чего использовали продукт, по которому пожаловались.', usageBars(s.byUsage), true));
     c.appendChild(panel('По агентам', 'В живой версии — имена из SalesDoctor и скорость реакции.', agentTable(s.byAgent), true));
   }
 
@@ -240,6 +241,19 @@
     }));
   }
 
+  function usageBars(byUsage) {
+    if (!byUsage || !byUsage.length) return el('div', { class: 'cmp-empty' }, 'Пока нет данных — назначение появится, когда клиенты начнут указывать его в боте.');
+    const max = Math.max(...byUsage.map((t) => t.n));
+    return el('div', { class: 'cmp-bars' }, byUsage.map((t) => {
+      const name = lbl('usage', t.code);
+      return el('div', { class: 'cmp-bar cmp-clk', onclick: () => drill('Назначение: ' + name + ' · ' + monthLabelRu(dashMonth), Object.assign({ usage: t.code }, monthRange(dashMonth))) }, [
+        el('span', { class: 'cmp-bar-nm', title: name }, name),
+        el('span', { class: 'cmp-bar-track' }, [el('span', { class: 'cmp-bar-fill', style: `width:${Math.round(t.n / max * 100)}%` })]),
+        el('span', { class: 'cmp-bar-vl' }, String(t.n)),
+      ]);
+    }));
+  }
+
   function agentTable(byAgent) {
     if (!byAgent || !byAgent.length) return el('div', { class: 'cmp-empty' }, 'Нет данных за период.');
     const max = Math.max(...byAgent.map((a) => a.n));
@@ -332,6 +346,7 @@
       field('Продукт', (c.product_name || '') + (c.product_category ? ' · ' + c.product_category : '')),
       field('Тип жалобы', lbl('type', c.complaint_type)),
       field('Звено', lbl('link', c.link_code)),
+      c.product_usage ? field('Назначение', lbl('usage', c.product_usage)) : null,
       field('Дата отгрузки', c.ship_date ? ruDate(c.ship_date) : '—'),
       field('Объём', c.volume_text),
       (c.storage_place || c.storage_temp != null || c.open_hours != null)

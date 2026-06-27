@@ -112,7 +112,7 @@ router.post('/api/dict/:id(\\d+)/delete', requireManager, async (req, res) => {
 
 // ----- Список с фильтрами -----
 router.get('/api/list', async (req, res) => {
-  const { from, to, status, type, link, severity, q, product } = req.query;
+  const { from, to, status, type, link, severity, q, product, usage } = req.query;
 
   // Собираем условия. base[] — фильтры без статуса (для сводки), full[] — со статусом (для списка).
   function build(includeStatus) {
@@ -123,6 +123,7 @@ router.get('/api/list', async (req, res) => {
     if (includeStatus && status) add('c.status = $?', status);
     if (type) add('c.complaint_type = $?', type);
     if (product) add('c.product_name = $?', product);
+    if (usage) add('c.product_usage = $?', usage);
     if (link) add('c.link_code = $?', link);
     if (severity) add('c.severity = $?', severity);
     if (q) { p.push('%' + String(q).trim() + '%'); const i = p.length;
@@ -356,6 +357,7 @@ router.get('/api/stats', async (req, res) => {
   const byLink = await one(`SELECT link_code code, count(*)::int n FROM tgbot.complaints WHERE ${inP} AND link_code IS NOT NULL GROUP BY 1 ORDER BY n DESC`, [from, to]);
   const byType = await one(`SELECT complaint_type code, count(*)::int n FROM tgbot.complaints WHERE ${inP} AND complaint_type IS NOT NULL GROUP BY 1 ORDER BY n DESC LIMIT 8`, [from, to]);
   const byProduct = await one(`SELECT product_name name, count(*)::int n FROM tgbot.complaints WHERE ${inP} AND product_name IS NOT NULL AND product_name<>'' GROUP BY 1 ORDER BY n DESC LIMIT 8`, [from, to]);
+  const byUsage = await one(`SELECT product_usage code, count(*)::int n FROM tgbot.complaints WHERE ${inP} AND product_usage IS NOT NULL AND product_usage<>'' GROUP BY 1 ORDER BY n DESC LIMIT 8`, [from, to]);
   const byAgent = await one(`SELECT COALESCE(NULLIF(agent_name,''),'—') name, count(*)::int n FROM tgbot.complaints WHERE ${inP} GROUP BY 1 ORDER BY n DESC LIMIT 8`, [from, to]);
 
   // Тренд: последние 12 месяцев до конца выбранного
@@ -401,7 +403,7 @@ router.get('/api/stats', async (req, res) => {
       critical,
       topLink: byLink[0] || null, topProduct: byProduct[0] || null,
     },
-    byLink, byType, byProduct, byAgent, trend, matrix,
+    byLink, byType, byProduct, byUsage, byAgent, trend, matrix,
   });
 });
 
