@@ -753,9 +753,12 @@ async function main() {
     }
     const rows = Object.entries(agg).map(([a, x]) => ({ name: agentLabel(names, a), okb: x.okb, akb: x.akb, ord: x.ord, not: x.okb - x.ord }));
     rows.sort((a, b) => b.not - a.not || b.okb - a.okb);
-    let text = `👥 По агентам · ${today}\nОКБ / АКБ(14д) / заказали / не заказали\n`;
-    text += rows.slice(0, 40).map((r) => `• ${r.name} — ${r.okb} / ${r.akb} / ${r.ord} / ${r.not}`).join("\n");
-    text += `\n\nОКБ — всего точек, АКБ — заказывали за 14 дней.`;
+    let text = `👥 По агентам · ${today}`;
+    text += rows.slice(0, 40).map((r) => {
+      const pct = r.okb ? Math.round(r.akb / r.okb * 100) : 0;
+      return `\n\n👤 ${r.name}\n   точек: ${r.okb} · актив: ${r.akb} (${pct}%) · сегодня: ${r.ord}✅ / ${r.not}🚫`;
+    }).join("");
+    text += `\n\nактив = заказывали за 14 дней.`;
     return text.slice(0, 3900);
   }
 
