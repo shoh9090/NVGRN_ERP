@@ -27,6 +27,7 @@ const STR = {
   pick_order:  { ru: "Выберите заказ, по которому претензия:", uz: "Shikoyat tegishli buyurtmani tanlang:" },
   pick_product:{ ru: "На какой товар жалоба?", uz: "Qaysi mahsulotga shikoyat?" },
   pick_type:   { ru: "Что не так с товаром?", uz: "Mahsulotda nima muammo?" },
+  pick_usage:  { ru: "Для чего используете этот продукт?", uz: "Bu mahsulotni nima uchun ishlatasiz?" },
   no_orders:   { ru: "Не нашёл недавних заказов по этой точке. Обратитесь к вашему агенту Novagreen.", uz: "Bu nuqta bo‘yicha yaqin buyurtmalar topilmadi. Novagreen agentingizga murojaat qiling." },
   no_products: { ru: "В этом заказе нет позиций. Выберите другой заказ через «📩 Претензия».", uz: "Bu buyurtmada mahsulot yo‘q. «📩 Shikoyat» orqali boshqa buyurtmani tanlang." },
   send_media:  { ru: "Пришлите фото или видео проблемы (до 5). Когда закончите — нажмите «Готово».", uz: "Muammoning rasm yoki videosini yuboring (5 tagacha). Tugagach «Tayyor» tugmasini bosing." },
@@ -55,6 +56,15 @@ async function getTypes() {
   const r = await db.query("SELECT code, label_ru, link_code FROM tgbot.complaint_dicts WHERE kind='type' AND active ORDER BY sort_order");
   _types = r.rows; _typesAt = Date.now();
   return _types;
+}
+
+// ---------- Справочник назначений продукта (кэш 10 мин) ----------
+let _usages = null, _usagesAt = 0;
+async function getUsages() {
+  if (_usages && Date.now() - _usagesAt < 600000) return _usages;
+  const r = await db.query("SELECT code, label_ru FROM tgbot.complaint_dicts WHERE kind='usage' AND active ORDER BY sort_order");
+  _usages = r.rows; _usagesAt = Date.now();
+  return _usages;
 }
 
 // ---------- Клавиатуры/хелперы ----------
@@ -139,6 +149,25 @@ async function askType(chatId, s, lang, page) {
   await bot.sendMessage(chatId, t(lang, "pick_type"), { reply_markup: { inline_keyboard: rows } });
 }
 
+async function askUsage(chatId, s, lang, page) {
+  const items = await getUsages();
+  const PER = 8;
+  const pages = Math.max(1, Math.ceil(items.length / PER));
+  const p = Math.min(Math.max(0, page || 0), pages - 1);
+  const rows = items.slice(p * PER, p * PER + PER).map((u) => [{ text: u.label_ru, callback_data: `cmpl:u:${u.code}` }]);
+  if (pages > 1) {
+    const nav = [];
+    if (p > 0) nav.push({ text: "◀", callback_data: `cmpl:up:${p - 1}` });
+    nav.push({ text: `${p + 1}/${pages}`, callback_data: "cmpl:noop" });
+    if (p < pages - 1) nav.push({ text: "▶", callback_data: `cmpl:up:${p + 1}` });
+    rows.push(nav);
+  }
+  rows.push([{ text: t(lang, "btn_skip"), callback_data: "cmpl:uskip" }]);
+  rows.push(cancelRow(lang));
+  s.stage = "usage";
+  await bot.sendMessage(chatId, t(lang, "pick_usage"), { reply_markup: { inline_keyboard: rows } });
+}
+
 async function askMedia(chatId, s, lang) {
   s.stage = "media"; s.media = [];
   await bot.sendMessage(chatId, t(lang, "send_media"), doneKb(lang));
@@ -178,6 +207,11 @@ async function finalize(chatId, s, lang) {
        s.product.sdId || null, s.product.name || null, s.type.code, s.type.link || null, s.client_comment || null]
     );
     const id = ins.rows[0].id;
+    // Назначение продукта пишем отдельно и мягко: если Hub ещё не добавил колонку — претензия всё равно сохранится.
+    if (s.usage) {
+      try { await db.query("UPDATE tgbot.complaints SET product_usage = $1 WHERE id = $2", [s.usage, id]); }
+      catch (e) { console.warn("[ПРЕТЕНЗИЯ usage]", e.message); }
+    }
     for (const m of s.media) {
       await db.query("INSERT INTO tgbot.complaint_files (complaint_id, kind, file_ref, tg_file_id) VALUES ($1,$2,$3,$4)", [id, m.kind, m.fileRef, m.tgFileId]);
     }
@@ -249,8 +283,14 @@ async function onCallback(q) {
       await bot.answerCallbackQuery(q.id);
       const op = s.products[Number(arg)]; if (!op) return true;
       s.product = { sdId: op.product.SD_id, name: op.product.name || op.product.SD_id, qty: Number(op.quantity) || 0 };
-      await askType(chatId, s, lang, 0); return true;
+      const usages = await getUsages();
+      if (usages.length) await askUsage(chatId, s, lang, 0);
+      else await askType(chatId, s, lang, 0);
+      return true;
     }
+    if (step === "up") { await bot.answerCallbackQuery(q.id); await askUsage(chatId, s, lang, Number(arg) || 0); return true; }
+    if (step === "u")  { await bot.answerCallbackQuery(q.id); s.usage = arg; await askType(chatId, s, lang, 0); return true; }
+    if (step === "uskip") { await bot.answerCallbackQuery(q.id); s.usage = null; await askType(chatId, s, lang, 0); return true; }
     if (step === "tp") { await bot.answerCallbackQuery(q.id); await askType(chatId, s, lang, Number(arg) || 0); return true; }
     if (step === "t")  {
       await bot.answerCallbackQuery(q.id);
