@@ -139,6 +139,8 @@
 .cmp-bar.cmp-clk:hover .cmp-bar-fill { filter: brightness(1.15); }
 .cmp-leg-it.cmp-clk:hover { background: #f1f4ee; border-radius: 6px; }
 .cmp-hm-cell.cmp-clk:hover { outline: 2px solid #163a28; outline-offset: -2px; }
+.cmp-tr-hot { cursor: pointer; }
+.cmp-tr-hot:hover { fill: rgba(140, 198, 63, 0.14) !important; }
 tr.cmp-clk { cursor: pointer; }
 tr.cmp-clk:hover td { background: #f3f6f1; }
 

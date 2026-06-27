@@ -225,7 +225,16 @@
       g += `<text x="${p[0]}" y="${p[1] - 12}" text-anchor="middle" font-size="12" font-weight="700" fill="#163a28">${trend[i].n}</text>`;
       g += `<text x="${p[0]}" y="${H - 12}" text-anchor="middle" font-size="10" fill="#7c8579">${monthLabelRu(trend[i].ym).split(' ')[0]}</text>`;
     });
-    return svgEl(g, { vb: '0 0 560 220' });
+    const step = (W - pad * 2) / (trend.length - 1);
+    trend.forEach((t, i) => {
+      g += `<rect class="cmp-tr-hot" data-ym="${t.ym}" x="${(X(i) - step / 2).toFixed(0)}" y="0" width="${step.toFixed(0)}" height="${H}" fill="transparent"/>`;
+    });
+    const node = svgEl(g, { vb: '0 0 560 220' });
+    node.querySelectorAll('[data-ym]').forEach((r) => r.addEventListener('click', () => {
+      const ym = r.getAttribute('data-ym');
+      drill('Месяц: ' + monthLabelRu(ym), monthRange(ym));
+    }));
+    return node;
   }
 
   function typeBars(byType) {
