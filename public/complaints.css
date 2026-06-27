@@ -70,3 +70,60 @@
   .cmp-card { grid-template-columns: 1fr; }
   .cmp-f-actions { margin-left: 0; width: 100%; }
 }
+
+/* ===== Дашборд (Этап 4) ===== */
+.cmp-tabs { display: flex; gap: 6px; margin-bottom: 16px; border-bottom: 1px solid var(--line, #e3e0d4); }
+.cmp-tab { background: none; border: none; padding: 10px 16px; font-size: 14px; font-weight: 700; color: #8a958b; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.cmp-tab.on { color: #163a28; border-bottom-color: #8cc63f; }
+.cmp-loading { padding: 40px; text-align: center; color: #8a958b; }
+
+.cmp-dash-top { display: flex; align-items: flex-end; justify-content: space-between; gap: 14px; flex-wrap: wrap; margin-bottom: 16px; }
+.cmp-eyebrow { font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: #7c8579; font-weight: 700; }
+.cmp-h2 { font-family: 'Lora', Georgia, serif; font-weight: 600; font-size: 27px; margin: 3px 0 0; letter-spacing: -.01em; color: #14241b; }
+.cmp-month { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #5a665c; }
+
+.cmp-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 14px; }
+.cmp-kpi { background: #fbfaf5; border: 1px solid #e3e0d4; border-radius: 16px; padding: 15px 17px; position: relative; }
+.cmp-kpi-lab { font-size: 12px; color: #7c8579; font-weight: 600; }
+.cmp-kpi-num { font-family: 'Lora', Georgia, serif; font-size: 38px; font-weight: 600; line-height: 1; margin-top: 7px; letter-spacing: -.02em; color: #14241b; }
+.cmp-kpi-num.sm { font-size: 24px; line-height: 1.1; }
+.cmp-kpi-sub { font-size: 12px; color: #7c8579; margin-top: 7px; }
+.cmp-kpi.alert { border-color: #f0c9c9; background: #fdf3f3; }
+.cmp-kpi.alert .cmp-kpi-num { color: #c62828; }
+.cmp-kpi-tag { position: absolute; top: 13px; right: 13px; font-size: 10px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; padding: 3px 8px; border-radius: 6px; background: #f7e4e4; color: #c62828; }
+
+.cmp-grid { display: grid; gap: 12px; margin-bottom: 12px; }
+.cmp-grid-2 { grid-template-columns: 1.55fr 1fr; }
+.cmp-panel { background: #fbfaf5; border: 1px solid #e3e0d4; border-radius: 16px; padding: 17px; }
+.cmp-panel h3 { margin: 0 0 2px; font-size: 15px; font-weight: 700; color: #14241b; }
+.cmp-hint { font-size: 12px; color: #7c8579; margin: 0 0 14px; }
+.cmp-full { grid-column: 1 / -1; }
+
+.cmp-hm { width: 100%; border-collapse: separate; border-spacing: 4px; }
+.cmp-hm th { font-size: 11px; color: #7c8579; font-weight: 700; text-align: center; padding: 3px 0; }
+.cmp-hm-lbl { font-size: 12.5px; font-weight: 600; text-align: right; padding-right: 10px; white-space: nowrap; width: 1%; color: #39433a; }
+.cmp-hm-cell { text-align: center; font-weight: 700; font-size: 13px; border-radius: 8px; height: 34px; min-width: 48px; font-variant-numeric: tabular-nums; }
+.cmp-hm-tot { font-weight: 800; color: #163a28; padding-left: 6px; font-variant-numeric: tabular-nums; }
+.cmp-hm-note { display: flex; align-items: center; gap: 9px; margin-top: 13px; font-size: 11px; color: #7c8579; }
+.cmp-scale { height: 9px; width: 120px; border-radius: 5px; background: linear-gradient(90deg, #eef0e6, #f3d79a, #e7a14f, #c0392b); }
+
+.cmp-leg { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+.cmp-leg-it { display: flex; align-items: center; gap: 9px; font-size: 13px; }
+.cmp-leg-dot { width: 11px; height: 11px; border-radius: 3px; flex: none; }
+.cmp-leg-nm { flex: 1; color: #39433a; } .cmp-leg-vl { font-weight: 700; font-variant-numeric: tabular-nums; }
+.cmp-leg-pc { color: #7c8579; font-size: 12px; width: 40px; text-align: right; }
+
+.cmp-bars { display: flex; flex-direction: column; gap: 9px; }
+.cmp-bar { display: grid; grid-template-columns: 135px 1fr 32px; align-items: center; gap: 10px; font-size: 13px; }
+.cmp-bar-nm { color: #39433a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cmp-bar-track { height: 13px; background: #edeee5; border-radius: 7px; overflow: hidden; }
+.cmp-bar-fill { display: block; height: 100%; border-radius: 7px; background: #163a28; }
+.cmp-bar-vl { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+.cmp-agent-t .cmp-mini-track { display: block; height: 11px; background: #edeee5; border-radius: 6px; overflow: hidden; }
+.cmp-agent-t .cmp-mini-fill { display: block; height: 100%; background: #163a28; border-radius: 6px; }
+
+@media (max-width: 820px) {
+  .cmp-kpis { grid-template-columns: repeat(2, 1fr); }
+  .cmp-grid-2 { grid-template-columns: 1fr; }
+}
