@@ -569,7 +569,10 @@ async function main() {
       return soon();
     }
     if (stf.role === "head_of_sales") {
-      if (txt === "👥 По агентам") return bot.sendMessage(chatId, "Дашборд по агентам: Hub → плитка «Бот HoReCa» → «Аналитика АКБ/ОКБ».");
+      const send = async (fn) => { bot.sendChatAction(chatId, "typing"); try { return await bot.sendMessage(chatId, await fn()); } catch (e) { return bot.sendMessage(chatId, "Ошибка: " + e.message); } };
+      if (txt === "📊 Сводка отдела") return send(deptSummary);
+      if (txt === "👥 По агентам") return send(deptByAgents);
+      if (txt === "📉 Сигналы") return send(deptSignals);
       if (txt === "🔄 Синхронизация") { bot.sendMessage(chatId, "Запускаю синхронизацию…"); const n = await syncClientsBot(); return bot.sendMessage(chatId, `Готово. Клиентов обновлено: ${n}.`); }
       return soon();
     }
@@ -699,6 +702,96 @@ async function main() {
     }
     return total;
   }
+
+  // ===== Аналитика для РОПа (меню head_of_sales) =====
+  async function agentNamesMap() {
+    const r = await db.query("SELECT crm_agent_id, telegram_first_name, telegram_last_name FROM telegram_staff WHERE role='agent' AND crm_agent_id IS NOT NULL");
+    const m = {};
+    for (const x of r.rows) {
+      if (!x.crm_agent_id) continue;
+      const nm = [x.telegram_first_name, x.telegram_last_name].filter(Boolean).join(" ");
+      m[String(x.crm_agent_id)] = nm || ("Агент " + x.crm_agent_id);
+    }
+    return m;
+  }
+  const agentLabel = (names, a) => (a === "_none" ? "(без агента)" : (names[String(a)] || ("Агент " + a)));
+
+  // 📊 Сводка отдела на сегодня
+  async function deptSummary() {
+    const today = tzToday();
+    const pts = (await db.query("SELECT sd_id, agent_sd_id FROM point_contacts WHERE coalesce(active,'Y')<>'N'")).rows;
+    const ptSet = new Set(pts.map((p) => p.sd_id));
+    const live = (await getOrdersToday()).filter((o) => o.status !== 5 && o.client && o.client.SD_id && ptSet.has(o.client.SD_id));
+    const ordered = new Set(live.map((o) => o.client.SD_id));
+    const dop = Math.max(0, live.length - ordered.size);
+    const skip = new Set((await db.query("SELECT sd_id FROM reminder_skips WHERE rdate=$1", [today])).rows.map((r) => r.sd_id));
+    const notOrdered = pts.filter((p) => !ordered.has(p.sd_id));
+    const notToday = notOrdered.filter((p) => skip.has(p.sd_id)).length;
+    const names = await agentNamesMap();
+    const byAgent = {};
+    for (const p of notOrdered) { const a = p.agent_sd_id || "_none"; byAgent[a] = (byAgent[a] || 0) + 1; }
+    const lines = Object.entries(byAgent).sort((a, b) => b[1] - a[1]).slice(0, 15).map(([a, n]) => `• ${agentLabel(names, a)} — ${n}`);
+    let text = `📊 Сводка отдела · ${today}\nТочек всего: ${pts.length}\n✅ Заказали: ${ordered.size}\n🚫 Не заказали: ${notOrdered.length}\n➕ Доп.заказы: ${dop}\n🔕 «Не сегодня»: ${notToday}`;
+    if (lines.length) text += `\n\nНе заказали по агентам:\n` + lines.join("\n");
+    return text.slice(0, 3900);
+  }
+
+  // 👥 По агентам: ОКБ / АКБ(14д) / заказали / не заказали
+  async function deptByAgents() {
+    const today = tzToday();
+    const pts = (await db.query("SELECT sd_id, agent_sd_id FROM point_contacts WHERE coalesce(active,'Y')<>'N'")).rows;
+    const ordered14 = new Set((await getOrders14()).filter((o) => o.status !== 5 && o.client).map((o) => o.client.SD_id));
+    const orderedToday = new Set((await getOrdersToday()).filter((o) => o.status !== 5 && o.client).map((o) => o.client.SD_id));
+    const names = await agentNamesMap();
+    const agg = {};
+    for (const p of pts) {
+      const a = p.agent_sd_id || "_none";
+      const x = agg[a] || (agg[a] = { okb: 0, akb: 0, ord: 0 });
+      x.okb++;
+      if (ordered14.has(p.sd_id)) x.akb++;
+      if (orderedToday.has(p.sd_id)) x.ord++;
+    }
+    const rows = Object.entries(agg).map(([a, x]) => ({ name: agentLabel(names, a), okb: x.okb, akb: x.akb, ord: x.ord, not: x.okb - x.ord }));
+    rows.sort((a, b) => b.not - a.not || b.okb - a.okb);
+    let text = `👥 По агентам · ${today}\nОКБ / АКБ(14д) / заказали / не заказали\n`;
+    text += rows.slice(0, 40).map((r) => `• ${r.name} — ${r.okb} / ${r.akb} / ${r.ord} / ${r.not}`).join("\n");
+    text += `\n\nОКБ — всего точек, АКБ — заказывали за 14 дней.`;
+    return text.slice(0, 3900);
+  }
+
+  // 📉 Сигналы по отделу (снимок, без записи в журнал)
+  async function deptSignals() {
+    const today = tzToday(); const d7 = tzDateAgo(7), d14 = tzDateAgo(14);
+    const byClient = {};
+    for (const o of await getOrders14()) {
+      const cid = o.client && o.client.SD_id; if (!cid) continue;
+      const dc = String(o.dateCreate || "").slice(0, 10); if (!dc) continue;
+      const sum = Number(o.totalSummaAfterDiscount || o.totalSumma || 0);
+      const c = byClient[cid] || (byClient[cid] = { last: "", w1: 0, w2: 0 });
+      if (dc > c.last) c.last = dc;
+      if (dc >= d7) c.w1 += sum; else if (dc >= d14) c.w2 += sum;
+    }
+    const pts = (await db.query("SELECT sd_id, point_name, firm_name, agent_sd_id FROM point_contacts WHERE coalesce(active,'Y')<>'N'")).rows;
+    const names = await agentNamesMap();
+    const byAgent = {};
+    for (const p of pts) {
+      const c = byClient[p.sd_id]; if (!c || !c.last) continue;
+      const daysSince = daysBetween(c.last, today);
+      const nm = p.point_name || p.firm_name || p.sd_id;
+      let txt = null;
+      if (daysSince >= botCfg.sig1Days) txt = `🔕 ${nm}: нет заказов ${daysSince} дн.`;
+      else if (c.w2 > 0 && c.w1 <= c.w2 * (1 - botCfg.sig2Pct / 100)) { const pct = Math.round((1 - c.w1 / c.w2) * 100); txt = `📉 ${nm}: сумма ↓${pct}% за неделю`; }
+      if (!txt) continue;
+      const a = p.agent_sd_id || "_none";
+      (byAgent[a] = byAgent[a] || []).push(txt);
+    }
+    const keys = Object.keys(byAgent);
+    if (!keys.length) return "📉 Сигналов по отделу нет. Всё ровно. 👍";
+    let text = `📉 Сигналы по отделу · ${today}`;
+    for (const a of keys) text += `\n\n${agentLabel(names, a)}:\n` + byAgent[a].slice(0, 15).join("\n");
+    return text.slice(0, 3900);
+  }
+
   let lastAgentDay = "";
   async function agentDailyTick() {
     try {
