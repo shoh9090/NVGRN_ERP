@@ -184,7 +184,10 @@ async function finalize(chatId, s, lang) {
     await db.logEvent("complaint_created", chatId, { id, type: s.type.code, sd_id: s.point.sd_id });
     sessions.delete(chatId);
     await bot.sendMessage(chatId, t(lang, "thanks", id), H.mainMenu(lang));
-    // Коммит 2: здесь добавим уведомление агенту (H.notifyClientAgent).
+    // Уведомляем агента точки. Если агента нет — notifyClientAgent сам отправит РОПу/админу.
+    const note = `📩 Новая претензия №${id}\nКлиент: {name}\nТовар: ${s.product.name}\nТип: ${s.type.label}`
+      + (s.client_comment ? `\nКомментарий: ${s.client_comment}` : "");
+    H.notifyClientAgent(s.point.sd_id, note, `complaint:${id}`).catch((e) => console.warn("[ПРЕТЕНЗИЯ notify]", e.message));
   } catch (e) {
     console.error("[ПРЕТЕНЗИЯ save]", e.message);
     sessions.delete(chatId);
