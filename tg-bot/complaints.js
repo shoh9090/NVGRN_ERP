@@ -28,6 +28,10 @@ function init(helpers) {
 const STR = {
   menu:        { ru: "📩 Претензия", uz: "📩 Shikoyat" },
   not_client:  { ru: "Похоже, вы не привязаны как клиент. Отправьте /start.", uz: "Siz mijoz sifatida ulanmagansiz. /start yuboring." },
+  agp_start:   { ru: "Претензия за клиента.\nВведите название вашей торговой точки (можно часть):", uz: "Mijoz uchun shikoyat.\nSavdo nuqtangiz nomini yozing (qism ham bo‘ladi):" },
+  agp_none:    { ru: "Среди ваших точек ничего не нашлось. Попробуйте другое название или /start для отмены.", uz: "Nuqtalaringiz orasidan topilmadi. Boshqa nom yozing yoki /start." },
+  agp_pick:    { ru: "Выберите точку:", uz: "Nuqtani tanlang:" },
+  agp_noagent: { ru: "У вас не привязан агент в CRM — обратитесь к администратору.", uz: "Sizga CRMda agent biriktirilmagan — administratorga murojaat qiling." },
   pick_point:  { ru: "По какой точке претензия?", uz: "Qaysi nuqta bo‘yicha shikoyat?" },
   pick_order:  { ru: "Выберите заказ, по которому претензия:", uz: "Shikoyat tegishli buyurtmani tanlang:" },
   pick_product:{ ru: "На какой товар жалоба?", uz: "Qaysi mahsulotga shikoyat?" },
@@ -134,6 +138,20 @@ async function start(chatId, tgId, lang) {
   sessions.set(chatId, s);
   if (points.length === 1) { s.point = points[0]; await askOrder(chatId, s, lang); }
   else await askPoint(chatId, s, lang);
+}
+
+// Старт мастера для АГЕНТА (оформляет претензию за клиента по своей точке).
+async function startForAgent(chatId, tgId, lang, agentCrmId) {
+  if (!agentCrmId) { await bot.sendMessage(chatId, t(lang, "agp_noagent")); return; }
+  let phone9 = null;
+  try { phone9 = await H.phone9OfUser(tgId); } catch (_) {}
+  sessions.set(chatId, { byAgent: true, agentCrmId, tgId, phone9, media: [], stage: "agent_point_search", source: "agent" });
+  await bot.sendMessage(chatId, t(lang, "agp_start"));
+}
+async function searchAgentPoints(agentCrmId, q) {
+  const pts = await H.pointsOfAgent(agentCrmId);
+  const needle = String(q).trim().toLowerCase();
+  return pts.filter((p) => String(p.point_name || p.firm_name || p.sd_id || "").toLowerCase().includes(needle)).slice(0, 8);
 }
 
 async function askPoint(chatId, s, lang) {
@@ -264,11 +282,12 @@ async function finalize(chatId, s, lang) {
       `INSERT INTO tgbot.complaints
          (source, sd_id, point_name, firm_name, agent_sd_id, agent_name, reporter_tg_id, reporter_phone,
           order_code, ship_date, volume_text, product_sd_id, product_name, complaint_type, link_code, client_comment, status)
-       VALUES ('client_bot',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'new') RETURNING id`,
+       VALUES ($16,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'new') RETURNING id`,
       [s.point.sd_id, s.point.point_name || pc.point_name || null, s.point.firm_name || pc.firm_name || null,
        pc.agent_sd_id || null, agentName, s.tgId, s.phone9 || null,
        (s.order && s.order.code_1C) || null, ship, s.product.qty ? String(s.product.qty) : null,
-       s.product.sdId || null, s.product.name || null, s.type.code, s.type.link || null, s.client_comment || null]
+       s.product.sdId || null, s.product.name || null, s.type.code, s.type.link || null, s.client_comment || null,
+       s.source || 'client_bot']
     );
     const id = ins.rows[0].id;
     // Назначение продукта пишем отдельно и мягко: если Hub ещё не добавил колонку — претензия всё равно сохранится.
@@ -373,6 +392,17 @@ async function onMessage(msg) {
   const s = sessions.get(chatId);
   if (!s) return false;
 
+  if (s.stage === "agent_point_search") {
+    if (txt) {
+      const found = await searchAgentPoints(s.agentCrmId, txt);
+      if (!found.length) { await bot.sendMessage(chatId, t(lang, "agp_none")); return true; }
+      s.points = found; s.stage = "point";
+      const rows = found.map((p, i) => [{ text: p.point_name || p.firm_name || p.sd_id, callback_data: `cmpl:pt:${i}` }]);
+      rows.push(cancelRow(lang));
+      await bot.sendMessage(chatId, t(lang, "agp_pick"), { reply_markup: { inline_keyboard: rows } });
+    }
+    return true;
+  }
   if (s.stage === "media") {
     const m = extractMedia(msg);
     if (m) { await acceptMedia(chatId, s, m, lang); return true; }
@@ -443,4 +473,4 @@ async function onCallback(q) {
   }
 }
 
-module.exports = { init, onMessage, onCallback, menuText, isActive: (chatId) => sessions.has(chatId) };
+module.exports = { init, onMessage, onCallback, menuText, startForAgent, isActive: (chatId) => sessions.has(chatId) };

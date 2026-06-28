@@ -173,7 +173,7 @@ async function syncClientsBot() {
   } catch (e) { console.warn("[СИНХРОНИЗАЦИЯ]", e.message); return 0; }
 }
 const STAFF_MENU = {
-  agent: [["👥 Мои клиенты"], ["🚫 Не заказали"], ["📊 Моя сводка"], ["➕ Доп. заказы"], ["📉 Сигналы"]],
+  agent: [["👥 Мои клиенты"], ["🚫 Не заказали"], ["📩 Претензия за клиента"], ["📊 Моя сводка"], ["➕ Доп. заказы"], ["📉 Сигналы"]],
   head_of_sales: [["📊 Сводка отдела"], ["👥 По агентам"], ["🚫 Не заказали"], ["➕ Доп. заказы"], ["📉 Сигналы"], ["⚠️ Ошибки", "🔄 Синхронизация"]],
   admin: [["🔄 Синхронизация"], ["👤 Telegram-сотрудники"], ["⚠️ Ошибки"], ["📦 Очередь заказов"], ["⚙️ Настройки"]],
 };
@@ -401,7 +401,7 @@ async function main() {
   ]).catch(() => {});
 
   // Мастер претензий: отдаём ему нужные помощники бота (логику заказов он не трогает).
-  complaints.init({ bot, db, getLang, pointsOfUser, phone9OfUser, getOrders14, mainMenu, notifyClientAgent, notifyAgentReact, notifyManagers });
+  complaints.init({ bot, db, getLang, pointsOfUser, phone9OfUser, pointsOfAgent, getOrders14, mainMenu, notifyClientAgent, notifyAgentReact, notifyManagers });
 
   // Прогрев кэша: каталог/остатки и история всегда «горячие», чтобы «Добавить» открывалось мгновенно.
   const warmStock = async () => { try { _cache.delete("stock"); await getStockData(); } catch (e) { console.warn("[ПРОГРЕВ stock]", e.message); } };
@@ -696,6 +696,7 @@ async function main() {
       return bot.sendMessage(chatId, `Не заказали на сегодня (${no.length}):\n` + lines.join("\n"));
     }
     if (stf.role === "agent") {
+      if (txt === "📩 Претензия за клиента") return complaints.startForAgent(chatId, tgId, await getLang(chatId), stf.crm_agent_id);
       if (txt === "👥 Мои клиенты") {
         const pts = await pointsOfAgent(stf.crm_agent_id);
         if (!pts.length) return bot.sendMessage(chatId, "За вами пока не закреплено точек. Проверьте синхронизацию в Hub.");
