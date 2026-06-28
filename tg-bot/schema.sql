@@ -229,6 +229,29 @@ CREATE TABLE IF NOT EXISTS order_snapshots (
   code_1c     TEXT,
   agent_sd_id TEXT,
   client_name TEXT,
-  items       JSONB NOT NULL DEFAULT '[]',   -- [{sd, name, qty}]
+  items       JSONB NOT NULL DEFAULT '[]',   -- [{sd, name, qty, price}]
   seen_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Реестр упущенных продаж: каждое урезание/удаление позиции в новом заказе (нет на складе).
+-- Бот пишет, Hub читает (дашборд в плитке «Бот HoReCa»).
+CREATE TABLE IF NOT EXISTS lost_sales (
+  id            BIGSERIAL PRIMARY KEY,
+  detected_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  order_sd_id   TEXT,
+  order_code    TEXT,
+  client_sd_id  TEXT,
+  client_name   TEXT,
+  agent_sd_id   TEXT,
+  product_sd_id TEXT,
+  product_name  TEXT,
+  qty_before    NUMERIC,
+  qty_after     NUMERIC,
+  qty_lost      NUMERIC,
+  price         NUMERIC,
+  amount_lost   NUMERIC,
+  reason        TEXT NOT NULL DEFAULT 'stock'
+);
+CREATE INDEX IF NOT EXISTS idx_lost_sales_detected ON lost_sales (detected_at);
+CREATE INDEX IF NOT EXISTS idx_lost_sales_agent ON lost_sales (agent_sd_id);
+CREATE INDEX IF NOT EXISTS idx_lost_sales_product ON lost_sales (product_name);

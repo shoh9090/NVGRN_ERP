@@ -41,6 +41,23 @@ function diffOrderItems(prev, now) {
   return lines;
 }
 
+// Упущенные продажи: только уменьшения/удаления позиций (склад не дал товар). Сумма = (было−стало)×цена.
+function computeLost(prev, now) {
+  const arr = (x) => (Array.isArray(x) ? x : []);
+  const nm = new Map(arr(now).map((x) => [String(x.sd), x]));
+  const out = [];
+  for (const p of arr(prev)) {
+    const before = Number(p.qty) || 0;
+    const n = nm.get(String(p.sd));
+    const after = n ? (Number(n.qty) || 0) : 0;
+    if (after < before) {
+      const lost = before - after, price = Number(p.price) || 0;
+      out.push({ sd: String(p.sd), name: p.name, before, after, lost, price, amount: lost * price });
+    }
+  }
+  return out;
+}
+
 // ---------- Кэш ----------
 const _cache = new Map();
 async function cached(key, ttlMs, fn) {
@@ -501,6 +518,20 @@ async function main() {
     }
     await notifyManagers(text); // РОПам и админу
   }
+  async function recordLostSales(o, prevItems, nowItems) {
+    const lost = computeLost(prevItems, nowItems);
+    if (!lost.length) return;
+    const clientName = (o.client && (o.client.clientName || o.client.clientLegalName)) || null;
+    for (const L of lost) {
+      await db.query(
+        `INSERT INTO lost_sales (order_sd_id, order_code, client_sd_id, client_name, agent_sd_id,
+           product_sd_id, product_name, qty_before, qty_after, qty_lost, price, amount_lost, reason)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'stock')`,
+        [o.SD_id || null, o.code_1C || null, (o.client && o.client.SD_id) || null, clientName,
+         (o.agent && o.agent.SD_id) || null, L.sd, L.name, L.before, L.after, L.lost, L.price, L.amount]
+      ).catch((e) => console.warn("[УПУЩЕНО]", e.message));
+    }
+  }
   async function watchOrderChanges() {
     try {
       const from = tzDateAgo(5), to = tzToday();
@@ -508,11 +539,12 @@ async function main() {
       for (const o of orders) {
         const id = o.SD_id || o.code_1C; if (!id) continue;
         const items = (o.orderProducts || []).filter((p) => p.product && p.product.SD_id)
-          .map((p) => ({ sd: String(p.product.SD_id), name: p.product.name || p.product.SD_id, qty: Number(p.quantity) || 0 }));
+          .map((p) => ({ sd: String(p.product.SD_id), name: p.product.name || p.product.SD_id, qty: Number(p.quantity) || 0, price: Number(p.price) || 0 }));
         const prev = (await db.query("SELECT items FROM order_snapshots WHERE sd_id=$1", [String(id)])).rows[0];
         if (!prev) { await saveOrderSnapshot(o, id, items); continue; } // первый раз — базовый снимок, без оповещения
         const diff = diffOrderItems(prev.items, items);
         if (diff.length) await notifyOrderChange(o, diff);
+        await recordLostSales(o, prev.items, items); // упущенные продажи в реестр
         await saveOrderSnapshot(o, id, items);
       }
       await db.query("DELETE FROM order_snapshots WHERE seen_at < now() - interval '10 days'").catch(() => {});
