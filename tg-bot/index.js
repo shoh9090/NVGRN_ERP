@@ -11,7 +11,7 @@ const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const ADMIN_TG_ID = process.env.ADMIN_TG_ID;
 const WINDOW_DAYS = Number(process.env.AVG_WINDOW_DAYS || 14);
 const TZ_OFFSET_MS = 5 * 3600 * 1000; // Asia/Tashkent = UTC+5
-let botCfg = { times: ["18:00", "21:00", "23:00"], deadline: "00:00", window: WINDOW_DAYS, enabled: true, digestTime: "08:30", digestEnabled: true, signalsEnabled: true, sig1Days: 3, sig2Pct: 40, sig2Win: 7 };
+let botCfg = { times: ["18:00", "21:00", "23:00"], deadline: "00:00", window: WINDOW_DAYS, enabled: true, digestTime: "08:30", digestEnabled: true, signalsEnabled: true, sig1Days: 3, sig2Pct: 40, sig2Win: 7, orderAlerts: true, quietFrom: "22:00", quietTo: "08:00", lostFreq: "weekly" };
 
 if (!TOKEN) { console.error("[СТАРТ] Нет TELEGRAM_BOT_TOKEN."); process.exit(1); }
 if (!process.env.DATABASE_URL) { console.error("[СТАРТ] Нет DATABASE_URL."); process.exit(1); }
@@ -56,6 +56,14 @@ function computeLost(prev, now) {
     }
   }
   return out;
+}
+
+// Тихий час: в окне quietFrom..quietTo оповещения об изменениях заказов не шлём.
+function inQuietHours(cfg) {
+  const from = cfg.quietFrom, to = cfg.quietTo;
+  if (!from || !to || from === to) return false;
+  const now = new Date(Date.now() + TZ_OFFSET_MS).toISOString().slice(11, 16);
+  return from < to ? (now >= from && now < to) : (now >= from || now < to);
 }
 
 // ---------- Кэш ----------
@@ -115,7 +123,8 @@ async function reloadCfg() {
       if (win !== botCfg.window) _cache.delete("orders14");
       botCfg = { times, deadline: s.deadline || "00:00", window: win, enabled: s.enabled !== false,
         digestTime: s.digest_time || "08:30", digestEnabled: s.digest_enabled !== false, signalsEnabled: s.signals_enabled !== false,
-        sig1Days: Number(s.signal1_days) || 3, sig2Pct: Number(s.signal2_pct) || 40, sig2Win: Number(s.signal2_window) || 7 };
+        sig1Days: Number(s.signal1_days) || 3, sig2Pct: Number(s.signal2_pct) || 40, sig2Win: Number(s.signal2_window) || 7,
+        orderAlerts: s.order_alerts_enabled !== false, quietFrom: s.quiet_from || "22:00", quietTo: s.quiet_to || "08:00", lostFreq: s.lost_summary_freq || "weekly" };
     }
   } catch (e) { console.warn("[НАСТРОЙКИ]", e.message); }
 }
@@ -509,6 +518,7 @@ async function main() {
     );
   }
   async function notifyOrderChange(o, diff) {
+    if (!botCfg.orderAlerts || inQuietHours(botCfg)) return; // выключено или тихий час — push не шлём (данные в реестре остаются)
     const clientName = (o.client && (o.client.clientName || o.client.clientLegalName)) || (o.client && o.client.SD_id) || "—";
     const text = `⚠️ Изменён новый заказ ${o.code_1C || o.SD_id}\nКлиент: ${clientName}\nПравки состава (склад):\n` + diff.join("\n");
     const agentSd = o.agent && o.agent.SD_id;

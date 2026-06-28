@@ -115,7 +115,7 @@
   <div class="tgm-overlay <%= openAgent ? 'on' : '' %>" id="agentOverlay">
     <div class="tgm-modal" style="max-width:560px">
       <div class="tgm-hd">
-        <div style="flex:1"><div class="tgm-t">Сводки и сигналы</div><div class="tgm-s">Что и когда получают торговые агенты</div></div>
+        <div style="flex:1"><div class="tgm-t">Сводки и сигналы для торговой команды</div><div class="tgm-s">Что и когда получают агенты и РОП</div></div>
         <button class="tgm-icon" data-close-agent type="button"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
       </div>
       <div class="tgm-body">
@@ -132,8 +132,20 @@
             <label class="tgm-remrow"><span>Сигнал 2: падение суммы ≥ %</span><input type="number" name="signal2_pct" min="5" max="95" value="<%= botSettings.signal2_pct||40 %>"></label>
             <label class="tgm-remrow"><span>Сигнал 2: окно сравнения (дней)</span><input type="number" name="signal2_window" min="3" max="30" value="<%= botSettings.signal2_window||7 %>"></label>
           </div>
+          <div class="tgm-fields" style="margin-top:14px">
+            <label class="tgm-check"><input type="checkbox" name="order_alerts_enabled" <%= botSettings.order_alerts_enabled!==false?'checked':'' %>> Оповещать об изменениях заказов на складе (упущения/правки)</label>
+            <label class="tgm-remrow"><span>Тихий час: не слать с</span><input type="time" name="quiet_from" value="<%= botSettings.quiet_from||'22:00' %>"></label>
+            <label class="tgm-remrow"><span>Тихий час: до</span><input type="time" name="quiet_to" value="<%= botSettings.quiet_to||'08:00' %>"></label>
+            <label class="tgm-remrow"><span>Сводка упущенных РОПу/админу</span>
+              <select name="lost_summary_freq">
+                <option value="off" <%= botSettings.lost_summary_freq==='off'?'selected':'' %>>Выключить</option>
+                <option value="daily" <%= botSettings.lost_summary_freq==='daily'?'selected':'' %>>Ежедневно</option>
+                <option value="weekly" <%= (botSettings.lost_summary_freq||'weekly')==='weekly'?'selected':'' %>>Еженедельно</option>
+              </select>
+            </label>
+          </div>
         </form>
-        <div class="tgm-note" style="margin-top:12px">Сводка приходит каждому агенту в указанное время по его клиентам. Сигналы — не чаще раза в день на клиента.</div>
+        <div class="tgm-note" style="margin-top:12px">Сводка приходит каждому агенту в указанное время по его клиентам. Сигналы — не чаще раза в день на клиента. В тихий час оповещения об изменениях заказов не отправляются (данные всё равно копятся для дашборда).</div>
       </div>
       <div class="tgm-ft">
         <button class="tgm-btn tgm-green" type="submit" form="agentForm">Сохранить</button>

@@ -57,6 +57,10 @@ async function ensureTables() {
   await db.pool.query(`ALTER TABLE tgbot.bot_settings ADD COLUMN IF NOT EXISTS signal1_days INT NOT NULL DEFAULT 3`);
   await db.pool.query(`ALTER TABLE tgbot.bot_settings ADD COLUMN IF NOT EXISTS signal2_pct INT NOT NULL DEFAULT 40`);
   await db.pool.query(`ALTER TABLE tgbot.bot_settings ADD COLUMN IF NOT EXISTS signal2_window INT NOT NULL DEFAULT 7`);
+  await db.pool.query(`ALTER TABLE tgbot.bot_settings ADD COLUMN IF NOT EXISTS order_alerts_enabled BOOLEAN NOT NULL DEFAULT true`);
+  await db.pool.query(`ALTER TABLE tgbot.bot_settings ADD COLUMN IF NOT EXISTS quiet_from TEXT NOT NULL DEFAULT '22:00'`);
+  await db.pool.query(`ALTER TABLE tgbot.bot_settings ADD COLUMN IF NOT EXISTS quiet_to TEXT NOT NULL DEFAULT '08:00'`);
+  await db.pool.query(`ALTER TABLE tgbot.bot_settings ADD COLUMN IF NOT EXISTS lost_summary_freq TEXT NOT NULL DEFAULT 'weekly'`);
   await db.pool.query(`CREATE TABLE IF NOT EXISTS tgbot.crm_agents (
     sd_agent_id TEXT PRIMARY KEY, sd_agent_code TEXT, sd_agent_name TEXT,
     is_active BOOLEAN NOT NULL DEFAULT true, last_synced_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -92,7 +96,7 @@ async function ensureTables() {
 function normPhone9(v) { const d = String(v || '').replace(/\D/g, ''); return d.length > 9 ? d.slice(-9) : d; }
 const ROLES = ['agent', 'head_of_sales', 'admin'];
 
-const DEFAULT_BOT_SETTINGS = { reminder_times: '18:00,21:00,23:00', deadline: '00:00', avg_window_days: 14, enabled: true, digest_time: '08:30', digest_enabled: true, signals_enabled: true, signal1_days: 3, signal2_pct: 40, signal2_window: 7 };
+const DEFAULT_BOT_SETTINGS = { reminder_times: '18:00,21:00,23:00', deadline: '00:00', avg_window_days: 14, enabled: true, digest_time: '08:30', digest_enabled: true, signals_enabled: true, signal1_days: 3, signal2_pct: 40, signal2_window: 7, order_alerts_enabled: true, quiet_from: '22:00', quiet_to: '08:00', lost_summary_freq: 'weekly' };
 async function getBotSettings() {
   await ensureTables();
   const r = await db.pool.query('SELECT * FROM tgbot.bot_settings WHERE id=1');
@@ -279,10 +283,15 @@ router.post('/settings/agent', async (req, res) => {
     let s1 = parseInt(req.body.signal1_days, 10); if (!(s1 >= 1 && s1 <= 30)) s1 = 3;
     let s2 = parseInt(req.body.signal2_pct, 10); if (!(s2 >= 5 && s2 <= 95)) s2 = 40;
     let s2w = parseInt(req.body.signal2_window, 10); if (!(s2w >= 3 && s2w <= 30)) s2w = 7;
+    const oae = ['on', 'true', '1'].includes(String(req.body.order_alerts_enabled));
+    const qf = normTimes(req.body.quiet_from)[0] || '22:00';
+    const qt = normTimes(req.body.quiet_to)[0] || '08:00';
+    const lf = ['off', 'daily', 'weekly'].includes(String(req.body.lost_summary_freq)) ? req.body.lost_summary_freq : 'weekly';
     await db.pool.query(
-      `UPDATE tgbot.bot_settings SET digest_time=$1, digest_enabled=$2, signals_enabled=$3, signal1_days=$4, signal2_pct=$5, signal2_window=$6, updated_at=now(), updated_by=$7 WHERE id=1`,
-      [dt, de, se, s1, s2, s2w, String(req.user.id)]);
-    await db.log(req.user.id, 'tgbot_agent_settings', `digest=${dt} de=${de} se=${se} s1=${s1} s2=${s2} s2w=${s2w}`);
+      `UPDATE tgbot.bot_settings SET digest_time=$1, digest_enabled=$2, signals_enabled=$3, signal1_days=$4, signal2_pct=$5, signal2_window=$6,
+         order_alerts_enabled=$7, quiet_from=$8, quiet_to=$9, lost_summary_freq=$10, updated_at=now(), updated_by=$11 WHERE id=1`,
+      [dt, de, se, s1, s2, s2w, oae, qf, qt, lf, String(req.user.id)]);
+    await db.log(req.user.id, 'tgbot_agent_settings', `digest=${dt} de=${de} se=${se} alerts=${oae} quiet=${qf}-${qt} lost=${lf}`);
     const botSettings = await getBotSettings();
     await render(res, req, settings, { botSettings, settingsSaved: true, openAgent: true });
   } catch (e) {
