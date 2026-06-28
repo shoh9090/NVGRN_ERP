@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Упущенные продажи — <%= settings.company_name %></title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Lora:wght@500;600&display=swap" rel="stylesheet">
+  <style>
+    :root { --ink:#14241b; --paper:#f4f2ea; --forest:#163a28; --lime:#8cc63f; --muted:#7c8579; --line:#e3e0d4; }
+    body { font-family:'Manrope',system-ui,sans-serif; color:var(--ink); background:#f4f2ea; margin:0; }
+    .ls-top { display:flex; align-items:center; gap:12px; padding:14px 18px; background:#fff; border-bottom:1px solid var(--line); }
+    .ls-top a { color:var(--forest); text-decoration:none; font-weight:700; font-size:14px; }
+    .ls-wrap { max-width:1100px; margin:0 auto; padding:18px; }
+    .ls-h { font-family:'Lora',serif; font-size:26px; margin:4px 0 2px; }
+    .ls-sub { color:var(--muted); font-size:13px; margin-bottom:16px; }
+    .ls-period { display:inline-flex; gap:4px; background:#eef0e6; border-radius:10px; padding:3px; margin-bottom:16px; }
+    .ls-period button { border:none; background:none; padding:7px 16px; border-radius:8px; font-weight:700; font-size:13px; color:var(--muted); cursor:pointer; }
+    .ls-period button.on { background:#fff; color:var(--forest); box-shadow:0 1px 3px rgba(0,0,0,.08); }
+    .ls-kpis { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin-bottom:16px; }
+    .ls-kpi { background:#fbfaf5; border:1px solid var(--line); border-radius:16px; padding:15px 17px; }
+    .ls-kpi-l { font-size:12px; color:var(--muted); font-weight:600; }
+    .ls-kpi-n { font-family:'Lora',serif; font-size:30px; font-weight:600; margin-top:6px; line-height:1; }
+    .ls-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:16px; }
+    .ls-panel { background:#fbfaf5; border:1px solid var(--line); border-radius:16px; padding:16px; }
+    .ls-panel h3 { margin:0 0 12px; font-size:15px; }
+    .ls-bar { display:grid; grid-template-columns:130px 1fr 92px; align-items:center; gap:10px; font-size:13px; padding:5px 6px; border-radius:8px; cursor:pointer; }
+    .ls-bar:hover { background:#f1f4ee; }
+    .ls-bar.on { background:#e8f1dc; }
+    .ls-bar-nm { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .ls-bar-track { height:12px; background:#edeee5; border-radius:6px; overflow:hidden; }
+    .ls-bar-fill { display:block; height:100%; background:var(--forest); border-radius:6px; }
+    .ls-bar-v { text-align:right; font-weight:700; font-variant-numeric:tabular-nums; }
+    .ls-rows { background:#fff; border:1px solid var(--line); border-radius:14px; overflow:hidden; }
+    .ls-row { display:grid; grid-template-columns:78px 1.2fr 1fr 1.3fr 0.9fr 1fr; gap:8px; padding:9px 12px; border-bottom:1px solid #f0f2ef; font-size:12.5px; align-items:center; }
+    .ls-row.head { background:#f2f5f1; font-weight:700; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.02em; }
+    .ls-row b { font-weight:700; }
+    .ls-flt { display:flex; align-items:center; gap:10px; margin-bottom:8px; font-size:13px; color:var(--muted); min-height:24px; }
+    .ls-flt button { border:1px solid var(--line); background:#fff; border-radius:8px; padding:4px 10px; cursor:pointer; font-size:12px; }
+    .ls-empty { text-align:center; color:var(--muted); padding:26px; }
+    @media (max-width:820px){ .ls-kpis{grid-template-columns:1fr} .ls-grid{grid-template-columns:1fr} .ls-row{grid-template-columns:64px 1.2fr 1fr 0.8fr} .ls-row .c5,.ls-row .c3{display:none} }
+  </style>
+</head>
+<body>
+  <div class="ls-top">
+    <a href="/tgbot">← Бот HoReCa</a>
+    <span style="color:var(--muted)">·</span>
+    <span style="font-weight:700">📉 Упущенные продажи</span>
+  </div>
+  <div class="ls-wrap">
+    <div class="ls-h">Упущенные продажи</div>
+    <div class="ls-sub">Что склад урезал из новых заказов (не было в наличии). Клик по товару или агенту — отфильтровать список ниже.</div>
+    <div class="ls-period">
+      <button data-p="week" class="on">Неделя</button>
+      <button data-p="month">Месяц</button>
+    </div>
+    <div id="ls-body"><div class="ls-empty">Загрузка…</div></div>
+  </div>
+
+  <script>
+  (function(){
+    var period='week', data=null, filter=null;
+    var fmt=function(n){ return Math.round(Number(n)||0).toLocaleString('ru-RU'); };
+    var el=function(t,c,h){ var n=document.createElement(t); if(c)n.className=c; if(h!=null)n.innerHTML=h; return n; };
+
+    function bars(title, list, kind){
+      var max=Math.max.apply(null,[1].concat(list.map(function(x){return Number(x.amt)||0;})));
+      var p=el('div','ls-panel'); p.appendChild(el('h3',null,title));
+      if(!list.length){ p.appendChild(el('div','ls-empty','Пока пусто.')); return p; }
+      list.forEach(function(x){
+        var row=el('div','ls-bar'+(filter&&filter.kind===kind&&filter.name===x.name?' on':''));
+        row.appendChild(el('span','ls-bar-nm',x.name||'—'));
+        var tr=el('span','ls-bar-track'); var f=el('span','ls-bar-fill'); f.style.width=Math.round((Number(x.amt)||0)/max*100)+'%'; tr.appendChild(f); row.appendChild(tr);
+        row.appendChild(el('span','ls-bar-v',fmt(x.amt)));
+        row.addEventListener('click',function(){ if(filter&&filter.kind===kind&&filter.name===x.name){filter=null;} else {filter={kind:kind,name:x.name};} renderRows(); paint(); });
+        p.appendChild(row);
+      });
+      return p;
+    }
+    function paint(){ document.querySelectorAll('.ls-bar').forEach(function(b){ b.classList.remove('on'); }); render(); }
+
+    function renderRows(){
+      var host=document.getElementById('ls-rowshost'); if(!host) return;
+      var rows=data.rows.slice();
+      if(filter){ rows=rows.filter(function(r){ return filter.kind==='product'? r.product_name===filter.name : (r.agent_name||'—')===filter.name; }); }
+      host.innerHTML='';
+      var flt=el('div','ls-flt');
+      if(filter){ flt.appendChild(el('span',null,'Фильтр: <b>'+filter.name+'</b> · найдено '+rows.length)); var b=el('button',null,'Сбросить'); b.onclick=function(){filter=null;render();}; flt.appendChild(b);} else { flt.appendChild(el('span',null,'Всего записей: '+rows.length)); }
+      host.appendChild(flt);
+      var box=el('div','ls-rows');
+      box.appendChild(el('div','ls-row head','<span>Когда</span><span>Заказ</span><span>Клиент</span><span>Товар</span><span class="c5">Агент</span><span>Упущено</span>'));
+      if(!rows.length){ box.appendChild(el('div','ls-empty','Нет записей по фильтру.')); }
+      rows.slice(0,300).forEach(function(r){
+        var was=Number(r.qty_before), now=Number(r.qty_after), lost=Number(r.qty_lost);
+        box.appendChild(el('div','ls-row',
+          '<span>'+r.ts+'</span>'+
+          '<span class="c3">'+(r.order_code||'—')+'</span>'+
+          '<span>'+(r.client_name||'—')+'</span>'+
+          '<span><b>'+(r.product_name||'—')+'</b> · '+was+'→'+now+'</span>'+
+          '<span class="c5">'+(r.agent_name||'—')+'</span>'+
+          '<span><b>'+fmt(r.amount_lost)+'</b> сум</span>'));
+      });
+      host.appendChild(box);
+    }
+
+    function render(){
+      var b=document.getElementById('ls-body'); b.innerHTML='';
+      var k=data.kpi||{};
+      var kp=el('div','ls-kpis');
+      kp.appendChild(el('div','ls-kpi','<div class="ls-kpi-l">Упущено, сум</div><div class="ls-kpi-n">'+fmt(k.amount)+'</div>'));
+      kp.appendChild(el('div','ls-kpi','<div class="ls-kpi-l">Позиций урезано</div><div class="ls-kpi-n">'+fmt(k.items)+'</div>'));
+      kp.appendChild(el('div','ls-kpi','<div class="ls-kpi-l">Заказов затронуто</div><div class="ls-kpi-n">'+fmt(k.orders)+'</div>'));
+      b.appendChild(kp);
+      var g=el('div','ls-grid');
+      g.appendChild(bars('Чаще не хватало (товары)', data.byProduct||[], 'product'));
+      g.appendChild(bars('По агентам', data.byAgent||[], 'agent'));
+      b.appendChild(g);
+      var host=el('div'); host.id='ls-rowshost'; b.appendChild(host);
+      renderRows();
+    }
+
+    function load(){
+      document.getElementById('ls-body').innerHTML='<div class="ls-empty">Загрузка…</div>';
+      fetch('/tgbot/lost-sales/api?period='+period).then(function(r){return r.json();}).then(function(d){
+        if(d.error){ document.getElementById('ls-body').innerHTML='<div class="ls-empty">Ошибка: '+d.error+'</div>'; return; }
+        data=d; filter=null; render();
+      }).catch(function(e){ document.getElementById('ls-body').innerHTML='<div class="ls-empty">Ошибка загрузки</div>'; });
+    }
+    document.querySelectorAll('.ls-period button').forEach(function(btn){
+      btn.addEventListener('click',function(){ document.querySelectorAll('.ls-period button').forEach(function(x){x.classList.remove('on');}); btn.classList.add('on'); period=btn.getAttribute('data-p'); load(); });
+    });
+    load();
+  })();
+  </script>
+</body>
+</html>

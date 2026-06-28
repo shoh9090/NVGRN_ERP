@@ -87,6 +87,15 @@ async function ensureTables() {
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(), UNIQUE (product_sd_id, replacement_sd_id)
   )`);
 
+  // Реестр упущенных продаж (бот пишет, Hub читает для дашборда).
+  await db.pool.query(`CREATE TABLE IF NOT EXISTS tgbot.lost_sales (
+    id BIGSERIAL PRIMARY KEY, detected_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    order_sd_id TEXT, order_code TEXT, client_sd_id TEXT, client_name TEXT, agent_sd_id TEXT,
+    product_sd_id TEXT, product_name TEXT, qty_before NUMERIC, qty_after NUMERIC, qty_lost NUMERIC,
+    price NUMERIC, amount_lost NUMERIC, reason TEXT NOT NULL DEFAULT 'stock'
+  )`);
+  await db.pool.query(`CREATE INDEX IF NOT EXISTS idx_lost_sales_detected ON tgbot.lost_sales (detected_at)`);
+
   // Претензии: схема и справочник вынесены в общий модуль (единый источник).
   await require('./complaints-schema').ensureComplaintSchema(db.pool);
 
@@ -247,6 +256,40 @@ router.get('/analytics', async (req, res) => {
   try { data = await integrations.getAgentCoverage(14); }
   catch (e) { error = e.message; }
   res.render('analytics', { settings, user: req.user, data, error });
+});
+
+// Дашборд «Упущенные продажи» — страница + JSON API (читает реестр из схемы бота).
+router.get('/lost-sales', async (req, res) => {
+  const settings = await db.getSettings();
+  res.render('lost-sales', { settings, user: req.user });
+});
+router.get('/lost-sales/api', async (req, res) => {
+  try {
+    await ensureTables();
+    const days = req.query.period === 'month' ? 30 : 7;
+    const p = [days];
+    const agentExpr = "COALESCE(NULLIF(TRIM(CONCAT_WS(' ', s.telegram_first_name, s.telegram_last_name)),''), l.agent_sd_id, '—')";
+    const kpi = (await db.pool.query(
+      `SELECT coalesce(sum(amount_lost),0)::numeric amount, coalesce(sum(qty_lost),0)::numeric qty,
+              count(distinct order_sd_id)::int orders, count(*)::int items
+       FROM tgbot.lost_sales WHERE detected_at >= now() - make_interval(days => $1)`, p)).rows[0];
+    const byProduct = (await db.pool.query(
+      `SELECT product_name name, sum(amount_lost)::numeric amt, sum(qty_lost)::numeric qty
+       FROM tgbot.lost_sales WHERE detected_at >= now() - make_interval(days => $1)
+       GROUP BY 1 ORDER BY amt DESC NULLS LAST LIMIT 12`, p)).rows;
+    const byAgent = (await db.pool.query(
+      `SELECT ${agentExpr} name, sum(l.amount_lost)::numeric amt, sum(l.qty_lost)::numeric qty
+       FROM tgbot.lost_sales l LEFT JOIN tgbot.telegram_staff s ON s.crm_agent_id = l.agent_sd_id
+       WHERE l.detected_at >= now() - make_interval(days => $1)
+       GROUP BY 1 ORDER BY amt DESC NULLS LAST LIMIT 12`, p)).rows;
+    const rows = (await db.pool.query(
+      `SELECT to_char(l.detected_at,'DD.MM HH24:MI') ts, l.order_code, l.client_name, l.product_name,
+              l.qty_before, l.qty_after, l.qty_lost, l.amount_lost, ${agentExpr} agent_name
+       FROM tgbot.lost_sales l LEFT JOIN tgbot.telegram_staff s ON s.crm_agent_id = l.agent_sd_id
+       WHERE l.detected_at >= now() - make_interval(days => $1)
+       ORDER BY l.detected_at DESC LIMIT 500`, p)).rows;
+    res.json({ kpi, byProduct, byAgent, rows });
+  } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 // Сохранение настроек напоминаний (только РОП/админ).
