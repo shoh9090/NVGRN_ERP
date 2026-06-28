@@ -467,6 +467,38 @@ async function main() {
   setInterval(schedulerTick, 60000);
   setInterval(agentDailyTick, 60000); // сводка агентам + сигналы (раз в день в digestTime)
 
+  // ===== Сводка упущенных продаж РОПу и админу (ежедневно/еженедельно) =====
+  let lastLostDay = "";
+  async function sendLostSummary(days) {
+    const rows = (await db.query(
+      `SELECT product_name, sum(amount_lost)::numeric amt, sum(qty_lost)::numeric qty, count(*)::int c
+       FROM lost_sales WHERE detected_at >= now() - make_interval(days => $1)
+       GROUP BY product_name ORDER BY amt DESC NULLS LAST LIMIT 10`, [days])).rows;
+    const tot = (await db.query(
+      `SELECT coalesce(sum(amount_lost),0)::numeric amt, count(*)::int c
+       FROM lost_sales WHERE detected_at >= now() - make_interval(days => $1)`, [days])).rows[0];
+    if (!Number(tot.c)) return; // упущенного не было — не шлём
+    const fmt = (n) => Math.round(Number(n) || 0).toLocaleString("ru-RU");
+    let text = `📉 Упущенные продажи ${days === 7 ? "за неделю" : "за сутки"}\nВсего упущено: ${fmt(tot.amt)} сум · позиций: ${tot.c}\n\nЧаще не хватало:\n`;
+    text += rows.map((r) => `• ${r.product_name}: ${fmt(r.amt)} сум (${fmt(r.qty)})`).join("\n");
+    text += `\n\nПодробно — в Hub → «Бот HoReCa» → «Упущенные продажи».`;
+    await notifyManagers(text.slice(0, 3900));
+  }
+  async function lostSummaryTick() {
+    try {
+      await reloadCfg();
+      if (botCfg.lostFreq === "off") return;
+      const hhmm = tzNow().toISOString().slice(11, 16);
+      if (hhmm !== (botCfg.digestTime || "08:30")) return; // в то же время, что и дайджест
+      if (botCfg.lostFreq === "weekly" && new Date(Date.now() + TZ_OFFSET_MS).getUTCDay() !== 1) return; // еженедельно — по понедельникам
+      const today = tzToday();
+      if (lastLostDay === today) return;
+      lastLostDay = today;
+      await sendLostSummary(botCfg.lostFreq === "weekly" ? 7 : 1);
+    } catch (e) { console.error("[УПУЩЕНО-СВОДКА]", e.message); }
+  }
+  setInterval(lostSummaryTick, 60000);
+
   bot.onText(/\/digestnow/, async (msg) => {
     if (!isAdmin(msg.chat.id)) { bot.sendMessage(msg.chat.id, "Только админ."); return; }
     bot.sendMessage(msg.chat.id, "Шлю сводки агентам и считаю сигналы…");
