@@ -298,7 +298,11 @@ router.post('/settings', async (req, res) => {
   try {
     await ensureTables();
     const slots = [];
-    for (let i = 1; i <= 5; i++) { const v = normTimes(req.body['reminder_' + i])[0]; if (v) slots.push(v); }
+    for (let i = 1; i <= 5; i++) {
+      const on = ['on', 'true', '1'].includes(String(req.body['reminder_on_' + i]));
+      const v = normTimes(req.body['reminder_' + i])[0];
+      if (on && v) slots.push(v); // напоминание учитываем только при включённой галочке
+    }
     const times = slots.join(',');
     const deadline = normTimes(req.body.deadline)[0] || '00:00';
     let win = parseInt(req.body.avg_window_days, 10); if (!(win >= 1 && win <= 60)) win = 14;
