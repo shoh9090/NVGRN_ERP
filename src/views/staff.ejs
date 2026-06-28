@@ -33,8 +33,10 @@
 <body>
   <header class="topbar">
     <div class="topbar-left">
-      <% if (settings.logo_file_id) { %><img class="topbar-logo" src="/file/<%= settings.logo_file_id %>" alt=""><% } %>
-      <span class="company"><%= settings.company_name %></span>
+      <a href="/" title="На главную Hub" style="display:inline-flex;align-items:center;gap:10px;text-decoration:none;color:inherit;cursor:pointer">
+        <% if (settings.logo_file_id) { %><img class="topbar-logo" src="/file/<%= settings.logo_file_id %>" alt=""><% } %>
+        <span class="company"><%= settings.company_name %></span>
+      </a>
     </div>
     <div class="topbar-right"><a class="btn-ghost" href="/tgbot">← К боту HoReCa</a></div>
   </header>
