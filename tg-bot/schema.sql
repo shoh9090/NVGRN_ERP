@@ -221,3 +221,14 @@ CREATE TABLE IF NOT EXISTS product_replacements (
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (product_sd_id, replacement_sd_id)
 );
+
+-- ===== Слежение за изменениями НОВЫХ заказов (завсклад правит состав при сборке) =====
+-- Снимок состава каждого нового заказа; сравниваем при опросе и шлём агенту/РОПу что изменилось.
+CREATE TABLE IF NOT EXISTS order_snapshots (
+  sd_id       TEXT PRIMARY KEY,
+  code_1c     TEXT,
+  agent_sd_id TEXT,
+  client_name TEXT,
+  items       JSONB NOT NULL DEFAULT '[]',   -- [{sd, name, qty}]
+  seen_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);

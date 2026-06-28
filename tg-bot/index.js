@@ -26,6 +26,21 @@ const daysBetween = (a, b) => Math.round((Date.parse(b) - Date.parse(a)) / 86400
 function normPhone(v) { const d = String(v || "").replace(/\D/g, ""); return d.length > 9 ? d.slice(-9) : d; }
 const PH9 = (col) => `right(regexp_replace(coalesce(${col},''),'[^0-9]','','g'),9)`;
 
+// Сравнение состава заказа (снимок ↔ текущий): что урезали / убрали / добавили.
+function diffOrderItems(prev, now) {
+  const arr = (x) => (Array.isArray(x) ? x : []);
+  const pm = new Map(arr(prev).map((x) => [String(x.sd), x]));
+  const nm = new Map(arr(now).map((x) => [String(x.sd), x]));
+  const lines = [];
+  for (const [sd, p] of pm) {
+    const n = nm.get(sd);
+    if (!n) { lines.push(`• ${p.name}: убрана (было ${p.qty})`); continue; }
+    if (Number(n.qty) !== Number(p.qty)) { const d = Number(n.qty) - Number(p.qty); lines.push(`• ${p.name}: ${p.qty} → ${n.qty} (${d > 0 ? "+" : ""}${d})`); }
+  }
+  for (const [sd, n] of nm) { if (!pm.has(sd)) lines.push(`• ${n.name}: добавлена (${n.qty})`); }
+  return lines;
+}
+
 // ---------- Кэш ----------
 const _cache = new Map();
 async function cached(key, ttlMs, fn) {
@@ -465,6 +480,46 @@ async function main() {
     } catch (e) { console.error("[ОЧЕРЕДЬ]", e.message); }
   }
   setInterval(retryPending, 60000);
+
+  // ===== Слежение за изменениями НОВЫХ заказов (status=1) =====
+  async function saveOrderSnapshot(o, id, items) {
+    const clientName = (o.client && (o.client.clientName || o.client.clientLegalName)) || null;
+    await db.query(
+      `INSERT INTO order_snapshots (sd_id, code_1c, agent_sd_id, client_name, items, seen_at)
+       VALUES ($1,$2,$3,$4,$5,now())
+       ON CONFLICT (sd_id) DO UPDATE SET code_1c=$2, agent_sd_id=$3, client_name=$4, items=$5, seen_at=now()`,
+      [String(id), o.code_1C || null, (o.agent && o.agent.SD_id) || null, clientName, JSON.stringify(items)]
+    );
+  }
+  async function notifyOrderChange(o, diff) {
+    const clientName = (o.client && (o.client.clientName || o.client.clientLegalName)) || (o.client && o.client.SD_id) || "—";
+    const text = `⚠️ Изменён новый заказ ${o.code_1C || o.SD_id}\nКлиент: ${clientName}\nПравки состава (склад):\n` + diff.join("\n");
+    const agentSd = o.agent && o.agent.SD_id;
+    if (agentSd) {
+      const a = (await db.query("SELECT telegram_chat_id FROM telegram_staff WHERE crm_agent_id=$1 AND role='agent' AND status='confirmed' AND telegram_chat_id IS NOT NULL ORDER BY id DESC LIMIT 1", [agentSd])).rows[0];
+      if (a) bot.sendMessage(a.telegram_chat_id, text).catch(() => {});
+    }
+    await notifyManagers(text); // РОПам и админу
+  }
+  async function watchOrderChanges() {
+    try {
+      const from = tzDateAgo(5), to = tzToday();
+      const orders = await sd.fetchAll("getOrder", { filter: { status: [1], period: { date: { from, to } } } });
+      for (const o of orders) {
+        const id = o.SD_id || o.code_1C; if (!id) continue;
+        const items = (o.orderProducts || []).filter((p) => p.product && p.product.SD_id)
+          .map((p) => ({ sd: String(p.product.SD_id), name: p.product.name || p.product.SD_id, qty: Number(p.quantity) || 0 }));
+        const prev = (await db.query("SELECT items FROM order_snapshots WHERE sd_id=$1", [String(id)])).rows[0];
+        if (!prev) { await saveOrderSnapshot(o, id, items); continue; } // первый раз — базовый снимок, без оповещения
+        const diff = diffOrderItems(prev.items, items);
+        if (diff.length) await notifyOrderChange(o, diff);
+        await saveOrderSnapshot(o, id, items);
+      }
+      await db.query("DELETE FROM order_snapshots WHERE seen_at < now() - interval '10 days'").catch(() => {});
+    } catch (e) { console.error("[СЛЕЖКА-ЗАКАЗЫ]", e.message); }
+  }
+  watchOrderChanges(); // базовые снимки при старте
+  setInterval(watchOrderChanges, 5 * 60 * 1000); // каждые 5 минут
 
   bot.onText(/\/queue/, async (msg) => {
     if (!isAdmin(msg.chat.id)) { bot.sendMessage(msg.chat.id, "Только админ."); return; }
