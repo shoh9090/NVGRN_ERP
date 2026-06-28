@@ -421,6 +421,11 @@ async function main() {
     const orders = await freshOrdersToday();
     const ordered = new Set(orders.filter((o) => o.status !== 5).map((o) => o.client && o.client.SD_id).filter(Boolean));
     const date = tzToday();
+    // «Надёжные» точки (заказывали вчера) не спамим весь вечер — только один раз в последний слот.
+    const yday = tzDateAgo(1);
+    const reliable = new Set((await getOrders14()).filter((o) => o.status !== 5 && o.client && String(o.dateCreate || "").slice(0, 10) >= yday).map((o) => o.client.SD_id).filter(Boolean));
+    const times = botCfg.times || [];
+    const isLastSlot = !times.includes(slot) || slot === times[times.length - 1];
     const users = (await db.query("SELECT telegram_id, chat_id, phone9 FROM tg_users WHERE chat_id IS NOT NULL AND coalesce(phone9,'') <> ''")).rows;
     let sent = 0;
     for (const u of users) {
@@ -435,6 +440,8 @@ async function main() {
         if (sk.rows.length) { await logSkip(pt.sd_id, "CLIENT_CLICKED_NOT_TODAY"); continue; }
         const lg = await db.query("SELECT 1 FROM reminder_log WHERE sd_id=$1 AND rdate=$2 AND slot=$3", [pt.sd_id, date, slot]);
         if (lg.rows.length) continue; // уже слали в этот слот
+        // Надёжная точка (заказывала вчера) — пропускаем ранние слоты, дёргаем только в последний.
+        if (reliable.has(pt.sd_id) && !isLastSlot) { await logSkip(pt.sd_id, "RELIABLE_EARLY_SLOT"); continue; }
         // Не шлём тупиковые напоминания: нет истории или нечего предложить из наличия.
         const draft = await getPointDraft(pt.sd_id, "avg");
         if (!draft) { await logSkip(pt.sd_id, "NO_ORDER_HISTORY"); continue; }
