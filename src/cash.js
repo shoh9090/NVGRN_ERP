@@ -502,7 +502,7 @@ router.post('/api/import/preview', upload.single('file'), async (req, res) => {
     if (buf[0] === 0xD0 && buf[1] === 0xCF) { rows = parseHayot(buf); bank = 'Хаёт (Excel)'; }
     else { const text = decodeCp1251(buf); if (/<tr/i.test(text)) { rows = parseAsiaAlliance(text); bank = 'Asia Alliance (HTML)'; } else return res.status(400).json({ error: 'Не удалось распознать формат выписки.' }); }
     if (!rows || !rows.length) return res.status(400).json({ error: 'Не нашёл транзакций в файле (проверьте формат).' });
-    const cats = (await db.pool.query("SELECT id, code, name, default_category_id FROM cash_categories WHERE status='active'")).rows;
+    const cats = (await db.pool.query("SELECT id, code, name FROM cash_categories WHERE status='active'")).rows;
     const catById = {}; cats.forEach((c) => { catById[c.id] = c; });
     const incomeCat = cats.find((c) => c.code === '200') || null;
     const cpByInn = {};
@@ -567,7 +567,7 @@ router.post('/api/import/run', upload.single('file'), async (req, res) => {
     if (buf[0] === 0xD0 && buf[1] === 0xCF) { rows = parseHayot(buf); bank = 'Хаёт (Excel)'; }
     else { const text = decodeCp1251(buf); if (/<tr/i.test(text)) { rows = parseAsiaAlliance(text); bank = 'Asia Alliance (HTML)'; } else return res.status(400).json({ error: 'Не удалось распознать формат выписки.' }); }
     if (!rows || !rows.length) return res.status(400).json({ error: 'Не нашёл транзакций в файле (проверьте формат).' });
-    const cats = (await db.pool.query("SELECT id, code, default_category_id FROM cash_categories WHERE status='active'")).rows;
+    const cats = (await db.pool.query("SELECT id, code FROM cash_categories WHERE status='active'")).rows;
     const incomeCat = cats.find((c) => c.code === '200') || null;
     const cpByInn = {};
     (await db.pool.query("SELECT id, inn, default_category_id FROM cash_counterparties WHERE status='active' AND inn IS NOT NULL AND inn<>''")).rows.forEach((c) => { cpByInn[String(c.inn).trim()] = c; });
