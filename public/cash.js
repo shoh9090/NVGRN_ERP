@@ -239,7 +239,7 @@
       wrap.querySelectorAll('.row-chk').forEach((c) => { c.checked = on; });
       updateBulk();
     });
-    const head = el('div', { class: 'cash-row head cash-tx' }, [selAll, ...['Дата', 'Кошелёк', 'Контрагент', 'Статья', 'Назначение', 'Приход', 'Расход'].map((h) => el('span', {}, h))]);
+    const head = el('div', { class: 'cash-row head cash-tx' }, [selAll, ...['Дата', 'Кошелёк', 'От кого', 'Статья', 'Назначение', 'Приход', 'Расход'].map((h) => el('span', {}, h))]);
     wrap.appendChild(el('div', { class: 'cash-list' }, [head, ...txItems.map(txRow)]));
     if (!txItems.length) wrap.appendChild(el('div', { class: 'cash-empty' }, 'Транзакций нет. Добавьте операцию или импортируйте выписку.'));
     updateBulk();
@@ -255,7 +255,7 @@
       chk,
       el('span', {}, ruDate(x.tx_date)),
       el('span', {}, [el('span', { class: 'cash-dot', style: 'background:' + (x.wallet_color || '#999') }), ' ' + wallet]),
-      el('span', {}, isT ? '— перевод —' : (x.cp_name || '—')),
+      el('span', {}, isT ? '— перевод —' : (x.cp_name || x.payer_name || '—')),
       el('span', {}, isT ? '—' : (x.cat_code ? (x.cat_code + ' ' + (x.cat_name || '')) : '—')),
       el('span', { class: 'cash-purpose' }, x.purpose || ''),
       el('span', { class: 'cash-amt-in' }, x.tx_type === 'in' ? ('+' + money(x.amount)) : ''),
@@ -272,14 +272,15 @@
     const cpWrap = el('div', { style: 'display:flex;gap:6px;align-items:center' }, [cp, el('button', { class: 'btn-ghost', style: 'padding:6px 11px;flex:none', onclick: () => openCpForm(null) }, '＋')]);
     const cat = fsel(catOptions(), tx.category_id || '');
     const purpose = finp(tx.purpose, { placeholder: 'Назначение' });
+    const payer = finp(tx.payer_name, { placeholder: 'Кто платит / получает' });
     const rows = [frow('Дата', date), frow('Сумма', amount)];
     if (!tx.id) rows.push(frow('Кошелёк', wallet));
-    rows.push(frow('Контрагент', cpWrap), frow('Статья ДДС', cat), frow('Назначение', purpose));
+    rows.push(frow('От кого', payer), frow('Контрагент', cpWrap), frow('Статья ДДС', cat), frow('Назначение', purpose));
     const body = el('div', { class: 'cashf' }, rows);
     const save = el('button', { class: 'btn-primary', onclick: async () => {
       try {
-        if (tx.id) await post('/tx/' + tx.id, { tx_date: date.value, amount: amount.value, counterparty_id: cp.value, category_id: cat.value, purpose: purpose.value });
-        else await post('/tx', { tx_type: type, tx_date: date.value, amount: amount.value, wallet_id: wallet.value, counterparty_id: cp.value, category_id: cat.value, purpose: purpose.value });
+        if (tx.id) await post('/tx/' + tx.id, { tx_date: date.value, amount: amount.value, counterparty_id: cp.value, category_id: cat.value, purpose: purpose.value, payer_name: payer.value });
+        else await post('/tx', { tx_type: type, tx_date: date.value, amount: amount.value, wallet_id: wallet.value, counterparty_id: cp.value, category_id: cat.value, purpose: purpose.value, payer_name: payer.value });
         toast('Сохранено'); closeModal(); loadTx();
       } catch (e) { toast(e.message, true); }
     } }, 'Сохранить');

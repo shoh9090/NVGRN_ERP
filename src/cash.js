@@ -96,6 +96,9 @@ async function ensureCashSchema() {
   await q(`CREATE INDEX IF NOT EXISTS idx_cash_tx_date ON cash_transactions (tx_date)`);
   await q(`CREATE INDEX IF NOT EXISTS idx_cash_tx_wallet ON cash_transactions (wallet_id)`);
   await q(`CREATE INDEX IF NOT EXISTS idx_cash_tx_cat ON cash_transactions (category_id)`);
+  // Плательщик/получатель из выписки (для столбца «От кого» и сопоставления по ИНН).
+  await q(`ALTER TABLE cash_transactions ADD COLUMN IF NOT EXISTS payer_name TEXT`);
+  await q(`ALTER TABLE cash_transactions ADD COLUMN IF NOT EXISTS payer_inn TEXT`);
 
   await q(`CREATE TABLE IF NOT EXISTS cash_groups (
     id SERIAL PRIMARY KEY,
@@ -373,9 +376,9 @@ router.post('/api/tx', J, async (req, res) => {
   } else {
     const cat = intOrNull(b.category_id);
     await db.pool.query(
-      `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, counterparty_id, contract_id, category_id, purpose, source, is_classified, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'manual',$9,$10)`,
-      [date, amount, type, wallet, intOrNull(b.counterparty_id), intOrNull(b.contract_id), cat, b.purpose || null, !!cat, req.user.id]);
+      `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, counterparty_id, contract_id, category_id, purpose, source, is_classified, payer_name, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'manual',$9,$10,$11)`,
+      [date, amount, type, wallet, intOrNull(b.counterparty_id), intOrNull(b.contract_id), cat, b.purpose || null, !!cat, b.payer_name || null, req.user.id]);
   }
   await db.log(req.user.id, 'cash_tx_add', type + ' ' + amount);
   res.json({ ok: true });
@@ -387,8 +390,8 @@ router.post('/api/tx/:id(\\d+)', J, async (req, res) => {
   const cat = intOrNull(b.category_id);
   await db.pool.query(
     `UPDATE cash_transactions SET tx_date=COALESCE($1,tx_date), amount=COALESCE($2,amount),
-       counterparty_id=$3, contract_id=$4, category_id=$5, purpose=$6, is_classified=$7 WHERE id=$8`,
-    [b.tx_date || null, b.amount ? Number(b.amount) : null, intOrNull(b.counterparty_id), intOrNull(b.contract_id), cat, b.purpose || null, !!cat, req.params.id]);
+       counterparty_id=$3, contract_id=$4, category_id=$5, purpose=$6, is_classified=$7, payer_name=COALESCE($9,payer_name) WHERE id=$8`,
+    [b.tx_date || null, b.amount ? Number(b.amount) : null, intOrNull(b.counterparty_id), intOrNull(b.contract_id), cat, b.purpose || null, !!cat, req.params.id, b.payer_name != null ? b.payer_name : null]);
   await db.log(req.user.id, 'cash_tx_edit', '#' + req.params.id);
   res.json({ ok: true });
 });
@@ -593,9 +596,9 @@ router.post('/api/import/run', upload.single('file'), async (req, res) => {
       if (r.tx_type === 'in') { category_id = incomeCat ? incomeCat.id : null; is_classified = !!incomeCat; }
       else { const cp = cpByInn[String(r.inn || '').trim()]; if (cp) { counterparty_id = cp.id; category_id = cp.default_category_id || null; is_classified = !!cp.default_category_id; } else newcp++; }
       await db.pool.query(
-        `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, counterparty_id, category_id, purpose, bank_doc_no, source, import_batch_id, is_classified, created_by)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'import',$9,$10,$11)`,
-        [r.tx_date, r.amount, r.tx_type, wallet_id, counterparty_id, category_id, r.purpose || null, r.doc_no || null, batch, is_classified, req.user.id]);
+        `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, counterparty_id, category_id, purpose, bank_doc_no, source, import_batch_id, is_classified, payer_name, payer_inn, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'import',$9,$10,$11,$12,$13)`,
+        [r.tx_date, r.amount, r.tx_type, wallet_id, counterparty_id, category_id, r.purpose || null, r.doc_no || null, batch, is_classified, r.payer || null, r.inn || null, req.user.id]);
       ins++;
     }
     await db.pool.query('UPDATE cash_import_batches SET count=$1 WHERE id=$2', [ins, batch]);
