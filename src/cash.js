@@ -6,6 +6,11 @@ const db = require('./db');
 
 const router = express.Router();
 
+// Объявляем заранее — используются как middleware при регистрации маршрутов ниже.
+const J = express.json();
+const intOrNull = (v) => (v === undefined || v === null || v === '' ? null : parseInt(v, 10));
+const numOrNull = (v) => (v === undefined || v === null || v === '' ? null : Number(v));
+
 // ---------- Схема и сидирование (идемпотентно) ----------
 let _ready = false;
 async function ensureCashSchema() {
@@ -243,9 +248,6 @@ router.post('/api/category/:id(\\d+)/delete', async (req, res) => {
 });
 
 // ---------- Управление справочниками ----------
-const J = express.json();
-const intOrNull = (v) => (v === undefined || v === null || v === '' ? null : parseInt(v, 10));
-const numOrNull = (v) => (v === undefined || v === null || v === '' ? null : Number(v));
 
 router.post('/api/wallet', J, async (req, res) => {
   const b = req.body || {};
