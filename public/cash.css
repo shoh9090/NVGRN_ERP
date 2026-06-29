@@ -73,3 +73,33 @@
 .cash-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 .cash-toast.err { background: #c0392b; }
 @media (max-width: 760px) { .cashf-row { grid-template-columns: 1fr; gap: 4px; } }
+
+/* Кошельки — итог */
+.cash-total { margin-top: 14px; font-weight: 700; color: var(--forest); font-size: 14px; }
+
+/* Транзакции */
+.cash-tx-btns { display: flex; gap: 8px; flex-wrap: wrap; }
+.cash-out { background: #c0392b !important; }
+.cash-filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+.cash-flab { font-size: 13px; color: var(--muted); }
+.cash-filt { width: auto; }
+.cash-filt-q { flex: 1; min-width: 180px; }
+.cash-tot-bar { display: flex; gap: 16px; flex-wrap: wrap; padding: 10px 12px; background: #fbfaf5; border: 1px solid var(--line); border-radius: 10px; margin-bottom: 10px; font-size: 13px; font-weight: 700; }
+.cash-tot-in { color: #2e7d32; }
+.cash-tot-out { color: #c0392b; }
+.cash-tot-net { color: var(--ink); }
+.cash-tot-unc { color: #b25b00; margin-left: auto; }
+.cash-tx { grid-template-columns: 84px 1.3fr 1.2fr 1.2fr 1.6fr 1fr; }
+.cash-tx .cash-purpose { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.cash-tx.unclass { background: #fff8e1; }
+.cash-tx.unclass:hover { background: #fff3cd; }
+.cash-row:not(.head).cash-tx:hover { background: #f7faf6; }
+.cash-dot { display: inline-block; width: 9px; height: 9px; border-radius: 3px; vertical-align: middle; }
+.cash-amt-in { color: #2e7d32; font-weight: 800; text-align: right; font-variant-numeric: tabular-nums; }
+.cash-amt-out { color: #c0392b; font-weight: 800; text-align: right; font-variant-numeric: tabular-nums; }
+.cash-amt-t { color: #6a4fb6; font-weight: 700; text-align: right; font-variant-numeric: tabular-nums; }
+.cash-note-info { font-size: 12px; color: var(--muted); background: #f1f4ee; border-radius: 8px; padding: 8px 10px; }
+@media (max-width: 760px) {
+  .cash-tx { grid-template-columns: 70px 1.2fr 1fr; }
+  .cash-tx > *:nth-child(4), .cash-tx > *:nth-child(5) { display: none; }
+}

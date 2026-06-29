@@ -14,6 +14,9 @@
     return n;
   };
   const money = (n) => Math.round(Number(n) || 0).toLocaleString('ru-RU');
+  const ruDate = (s) => { const m = String(s || '').slice(0, 10).match(/^(\d{4})-(\d{2})-(\d{2})/); return m ? (m[3] + '.' + m[2] + '.' + m[1]) : (s || ''); };
+  const todayStr = () => new Date().toISOString().slice(0, 10);
+  const monthStartStr = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-01'; };
   async function api(path) {
     const res = await fetch('/cash/api' + path);
     const data = await res.json().catch(() => ({}));
@@ -131,6 +134,7 @@
   }
   function render() {
     shell();
+    if (TAB === 'tx') return renderTransactions();
     if (TAB === 'wallets') return renderWallets();
     if (TAB === 'dicts') return renderDicts();
     return renderSoon();
@@ -139,20 +143,126 @@
     $('#cash-content').appendChild(el('div', { class: 'cash-soon' }, 'Этот раздел появится на следующем этапе. Пока готов фундамент и справочники.'));
   }
 
-  function renderWallets() {
-    const c = $('#cash-content'); c.innerHTML = '';
+  async function renderWallets() {
+    const c = $('#cash-content'); c.innerHTML = '<div class="cash-loading">Загрузка…</div>';
+    let data; try { data = await api('/wallets'); } catch (e) { c.innerHTML = ''; c.appendChild(el('div', { class: 'cash-empty' }, 'Ошибка: ' + e.message)); return; }
+    c.innerHTML = '';
     c.appendChild(el('div', { class: 'cash-head' }, [
-      el('div', {}, [el('div', { class: 'cash-h2' }, 'Кошельки'), el('div', { class: 'cash-sub' }, 'Счета и кассы. Остаток считается из журнала транзакций (Этап 2). Клик — изменить.')]),
+      el('div', {}, [el('div', { class: 'cash-h2' }, 'Кошельки'), el('div', { class: 'cash-sub' }, 'Остаток считается из журнала. Клик — изменить.')]),
       addBtn('+ Кошелёк', () => openWalletForm(null)),
     ]));
-    const w = (DICTS.wallets || []);
+    const w = data.wallets || [];
     if (!w.length) { c.appendChild(el('div', { class: 'cash-empty' }, 'Кошельков нет.')); return; }
     const KIND = { bank: 'Расчётный счёт', card: 'Карта', cash: 'Наличные', reserve: 'Резерв' };
     c.appendChild(el('div', { class: 'cash-wallets' }, w.map((x) => el('div', { class: 'cash-wallet', style: 'border-left-color:' + (x.color || '#163a28') + ';cursor:pointer', onclick: () => openWalletForm(x) }, [
       el('div', { class: 'cash-wallet-nm' }, x.name),
       el('div', { class: 'cash-wallet-kind' }, KIND[x.kind] || x.kind),
-      el('div', { class: 'cash-wallet-bal' }, money(0) + ' сум'),
+      el('div', { class: 'cash-wallet-bal' }, money(x.balance) + ' сум'),
     ]))));
+    const total = w.reduce((s, x) => s + Number(x.balance || 0), 0);
+    c.appendChild(el('div', { class: 'cash-total' }, 'Итого по кошелькам: ' + money(total) + ' сум'));
+  }
+
+  // ================= ТРАНЗАКЦИИ =================
+  const txState = { from: '', to: '', wallet: '', type: '', q: '' };
+  async function renderTransactions() {
+    const c = $('#cash-content'); c.innerHTML = '';
+    if (!txState.from) txState.from = monthStartStr();
+    if (!txState.to) txState.to = todayStr();
+    c.appendChild(el('div', { class: 'cash-head' }, [
+      el('div', {}, [el('div', { class: 'cash-h2' }, 'Транзакции'), el('div', { class: 'cash-sub' }, 'Журнал движения денег. Жёлтым — неразобранные (без статьи).')]),
+      el('div', { class: 'cash-tx-btns' }, [
+        addBtn('+ Приход', () => openTxForm('in', null)),
+        el('button', { class: 'btn-primary cash-add cash-out', onclick: () => openTxForm('out', null) }, '+ Расход'),
+        el('button', { class: 'btn-ghost cash-add', onclick: () => openTransferForm(null) }, '↔ Перевод'),
+      ]),
+    ]));
+    const dateInp = (k) => el('input', { type: 'date', class: 'cashf-inp cash-filt', value: txState[k], onchange: (e) => { txState[k] = e.target.value; loadTx(); } });
+    const walletSel = el('select', { class: 'cashf-inp cash-filt', onchange: (e) => { txState.wallet = e.target.value; loadTx(); } }, [el('option', { value: '' }, 'Все кошельки'), ...(DICTS.wallets || []).map((x) => el('option', { value: x.id, selected: String(x.id) === txState.wallet || null }, x.name))]);
+    const typeSel = el('select', { class: 'cashf-inp cash-filt', onchange: (e) => { txState.type = e.target.value; loadTx(); } }, [{ v: '', t: 'Все типы' }, { v: 'in', t: 'Приходы' }, { v: 'out', t: 'Расходы' }, { v: 'transfer', t: 'Переводы' }].map((o) => el('option', { value: o.v, selected: o.v === txState.type || null }, o.t)));
+    const search = el('input', { type: 'search', class: 'cashf-inp cash-filt cash-filt-q', placeholder: 'Поиск по назначению…', value: txState.q, oninput: (e) => { txState.q = e.target.value; clearTimeout(window.__cashT); window.__cashT = setTimeout(loadTx, 350); } });
+    c.appendChild(el('div', { class: 'cash-filters' }, [el('span', { class: 'cash-flab' }, 'С'), dateInp('from'), el('span', { class: 'cash-flab' }, 'по'), dateInp('to'), walletSel, typeSel, search]));
+    c.appendChild(el('div', { id: 'cash-tx-wrap' }));
+    loadTx();
+  }
+  async function loadTx() {
+    const wrap = $('#cash-tx-wrap'); if (!wrap) return;
+    const p = new URLSearchParams();
+    ['from', 'to', 'wallet', 'type', 'q'].forEach((k) => { if (txState[k]) p.set(k, txState[k]); });
+    let data; try { data = await api('/transactions?' + p.toString()); } catch (e) { toast(e.message, true); return; }
+    wrap.innerHTML = '';
+    const t = data.totals || { in: 0, out: 0 };
+    wrap.appendChild(el('div', { class: 'cash-tot-bar' }, [
+      el('span', { class: 'cash-tot-in' }, 'Приход: ' + money(t.in)),
+      el('span', { class: 'cash-tot-out' }, 'Расход: ' + money(t.out)),
+      el('span', { class: 'cash-tot-net' }, 'Сальдо: ' + money(t.in - t.out)),
+      data.unclassified ? el('span', { class: 'cash-tot-unc' }, 'Не разобрано: ' + data.unclassified) : null,
+    ]));
+    const head = el('div', { class: 'cash-row head cash-tx' }, ['Дата', 'Кошелёк', 'Контрагент', 'Статья', 'Назначение', 'Сумма'].map((h) => el('span', {}, h)));
+    wrap.appendChild(el('div', { class: 'cash-list' }, [head, ...(data.items || []).map(txRow)]));
+    if (!data.items.length) wrap.appendChild(el('div', { class: 'cash-empty' }, 'Транзакций нет. Добавьте приход/расход или импортируйте выписку (Этап 3).'));
+  }
+  function txRow(x) {
+    const isT = x.tx_type === 'transfer';
+    const cls = 'cash-row cash-tx' + (!isT && !x.is_classified ? ' unclass' : '');
+    const amtCls = isT ? 'cash-amt-t' : (x.tx_type === 'in' ? 'cash-amt-in' : 'cash-amt-out');
+    const sign = isT ? '↔ ' : (x.tx_type === 'in' ? '+' : '−');
+    const wallet = isT ? ((x.wallet_name || '?') + ' → ' + (x.wallet_to_name || '?')) : (x.wallet_name || '—');
+    return el('div', { class: cls, style: 'cursor:pointer', onclick: () => (isT ? openTransferForm(x) : openTxForm(x.tx_type, x)) }, [
+      el('span', {}, ruDate(x.tx_date)),
+      el('span', {}, [el('span', { class: 'cash-dot', style: 'background:' + (x.wallet_color || '#999') }), ' ' + wallet]),
+      el('span', {}, isT ? '— перевод —' : (x.cp_name || '—')),
+      el('span', {}, isT ? '—' : (x.cat_code ? (x.cat_code + ' ' + (x.cat_name || '')) : '—')),
+      el('span', { class: 'cash-purpose' }, x.purpose || ''),
+      el('span', { class: amtCls }, sign + money(x.amount)),
+    ]);
+  }
+
+  function openTxForm(type, tx) {
+    tx = tx || {};
+    const date = finp(tx.tx_date ? String(tx.tx_date).slice(0, 10) : todayStr(), { type: 'date' });
+    const amount = finp(tx.amount, { type: 'number', placeholder: 'Сумма' });
+    const wallet = fsel((DICTS.wallets || []).map((x) => ({ v: x.id, t: x.name })), tx.wallet_id || '');
+    const cp = fsel(cpOptions(), tx.counterparty_id || '');
+    const cat = fsel(catOptions(), tx.category_id || '');
+    const purpose = finp(tx.purpose, { placeholder: 'Назначение' });
+    const rows = [frow('Дата', date), frow('Сумма', amount)];
+    if (!tx.id) rows.push(frow('Кошелёк', wallet));
+    rows.push(frow('Контрагент', cp), frow('Статья ДДС', cat), frow('Назначение', purpose));
+    const body = el('div', { class: 'cashf' }, rows);
+    const save = el('button', { class: 'btn-primary', onclick: async () => {
+      try {
+        if (tx.id) await post('/tx/' + tx.id, { tx_date: date.value, amount: amount.value, counterparty_id: cp.value, category_id: cat.value, purpose: purpose.value });
+        else await post('/tx', { tx_type: type, tx_date: date.value, amount: amount.value, wallet_id: wallet.value, counterparty_id: cp.value, category_id: cat.value, purpose: purpose.value });
+        toast('Сохранено'); closeModal(); loadTx();
+      } catch (e) { toast(e.message, true); }
+    } }, 'Сохранить');
+    const acts = [save];
+    if (tx.id) acts.unshift(el('button', { class: 'btn-ghost cashf-arch', onclick: async () => { if (!confirm('Удалить транзакцию?')) return; try { await post('/tx/' + tx.id + '/delete', {}); toast('Удалено'); closeModal(); loadTx(); } catch (e) { toast(e.message, true); } } }, 'Удалить'));
+    modal(tx.id ? 'Изменить операцию' : (type === 'in' ? 'Приход' : 'Расход'), body, acts);
+  }
+
+  function openTransferForm(tx) {
+    tx = tx || {};
+    const date = finp(tx.tx_date ? String(tx.tx_date).slice(0, 10) : todayStr(), { type: 'date' });
+    const amount = finp(tx.amount, { type: 'number', placeholder: 'Сумма' });
+    const wopts = (DICTS.wallets || []).map((x) => ({ v: x.id, t: x.name }));
+    const from = fsel(wopts, tx.wallet_id || '');
+    const to = fsel(wopts, tx.wallet_to_id || '');
+    if (tx.id) { from.disabled = true; to.disabled = true; }
+    const purpose = finp(tx.purpose, { placeholder: 'Комментарий (необязательно)' });
+    const rows = [frow('Дата', date), frow('Сумма', amount), frow('Откуда', from), frow('Куда', to), frow('Комментарий', purpose)];
+    const body = el('div', { class: 'cashf' }, [...rows, el('div', { class: 'cash-note-info' }, 'Перевод между своими кошельками не считается доходом/расходом.')]);
+    const save = el('button', { class: 'btn-primary', onclick: async () => {
+      try {
+        if (tx.id) await post('/tx/' + tx.id, { tx_date: date.value, amount: amount.value, purpose: purpose.value });
+        else await post('/tx', { tx_type: 'transfer', tx_date: date.value, amount: amount.value, wallet_id: from.value, wallet_to_id: to.value, purpose: purpose.value });
+        toast('Сохранено'); closeModal(); loadTx();
+      } catch (e) { toast(e.message, true); }
+    } }, 'Сохранить');
+    const acts = [save];
+    if (tx.id) acts.unshift(el('button', { class: 'btn-ghost cashf-arch', onclick: async () => { if (!confirm('Удалить перевод?')) return; try { await post('/tx/' + tx.id + '/delete', {}); toast('Удалено'); closeModal(); loadTx(); } catch (e) { toast(e.message, true); } } }, 'Удалить'));
+    modal(tx.id ? 'Перевод' : 'Перевод между кошельками', body, acts);
   }
 
   function renderDicts() {

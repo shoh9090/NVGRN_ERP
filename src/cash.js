@@ -257,4 +257,94 @@ router.post('/api/contract', J, async (req, res) => {
   res.json({ ok: true });
 });
 
+// ---------- Остатки кошельков (считаются из журнала) ----------
+async function walletBalances() {
+  const r = await db.pool.query(`
+    SELECT w.id, w.name, w.kind, w.color, w.account_no, w.sort_order,
+      COALESCE(SUM(CASE
+        WHEN t.tx_type='in' AND t.wallet_id=w.id THEN t.amount
+        WHEN t.tx_type='transfer' AND t.wallet_to_id=w.id THEN t.amount
+        WHEN t.tx_type='out' AND t.wallet_id=w.id THEN -t.amount
+        WHEN t.tx_type='transfer' AND t.wallet_id=w.id THEN -t.amount
+        ELSE 0 END), 0) AS balance
+    FROM cash_wallets w
+    LEFT JOIN cash_transactions t ON (t.wallet_id = w.id OR t.wallet_to_id = w.id)
+    WHERE w.status='active'
+    GROUP BY w.id ORDER BY w.sort_order, w.id`);
+  return r.rows;
+}
+router.get('/api/wallets', async (req, res) => { res.json({ wallets: await walletBalances() }); });
+
+// ---------- Журнал транзакций ----------
+router.get('/api/transactions', async (req, res) => {
+  const { from, to, wallet, counterparty, category, type, q } = req.query;
+  const p = [], w = [];
+  if (from) { p.push(from); w.push(`t.tx_date >= $${p.length}`); }
+  if (to) { p.push(to); w.push(`t.tx_date <= $${p.length}`); }
+  if (type && ['in', 'out', 'transfer'].includes(type)) { p.push(type); w.push(`t.tx_type = $${p.length}`); }
+  if (wallet) { p.push(parseInt(wallet)); w.push(`(t.wallet_id = $${p.length} OR t.wallet_to_id = $${p.length})`); }
+  if (counterparty) { p.push(parseInt(counterparty)); w.push(`t.counterparty_id = $${p.length}`); }
+  if (category) { p.push(parseInt(category)); w.push(`t.category_id = $${p.length}`); }
+  if (q) { p.push('%' + String(q).trim() + '%'); w.push(`t.purpose ILIKE $${p.length}`); }
+  const where = w.length ? 'WHERE ' + w.join(' AND ') : '';
+  const rows = (await db.pool.query(
+    `SELECT t.*, w.name AS wallet_name, w.color AS wallet_color, w2.name AS wallet_to_name,
+            cp.name AS cp_name, cat.code AS cat_code, cat.name AS cat_name
+     FROM cash_transactions t
+     LEFT JOIN cash_wallets w ON w.id = t.wallet_id
+     LEFT JOIN cash_wallets w2 ON w2.id = t.wallet_to_id
+     LEFT JOIN cash_counterparties cp ON cp.id = t.counterparty_id
+     LEFT JOIN cash_categories cat ON cat.id = t.category_id
+     ${where} ORDER BY t.tx_date DESC, t.id DESC LIMIT 1000`, p)).rows;
+  // сводка по фильтру
+  const tot = { in: 0, out: 0 };
+  for (const r of rows) { if (r.tx_type === 'in') tot.in += Number(r.amount); else if (r.tx_type === 'out') tot.out += Number(r.amount); }
+  res.json({ items: rows, totals: tot, unclassified: rows.filter((r) => r.tx_type !== 'transfer' && !r.is_classified).length });
+});
+
+router.post('/api/tx', J, async (req, res) => {
+  const b = req.body || {};
+  const type = ['in', 'out', 'transfer'].includes(b.tx_type) ? b.tx_type : null;
+  if (!type) return res.status(400).json({ error: 'Не указан тип операции' });
+  const amount = Number(b.amount);
+  if (!(amount > 0)) return res.status(400).json({ error: 'Сумма должна быть больше 0' });
+  const date = b.tx_date || new Date().toISOString().slice(0, 10);
+  const wallet = intOrNull(b.wallet_id);
+  if (!wallet) return res.status(400).json({ error: 'Выберите кошелёк' });
+  if (type === 'transfer') {
+    const to = intOrNull(b.wallet_to_id);
+    if (!to) return res.status(400).json({ error: 'Выберите кошелёк-получатель' });
+    if (to === wallet) return res.status(400).json({ error: 'Кошельки источника и получателя совпадают' });
+    await db.pool.query(
+      `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, wallet_to_id, purpose, source, is_classified, created_by)
+       VALUES ($1,$2,'transfer',$3,$4,$5,'manual',true,$6)`,
+      [date, amount, wallet, to, b.purpose || null, req.user.id]);
+  } else {
+    const cat = intOrNull(b.category_id);
+    await db.pool.query(
+      `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, counterparty_id, contract_id, category_id, purpose, source, is_classified, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'manual',$9,$10)`,
+      [date, amount, type, wallet, intOrNull(b.counterparty_id), intOrNull(b.contract_id), cat, b.purpose || null, !!cat, req.user.id]);
+  }
+  await db.log(req.user.id, 'cash_tx_add', type + ' ' + amount);
+  res.json({ ok: true });
+});
+
+// Редактирование / классификация транзакции (тип и кошельки не меняем — чтобы остатки оставались целыми).
+router.post('/api/tx/:id(\\d+)', J, async (req, res) => {
+  const b = req.body || {};
+  const cat = intOrNull(b.category_id);
+  await db.pool.query(
+    `UPDATE cash_transactions SET tx_date=COALESCE($1,tx_date), amount=COALESCE($2,amount),
+       counterparty_id=$3, contract_id=$4, category_id=$5, purpose=$6, is_classified=$7 WHERE id=$8`,
+    [b.tx_date || null, b.amount ? Number(b.amount) : null, intOrNull(b.counterparty_id), intOrNull(b.contract_id), cat, b.purpose || null, !!cat, req.params.id]);
+  await db.log(req.user.id, 'cash_tx_edit', '#' + req.params.id);
+  res.json({ ok: true });
+});
+router.post('/api/tx/:id(\\d+)/delete', async (req, res) => {
+  await db.pool.query('DELETE FROM cash_transactions WHERE id=$1', [req.params.id]);
+  await db.log(req.user.id, 'cash_tx_delete', '#' + req.params.id);
+  res.json({ ok: true });
+});
+
 module.exports = router;
