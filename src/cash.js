@@ -89,9 +89,25 @@ async function ensureCashSchema() {
   await q(`CREATE INDEX IF NOT EXISTS idx_cash_tx_wallet ON cash_transactions (wallet_id)`);
   await q(`CREATE INDEX IF NOT EXISTS idx_cash_tx_cat ON cash_transactions (category_id)`);
 
+  await q(`CREATE TABLE IF NOT EXISTS cash_groups (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    sort_order INT NOT NULL DEFAULT 100,
+    status TEXT NOT NULL DEFAULT 'active'
+  )`);
+  await seedGroups();
   await seedCategories();
   await seedWallets();
+  // Код 100 «ОБН» — это перемещение между кошельками (подсказка для импорта).
+  await db.pool.query("UPDATE cash_categories SET direction_hint='transfer' WHERE code='100' AND (direction_hint IS NULL OR direction_hint='')");
   _ready = true;
+}
+
+async function seedGroups() {
+  const G = ['1. Сырьё и переменные затраты', '2. Производственные затраты', '3. Продажи и маркетинг',
+    '4. Административные расходы', '5. Логистика', '6. Финансы', '7. Капекс (инвестиции)', '8. Прочее'];
+  let i = 0;
+  for (const name of G) { i += 10; await db.pool.query('INSERT INTO cash_groups (name, sort_order) VALUES ($1,$2) ON CONFLICT (name) DO NOTHING', [name, i]); }
 }
 
 // Классификатор статей ДДС (Приложение А). flow: 1-5,8 operating; 6 financing; 7 investing. * → only_transfer.
@@ -188,6 +204,7 @@ router.get('/', async (req, res) => {
 router.get('/api/dicts', async (req, res) => {
   const wallets = (await db.pool.query("SELECT * FROM cash_wallets WHERE status='active' ORDER BY sort_order, id")).rows;
   const categories = (await db.pool.query("SELECT * FROM cash_categories WHERE status='active' ORDER BY sort_order, id")).rows;
+  const groups = (await db.pool.query("SELECT * FROM cash_groups WHERE status='active' ORDER BY sort_order, id")).rows;
   const counterparties = (await db.pool.query(
     `SELECT c.*, cat.code AS cat_code, cat.name AS cat_name
      FROM cash_counterparties c LEFT JOIN cash_categories cat ON cat.id = c.default_category_id
@@ -200,7 +217,29 @@ router.get('/api/dicts', async (req, res) => {
      ORDER BY k.id DESC`)).rows;
   let suppliers = [];
   try { suppliers = (await db.pool.query('SELECT id, name FROM ref_counterparties ORDER BY name LIMIT 2000')).rows; } catch (e) { /* справочника может не быть */ }
-  res.json({ wallets, categories, counterparties, contracts, suppliers });
+  res.json({ wallets, categories, groups, counterparties, contracts, suppliers });
+});
+
+router.post('/api/group', J, async (req, res) => {
+  const b = req.body || {};
+  if (!b.name || !String(b.name).trim()) return res.status(400).json({ error: 'Введите название группы' });
+  try {
+    if (b.id) await db.pool.query('UPDATE cash_groups SET name=$1, sort_order=$2 WHERE id=$3', [String(b.name).trim(), parseInt(b.sort_order) || 100, b.id]);
+    else await db.pool.query('INSERT INTO cash_groups (name, sort_order) VALUES ($1,$2)', [String(b.name).trim(), parseInt(b.sort_order) || 100]);
+  } catch (e) { return res.status(400).json({ error: 'Такая группа уже есть или ошибка' }); }
+  await db.log(req.user.id, 'cash_group_save', String(b.name));
+  res.json({ ok: true });
+});
+router.post('/api/group/:id(\\d+)/archive', async (req, res) => { await db.pool.query("UPDATE cash_groups SET status='archived' WHERE id=$1", [req.params.id]); res.json({ ok: true }); });
+
+router.post('/api/category/:id(\\d+)/delete', async (req, res) => {
+  const id = req.params.id;
+  const used = (await db.pool.query(
+    'SELECT 1 FROM cash_transactions WHERE category_id=$1 UNION ALL SELECT 1 FROM cash_contracts WHERE category_id=$1 UNION ALL SELECT 1 FROM cash_counterparties WHERE default_category_id=$1 LIMIT 1', [id])).rowCount;
+  if (used) return res.status(400).json({ error: 'Статья используется (транзакции/договоры/контрагенты). Можно отправить в архив.' });
+  await db.pool.query('DELETE FROM cash_categories WHERE id=$1', [id]);
+  await db.log(req.user.id, 'cash_category_delete', '#' + id);
+  res.json({ ok: true });
 });
 
 // ---------- Управление справочниками ----------

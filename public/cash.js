@@ -72,15 +72,35 @@
     c = c || {};
     const code = finp(c.code, { placeholder: 'Код (напр. 10)' });
     const name = finp(c.name, { placeholder: 'Название' });
-    const grp = finp(c.group_name, { placeholder: 'Группа' });
+    const grpOpts = [{ v: '', t: '— группа —' }].concat((DICTS.groups || []).map((g) => ({ v: g.name, t: g.name })));
+    const grp = fsel(grpOpts, c.group_name || '');
     const flow = fsel([{ v: 'operating', t: 'Операционный' }, { v: 'investing', t: 'Инвестиции (капекс)' }, { v: 'financing', t: 'Финансы (кредиты/налоги)' }], c.flow_type || 'operating');
     const onlyT = el('input', { type: 'checkbox' }); if (c.only_transfer) onlyT.checked = true;
     const sort = finp(c.sort_order != null ? c.sort_order : 0, { type: 'number' });
     const body = el('div', { class: 'cashf' }, [frow('Код', code), frow('Название', name), frow('Группа', grp), frow('Поток (P&L)', flow), frow('Только перечислением ★', onlyT), frow('Порядок', sort)]);
     const save = el('button', { class: 'btn-primary', onclick: async () => { try { await post('/category', { id: c.id, code: code.value, name: name.value, group_name: grp.value, flow_type: flow.value, only_transfer: onlyT.checked, sort_order: sort.value }); toast('Сохранено'); closeModal(); reload(); } catch (e) { toast(e.message, true); } } }, 'Сохранить');
     const acts = [save];
-    if (c.id) acts.unshift(el('button', { class: 'btn-ghost cashf-arch', onclick: async () => { if (!confirm('Архивировать статью «' + c.code + ' ' + c.name + '»?')) return; try { await post('/category/' + c.id + '/archive', {}); toast('В архиве'); closeModal(); reload(); } catch (e) { toast(e.message, true); } } }, 'В архив'));
+    if (c.id) {
+      acts.unshift(el('button', { class: 'btn-ghost cashf-arch', onclick: async () => { if (!confirm('Архивировать статью «' + c.code + ' ' + c.name + '»?')) return; try { await post('/category/' + c.id + '/archive', {}); toast('В архиве'); closeModal(); reload(); } catch (e) { toast(e.message, true); } } }, 'В архив'));
+      acts.unshift(el('button', { class: 'btn-ghost cashf-del', onclick: async () => { if (!confirm('Удалить статью «' + c.code + ' ' + c.name + '» безвозвратно?')) return; try { await post('/category/' + c.id + '/delete', {}); toast('Удалено'); closeModal(); reload(); } catch (e) { toast(e.message, true); } } }, 'Удалить'));
+    }
     modal(c.id ? 'Статья ДДС' : 'Новая статья', body, acts);
+  }
+
+  function openGroupsManager() {
+    const list = el('div', { class: 'cash-grp-list' });
+    function rowG(g) {
+      g = g || {};
+      const name = finp(g.name, { placeholder: 'Название группы' });
+      const sort = finp(g.sort_order != null ? g.sort_order : 100, { type: 'number' });
+      const save = el('button', { class: 'btn-primary cash-gsave', onclick: async () => { if (!name.value.trim()) return toast('Введите название', true); try { await post('/group', { id: g.id, name: name.value, sort_order: sort.value }); toast('Сохранено'); await refreshDicts(); } catch (e) { toast(e.message, true); } } }, g.id ? '✓' : 'Доб.');
+      const cells = [name, sort, save];
+      if (g.id) cells.push(el('button', { class: 'cash-gdel', title: 'В архив', onclick: async () => { if (!confirm('Архивировать группу «' + g.name + '»?')) return; try { await post('/group/' + g.id + '/archive', {}); toast('В архиве'); await refreshDicts(); openGroupsManager(); } catch (e) { toast(e.message, true); } } }, '🗑'));
+      return el('div', { class: 'cash-grow' }, cells);
+    }
+    (DICTS.groups || []).forEach((g) => list.appendChild(rowG(g)));
+    const add = el('button', { class: 'btn-ghost', onclick: () => list.appendChild(rowG(null)) }, '+ Группа');
+    modal('Группы статей', el('div', { class: 'cashf' }, [el('div', { class: 'cash-sub' }, 'Добавляйте и переименовывайте группы — они появятся в выпадашке у статьи.'), list, add]), []);
   }
 
   function openCpForm(c) {
@@ -280,7 +300,7 @@
     const cats = DICTS.categories || [];
     box.appendChild(el('div', { class: 'cash-head' }, [
       el('div', {}, [el('div', { class: 'cash-h2' }, 'Классификатор статей (ДДС)'), el('div', { class: 'cash-sub' }, 'По каждой статье — поток для P&L. ★ — только перечислением. Клик — изменить.')]),
-      addBtn('+ Статья', () => openCategoryForm(null)),
+      el('div', { class: 'cash-tx-btns' }, [el('button', { class: 'btn-ghost cash-add', onclick: openGroupsManager }, '⚙ Группы'), addBtn('+ Статья', () => openCategoryForm(null))]),
     ]));
     const groups = {};
     cats.forEach((x) => { (groups[x.group_name || '—'] = groups[x.group_name || '—'] || []).push(x); });
