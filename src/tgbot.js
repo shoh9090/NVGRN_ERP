@@ -11,12 +11,23 @@ const integrations = require('./integrations');
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } });
 
-// Доступ: администратор или роль «Руководитель продаж».
-function requireSalesAccess(req, res, next) {
+// Доступ: администратор — всегда; сотрудник — если его роли назначена плитка /tgbot
+// (как в остальных модулях). Раньше проверка шла по точному имени роли «Руководитель
+// продаж», поэтому при другом названии роли плитка была видна, но вход давал 403.
+async function requireSalesAccess(req, res, next) {
   if (!req.user) return res.redirect('/login');
-  const roles = req.user.roles || [];
-  if (req.user.isAdmin || roles.includes('Руководитель продаж')) return next();
-  return res.status(403).send('Доступ к этому разделу только у администратора и руководителя продаж.');
+  if (req.user.isAdmin) return next();
+  try {
+    const r = await db.pool.query(
+      `SELECT 1 FROM tiles t
+       JOIN role_tiles rt ON rt.tile_id = t.id
+       JOIN user_roles ur ON ur.role_id = rt.role_id
+       WHERE ur.user_id = $1 AND t.url = '/tgbot' LIMIT 1`,
+      [req.user.id]
+    );
+    if (r.rows.length) return next();
+  } catch (e) { /* падать на проверке доступа нельзя — ниже отдадим 403 */ }
+  return res.status(403).send('Нет доступа к разделу «Бот HoReCa». Обратитесь к администратору.');
 }
 router.use(requireSalesAccess);
 

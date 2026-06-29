@@ -42,10 +42,20 @@ router.get('/api/dicts', async (req, res) => {
 // ----- Управление справочником (админ или РОП) -----
 // Редактируем только пользовательские разделы; служебные (link/category/resolution/status) не трогаем здесь.
 const EDITABLE_KINDS = ['type', 'severity', 'usage', 'dish_form'];
-function requireManager(req, res, next) {
-  const roles = (req.user && req.user.roles) || [];
-  if (req.user && (req.user.isAdmin || roles.includes('Руководитель продаж'))) return next();
-  return res.status(403).json({ error: 'Действие доступно администратору или руководителю продаж' });
+async function requireManager(req, res, next) {
+  if (!req.user) return res.status(403).json({ error: 'Не авторизовано' });
+  if (req.user.isAdmin) return next();
+  try {
+    const r = await db.pool.query(
+      `SELECT 1 FROM tiles t
+       JOIN role_tiles rt ON rt.tile_id = t.id
+       JOIN user_roles ur ON ur.role_id = rt.role_id
+       WHERE ur.user_id = $1 AND t.url = '/complaints' LIMIT 1`,
+      [req.user.id]
+    );
+    if (r.rows.length) return next();
+  } catch (e) { /* не падаем на проверке доступа */ }
+  return res.status(403).json({ error: 'Действие доступно администратору или тем, кому назначена плитка «Претензии»' });
 }
 
 // Все записи справочника (включая выключенные) — для экрана настроек.
