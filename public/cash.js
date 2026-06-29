@@ -289,43 +289,23 @@
   function openImport() {
     const wallet = fsel([{ v: '', t: '— кошелёк —' }].concat((DICTS.wallets || []).map((x) => ({ v: x.id, t: x.name }))), '');
     const file = el('input', { type: 'file', accept: '.xls,.xlsx,.html,.htm', class: 'cashf-inp' });
-    const out = el('div', { class: 'cash-imp-out' });
-    let payload = null;
-    const commit = el('button', { class: 'btn-primary', onclick: async () => {
-      if (!payload) return;
-      try { const d = await post('/import/commit', { payload, filename: (file.files[0] && file.files[0].name) || '' }); toast('Импортировано: ' + d.inserted + ', пропущено: ' + d.skipped); closeModal(); render(); }
-      catch (e) { toast(e.message, true); }
-    } }, 'Импортировать');
-    commit.disabled = true;
-    const preview = el('button', { class: 'btn-ghost', onclick: async () => {
+    const body = el('div', { class: 'cashf' }, [
+      el('div', { class: 'cash-sub' }, 'Выберите кошелёк и файл выписки банка. Загружу транзакции; повторные (дубли) пропущу.'),
+      frow('Кошелёк', wallet), frow('Файл', file),
+    ]);
+    const load = el('button', { class: 'btn-primary', onclick: async () => {
       if (!wallet.value) return toast('Выберите кошелёк', true);
       if (!file.files[0]) return toast('Выберите файл', true);
-      out.innerHTML = 'Разбираю…';
+      load.disabled = true; load.textContent = 'Загружаю…';
       const fd = new FormData(); fd.append('wallet_id', wallet.value); fd.append('file', file.files[0]);
       try {
-        const res = await fetch('/cash/api/import/preview', { method: 'POST', body: fd });
+        const res = await fetch('/cash/api/import/run', { method: 'POST', body: fd });
         const d = await res.json(); if (!res.ok) throw new Error(d.error || 'Ошибка');
-        payload = d.payload; out.innerHTML = '';
-        const s = d.summary;
-        out.appendChild(el('div', { class: 'cash-imp-sum' }, `Банк: ${s.bank || '—'} · всего: ${s.total} · к записи: ${s.willInsert} · дубли: ${s.dup} · с статьёй: ${s.classified} · новых к-агентов: ${s.newcp}`));
-        const head = el('div', { class: 'cash-row head cash-imp' }, ['Дата', 'Тип', 'Сумма', 'Контрагент / код', 'Статья', 'Назначение'].map((h) => el('span', {}, h)));
-        const rows = (d.rows || []).map((r) => el('div', { class: 'cash-row cash-imp' + (r.dup ? ' dim' : '') + (!r.is_classified ? ' unclass' : '') }, [
-          el('span', {}, ruDate(r.tx_date)),
-          el('span', { class: r.tx_type === 'in' ? 'cash-amt-in' : 'cash-amt-out' }, r.tx_type === 'in' ? 'приход' : 'расход'),
-          el('span', {}, money(r.amount)),
-          el('span', {}, (r.cp_known || r.payer || '') + (r.cp_code ? (' [' + r.cp_code + ']') : '')),
-          el('span', {}, r.cat_label || (r.flag === 'new_cp' ? 'новый к-агент' : '—')),
-          el('span', { class: 'cash-purpose' }, r.purpose || ''),
-        ]));
-        out.appendChild(el('div', { class: 'cash-list cash-imp-list' }, [head, ...rows]));
-        commit.disabled = false;
-      } catch (e) { out.innerHTML = ''; toast(e.message, true); }
-    } }, 'Предпросмотр');
-    const body = el('div', { class: 'cashf' }, [
-      el('div', { class: 'cash-sub' }, 'Выберите кошелёк и файл выписки (Asia Alliance). Покажу предпросмотр перед записью; дубли пропустятся.'),
-      frow('Кошелёк', wallet), frow('Файл', file), out,
-    ]);
-    modal('Импорт выписки', body, [preview, commit]);
+        toast(`${d.bank}: загружено ${d.inserted}, пропущено ${d.skipped}` + (d.newcp ? `, новых к-агентов ${d.newcp}` : ''));
+        closeModal(); render();
+      } catch (e) { toast(e.message, true); load.disabled = false; load.textContent = 'Загрузить'; }
+    } }, 'Загрузить');
+    modal('Импорт выписки', body, [load]);
   }
 
   function renderDicts() {

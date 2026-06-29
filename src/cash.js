@@ -557,4 +557,42 @@ router.post('/api/import/commit', J, async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
+// Импорт «в одно действие»: распознать банк → распарсить → классифицировать → записать (дубли пропустить).
+router.post('/api/import/run', upload.single('file'), async (req, res) => {
+  try {
+    const wallet_id = intOrNull(req.body.wallet_id);
+    if (!wallet_id) return res.status(400).json({ error: 'Выберите кошелёк' });
+    if (!req.file) return res.status(400).json({ error: 'Файл не выбран' });
+    let rows, bank; const buf = req.file.buffer;
+    if (buf[0] === 0xD0 && buf[1] === 0xCF) { rows = parseHayot(buf); bank = 'Хаёт (Excel)'; }
+    else { const text = decodeCp1251(buf); if (/<tr/i.test(text)) { rows = parseAsiaAlliance(text); bank = 'Asia Alliance (HTML)'; } else return res.status(400).json({ error: 'Не удалось распознать формат выписки.' }); }
+    if (!rows || !rows.length) return res.status(400).json({ error: 'Не нашёл транзакций в файле (проверьте формат).' });
+    const cats = (await db.pool.query("SELECT id, code, default_category_id FROM cash_categories WHERE status='active'")).rows;
+    const incomeCat = cats.find((c) => c.code === '200') || null;
+    const cpByInn = {};
+    (await db.pool.query("SELECT id, inn, default_category_id FROM cash_counterparties WHERE status='active' AND inn IS NOT NULL AND inn<>''")).rows.forEach((c) => { cpByInn[String(c.inn).trim()] = c; });
+    const existing = new Set();
+    (await db.pool.query("SELECT to_char(tx_date,'YYYY-MM-DD') d, amount, COALESCE(bank_doc_no,'') doc FROM cash_transactions WHERE wallet_id=$1 AND source='import'", [wallet_id])).rows
+      .forEach((x) => existing.add(x.d + '|' + Number(x.amount) + '|' + x.doc));
+    const batch = (await db.pool.query('INSERT INTO cash_import_batches (wallet_id, filename, count, created_by) VALUES ($1,$2,0,$3) RETURNING id', [wallet_id, req.file.originalname || null, req.user.id])).rows[0].id;
+    let ins = 0, skip = 0, newcp = 0;
+    for (const r of rows) {
+      const key = r.tx_date + '|' + Number(r.amount) + '|' + (r.doc_no || '');
+      if (existing.has(key)) { skip++; continue; }
+      existing.add(key);
+      let category_id = null, counterparty_id = null, is_classified = false;
+      if (r.tx_type === 'in') { category_id = incomeCat ? incomeCat.id : null; is_classified = !!incomeCat; }
+      else { const cp = cpByInn[String(r.inn || '').trim()]; if (cp) { counterparty_id = cp.id; category_id = cp.default_category_id || null; is_classified = !!cp.default_category_id; } else newcp++; }
+      await db.pool.query(
+        `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, counterparty_id, category_id, purpose, bank_doc_no, source, import_batch_id, is_classified, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'import',$9,$10,$11)`,
+        [r.tx_date, r.amount, r.tx_type, wallet_id, counterparty_id, category_id, r.purpose || null, r.doc_no || null, batch, is_classified, req.user.id]);
+      ins++;
+    }
+    await db.pool.query('UPDATE cash_import_batches SET count=$1 WHERE id=$2', [ins, batch]);
+    await db.log(req.user.id, 'cash_import', `${bank}: +${ins}, пропущено ${skip}`);
+    res.json({ ok: true, bank, inserted: ins, skipped: skip, newcp });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 module.exports = router;
