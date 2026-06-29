@@ -2,9 +2,11 @@
 // Принцип: деньги вносятся один раз (импорт выписки + ручной ввод), отчёты считаются сами.
 // Переводы между кошельками — отдельный тип, вне доходов/расходов (защита от двойного счёта).
 const express = require('express');
+const multer = require('multer');
 const db = require('./db');
 
 const router = express.Router();
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 16 * 1024 * 1024 } });
 
 // Объявляем заранее — используются как middleware при регистрации маршрутов ниже.
 const J = express.json();
@@ -105,21 +107,28 @@ async function ensureCashSchema() {
   await seedWallets();
   // Код 100 «ОБН» — это перемещение между кошельками (подсказка для импорта).
   await db.pool.query("UPDATE cash_categories SET direction_hint='transfer' WHERE code='100' AND (direction_hint IS NULL OR direction_hint='')");
+  await db.pool.query("UPDATE cash_categories SET direction_hint='in' WHERE code IN ('200','201','202','203') AND (direction_hint IS NULL OR direction_hint='')");
   _ready = true;
 }
 
 async function seedGroups() {
   const G = ['1. Сырьё и переменные затраты', '2. Производственные затраты', '3. Продажи и маркетинг',
     '4. Административные расходы', '5. Логистика', '6. Финансы', '7. Капекс (инвестиции)', '8. Прочее'];
+  await db.pool.query("INSERT INTO cash_groups (name, sort_order) VALUES ('Доходы и поступления', 5) ON CONFLICT (name) DO NOTHING");
   let i = 0;
-  for (const name of G) { i += 10; await db.pool.query('INSERT INTO cash_groups (name, sort_order) VALUES ($1,$2) ON CONFLICT (name) DO NOTHING', [name, i]); }
+  for (const name of G) { i += 10; await db.pool.query('INSERT INTO cash_groups (name, sort_order) VALUES ($1,$2) ON CONFLICT (name) DO NOTHING', [name, i + 10]); }
 }
 
 // Классификатор статей ДДС (Приложение А). flow: 1-5,8 operating; 6 financing; 7 investing. * → only_transfer.
 async function seedCategories() {
   const G1 = '1. Сырьё и переменные затраты', G2 = '2. Производственные затраты', G3 = '3. Продажи и маркетинг',
-        G4 = '4. Административные расходы', G5 = '5. Логистика', G6 = '6. Финансы', G7 = '7. Капекс (инвестиции)', G8 = '8. Прочее';
+        G4 = '4. Административные расходы', G5 = '5. Логистика', G6 = '6. Финансы', G7 = '7. Капекс (инвестиции)', G8 = '8. Прочее',
+        GINC = 'Доходы и поступления';
   const CATS = [
+    ['200', 'Выручка от продаж', GINC, 'operating', false],
+    ['201', 'Взносы учредителей', GINC, 'financing', false],
+    ['202', 'Получение кредита', GINC, 'financing', false],
+    ['203', 'Финансовый заём', GINC, 'financing', false],
     ['10', 'Сырьё (зелень)', G1, 'operating', false],
     ['11', 'Упаковка', G1, 'operating', false],
     ['12', 'Расходники производства (перчатки и т.д.)', G1, 'operating', false],
@@ -386,6 +395,117 @@ router.post('/api/tx/:id(\\d+)/delete', async (req, res) => {
   await db.pool.query('DELETE FROM cash_transactions WHERE id=$1', [req.params.id]);
   await db.log(req.user.id, 'cash_tx_delete', '#' + req.params.id);
   res.json({ ok: true });
+});
+
+// ---------- Импорт банковской выписки ----------
+// Декодер cp1251 (выписка Asia Alliance в windows-1251).
+const CP1251_HIGH = {
+  0x80: 0x0402, 0x81: 0x0403, 0x82: 0x201A, 0x83: 0x0453, 0x84: 0x201E, 0x85: 0x2026, 0x86: 0x2020, 0x87: 0x2021,
+  0x88: 0x20AC, 0x89: 0x2030, 0x8A: 0x0409, 0x8B: 0x2039, 0x8C: 0x040A, 0x8D: 0x040C, 0x8E: 0x040B, 0x8F: 0x040F,
+  0x90: 0x0452, 0x91: 0x2018, 0x92: 0x2019, 0x93: 0x201C, 0x94: 0x201D, 0x95: 0x2022, 0x96: 0x2013, 0x97: 0x2014,
+  0x98: 0x0098, 0x99: 0x2122, 0x9A: 0x0459, 0x9B: 0x203A, 0x9C: 0x045A, 0x9D: 0x045C, 0x9E: 0x045B, 0x9F: 0x045F,
+  0xA0: 0x00A0, 0xA1: 0x040E, 0xA2: 0x045E, 0xA3: 0x0408, 0xA4: 0x00A4, 0xA5: 0x0490, 0xA6: 0x00A6, 0xA7: 0x00A7,
+  0xA8: 0x0401, 0xA9: 0x00A9, 0xAA: 0x0404, 0xAB: 0x00AB, 0xAC: 0x00AC, 0xAD: 0x00AD, 0xAE: 0x00AE, 0xAF: 0x0407,
+  0xB0: 0x00B0, 0xB1: 0x00B1, 0xB2: 0x0406, 0xB3: 0x0456, 0xB4: 0x0491, 0xB5: 0x00B5, 0xB6: 0x00B6, 0xB7: 0x00B7,
+  0xB8: 0x0451, 0xB9: 0x2116, 0xBA: 0x0454, 0xBB: 0x00BB, 0xBC: 0x0458, 0xBD: 0x0405, 0xBE: 0x0455, 0xBF: 0x0457,
+};
+function decodeCp1251(buf) {
+  let s = '';
+  for (let i = 0; i < buf.length; i++) {
+    const b = buf[i];
+    if (b < 0x80) s += String.fromCharCode(b);
+    else if (b >= 0xC0) s += String.fromCharCode(0x410 + (b - 0xC0));
+    else s += String.fromCharCode(CP1251_HIGH[b] || b);
+  }
+  return s;
+}
+const stripTags = (s) => String(s || '').replace(/<[^>]*>/g, '').replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>').replace(/&quot;/gi, '"').replace(/\s+/g, ' ').trim();
+const parseAmount = (s) => { const t = String(s || '').replace(/ /g, '').replace(/\s/g, '').replace(',', '.'); const n = parseFloat(t); return isNaN(n) ? 0 : n; };
+const toISO = (dt) => { const m = String(dt || '').match(/(\d{2})\.(\d{2})\.(\d{4})/); return m ? `${m[3]}-${m[2]}-${m[1]}` : null; };
+const extractContract = (p) => { const m = String(p || '').match(/дог(?:овор)?[а-я]?\.?\s*№?\s*([A-Za-zА-Яа-я0-9\-\/]+)/i); return m ? m[1] : null; };
+
+// Парсер выписки Asia Alliance (HTML-as-xls). Колонки: 0 дата · 1 счёт/ИНН/назв · 2 №док · 3 опкод · 4 код к-агента · 5 дебет(расход) · 6 кредит(приход) · 7 назначение.
+function parseAsiaAlliance(text) {
+  const out = [];
+  const trs = text.match(/<tr[\s\S]*?<\/tr>/gi) || [];
+  for (const tr of trs) {
+    const tds = (tr.match(/<td[\s\S]*?<\/td>/gi) || []).map(stripTags);
+    if (tds.length < 8) continue;
+    const date = toISO(tds[0]); if (!date) continue; // только строки-данные
+    const credit = parseAmount(tds[6]), debit = parseAmount(tds[5]);
+    let type = null, amount = 0;
+    if (credit > 0) { type = 'in'; amount = credit; }
+    else if (debit > 0) { type = 'out'; amount = debit; }
+    else continue;
+    const parts = String(tds[1] || '').split('/');
+    out.push({
+      tx_date: date, amount, tx_type: type, doc_no: tds[2] || '', op: tds[3] || '', cp_code: (tds[4] || '').trim(),
+      inn: parts.length > 1 ? parts[1].trim() : '', payer: parts.length > 2 ? parts.slice(2).join('/').trim() : '',
+      purpose: tds[7] || '', contract_no: extractContract(tds[7]),
+    });
+  }
+  return out;
+}
+
+// Предпросмотр: парсим, классифицируем, помечаем дубли. Ничего не пишем.
+router.post('/api/import/preview', upload.single('file'), async (req, res) => {
+  try {
+    const wallet_id = intOrNull(req.body.wallet_id);
+    if (!wallet_id) return res.status(400).json({ error: 'Выберите кошелёк, на который грузим выписку' });
+    if (!req.file) return res.status(400).json({ error: 'Файл не выбран' });
+    const text = decodeCp1251(req.file.buffer);
+    if (!/<tr/i.test(text)) return res.status(400).json({ error: 'Это не HTML-выписка. Похоже на Excel-формат второго банка — он пока не поддержан.' });
+    const rows = parseAsiaAlliance(text);
+    if (!rows.length) return res.status(400).json({ error: 'Не нашёл транзакций в файле (проверьте формат).' });
+    const cats = (await db.pool.query("SELECT id, code, name, default_category_id FROM cash_categories WHERE status='active'")).rows;
+    const catById = {}; cats.forEach((c) => { catById[c.id] = c; });
+    const incomeCat = cats.find((c) => c.code === '200') || null;
+    const cpByCode = {};
+    (await db.pool.query("SELECT id, bank_code, default_category_id, name FROM cash_counterparties WHERE status='active' AND bank_code IS NOT NULL AND bank_code<>''")).rows.forEach((c) => { cpByCode[c.bank_code] = c; });
+    let dup = 0, classified = 0, newcp = 0;
+    for (const r of rows) {
+      const ex = await db.pool.query('SELECT 1 FROM cash_transactions WHERE tx_date=$1 AND amount=$2 AND bank_doc_no=$3 AND wallet_id=$4 LIMIT 1', [r.tx_date, r.amount, r.doc_no, wallet_id]);
+      r.dup = ex.rows.length > 0; if (r.dup) dup++;
+      if (r.tx_type === 'in') {
+        r.category_id = incomeCat ? incomeCat.id : null;
+        r.cat_label = incomeCat ? (incomeCat.code + ' ' + incomeCat.name) : null;
+        r.is_classified = !!incomeCat; r.flag = 'income';
+      } else {
+        const cp = cpByCode[r.cp_code];
+        if (cp) {
+          r.counterparty_id = cp.id; r.cp_known = cp.name; r.category_id = cp.default_category_id || null;
+          const cat = catById[cp.default_category_id];
+          r.cat_label = cat ? (cat.code + ' ' + cat.name) : null;
+          r.is_classified = !!cp.default_category_id; r.flag = r.is_classified ? 'ok' : 'cp_no_cat';
+        } else { r.is_classified = false; r.flag = 'new_cp'; newcp++; }
+      }
+      if (r.is_classified) classified++;
+    }
+    const payload = Buffer.from(JSON.stringify({ wallet_id, rows })).toString('base64');
+    res.json({ summary: { total: rows.length, dup, classified, newcp, willInsert: rows.length - dup }, rows: rows.slice(0, 300), payload });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Подтверждение: пишем непродублированные строки в журнал с import_batch_id.
+router.post('/api/import/commit', J, async (req, res) => {
+  try {
+    const data = JSON.parse(Buffer.from(String(req.body.payload || ''), 'base64').toString('utf8'));
+    const wallet_id = intOrNull(data.wallet_id);
+    if (!wallet_id) return res.status(400).json({ error: 'Нет кошелька' });
+    const batch = (await db.pool.query('INSERT INTO cash_import_batches (wallet_id, filename, count, created_by) VALUES ($1,$2,0,$3) RETURNING id', [wallet_id, req.body.filename || null, req.user.id])).rows[0].id;
+    let ins = 0, skip = 0;
+    for (const r of (data.rows || [])) {
+      if (r.dup) { skip++; continue; }
+      await db.pool.query(
+        `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, counterparty_id, category_id, purpose, bank_doc_no, source, import_batch_id, is_classified, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'import',$9,$10,$11)`,
+        [r.tx_date, r.amount, r.tx_type, wallet_id, intOrNull(r.counterparty_id), intOrNull(r.category_id), r.purpose || null, r.doc_no || null, batch, !!r.is_classified, req.user.id]);
+      ins++;
+    }
+    await db.pool.query('UPDATE cash_import_batches SET count=$1 WHERE id=$2', [ins, batch]);
+    await db.log(req.user.id, 'cash_import', `+${ins}, пропущено ${skip}`);
+    res.json({ ok: true, inserted: ins, skipped: skip, batch });
+  } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 module.exports = router;
