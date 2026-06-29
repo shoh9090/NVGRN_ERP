@@ -397,6 +397,13 @@ router.post('/api/tx/:id(\\d+)/delete', async (req, res) => {
   await db.log(req.user.id, 'cash_tx_delete', '#' + req.params.id);
   res.json({ ok: true });
 });
+router.post('/api/tx/bulk-delete', J, async (req, res) => {
+  const ids = (req.body && Array.isArray(req.body.ids) ? req.body.ids : []).map((x) => parseInt(x, 10)).filter(Boolean);
+  if (!ids.length) return res.status(400).json({ error: 'Ничего не выбрано' });
+  await db.pool.query('DELETE FROM cash_transactions WHERE id = ANY($1)', [ids]);
+  await db.log(req.user.id, 'cash_tx_bulk_delete', ids.length + ' шт');
+  res.json({ ok: true, deleted: ids.length });
+});
 
 // ---------- Импорт банковской выписки ----------
 // Декодер cp1251 (выписка Asia Alliance в windows-1251).
@@ -433,6 +440,7 @@ function parseAsiaAlliance(text) {
     const tds = (tr.match(/<td[\s\S]*?<\/td>/gi) || []).map(stripTags);
     if (tds.length < 8) continue;
     const date = toISO(tds[0]); if (!date) continue; // только строки-данные
+    if (/сальдо/i.test(tds[7] || '')) continue; // строки «входящее/исходящее сальдо» — не транзакции
     const credit = parseAmount(tds[6]), debit = parseAmount(tds[5]);
     let type = null, amount = 0;
     if (credit > 0) { type = 'in'; amount = credit; }
@@ -475,6 +483,7 @@ function parseHayot(buf) {
   for (let i = hdr + 1; i < aoa.length; i++) {
     const row = (aoa[i] || []).map((x) => String(x || '').trim());
     const date = toISO(row[col.date]); if (!date) continue;
+    if (/сальдо/i.test(row[col.purpose] || '')) continue; // строки сальдо — не транзакции
     const credit = parseAmount(row[col.credit]), debit = parseAmount(row[col.debit]);
     let type = null, amount = 0;
     if (credit > 0) { type = 'in'; amount = credit; }

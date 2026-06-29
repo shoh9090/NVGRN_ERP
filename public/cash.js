@@ -185,6 +185,7 @@
 
   // ================= ТРАНЗАКЦИИ =================
   const txState = { from: '', to: '', wallet: '', type: '', q: '' };
+  let txSel = new Set();
   async function renderTransactions() {
     const c = $('#cash-content'); c.innerHTML = '';
     if (!txState.from) txState.from = monthStartStr();
@@ -206,11 +207,18 @@
     c.appendChild(el('div', { id: 'cash-tx-wrap' }));
     loadTx();
   }
+  let txItems = [];
+  function updateBulk() {
+    const bar = $('#cash-bulk'); if (!bar) return;
+    bar.style.display = txSel.size ? 'flex' : 'none';
+    const n = bar.querySelector('.cash-bulk-n'); if (n) n.textContent = 'Выбрано: ' + txSel.size;
+  }
   async function loadTx() {
     const wrap = $('#cash-tx-wrap'); if (!wrap) return;
     const p = new URLSearchParams();
     ['from', 'to', 'wallet', 'type', 'q'].forEach((k) => { if (txState[k]) p.set(k, txState[k]); });
     let data; try { data = await api('/transactions?' + p.toString()); } catch (e) { toast(e.message, true); return; }
+    txItems = data.items || []; txSel.clear();
     wrap.innerHTML = '';
     const t = data.totals || { in: 0, out: 0 };
     wrap.appendChild(el('div', { class: 'cash-tot-bar' }, [
@@ -219,23 +227,39 @@
       el('span', { class: 'cash-tot-net' }, 'Сальдо: ' + money(t.in - t.out)),
       data.unclassified ? el('span', { class: 'cash-tot-unc' }, 'Не разобрано: ' + data.unclassified) : null,
     ]));
-    const head = el('div', { class: 'cash-row head cash-tx' }, ['Дата', 'Кошелёк', 'Контрагент', 'Статья', 'Назначение', 'Сумма'].map((h) => el('span', {}, h)));
-    wrap.appendChild(el('div', { class: 'cash-list' }, [head, ...(data.items || []).map(txRow)]));
-    if (!data.items.length) wrap.appendChild(el('div', { class: 'cash-empty' }, 'Транзакций нет. Добавьте приход/расход или импортируйте выписку (Этап 3).'));
+    const delBtn = el('button', { class: 'btn-ghost cashf-del', onclick: async () => {
+      if (!txSel.size) return; if (!confirm('Удалить выбранные операции (' + txSel.size + ')?')) return;
+      try { const d = await post('/tx/bulk-delete', { ids: [...txSel] }); toast('Удалено: ' + d.deleted); loadTx(); } catch (e) { toast(e.message, true); }
+    } }, 'Удалить выбранные');
+    const clr = el('button', { class: 'btn-ghost', onclick: () => { txSel.clear(); loadTx(); } }, 'Снять');
+    wrap.appendChild(el('div', { id: 'cash-bulk', class: 'cash-bulkbar', style: 'display:none' }, [el('span', { class: 'cash-bulk-n' }, ''), delBtn, clr]));
+    const selAll = el('input', { type: 'checkbox', class: 'cash-chk' });
+    selAll.addEventListener('click', (e) => {
+      const on = e.target.checked; txSel.clear(); if (on) txItems.forEach((x) => txSel.add(x.id));
+      wrap.querySelectorAll('.row-chk').forEach((c) => { c.checked = on; });
+      updateBulk();
+    });
+    const head = el('div', { class: 'cash-row head cash-tx' }, [selAll, ...['Дата', 'Кошелёк', 'Контрагент', 'Статья', 'Назначение', 'Приход', 'Расход'].map((h) => el('span', {}, h))]);
+    wrap.appendChild(el('div', { class: 'cash-list' }, [head, ...txItems.map(txRow)]));
+    if (!txItems.length) wrap.appendChild(el('div', { class: 'cash-empty' }, 'Транзакций нет. Добавьте операцию или импортируйте выписку.'));
+    updateBulk();
   }
   function txRow(x) {
     const isT = x.tx_type === 'transfer';
     const cls = 'cash-row cash-tx' + (!isT && !x.is_classified ? ' unclass' : '');
-    const amtCls = isT ? 'cash-amt-t' : (x.tx_type === 'in' ? 'cash-amt-in' : 'cash-amt-out');
-    const sign = isT ? '↔ ' : (x.tx_type === 'in' ? '+' : '−');
-    const wallet = isT ? ((x.wallet_name || '?') + ' → ' + (x.wallet_to_name || '?')) : (x.wallet_name || '—');
+    const chk = el('input', { type: 'checkbox', class: 'cash-chk row-chk' });
+    chk.checked = txSel.has(x.id);
+    chk.addEventListener('click', (e) => { e.stopPropagation(); if (chk.checked) txSel.add(x.id); else txSel.delete(x.id); updateBulk(); });
+    const wallet = isT ? ((x.wallet_name || '?') + ' → ' + (x.wallet_to_name || '?') + ' · ↔' + money(x.amount)) : (x.wallet_name || '—');
     return el('div', { class: cls, style: 'cursor:pointer', onclick: () => (isT ? openTransferForm(x) : openTxForm(x.tx_type, x)) }, [
+      chk,
       el('span', {}, ruDate(x.tx_date)),
       el('span', {}, [el('span', { class: 'cash-dot', style: 'background:' + (x.wallet_color || '#999') }), ' ' + wallet]),
       el('span', {}, isT ? '— перевод —' : (x.cp_name || '—')),
       el('span', {}, isT ? '—' : (x.cat_code ? (x.cat_code + ' ' + (x.cat_name || '')) : '—')),
       el('span', { class: 'cash-purpose' }, x.purpose || ''),
-      el('span', { class: amtCls }, sign + money(x.amount)),
+      el('span', { class: 'cash-amt-in' }, x.tx_type === 'in' ? ('+' + money(x.amount)) : ''),
+      el('span', { class: 'cash-amt-out' }, x.tx_type === 'out' ? ('−' + money(x.amount)) : ''),
     ]);
   }
 
@@ -244,12 +268,13 @@
     const date = finp(tx.tx_date ? String(tx.tx_date).slice(0, 10) : todayStr(), { type: 'date' });
     const amount = finp(tx.amount, { type: 'number', placeholder: 'Сумма' });
     const wallet = fsel((DICTS.wallets || []).map((x) => ({ v: x.id, t: x.name })), tx.wallet_id || '');
-    const cp = fsel(cpOptions(), tx.counterparty_id || '');
+    const cp = fsel(cpOptions(), tx.counterparty_id || ''); cp.style.flex = '1';
+    const cpWrap = el('div', { style: 'display:flex;gap:6px;align-items:center' }, [cp, el('button', { class: 'btn-ghost', style: 'padding:6px 11px;flex:none', onclick: () => openCpForm(null) }, '＋')]);
     const cat = fsel(catOptions(), tx.category_id || '');
     const purpose = finp(tx.purpose, { placeholder: 'Назначение' });
     const rows = [frow('Дата', date), frow('Сумма', amount)];
     if (!tx.id) rows.push(frow('Кошелёк', wallet));
-    rows.push(frow('Контрагент', cp), frow('Статья ДДС', cat), frow('Назначение', purpose));
+    rows.push(frow('Контрагент', cpWrap), frow('Статья ДДС', cat), frow('Назначение', purpose));
     const body = el('div', { class: 'cashf' }, rows);
     const save = el('button', { class: 'btn-primary', onclick: async () => {
       try {
