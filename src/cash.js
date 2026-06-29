@@ -507,10 +507,14 @@ router.post('/api/import/preview', upload.single('file'), async (req, res) => {
     const incomeCat = cats.find((c) => c.code === '200') || null;
     const cpByInn = {};
     (await db.pool.query("SELECT id, inn, default_category_id, name FROM cash_counterparties WHERE status='active' AND inn IS NOT NULL AND inn<>''")).rows.forEach((c) => { cpByInn[String(c.inn).trim()] = c; });
+    // Дедуп одним запросом: тянем уже загруженные ключи по этому кошельку в Set.
+    const existing = new Set();
+    (await db.pool.query("SELECT to_char(tx_date,'YYYY-MM-DD') d, amount, COALESCE(bank_doc_no,'') doc FROM cash_transactions WHERE wallet_id=$1 AND source='import'", [wallet_id])).rows
+      .forEach((x) => existing.add(x.d + '|' + Number(x.amount) + '|' + x.doc));
     let dup = 0, classified = 0, newcp = 0;
     for (const r of rows) {
-      const ex = await db.pool.query('SELECT 1 FROM cash_transactions WHERE tx_date=$1 AND amount=$2 AND bank_doc_no=$3 AND wallet_id=$4 LIMIT 1', [r.tx_date, r.amount, r.doc_no, wallet_id]);
-      r.dup = ex.rows.length > 0; if (r.dup) dup++;
+      r.dup = existing.has(r.tx_date + '|' + Number(r.amount) + '|' + (r.doc_no || ''));
+      if (r.dup) dup++;
       if (r.tx_type === 'in') {
         r.category_id = incomeCat ? incomeCat.id : null;
         r.cat_label = incomeCat ? (incomeCat.code + ' ' + incomeCat.name) : null;
