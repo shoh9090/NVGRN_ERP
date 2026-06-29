@@ -5,6 +5,13 @@ const { notify } = require('./notifications');
 
 const router = express.Router();
 
+// Связка с Кассой: у поставщика — статья ДДС по умолчанию (для автоклассификации расходов по ИНН).
+let _ccCol = false;
+router.use(async (req, res, next) => {
+  if (!_ccCol) { try { await db.pool.query('ALTER TABLE ref_counterparties ADD COLUMN IF NOT EXISTS cash_category_id INTEGER'); } catch (e) { /* ignore */ } _ccCol = true; }
+  next();
+});
+
 // ---------- Страница ----------
 router.get('/', async (req, res) => {
   const settings = await db.getSettings();
@@ -25,6 +32,7 @@ router.get('/api/suppliers', async (req, res) => {
   const r = await db.pool.query(
     `SELECT c.id, c.name, c.legal_name, c.phone, c.inn, c.supplies, c.payment_terms, c.status,
             c.parent_category_id, pc.name AS parent_category_name, pc.color AS parent_category_color,
+            c.cash_category_id, cc.code AS cash_cat_code, cc.name AS cash_cat_name,
             COALESCE(c.opening_balance, 0) AS opening_balance,
             COALESCE(d.delivered, 0) AS delivered,
             COALESCE(p.paid, 0) AS paid,
@@ -32,6 +40,7 @@ router.get('/api/suppliers', async (req, res) => {
             COALESCE(sm.n, 0) AS attached_count
      FROM ref_counterparties c
      LEFT JOIN ref_parent_categories pc ON pc.id = c.parent_category_id
+     LEFT JOIN cash_categories cc ON cc.id = c.cash_category_id
      LEFT JOIN (
        SELECT po.supplier_id, SUM(COALESCE(i.fact_qty, i.qty) * COALESCE(i.fact_price, i.price)) AS delivered
        FROM purchase_orders po
@@ -53,12 +62,13 @@ router.get('/api/suppliers', async (req, res) => {
 });
 
 router.put('/api/suppliers/:id(\\d+)', express.json(), async (req, res) => {
-  const allowed = ['name', 'legal_name', 'phone', 'inn', 'supplies', 'payment_terms', 'opening_balance', 'comment', 'parent_category_id'];
+  const allowed = ['name', 'legal_name', 'phone', 'inn', 'supplies', 'payment_terms', 'opening_balance', 'comment', 'parent_category_id', 'cash_category_id'];
+  const numeric = ['opening_balance', 'parent_category_id', 'cash_category_id'];
   const sets = [];
   const vals = [];
   for (const k of allowed) {
     if (k in req.body) {
-      vals.push((k === 'opening_balance' || k === 'parent_category_id') ? (req.body[k] === '' || req.body[k] == null ? null : Number(req.body[k])) : String(req.body[k] ?? ''));
+      vals.push(numeric.includes(k) ? (req.body[k] === '' || req.body[k] == null ? null : Number(req.body[k])) : String(req.body[k] ?? ''));
       sets.push(`${k} = $${vals.length}`);
     }
   }
@@ -75,10 +85,11 @@ router.post('/api/suppliers', express.json(), async (req, res) => {
   const dup = await db.pool.query('SELECT id FROM ref_counterparties WHERE lower(name) = lower($1) LIMIT 1', [name]);
   if (dup.rows.length) return res.status(409).json({ error: `Поставщик «${name}» уже существует` });
   const r = await db.pool.query(
-    `INSERT INTO ref_counterparties (name, legal_name, phone, inn, supplies, parent_category_id, role_supplier, created_by, updated_by)
-     VALUES ($1, $2, $3, $4, $5, $6, TRUE, $7, $7) RETURNING id`,
+    `INSERT INTO ref_counterparties (name, legal_name, phone, inn, supplies, parent_category_id, cash_category_id, role_supplier, created_by, updated_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE, $8, $8) RETURNING id`,
     [name, req.body.legal_name || '', req.body.phone || '', req.body.inn || '', req.body.supplies || '',
-     req.body.parent_category_id ? Number(req.body.parent_category_id) : null, req.user.id]
+     req.body.parent_category_id ? Number(req.body.parent_category_id) : null,
+     req.body.cash_category_id ? Number(req.body.cash_category_id) : null, req.user.id]
   );
   await db.log(req.user.id, 'purchase_supplier_create', name);
   res.json({ id: r.rows[0].id });
@@ -237,7 +248,15 @@ router.get('/api/filter-options', async (req, res) => {
      UNION ALL SELECT 'packaging', id, code, name FROM ref_packaging WHERE status='active'
      ORDER BY name`
   );
-  res.json({ suppliers: sup.rows, categories: cat.rows, parents: parents.rows, items: items.rows });
+  // Статьи ДДС из Кассы (для присвоения поставщику) — мягко, если таблицы ещё нет
+  let cashCats = [];
+  try {
+    const cc = await db.pool.query(
+      "SELECT id, code, name, group_name FROM cash_categories WHERE status = 'active' AND direction_hint <> 'transfer' ORDER BY sort_order, code"
+    );
+    cashCats = cc.rows;
+  } catch (e) { /* Касса ещё не инициализирована */ }
+  res.json({ suppliers: sup.rows, categories: cat.rows, parents: parents.rows, items: items.rows, cashCats });
 });
 
 const multer = require('multer');

@@ -544,6 +544,8 @@ router.post('/api/import/preview', upload.single('file'), async (req, res) => {
     const incomeCat = cats.find((c) => c.code === '200') || null;
     const cpByInn = {};
     (await db.pool.query("SELECT id, inn, default_category_id, name FROM cash_counterparties WHERE status='active' AND inn IS NOT NULL AND inn<>''")).rows.forEach((c) => { cpByInn[String(c.inn).trim()] = c; });
+    const refCatByInn = {};
+    try { (await db.pool.query("SELECT inn, cash_category_id FROM ref_counterparties WHERE role_supplier=TRUE AND inn IS NOT NULL AND inn<>'' AND cash_category_id IS NOT NULL")).rows.forEach((c) => { refCatByInn[String(c.inn).trim()] = c.cash_category_id; }); } catch (e) { /* колонки ещё нет */ }
     // Дедуп одним запросом: тянем уже загруженные ключи по этому кошельку в Set.
     const existing = new Set();
     (await db.pool.query("SELECT to_char(tx_date,'YYYY-MM-DD') d, amount, COALESCE(bank_doc_no,'') doc FROM cash_transactions WHERE wallet_id=$1 AND source='import'", [wallet_id])).rows
@@ -563,6 +565,11 @@ router.post('/api/import/preview', upload.single('file'), async (req, res) => {
           const cat = catById[cp.default_category_id];
           r.cat_label = cat ? (cat.code + ' ' + cat.name) : null;
           r.is_classified = !!cp.default_category_id; r.flag = r.is_classified ? 'ok' : 'cp_no_cat';
+        } else if (refCatByInn[String(r.inn || '').trim()]) {
+          r.category_id = refCatByInn[String(r.inn || '').trim()];
+          const cat = catById[r.category_id];
+          r.cat_label = cat ? (cat.code + ' ' + cat.name) : null;
+          r.is_classified = !!r.category_id; r.flag = 'ok'; newcp++;
         } else { r.is_classified = false; r.flag = 'new_cp'; newcp++; }
       }
       if (r.is_classified) classified++;
@@ -608,6 +615,9 @@ router.post('/api/import/run', upload.single('file'), async (req, res) => {
     const incomeCat = cats.find((c) => c.code === '200') || null;
     const cpByInn = {};
     (await db.pool.query("SELECT id, inn, default_category_id FROM cash_counterparties WHERE status='active' AND inn IS NOT NULL AND inn<>''")).rows.forEach((c) => { cpByInn[String(c.inn).trim()] = c; });
+    // запасная классификация расходов: статья ДДС поставщика из Закупа (по ИНН)
+    const refCatByInn = {};
+    try { (await db.pool.query("SELECT inn, cash_category_id FROM ref_counterparties WHERE role_supplier=TRUE AND inn IS NOT NULL AND inn<>'' AND cash_category_id IS NOT NULL")).rows.forEach((c) => { refCatByInn[String(c.inn).trim()] = c.cash_category_id; }); } catch (e) { /* колонки ещё нет */ }
     const existing = new Set();
     (await db.pool.query("SELECT to_char(tx_date,'YYYY-MM-DD') d, amount, COALESCE(bank_doc_no,'') doc FROM cash_transactions WHERE wallet_id=$1 AND source='import'", [wallet_id])).rows
       .forEach((x) => existing.add(x.d + '|' + Number(x.amount) + '|' + x.doc));
@@ -618,8 +628,15 @@ router.post('/api/import/run', upload.single('file'), async (req, res) => {
       if (existing.has(key)) { skip++; continue; }
       existing.add(key);
       let category_id = null, counterparty_id = null, is_classified = false;
-      if (r.tx_type === 'in') { category_id = incomeCat ? incomeCat.id : null; is_classified = !!incomeCat; const cl = cpByInn[String(r.inn || '').trim()]; if (cl) counterparty_id = cl.id; }
-      else { const cp = cpByInn[String(r.inn || '').trim()]; if (cp) { counterparty_id = cp.id; category_id = cp.default_category_id || null; is_classified = !!cp.default_category_id; } else newcp++; }
+      const inn = String(r.inn || '').trim();
+      if (r.tx_type === 'in') { category_id = incomeCat ? incomeCat.id : null; is_classified = !!incomeCat; const cl = cpByInn[inn]; if (cl) counterparty_id = cl.id; }
+      else {
+        const cp = cpByInn[inn];
+        if (cp) { counterparty_id = cp.id; category_id = cp.default_category_id || null; }
+        if (!category_id && refCatByInn[inn]) category_id = refCatByInn[inn]; // подхватили статью из Закупа
+        is_classified = !!category_id;
+        if (!cp) newcp++;
+      }
       await db.pool.query(
         `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, counterparty_id, category_id, purpose, bank_doc_no, source, import_batch_id, is_classified, payer_name, payer_inn, created_by)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'import',$9,$10,$11,$12,$13)`,

@@ -450,12 +450,14 @@
       return;
     }
     box.appendChild(el('table', { class: 'dict-table' }, [
-      el('thead', {}, el('tr', {}, ['Имя', 'Категория', 'Фирма', 'Телефон', 'Товары', 'Сальдо'].map((h, i) =>
-        el('th', { style: i === 5 ? 'text-align:right' : '' }, h)))),
+      el('thead', {}, el('tr', {}, ['Имя', 'Категория', 'Статья ДДС', 'Фирма', 'Телефон', 'Товары', 'Сальдо'].map((h, i) =>
+        el('th', { style: i === 6 ? 'text-align:right' : '' }, h)))),
       el('tbody', {}, data.items.map((s) =>
         el('tr', { onclick: () => openStatement(s.id) }, [
           el('td', { style: 'font-weight:700' }, s.name),
           el('td', {}, pcBadge(s.parent_category_name, s.parent_category_color)),
+          el('td', { class: 'muted', title: s.cash_cat_name || '' },
+            s.cash_cat_code ? s.cash_cat_code + ' · ' + (s.cash_cat_name || '') : '—'),
           el('td', {}, s.legal_name || ''),
           el('td', { class: 'tnum' }, s.phone || ''),
           el('td', { class: 'muted' }, s.attached_count > 0 ? '📎 ' + s.attached_count : ((s.supplies || '').slice(0, 40) || '—')),
@@ -536,6 +538,20 @@
     if (sup && sup.parent_category_id) pcSel.value = sup.parent_category_id;
     f['parent_category_id'] = pcSel;
     rows.push(el('label', {}, ['Родительская категория', pcSel]));
+    // статья ДДС (классификатор Кассы) — для автоклассификации расходов по этому поставщику
+    const ccList = FOPTS.cashCats || [];
+    const ccSel = el('select', {}, [
+      el('option', { value: '' }, '— не задана —'),
+      ...ccList.map((c) => el('option', { value: c.id }, `${c.code} · ${c.name}`)),
+    ]);
+    if (sup && sup.cash_category_id) ccSel.value = sup.cash_category_id;
+    f['cash_category_id'] = ccSel;
+    rows.push(el('label', {}, [
+      'Статья ДДС (Касса)',
+      ccSel,
+      el('div', { class: 'muted', style: 'font-size:12px;margin-top:2px' },
+        ccList.length ? 'Расходы этому поставщику в Кассе будут авто-классифицироваться по этой статье.' : 'Откройте плитку «Касса» хотя бы раз, чтобы появились статьи ДДС.'),
+    ]));
     const body = el('div', { class: 'form-col', style: 'max-width:100%' }, rows);
     const m = modal(sup ? '✏️ ' + sup.name : '+ Новый поставщик', body, [
       el('button', { onclick: () => m.close() }, 'Отмена'),
