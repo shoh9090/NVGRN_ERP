@@ -3,6 +3,7 @@
 // Переводы между кошельками — отдельный тип, вне доходов/расходов (защита от двойного счёта).
 const express = require('express');
 const multer = require('multer');
+const XLSX = require('xlsx');
 const db = require('./db');
 
 const router = express.Router();
@@ -447,21 +448,65 @@ function parseAsiaAlliance(text) {
   return out;
 }
 
+// Парсер выписки Хаёт (бинарный Excel .xls). Колонки находим по заголовкам.
+function parseHayot(buf) {
+  const wb = XLSX.read(buf, { type: 'buffer' });
+  const sh = wb.Sheets[wb.SheetNames[0]];
+  const aoa = XLSX.utils.sheet_to_json(sh, { header: 1, raw: false, defval: '' });
+  let hdr = -1; const col = {};
+  for (let i = 0; i < aoa.length; i++) {
+    const row = (aoa[i] || []).map((x) => String(x || '').trim());
+    const joined = row.join('|');
+    if (joined.includes('Дата документа') && (joined.includes('Обороты по кредиту') || joined.includes('Обороты по дебету'))) {
+      hdr = i;
+      row.forEach((c, idx) => {
+        if (c.includes('Дата документа')) col.date = idx;
+        else if (c.includes('док')) col.doc = idx;
+        else if (c.includes('Наименование сч')) col.name = idx;
+        else if (c.includes('Обороты по дебету')) col.debit = idx;
+        else if (c.includes('Обороты по кредиту')) col.credit = idx;
+        else if (c.includes('Назначение')) col.purpose = idx;
+      });
+      break;
+    }
+  }
+  if (hdr < 0 || col.date == null) return [];
+  const out = [];
+  for (let i = hdr + 1; i < aoa.length; i++) {
+    const row = (aoa[i] || []).map((x) => String(x || '').trim());
+    const date = toISO(row[col.date]); if (!date) continue;
+    const credit = parseAmount(row[col.credit]), debit = parseAmount(row[col.debit]);
+    let type = null, amount = 0;
+    if (credit > 0) { type = 'in'; amount = credit; }
+    else if (debit > 0) { type = 'out'; amount = debit; }
+    else continue;
+    const nm = row[col.name] || '';
+    const innM = nm.match(/(\d{9})\s*$/);
+    out.push({
+      tx_date: date, amount, tx_type: type, doc_no: row[col.doc] || '', op: '', cp_code: '',
+      inn: innM ? innM[1] : '', payer: innM ? nm.slice(0, innM.index).trim() : nm.trim(),
+      purpose: row[col.purpose] || '', contract_no: extractContract(row[col.purpose]),
+    });
+  }
+  return out;
+}
+
 // Предпросмотр: парсим, классифицируем, помечаем дубли. Ничего не пишем.
 router.post('/api/import/preview', upload.single('file'), async (req, res) => {
   try {
     const wallet_id = intOrNull(req.body.wallet_id);
     if (!wallet_id) return res.status(400).json({ error: 'Выберите кошелёк, на который грузим выписку' });
     if (!req.file) return res.status(400).json({ error: 'Файл не выбран' });
-    const text = decodeCp1251(req.file.buffer);
-    if (!/<tr/i.test(text)) return res.status(400).json({ error: 'Это не HTML-выписка. Похоже на Excel-формат второго банка — он пока не поддержан.' });
-    const rows = parseAsiaAlliance(text);
-    if (!rows.length) return res.status(400).json({ error: 'Не нашёл транзакций в файле (проверьте формат).' });
+    let rows, bank;
+    const buf = req.file.buffer;
+    if (buf[0] === 0xD0 && buf[1] === 0xCF) { rows = parseHayot(buf); bank = 'Хаёт (Excel)'; }
+    else { const text = decodeCp1251(buf); if (/<tr/i.test(text)) { rows = parseAsiaAlliance(text); bank = 'Asia Alliance (HTML)'; } else return res.status(400).json({ error: 'Не удалось распознать формат выписки.' }); }
+    if (!rows || !rows.length) return res.status(400).json({ error: 'Не нашёл транзакций в файле (проверьте формат).' });
     const cats = (await db.pool.query("SELECT id, code, name, default_category_id FROM cash_categories WHERE status='active'")).rows;
     const catById = {}; cats.forEach((c) => { catById[c.id] = c; });
     const incomeCat = cats.find((c) => c.code === '200') || null;
-    const cpByCode = {};
-    (await db.pool.query("SELECT id, bank_code, default_category_id, name FROM cash_counterparties WHERE status='active' AND bank_code IS NOT NULL AND bank_code<>''")).rows.forEach((c) => { cpByCode[c.bank_code] = c; });
+    const cpByInn = {};
+    (await db.pool.query("SELECT id, inn, default_category_id, name FROM cash_counterparties WHERE status='active' AND inn IS NOT NULL AND inn<>''")).rows.forEach((c) => { cpByInn[String(c.inn).trim()] = c; });
     let dup = 0, classified = 0, newcp = 0;
     for (const r of rows) {
       const ex = await db.pool.query('SELECT 1 FROM cash_transactions WHERE tx_date=$1 AND amount=$2 AND bank_doc_no=$3 AND wallet_id=$4 LIMIT 1', [r.tx_date, r.amount, r.doc_no, wallet_id]);
@@ -471,7 +516,7 @@ router.post('/api/import/preview', upload.single('file'), async (req, res) => {
         r.cat_label = incomeCat ? (incomeCat.code + ' ' + incomeCat.name) : null;
         r.is_classified = !!incomeCat; r.flag = 'income';
       } else {
-        const cp = cpByCode[r.cp_code];
+        const cp = cpByInn[String(r.inn || '').trim()];
         if (cp) {
           r.counterparty_id = cp.id; r.cp_known = cp.name; r.category_id = cp.default_category_id || null;
           const cat = catById[cp.default_category_id];
@@ -482,7 +527,7 @@ router.post('/api/import/preview', upload.single('file'), async (req, res) => {
       if (r.is_classified) classified++;
     }
     const payload = Buffer.from(JSON.stringify({ wallet_id, rows })).toString('base64');
-    res.json({ summary: { total: rows.length, dup, classified, newcp, willInsert: rows.length - dup }, rows: rows.slice(0, 300), payload });
+    res.json({ summary: { bank, total: rows.length, dup, classified, newcp, willInsert: rows.length - dup }, rows: rows.slice(0, 300), payload });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 

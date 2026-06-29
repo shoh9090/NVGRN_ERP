@@ -307,7 +307,7 @@
         const d = await res.json(); if (!res.ok) throw new Error(d.error || 'Ошибка');
         payload = d.payload; out.innerHTML = '';
         const s = d.summary;
-        out.appendChild(el('div', { class: 'cash-imp-sum' }, `Всего: ${s.total} · к записи: ${s.willInsert} · дубли: ${s.dup} · с статьёй: ${s.classified} · новых к-агентов: ${s.newcp}`));
+        out.appendChild(el('div', { class: 'cash-imp-sum' }, `Банк: ${s.bank || '—'} · всего: ${s.total} · к записи: ${s.willInsert} · дубли: ${s.dup} · с статьёй: ${s.classified} · новых к-агентов: ${s.newcp}`));
         const head = el('div', { class: 'cash-row head cash-imp' }, ['Дата', 'Тип', 'Сумма', 'Контрагент / код', 'Статья', 'Назначение'].map((h) => el('span', {}, h)));
         const rows = (d.rows || []).map((r) => el('div', { class: 'cash-row cash-imp' + (r.dup ? ' dim' : '') + (!r.is_classified ? ' unclass' : '') }, [
           el('span', {}, ruDate(r.tx_date)),
