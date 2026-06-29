@@ -1,0 +1,204 @@
+// cash.js — модуль «Касса»: единый журнал транзакций, справочники, отчёты.
+// Принцип: деньги вносятся один раз (импорт выписки + ручной ввод), отчёты считаются сами.
+// Переводы между кошельками — отдельный тип, вне доходов/расходов (защита от двойного счёта).
+const express = require('express');
+const db = require('./db');
+
+const router = express.Router();
+
+// ---------- Схема и сидирование (идемпотентно) ----------
+let _ready = false;
+async function ensureCashSchema() {
+  if (_ready) return;
+  const q = (sql) => db.pool.query(sql);
+
+  await q(`CREATE TABLE IF NOT EXISTS cash_wallets (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'bank',        -- bank | card | cash | reserve
+    account_no TEXT,
+    color TEXT DEFAULT '#163a28',
+    sort_order INT NOT NULL DEFAULT 100,
+    status TEXT NOT NULL DEFAULT 'active'      -- active | archived
+  )`);
+
+  await q(`CREATE TABLE IF NOT EXISTS cash_categories (
+    id SERIAL PRIMARY KEY,
+    code TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    group_name TEXT,
+    flow_type TEXT NOT NULL DEFAULT 'operating', -- operating | investing | financing
+    direction_hint TEXT,                          -- in | out | transfer
+    only_transfer BOOLEAN NOT NULL DEFAULT false,
+    sort_order INT NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'active'
+  )`);
+
+  await q(`CREATE TABLE IF NOT EXISTS cash_counterparties (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    inn TEXT,
+    bank_code TEXT,                               -- код контрагента из выписки (ключ автоклассификации)
+    default_category_id INT REFERENCES cash_categories(id),
+    linked_supplier_id INT,                       -- связь с поставщиком Закупа (ref_counterparties.id)
+    comment TEXT,
+    status TEXT NOT NULL DEFAULT 'active'
+  )`);
+  await q(`CREATE INDEX IF NOT EXISTS idx_cash_cp_bankcode ON cash_counterparties (bank_code)`);
+
+  await q(`CREATE TABLE IF NOT EXISTS cash_contracts (
+    id SERIAL PRIMARY KEY,
+    counterparty_id INT REFERENCES cash_counterparties(id),
+    number TEXT,
+    subject TEXT,
+    category_id INT REFERENCES cash_categories(id),
+    amount NUMERIC,
+    date_start DATE,
+    date_end DATE,
+    status TEXT NOT NULL DEFAULT 'active'
+  )`);
+
+  await q(`CREATE TABLE IF NOT EXISTS cash_import_batches (
+    id SERIAL PRIMARY KEY,
+    wallet_id INT REFERENCES cash_wallets(id),
+    filename TEXT,
+    count INT DEFAULT 0,
+    created_by INT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+
+  await q(`CREATE TABLE IF NOT EXISTS cash_transactions (
+    id SERIAL PRIMARY KEY,
+    tx_date DATE NOT NULL,
+    amount NUMERIC NOT NULL,
+    tx_type TEXT NOT NULL,                        -- in | out | transfer
+    wallet_id INT REFERENCES cash_wallets(id),
+    wallet_to_id INT REFERENCES cash_wallets(id), -- только для transfer
+    counterparty_id INT REFERENCES cash_counterparties(id),
+    contract_id INT REFERENCES cash_contracts(id),
+    category_id INT REFERENCES cash_categories(id),
+    purpose TEXT,
+    bank_doc_no TEXT,
+    source TEXT NOT NULL DEFAULT 'manual',        -- import | manual
+    import_batch_id INT REFERENCES cash_import_batches(id),
+    is_classified BOOLEAN NOT NULL DEFAULT false,
+    created_by INT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  await q(`CREATE INDEX IF NOT EXISTS idx_cash_tx_date ON cash_transactions (tx_date)`);
+  await q(`CREATE INDEX IF NOT EXISTS idx_cash_tx_wallet ON cash_transactions (wallet_id)`);
+  await q(`CREATE INDEX IF NOT EXISTS idx_cash_tx_cat ON cash_transactions (category_id)`);
+
+  await seedCategories();
+  await seedWallets();
+  _ready = true;
+}
+
+// Классификатор статей ДДС (Приложение А). flow: 1-5,8 operating; 6 financing; 7 investing. * → only_transfer.
+async function seedCategories() {
+  const G1 = '1. Сырьё и переменные затраты', G2 = '2. Производственные затраты', G3 = '3. Продажи и маркетинг',
+        G4 = '4. Административные расходы', G5 = '5. Логистика', G6 = '6. Финансы', G7 = '7. Капекс (инвестиции)', G8 = '8. Прочее';
+  const CATS = [
+    ['10', 'Сырьё (зелень)', G1, 'operating', false],
+    ['11', 'Упаковка', G1, 'operating', false],
+    ['12', 'Расходники производства (перчатки и т.д.)', G1, 'operating', false],
+    ['20', 'ЗП производство', G2, 'operating', false],
+    ['21', 'Ремонт оборудования и наладка, мелкие запчасти', G2, 'operating', false],
+    ['22', 'Вода', G2, 'operating', false],
+    ['23', 'Электричество', G2, 'operating', false],
+    ['24', 'Вывоз мусора', G2, 'operating', false],
+    ['30', 'SMM + реклама', G3, 'operating', false],
+    ['31', 'POSM материалы (шелфы + воблеры)', G3, 'operating', false],
+    ['32', 'Холодильники торговые', G3, 'operating', false],
+    ['40', 'Зарплата офиса', G4, 'operating', false],
+    ['41', 'Аренда', G4, 'operating', false],
+    ['42', 'Интернет / связь', G4, 'operating', false],
+    ['43', 'Канцелярия', G4, 'operating', false],
+    ['44', 'Мебель (частично, если мелкое)', G4, 'operating', false],
+    ['45', 'Расходники (тряпки + чист. ср-ва) + картриджи', G4, 'operating', false],
+    ['46', 'Возмещение расходов, обмен ГП, брак, прочие расходы', G4, 'operating', false],
+    ['47', 'Эл.док, вакансии, картридж, 1С', G4, 'operating', false],
+    ['48', 'Сертификация', G4, 'operating', false],
+    ['50', 'Топливо (газ/бензин)', G5, 'operating', false],
+    ['51', 'Ремонт авто', G5, 'operating', false],
+    ['52', 'Страховка', G5, 'operating', false],
+    ['53', 'Доставка и такси', G5, 'operating', false],
+    ['60', 'Проценты по кредитам', G6, 'financing', false],
+    ['61', 'Возврат кредитов', G6, 'financing', false],
+    ['62', '% банка', G6, 'financing', true],
+    ['63', 'Возврат долгов', G6, 'financing', false],
+    ['64', '% расход наличку', G6, 'financing', false],
+    ['65', 'Налоги от ЗП', G6, 'financing', true],
+    ['66', 'НДС', G6, 'financing', true],
+    ['67', 'Налог на прибыль', G6, 'financing', true],
+    ['68', 'Др. налоги', G6, 'financing', true],
+    ['69', 'Резервный счёт', G6, 'financing', false],
+    ['89', 'Счёт Хаёт банка', G6, 'financing', false],
+    ['79', 'Корпоративная карта', G6, 'financing', false],
+    ['70', 'Оборудование + офисное оборудование', G7, 'investing', false],
+    ['71', 'Стеллажи', G7, 'investing', false],
+    ['72', 'Стройка', G7, 'investing', false],
+    ['80', 'День рождения', G8, 'operating', false],
+    ['81', 'Питание «базар»', G8, 'operating', false],
+    ['82', 'Проект уксус', G8, 'operating', false],
+    ['100', 'ОБН', G8, 'operating', false],
+  ];
+  let i = 0;
+  for (const [code, name, grp, flow, onlyT] of CATS) {
+    i += 10;
+    // status не трогаем при обновлении — чтобы не «воскрешать» заархивированные пользователем статьи.
+    await db.pool.query(
+      `INSERT INTO cash_categories (code, name, group_name, flow_type, only_transfer, sort_order)
+       VALUES ($1,$2,$3,$4,$5,$6)
+       ON CONFLICT (code) DO UPDATE SET name=EXCLUDED.name, group_name=EXCLUDED.group_name,
+         flow_type=EXCLUDED.flow_type, only_transfer=EXCLUDED.only_transfer, sort_order=EXCLUDED.sort_order`,
+      [code, name, grp, flow, onlyT, i]
+    );
+  }
+}
+
+// Кошельки — стартовые заглушки (только если справочник пуст; названия уточнит пользователь).
+async function seedWallets() {
+  const ex = await db.pool.query('SELECT 1 FROM cash_wallets LIMIT 1');
+  if (ex.rows.length) return;
+  const W = [
+    ['Расчётный счёт Хаёт-банк', 'bank', '#163a28', 10],
+    ['Расчётный счёт (второй банк)', 'bank', '#0d5aa7', 20],
+    ['Резервный счёт', 'reserve', '#6a4fb6', 30],
+    ['Пластиковая карта', 'card', '#c77800', 40],
+    ['Наличная касса', 'cash', '#2e7d32', 50],
+  ];
+  for (const [name, kind, color, sort] of W) {
+    await db.pool.query('INSERT INTO cash_wallets (name, kind, color, sort_order) VALUES ($1,$2,$3,$4)', [name, kind, color, sort]);
+  }
+}
+
+router.use(async (req, res, next) => {
+  try { await ensureCashSchema(); next(); }
+  catch (e) { next(e); }
+});
+
+// ---------- Страница ----------
+router.get('/', async (req, res) => {
+  const settings = await db.getSettings();
+  res.render('cash', { settings, user: req.user });
+});
+
+// ---------- Справочники (для SPA) ----------
+router.get('/api/dicts', async (req, res) => {
+  const wallets = (await db.pool.query("SELECT * FROM cash_wallets WHERE status='active' ORDER BY sort_order, id")).rows;
+  const categories = (await db.pool.query("SELECT * FROM cash_categories WHERE status='active' ORDER BY sort_order, id")).rows;
+  const counterparties = (await db.pool.query(
+    `SELECT c.*, cat.code AS cat_code, cat.name AS cat_name
+     FROM cash_counterparties c LEFT JOIN cash_categories cat ON cat.id = c.default_category_id
+     WHERE c.status='active' ORDER BY c.name`)).rows;
+  const contracts = (await db.pool.query(
+    `SELECT k.*, cp.name AS cp_name, cat.code AS cat_code, cat.name AS cat_name
+     FROM cash_contracts k
+     LEFT JOIN cash_counterparties cp ON cp.id = k.counterparty_id
+     LEFT JOIN cash_categories cat ON cat.id = k.category_id
+     ORDER BY k.id DESC`)).rows;
+  res.json({ wallets, categories, counterparties, contracts });
+});
+
+module.exports = router;

@@ -568,6 +568,15 @@ async function seed() {
     );
   }
 
+  // Плитка «Касса» — денежный модуль
+  const csht = await pool.query("SELECT id FROM tiles WHERE url = '/cash' LIMIT 1");
+  if (csht.rows.length === 0) {
+    await pool.query(
+      `INSERT INTO tiles (title, description, icon, url, open_new_tab, sort_order)
+       VALUES ('Касса', 'Деньги, кэш-флоу (ДДС), P&L, остатки кошельков', '💸', '/cash', FALSE, 50)`
+    );
+  }
+
   // Первая плитка — Счета-фактуры (адрес меняется в админке)
   const t = await pool.query('SELECT id FROM tiles LIMIT 1');
   if (t.rows.length === 0) {
@@ -589,6 +598,7 @@ async function seed() {
     ['/purchase', 'Склад и закуп'],
     ['/stock', 'Склад и закуп'],
     ['/dictionaries', 'Справочники и настройки'],
+    ['/cash', 'Финансы'],
   ];
   for (const [u, sec] of tileSections) {
     await pool.query("UPDATE tiles SET section = $1 WHERE url = $2 AND (section IS NULL OR section = '')", [sec, u]);
