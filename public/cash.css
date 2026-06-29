@@ -52,7 +52,9 @@
 
 /* Шапка раздела с кнопкой */
 .cash-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
-.cash-add { white-space: nowrap; }
+.cash-add { white-space: nowrap; padding: 8px 14px; border-radius: 10px; font-weight: 700; font-size: 13px; cursor: pointer; line-height: 1.1; }
+.btn-ghost.cash-add { background: #fff; border: 1px solid var(--forest); color: var(--forest); }
+.btn-ghost.cash-add:hover { background: #eef4e9; }
 
 /* Модалка */
 .cashm-overlay { position: fixed; inset: 0; background: rgba(20,36,27,.45); display: flex; align-items: flex-start; justify-content: center; padding: 40px 14px; z-index: 60; overflow: auto; }
