@@ -47,6 +47,7 @@
     root.appendChild(overlay);
   }
   async function reload() { try { DICTS = await api('/dicts'); } catch (e) {} render(); }
+  async function refreshDicts() { try { DICTS = await api('/dicts'); } catch (e) {} }
   const frow = (label, control) => el('label', { class: 'cashf-row' }, [el('span', {}, label), control]);
   const finp = (val, attrs) => el('input', Object.assign({ class: 'cashf-inp', value: val == null ? '' : String(val) }, attrs || {}));
   const fsel = (options, val) => el('select', { class: 'cashf-inp' }, options.map((o) => el('option', { value: o.v, selected: String(o.v) === String(val) || null }, o.t)));
@@ -139,6 +140,7 @@
   let DICTS = null;
   let TAB = 'wallets';
   let SUB = 'categories';
+  let cpView = 'main';
 
   function shell() {
     const main = $('#cash-main'); main.innerHTML = '';
@@ -377,13 +379,27 @@
       el('div', {}, [el('div', { class: 'cash-h2' }, 'Контрагенты' + ' (' + list.length + ')'), el('div', { class: 'cash-sub' }, 'Поставщики, аренда, налоги, банк. Ключ автоклассификации — ИНН. ' + syncInfo)]),
       el('div', { class: 'cash-tx-btns' }, [syncBtn, addBtn('+ Контрагент', () => openCpForm(null))]),
     ]));
-    if (!list.length) { box.appendChild(el('div', { class: 'cash-empty' }, 'Пока пусто. Контрагенты появятся при импорте выписки (Этап 3) или добавьте вручную.')); return; }
+    const chip = (id, label) => el('button', { class: 'cash-subtab' + (cpView === id ? ' on' : ''), onclick: () => { cpView = id; renderDicts(); } }, label);
+    box.appendChild(el('div', { class: 'cash-subtabs' }, [chip('main', 'Поставщики и прочие'), chip('clients', 'Покупатели (клиенты из SD)')]));
+    if (cpView === 'clients') { renderClients(box); return; }
+    if (!list.length) { box.appendChild(el('div', { class: 'cash-empty' }, 'Пока пусто. Контрагенты появятся при импорте выписки или добавьте вручную.')); return; }
     const head = el('div', { class: 'cash-row head cash-cp' }, ['Название', 'Код / ИНН', 'Статья', 'Комментарий'].map((h) => el('span', {}, h)));
     box.appendChild(el('div', { class: 'cash-list' }, [head, ...list.map((x) => el('div', { class: 'cash-row cash-cp', style: 'cursor:pointer', onclick: () => openCpForm(x) }, [
       el('span', {}, x.name),
       el('span', {}, (x.bank_code || '—') + (x.inn ? ' · ' + x.inn : '')),
       el('span', {}, x.cat_code ? (x.cat_code + ' ' + (x.cat_name || '')) : '—'),
       el('span', {}, x.comment || ''),
+    ]))]));
+  }
+
+  async function renderClients(box) {
+    let data; try { data = await api('/clients'); } catch (e) { box.appendChild(el('div', { class: 'cash-empty' }, 'Ошибка: ' + e.message)); return; }
+    const items = data.items || [];
+    box.appendChild(el('div', { class: 'cash-sub' }, 'Покупатели подтягиваются из SalesDoctor (кнопка «🔄 Клиенты из SD»). По их ИНН приходы привязываются автоматически.'));
+    if (!items.length) { box.appendChild(el('div', { class: 'cash-empty' }, 'Клиентов нет. Нажмите «🔄 Клиенты из SD».')); return; }
+    const head = el('div', { class: 'cash-row head cash-cp' }, ['Название', 'ИНН', '', ''].map((h) => el('span', {}, h)));
+    box.appendChild(el('div', { class: 'cash-list' }, [head, ...items.map((c) => el('div', { class: 'cash-row cash-cp' }, [
+      el('span', {}, c.name), el('span', {}, c.inn || '—'), el('span', {}, ''), el('span', {}, ''),
     ]))]));
   }
 
