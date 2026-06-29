@@ -115,7 +115,26 @@ async function ensureCashSchema() {
   // Код 100 «ОБН» — это перемещение между кошельками (подсказка для импорта).
   await db.pool.query("UPDATE cash_categories SET direction_hint='transfer' WHERE code='100' AND (direction_hint IS NULL OR direction_hint='')");
   await db.pool.query("UPDATE cash_categories SET direction_hint='in' WHERE code IN ('200','201','202','203') AND (direction_hint IS NULL OR direction_hint='')");
+  await seedSupplierCashCats();
   _ready = true;
+}
+
+// Разовое заполнение статьи ДДС у поставщиков Закупа из справочника ИНН→код
+// (только там, где ещё не задано вручную — ручные значения не перетираем).
+async function seedSupplierCashCats() {
+  let map;
+  try { map = require('./data/cash_inn_categories.json'); } catch (e) { return; }
+  const entries = Object.entries(map || {});
+  if (!entries.length) return;
+  const vals = [], params = [];
+  entries.forEach(([inn, code], i) => { params.push(inn, code); vals.push(`($${i * 2 + 1}::text,$${i * 2 + 2}::text)`); });
+  try {
+    await db.pool.query(
+      `UPDATE ref_counterparties rc SET cash_category_id = cc.id
+       FROM (VALUES ${vals.join(',')}) AS m(inn, code)
+       JOIN cash_categories cc ON cc.code = m.code
+       WHERE rc.inn = m.inn AND rc.cash_category_id IS NULL`, params);
+  } catch (e) { /* таблица Закупа может отсутствовать/отличаться */ }
 }
 
 async function seedGroups() {
@@ -546,6 +565,8 @@ router.post('/api/import/preview', upload.single('file'), async (req, res) => {
     (await db.pool.query("SELECT id, inn, default_category_id, name FROM cash_counterparties WHERE status='active' AND inn IS NOT NULL AND inn<>''")).rows.forEach((c) => { cpByInn[String(c.inn).trim()] = c; });
     const refCatByInn = {};
     try { (await db.pool.query("SELECT inn, cash_category_id FROM ref_counterparties WHERE role_supplier=TRUE AND inn IS NOT NULL AND inn<>'' AND cash_category_id IS NOT NULL")).rows.forEach((c) => { refCatByInn[String(c.inn).trim()] = c.cash_category_id; }); } catch (e) { /* колонки ещё нет */ }
+    let innMap = {}; try { innMap = require('./data/cash_inn_categories.json') || {}; } catch (e) { /* нет файла */ }
+    const innCatId = (inn) => { const code = innMap[String(inn).trim()]; const c = code ? cats.find((x) => String(x.code) === code) : null; return c ? c.id : null; };
     // Дедуп одним запросом: тянем уже загруженные ключи по этому кошельку в Set.
     const existing = new Set();
     (await db.pool.query("SELECT to_char(tx_date,'YYYY-MM-DD') d, amount, COALESCE(bank_doc_no,'') doc FROM cash_transactions WHERE wallet_id=$1 AND source='import'", [wallet_id])).rows
@@ -565,8 +586,8 @@ router.post('/api/import/preview', upload.single('file'), async (req, res) => {
           const cat = catById[cp.default_category_id];
           r.cat_label = cat ? (cat.code + ' ' + cat.name) : null;
           r.is_classified = !!cp.default_category_id; r.flag = r.is_classified ? 'ok' : 'cp_no_cat';
-        } else if (refCatByInn[String(r.inn || '').trim()]) {
-          r.category_id = refCatByInn[String(r.inn || '').trim()];
+        } else if (refCatByInn[String(r.inn || '').trim()] || innCatId(r.inn)) {
+          r.category_id = refCatByInn[String(r.inn || '').trim()] || innCatId(r.inn);
           const cat = catById[r.category_id];
           r.cat_label = cat ? (cat.code + ' ' + cat.name) : null;
           r.is_classified = !!r.category_id; r.flag = 'ok'; newcp++;
@@ -613,11 +634,15 @@ router.post('/api/import/run', upload.single('file'), async (req, res) => {
     if (!rows || !rows.length) return res.status(400).json({ error: 'Не нашёл транзакций в файле (проверьте формат).' });
     const cats = (await db.pool.query("SELECT id, code FROM cash_categories WHERE status='active'")).rows;
     const incomeCat = cats.find((c) => c.code === '200') || null;
+    const catByCode = {}; cats.forEach((c) => { catByCode[String(c.code)] = c.id; });
     const cpByInn = {};
     (await db.pool.query("SELECT id, inn, default_category_id FROM cash_counterparties WHERE status='active' AND inn IS NOT NULL AND inn<>''")).rows.forEach((c) => { cpByInn[String(c.inn).trim()] = c; });
     // запасная классификация расходов: статья ДДС поставщика из Закупа (по ИНН)
     const refCatByInn = {};
     try { (await db.pool.query("SELECT inn, cash_category_id FROM ref_counterparties WHERE role_supplier=TRUE AND inn IS NOT NULL AND inn<>'' AND cash_category_id IS NOT NULL")).rows.forEach((c) => { refCatByInn[String(c.inn).trim()] = c.cash_category_id; }); } catch (e) { /* колонки ещё нет */ }
+    // справочник ИНН→код (поставщики + админ-расходы), резолвим код в id категории
+    let innMap = {}; try { innMap = require('./data/cash_inn_categories.json') || {}; } catch (e) { /* нет файла */ }
+    const innCat = (inn) => { const code = innMap[String(inn).trim()]; return code && catByCode[code] ? catByCode[code] : null; };
     const existing = new Set();
     (await db.pool.query("SELECT to_char(tx_date,'YYYY-MM-DD') d, amount, COALESCE(bank_doc_no,'') doc FROM cash_transactions WHERE wallet_id=$1 AND source='import'", [wallet_id])).rows
       .forEach((x) => existing.add(x.d + '|' + Number(x.amount) + '|' + x.doc));
@@ -633,7 +658,8 @@ router.post('/api/import/run', upload.single('file'), async (req, res) => {
       else {
         const cp = cpByInn[inn];
         if (cp) { counterparty_id = cp.id; category_id = cp.default_category_id || null; }
-        if (!category_id && refCatByInn[inn]) category_id = refCatByInn[inn]; // подхватили статью из Закупа
+        if (!category_id && refCatByInn[inn]) category_id = refCatByInn[inn]; // статья поставщика из Закупа
+        if (!category_id) category_id = innCat(inn);                          // справочник ИНН→код
         is_classified = !!category_id;
         if (!cp) newcp++;
       }
