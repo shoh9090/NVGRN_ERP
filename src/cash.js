@@ -198,7 +198,63 @@ router.get('/api/dicts', async (req, res) => {
      LEFT JOIN cash_counterparties cp ON cp.id = k.counterparty_id
      LEFT JOIN cash_categories cat ON cat.id = k.category_id
      ORDER BY k.id DESC`)).rows;
-  res.json({ wallets, categories, counterparties, contracts });
+  let suppliers = [];
+  try { suppliers = (await db.pool.query('SELECT id, name FROM ref_counterparties ORDER BY name LIMIT 2000')).rows; } catch (e) { /* справочника может не быть */ }
+  res.json({ wallets, categories, counterparties, contracts, suppliers });
+});
+
+// ---------- Управление справочниками ----------
+const J = express.json();
+const intOrNull = (v) => (v === undefined || v === null || v === '' ? null : parseInt(v, 10));
+const numOrNull = (v) => (v === undefined || v === null || v === '' ? null : Number(v));
+
+router.post('/api/wallet', J, async (req, res) => {
+  const b = req.body || {};
+  if (!b.name || !String(b.name).trim()) return res.status(400).json({ error: 'Введите название' });
+  const kind = ['bank', 'card', 'cash', 'reserve'].includes(b.kind) ? b.kind : 'bank';
+  const args = [String(b.name).trim(), kind, b.account_no || null, b.color || '#163a28', parseInt(b.sort_order) || 100];
+  if (b.id) await db.pool.query('UPDATE cash_wallets SET name=$1, kind=$2, account_no=$3, color=$4, sort_order=$5 WHERE id=$6', [...args, b.id]);
+  else await db.pool.query('INSERT INTO cash_wallets (name, kind, account_no, color, sort_order) VALUES ($1,$2,$3,$4,$5)', args);
+  await db.log(req.user.id, 'cash_wallet_save', String(b.name));
+  res.json({ ok: true });
+});
+router.post('/api/wallet/:id(\\d+)/archive', async (req, res) => { await db.pool.query("UPDATE cash_wallets SET status='archived' WHERE id=$1", [req.params.id]); res.json({ ok: true }); });
+
+router.post('/api/category', J, async (req, res) => {
+  const b = req.body || {};
+  if (!b.code || !String(b.code).trim()) return res.status(400).json({ error: 'Введите код' });
+  if (!b.name || !String(b.name).trim()) return res.status(400).json({ error: 'Введите название' });
+  const ft = ['operating', 'investing', 'financing'].includes(b.flow_type) ? b.flow_type : 'operating';
+  const args = [String(b.code).trim(), String(b.name).trim(), b.group_name || null, ft, !!b.only_transfer, parseInt(b.sort_order) || 0];
+  try {
+    if (b.id) await db.pool.query('UPDATE cash_categories SET code=$1, name=$2, group_name=$3, flow_type=$4, only_transfer=$5, sort_order=$6 WHERE id=$7', [...args, b.id]);
+    else await db.pool.query('INSERT INTO cash_categories (code, name, group_name, flow_type, only_transfer, sort_order) VALUES ($1,$2,$3,$4,$5,$6)', args);
+  } catch (e) { return res.status(400).json({ error: 'Такой код уже есть или ошибка: ' + e.message }); }
+  await db.log(req.user.id, 'cash_category_save', String(b.code));
+  res.json({ ok: true });
+});
+router.post('/api/category/:id(\\d+)/archive', async (req, res) => { await db.pool.query("UPDATE cash_categories SET status='archived' WHERE id=$1", [req.params.id]); res.json({ ok: true }); });
+
+router.post('/api/counterparty', J, async (req, res) => {
+  const b = req.body || {};
+  if (!b.name || !String(b.name).trim()) return res.status(400).json({ error: 'Введите название' });
+  const args = [String(b.name).trim(), b.inn || null, b.bank_code || null, intOrNull(b.default_category_id), intOrNull(b.linked_supplier_id), b.comment || null];
+  if (b.id) await db.pool.query('UPDATE cash_counterparties SET name=$1, inn=$2, bank_code=$3, default_category_id=$4, linked_supplier_id=$5, comment=$6 WHERE id=$7', [...args, b.id]);
+  else await db.pool.query('INSERT INTO cash_counterparties (name, inn, bank_code, default_category_id, linked_supplier_id, comment) VALUES ($1,$2,$3,$4,$5,$6)', args);
+  await db.log(req.user.id, 'cash_counterparty_save', String(b.name));
+  res.json({ ok: true });
+});
+router.post('/api/counterparty/:id(\\d+)/archive', async (req, res) => { await db.pool.query("UPDATE cash_counterparties SET status='archived' WHERE id=$1", [req.params.id]); res.json({ ok: true }); });
+
+router.post('/api/contract', J, async (req, res) => {
+  const b = req.body || {};
+  if (!intOrNull(b.counterparty_id)) return res.status(400).json({ error: 'Выберите контрагента' });
+  const status = ['active', 'closed'].includes(b.status) ? b.status : 'active';
+  const args = [intOrNull(b.counterparty_id), b.number || null, b.subject || null, intOrNull(b.category_id), numOrNull(b.amount), b.date_start || null, b.date_end || null, status];
+  if (b.id) await db.pool.query('UPDATE cash_contracts SET counterparty_id=$1, number=$2, subject=$3, category_id=$4, amount=$5, date_start=$6, date_end=$7, status=$8 WHERE id=$9', [...args, b.id]);
+  else await db.pool.query('INSERT INTO cash_contracts (counterparty_id, number, subject, category_id, amount, date_start, date_end, status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)', args);
+  await db.log(req.user.id, 'cash_contract_save', String(b.number || ''));
+  res.json({ ok: true });
 });
 
 module.exports = router;
