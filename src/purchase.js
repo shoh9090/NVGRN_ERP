@@ -252,7 +252,7 @@ router.get('/api/filter-options', async (req, res) => {
   let cashCats = [];
   try {
     const cc = await db.pool.query(
-      "SELECT id, code, name, group_name FROM cash_categories WHERE status = 'active' AND direction_hint <> 'transfer' ORDER BY sort_order, code"
+      "SELECT id, code, name, group_name FROM cash_categories WHERE status = 'active' AND group_name ILIKE '%Сырьё%' ORDER BY sort_order, code"
     );
     cashCats = cc.rows;
   } catch (e) { /* Касса ещё не инициализирована */ }
