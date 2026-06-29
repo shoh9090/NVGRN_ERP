@@ -5,6 +5,7 @@ const express = require('express');
 const multer = require('multer');
 const XLSX = require('xlsx');
 const db = require('./db');
+const integrations = require('./integrations');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 16 * 1024 * 1024 } });
@@ -53,6 +54,8 @@ async function ensureCashSchema() {
     status TEXT NOT NULL DEFAULT 'active'
   )`);
   await q(`CREATE INDEX IF NOT EXISTS idx_cash_cp_bankcode ON cash_counterparties (bank_code)`);
+  await q(`ALTER TABLE cash_counterparties ADD COLUMN IF NOT EXISTS cp_role TEXT`); // null=поставщик/прочее, 'client'=клиент из SD
+  await q(`CREATE INDEX IF NOT EXISTS idx_cash_cp_inn ON cash_counterparties (inn)`);
 
   await q(`CREATE TABLE IF NOT EXISTS cash_contracts (
     id SERIAL PRIMARY KEY,
@@ -226,7 +229,10 @@ router.get('/api/dicts', async (req, res) => {
   const counterparties = (await db.pool.query(
     `SELECT c.*, cat.code AS cat_code, cat.name AS cat_name
      FROM cash_counterparties c LEFT JOIN cash_categories cat ON cat.id = c.default_category_id
-     WHERE c.status='active' ORDER BY c.name`)).rows;
+     WHERE c.status='active' AND (c.cp_role IS DISTINCT FROM 'client') ORDER BY c.name`)).rows;
+  const clientsCount = Number((await db.pool.query("SELECT count(*) n FROM cash_counterparties WHERE cp_role='client' AND status='active'")).rows[0].n);
+  const settings = await db.getSettings();
+  const clientsSyncedAt = settings.cash_clients_synced_at || null;
   const contracts = (await db.pool.query(
     `SELECT k.*, cp.name AS cp_name, cat.code AS cat_code, cat.name AS cat_name
      FROM cash_contracts k
@@ -235,7 +241,26 @@ router.get('/api/dicts', async (req, res) => {
      ORDER BY k.id DESC`)).rows;
   let suppliers = [];
   try { suppliers = (await db.pool.query('SELECT id, name FROM ref_counterparties ORDER BY name LIMIT 2000')).rows; } catch (e) { /* справочника может не быть */ }
-  res.json({ wallets, categories, groups, counterparties, contracts, suppliers });
+  res.json({ wallets, categories, groups, counterparties, contracts, suppliers, clientsCount, clientsSyncedAt });
+});
+
+// Синхронизация клиентов из SalesDoctor (контрагенты-клиенты для привязки приходов).
+router.post('/api/sync-clients', async (req, res) => {
+  try {
+    const r = await integrations.syncCashClients();
+    await db.setSetting('cash_clients_synced_at', new Date().toISOString());
+    await db.log(req.user.id, 'cash_sync_clients', String(r.total));
+    res.json({ ok: true, created: r.created, updated: r.updated, total: r.total });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Список клиентов (по запросу — в общий справочник не лезут).
+router.get('/api/clients', async (req, res) => {
+  const q = (req.query.q || '').trim();
+  const params = []; let w = "cp_role='client' AND status='active'";
+  if (q) { params.push('%' + q + '%'); w += ' AND (name ILIKE $1 OR inn ILIKE $1)'; }
+  const rows = (await db.pool.query(`SELECT id, name, inn FROM cash_counterparties WHERE ${w} ORDER BY name LIMIT 300`, params)).rows;
+  res.json({ items: rows });
 });
 
 router.post('/api/group', J, async (req, res) => {
@@ -593,7 +618,7 @@ router.post('/api/import/run', upload.single('file'), async (req, res) => {
       if (existing.has(key)) { skip++; continue; }
       existing.add(key);
       let category_id = null, counterparty_id = null, is_classified = false;
-      if (r.tx_type === 'in') { category_id = incomeCat ? incomeCat.id : null; is_classified = !!incomeCat; }
+      if (r.tx_type === 'in') { category_id = incomeCat ? incomeCat.id : null; is_classified = !!incomeCat; const cl = cpByInn[String(r.inn || '').trim()]; if (cl) counterparty_id = cl.id; }
       else { const cp = cpByInn[String(r.inn || '').trim()]; if (cp) { counterparty_id = cp.id; category_id = cp.default_category_id || null; is_classified = !!cp.default_category_id; } else newcp++; }
       await db.pool.query(
         `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, counterparty_id, category_id, purpose, bank_doc_no, source, import_batch_id, is_classified, payer_name, payer_inn, created_by)

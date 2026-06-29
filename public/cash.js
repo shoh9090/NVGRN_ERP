@@ -367,9 +367,15 @@
 
   function renderCounterparties(box) {
     const list = DICTS.counterparties || [];
+    const syncBtn = el('button', { class: 'btn-ghost cash-add', onclick: async () => {
+      syncBtn.disabled = true; syncBtn.textContent = 'Синхронизирую…';
+      try { const d = await post('/sync-clients', {}); toast('Клиенты SD: +' + d.created + ', обновлено ' + d.updated); await refreshDicts(); renderDicts(); }
+      catch (e) { toast(e.message, true); syncBtn.disabled = false; syncBtn.textContent = '🔄 Клиенты из SD'; }
+    } }, '🔄 Клиенты из SD');
+    const syncInfo = DICTS.clientsCount ? ('🟢 Клиентов из SD: ' + DICTS.clientsCount + (DICTS.clientsSyncedAt ? ' · синхр. ' + ruDate(DICTS.clientsSyncedAt) : '')) : '⚪ Клиенты из SD ещё не синхронизированы';
     box.appendChild(el('div', { class: 'cash-head' }, [
-      el('div', {}, [el('div', { class: 'cash-h2' }, 'Контрагенты' + ' (' + list.length + ')'), el('div', { class: 'cash-sub' }, 'Поставщики, аренда, налоги, банк. Код из выписки — ключ автоклассификации. Клик — изменить.')]),
-      addBtn('+ Контрагент', () => openCpForm(null)),
+      el('div', {}, [el('div', { class: 'cash-h2' }, 'Контрагенты' + ' (' + list.length + ')'), el('div', { class: 'cash-sub' }, 'Поставщики, аренда, налоги, банк. Ключ автоклассификации — ИНН. ' + syncInfo)]),
+      el('div', { class: 'cash-tx-btns' }, [syncBtn, addBtn('+ Контрагент', () => openCpForm(null))]),
     ]));
     if (!list.length) { box.appendChild(el('div', { class: 'cash-empty' }, 'Пока пусто. Контрагенты появятся при импорте выписки (Этап 3) или добавьте вручную.')); return; }
     const head = el('div', { class: 'cash-row head cash-cp' }, ['Название', 'Код / ИНН', 'Статья', 'Комментарий'].map((h) => el('span', {}, h)));
