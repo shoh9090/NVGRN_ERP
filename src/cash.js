@@ -116,7 +116,34 @@ async function ensureCashSchema() {
   await db.pool.query("UPDATE cash_categories SET direction_hint='transfer' WHERE code='100' AND (direction_hint IS NULL OR direction_hint='')");
   await db.pool.query("UPDATE cash_categories SET direction_hint='in' WHERE code IN ('200','201','202','203') AND (direction_hint IS NULL OR direction_hint='')");
   await seedSupplierCashCats();
+  await seedCashCounterparties();
   _ready = true;
+}
+
+// Разовая загрузка контрагентов из справочника (поставщики + админ-расходы) в Кассу.
+// Если контрагента с таким ИНН ещё нет — создаём карточку с кодом ДДС.
+// Если есть, но без статьи — проставляем. Ручные карточки/статьи не трогаем. Идемпотентно.
+async function seedCashCounterparties() {
+  let map;
+  try { map = require('./data/cash_counterparties_seed.json'); } catch (e) { return; }
+  const entries = Object.entries(map || {});
+  if (!entries.length) return;
+  const codeToCat = {};
+  (await db.pool.query("SELECT id, code FROM cash_categories WHERE status='active'")).rows.forEach((c) => { codeToCat[String(c.code)] = c.id; });
+  for (const [inn, v] of entries) {
+    const catId = codeToCat[String(v.code)] || null;
+    if (!catId) continue;
+    const ex = await db.pool.query("SELECT id, default_category_id FROM cash_counterparties WHERE inn=$1 AND (cp_role IS DISTINCT FROM 'client') LIMIT 1", [inn]);
+    if (ex.rows.length) {
+      if (ex.rows[0].default_category_id == null) {
+        await db.pool.query('UPDATE cash_counterparties SET default_category_id=$1 WHERE id=$2', [catId, ex.rows[0].id]);
+      }
+    } else {
+      await db.pool.query(
+        "INSERT INTO cash_counterparties (name, inn, default_category_id, status) VALUES ($1,$2,$3,'active')",
+        [v.name, inn, catId]);
+    }
+  }
 }
 
 // Разовое заполнение статьи ДДС у поставщиков Закупа из справочника ИНН→код
