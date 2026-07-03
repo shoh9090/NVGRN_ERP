@@ -586,6 +586,7 @@ async function syncCashClients() {
   if (!cfg.url || !cfg.login || !cfg.password) throw new Error('Сначала заполните доступ к SalesDoctor в разделе «Интеграции».');
   const auth = await sdLogin(cfg);
   await db.pool.query("ALTER TABLE cash_counterparties ADD COLUMN IF NOT EXISTS cp_role TEXT").catch(() => {});
+  await db.pool.query("ALTER TABLE cash_counterparties ADD COLUMN IF NOT EXISTS firm_name TEXT").catch(() => {});
   const clients = (await sdGetAll(cfg, auth, 'getClient', 'client', {})).filter((c) => c.active === 'Y' && c.inn);
   const existing = {};
   (await db.pool.query("SELECT id, inn FROM cash_counterparties WHERE cp_role='client'")).rows.forEach((r) => { existing[String(r.inn).trim()] = r.id; });
@@ -593,8 +594,9 @@ async function syncCashClients() {
   for (const c of clients) {
     const inn = String(c.inn).trim(); if (!inn) continue;
     const name = c.name || c.firmName || inn;
-    if (existing[inn]) { await db.pool.query("UPDATE cash_counterparties SET name=$1, status='active' WHERE id=$2", [name, existing[inn]]); updated++; }
-    else { const r = await db.pool.query("INSERT INTO cash_counterparties (name, inn, cp_role, status) VALUES ($1,$2,'client','active') RETURNING id", [name, inn]); existing[inn] = r.rows[0].id; created++; }
+    const firm = c.firmName || null;
+    if (existing[inn]) { await db.pool.query("UPDATE cash_counterparties SET name=$1, firm_name=COALESCE($3, firm_name), status='active' WHERE id=$2", [name, existing[inn], firm]); updated++; }
+    else { const r = await db.pool.query("INSERT INTO cash_counterparties (name, inn, firm_name, cp_role, status) VALUES ($1,$2,$3,'client','active') RETURNING id", [name, inn, firm]); existing[inn] = r.rows[0].id; created++; }
   }
   return { created, updated, total: created + updated };
 }

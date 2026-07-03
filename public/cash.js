@@ -110,10 +110,9 @@
     const inn = finp(c.inn, { placeholder: 'ИНН' });
     const code = finp(c.bank_code, { placeholder: 'Код из выписки (напр. 01071)' });
     const cat = fsel(catOptions(), c.default_category_id || '');
-    const sup = fsel(supOptions(), c.linked_supplier_id || '');
     const comment = finp(c.comment, { placeholder: 'Комментарий' });
-    const body = el('div', { class: 'cashf' }, [frow('Название', name), frow('ИНН', inn), frow('Код выписки', code), frow('Статья по умолч.', cat), frow('Поставщик Закупа', sup), frow('Комментарий', comment)]);
-    const save = el('button', { class: 'btn-primary', onclick: async () => { try { await post('/counterparty', { id: c.id, name: name.value, inn: inn.value, bank_code: code.value, default_category_id: cat.value, linked_supplier_id: sup.value, comment: comment.value }); toast('Сохранено'); closeModal(); reload(); } catch (e) { toast(e.message, true); } } }, 'Сохранить');
+    const body = el('div', { class: 'cashf' }, [frow('Название', name), frow('ИНН', inn), frow('Код выписки', code), frow('Статья по умолч.', cat), frow('Комментарий', comment)]);
+    const save = el('button', { class: 'btn-primary', onclick: async () => { try { await post('/counterparty', { id: c.id, name: name.value, inn: inn.value, bank_code: code.value, default_category_id: cat.value, linked_supplier_id: c.linked_supplier_id || '', comment: comment.value }); toast('Сохранено'); closeModal(); reload(); } catch (e) { toast(e.message, true); } } }, 'Сохранить');
     const acts = [save];
     if (c.id) acts.unshift(el('button', { class: 'btn-ghost cashf-arch', onclick: async () => { if (!confirm('Архивировать контрагента «' + c.name + '»?')) return; try { await post('/counterparty/' + c.id + '/archive', {}); toast('В архиве'); closeModal(); reload(); } catch (e) { toast(e.message, true); } } }, 'В архив'));
     modal(c.id ? 'Контрагент' : 'Новый контрагент', body, acts);
@@ -201,6 +200,8 @@
         el('button', { class: 'btn-primary cash-add cash-out', onclick: () => openTxForm('out', null) }, '+ Расход'),
         el('button', { class: 'btn-ghost cash-add', onclick: () => openTransferForm(null) }, '↔ Перевод'),
         el('button', { class: 'btn-ghost cash-add', onclick: openImport }, '📥 Импорт выписки'),
+        el('button', { class: 'btn-ghost cash-add', title: 'Привязать контрагентов и проставить статьи ДДС по ИНН', onclick: doRelink }, '🔗 Привязать по ИНН'),
+        ...((window.HUB_USER && window.HUB_USER.isAdmin) ? [el('button', { class: 'btn-ghost cash-add cashf-del', onclick: doWipe }, '🧹 Очистить')] : []),
       ]),
     ]));
     const dateInp = (k) => el('input', { type: 'date', class: 'cashf-inp cash-filt', value: txState[k], onchange: (e) => { txState[k] = e.target.value; loadTx(); } });
@@ -338,6 +339,25 @@
     modal('Импорт выписки', body, [load]);
   }
 
+  async function doRelink() {
+    try {
+      const d = await post('/transactions/relink', {});
+      toast('Привязано контрагентов: ' + d.linked + ', статей по ИНН: ' + d.byMap);
+      render();
+    } catch (e) { toast(e.message, true); }
+  }
+
+  async function doWipe() {
+    if (!confirm('Удалить ВСЕ транзакции и загрузки выписок? Справочники (статьи, контрагенты, кошельки) останутся. Действие необратимо.')) return;
+    const w = prompt('Для подтверждения введите слово: УДАЛИТЬ');
+    if (String(w || '').trim().toUpperCase() !== 'УДАЛИТЬ') return toast('Отменено', true);
+    try {
+      const d = await post('/transactions/wipe', {});
+      toast('Удалено транзакций: ' + d.deleted);
+      render();
+    } catch (e) { toast(e.message, true); }
+  }
+
   function openCpImport() {
     const file = el('input', { type: 'file', accept: '.xls,.xlsx', class: 'cashf-inp' });
     const tpl = el('a', { href: '/cash/api/counterparties/template.xlsx', class: 'cash-link' }, '⬇ Скачать шаблон Excel');
@@ -446,14 +466,25 @@
   }
 
   async function renderClients(box) {
-    let data; try { data = await api('/clients'); } catch (e) { box.appendChild(el('div', { class: 'cash-empty' }, 'Ошибка: ' + e.message)); return; }
-    const items = data.items || [];
     box.appendChild(el('div', { class: 'cash-sub' }, 'Покупатели подтягиваются из SalesDoctor (кнопка «🔄 Клиенты из SD»). По их ИНН приходы привязываются автоматически.'));
-    if (!items.length) { box.appendChild(el('div', { class: 'cash-empty' }, 'Клиентов нет. Нажмите «🔄 Клиенты из SD».')); return; }
-    const head = el('div', { class: 'cash-row head cash-cp' }, ['Название', 'ИНН', '', ''].map((h) => el('span', {}, h)));
-    box.appendChild(el('div', { class: 'cash-list' }, [head, ...items.map((c) => el('div', { class: 'cash-row cash-cp' }, [
-      el('span', {}, c.name), el('span', {}, c.inn || '—'), el('span', {}, ''), el('span', {}, ''),
-    ]))]));
+    const q = el('input', { class: 'cashf-inp cash-filt-q', placeholder: 'Поиск по названию, юр.лицу или ИНН', value: cpFilterQ });
+    const listBox = el('div', {});
+    async function load() {
+      listBox.innerHTML = '<div class="cash-loading">Загружаю…</div>';
+      let data; try { data = await api('/clients' + (q.value.trim() ? '?q=' + encodeURIComponent(q.value.trim()) : '')); } catch (e) { listBox.innerHTML = ''; listBox.appendChild(el('div', { class: 'cash-empty' }, 'Ошибка: ' + e.message)); return; }
+      const items = data.items || [];
+      listBox.innerHTML = '';
+      if (!items.length) { listBox.appendChild(el('div', { class: 'cash-empty' }, q.value.trim() ? 'Ничего не найдено.' : 'Клиентов нет. Нажмите «🔄 Клиенты из SD».')); return; }
+      const head = el('div', { class: 'cash-row head cash-cp' }, ['Название', 'Юр.лицо', 'ИНН', ''].map((h) => el('span', {}, h)));
+      listBox.appendChild(el('div', { class: 'cash-list' }, [head, ...items.map((c) => el('div', { class: 'cash-row cash-cp' }, [
+        el('span', {}, c.name), el('span', { class: 'muted' }, c.firm_name || '—'), el('span', {}, c.inn || '—'), el('span', {}, ''),
+      ]))]));
+    }
+    q.onchange = () => { cpFilterQ = q.value; load(); };
+    const findBtn = el('button', { class: 'btn-ghost', onclick: () => { cpFilterQ = q.value; load(); } }, 'Найти');
+    box.appendChild(el('div', { class: 'cash-filters' }, [q, findBtn]));
+    box.appendChild(listBox);
+    load();
   }
 
   function renderContracts(box) {

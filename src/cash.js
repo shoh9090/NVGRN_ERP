@@ -55,6 +55,7 @@ async function ensureCashSchema() {
   )`);
   await q(`CREATE INDEX IF NOT EXISTS idx_cash_cp_bankcode ON cash_counterparties (bank_code)`);
   await q(`ALTER TABLE cash_counterparties ADD COLUMN IF NOT EXISTS cp_role TEXT`); // null=поставщик/прочее, 'client'=клиент из SD
+  await q(`ALTER TABLE cash_counterparties ADD COLUMN IF NOT EXISTS firm_name TEXT`); // юр.лицо (для клиентов из SD)
   await q(`CREATE INDEX IF NOT EXISTS idx_cash_cp_inn ON cash_counterparties (inn)`);
 
   await q(`CREATE TABLE IF NOT EXISTS cash_contracts (
@@ -304,8 +305,8 @@ router.post('/api/sync-clients', async (req, res) => {
 router.get('/api/clients', async (req, res) => {
   const q = (req.query.q || '').trim();
   const params = []; let w = "cp_role='client' AND status='active'";
-  if (q) { params.push('%' + q + '%'); w += ' AND (name ILIKE $1 OR inn ILIKE $1)'; }
-  const rows = (await db.pool.query(`SELECT id, name, inn FROM cash_counterparties WHERE ${w} ORDER BY name LIMIT 300`, params)).rows;
+  if (q) { params.push('%' + q + '%'); w += ' AND (name ILIKE $1 OR firm_name ILIKE $1 OR inn ILIKE $1)'; }
+  const rows = (await db.pool.query(`SELECT id, name, firm_name, inn FROM cash_counterparties WHERE ${w} ORDER BY name LIMIT 500`, params)).rows;
   res.json({ items: rows });
 });
 
@@ -766,6 +767,54 @@ router.post('/api/import/run', upload.single('file'), async (req, res) => {
     await db.pool.query('UPDATE cash_import_batches SET count=$1 WHERE id=$2', [ins, batch]);
     await db.log(req.user.id, 'cash_import', `${bank}: +${ins}, пропущено ${skip}`);
     res.json({ ok: true, bank, inserted: ins, skipped: skip, newcp });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Очистка транзакций (админ). Справочники/контрагенты/статьи НЕ трогаем.
+router.post('/api/transactions/wipe', J, async (req, res) => {
+  if (!req.user || !req.user.isAdmin) return res.status(403).json({ error: 'Только администратор' });
+  try {
+    const n = (await db.pool.query('SELECT count(*)::int c FROM cash_transactions')).rows[0].c;
+    await db.pool.query('DELETE FROM cash_transactions');
+    await db.pool.query('DELETE FROM cash_import_batches');
+    await db.log(req.user.id, 'cash_wipe_transactions', `удалено ${n}`);
+    res.json({ ok: true, deleted: n });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Привязать контрагентов и статьи ДДС к уже загруженным транзакциям по ИНН (не перетирая заполненное).
+router.post('/api/transactions/relink', J, async (req, res) => {
+  try {
+    // 1) Контрагент по ИНН плательщика (где ещё не привязан).
+    const link = await db.pool.query(
+      `UPDATE cash_transactions t SET counterparty_id = cp.id
+       FROM cash_counterparties cp
+       WHERE t.counterparty_id IS NULL AND COALESCE(t.payer_inn,'')<>'' AND cp.inn = t.payer_inn AND cp.status='active'`);
+    // 2) Статья из дефолтной у привязанного контрагента (где статьи ещё нет).
+    await db.pool.query(
+      `UPDATE cash_transactions t SET category_id = cp.default_category_id, is_classified = true
+       FROM cash_counterparties cp
+       WHERE t.category_id IS NULL AND t.counterparty_id = cp.id AND cp.default_category_id IS NOT NULL`);
+    // 3) Статья из поставщика Закупа по ИНН.
+    try {
+      await db.pool.query(
+        `UPDATE cash_transactions t SET category_id = rc.cash_category_id, is_classified = true
+         FROM ref_counterparties rc
+         WHERE t.category_id IS NULL AND COALESCE(t.payer_inn,'')<>'' AND rc.inn = t.payer_inn AND rc.cash_category_id IS NOT NULL`);
+    } catch (e) { /* нет колонки */ }
+    // 4) Статья из справочника ИНН→код.
+    let innMap = {}; try { innMap = require('./data/cash_inn_categories.json') || {}; } catch (e) { /* нет файла */ }
+    const codeToCat = {};
+    (await db.pool.query("SELECT id, code FROM cash_categories WHERE status='active'")).rows.forEach((c) => { codeToCat[String(c.code)] = c.id; });
+    let byMap = 0;
+    for (const [inn, code] of Object.entries(innMap)) {
+      const catId = codeToCat[code]; if (!catId) continue;
+      const r = await db.pool.query(
+        "UPDATE cash_transactions SET category_id=$1, is_classified=true WHERE category_id IS NULL AND payer_inn=$2", [catId, inn]);
+      byMap += r.rowCount || 0;
+    }
+    await db.log(req.user.id, 'cash_relink', `контрагентов ${link.rowCount || 0}, статей по ИНН ${byMap}`);
+    res.json({ ok: true, linked: link.rowCount || 0, byMap });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
