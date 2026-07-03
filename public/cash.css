@@ -90,6 +90,13 @@
 .cash-toast.err { background: #c0392b; }
 @media (max-width: 760px) { .cashf-row { grid-template-columns: 1fr; gap: 4px; } }
 
+/* Пагинация */
+.cash-pager { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 12px; padding: 8px 4px; }
+.cash-page-btns { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.cash-page-btn { padding: 6px 12px; border-radius: 8px; font-size: 13px; font-weight: 700; cursor: pointer; background: #fff; border: 1px solid var(--line); color: var(--forest); }
+.cash-page-btn:hover:not(:disabled) { background: #eef4e9; }
+.cash-page-btn:disabled { opacity: .4; cursor: default; }
+
 /* Ссылка-шаблон */
 .cash-link { color: var(--forest); font-weight: 700; font-size: 13px; text-decoration: none; border-bottom: 1px dashed var(--forest); }
 .cash-link:hover { color: var(--lime); }

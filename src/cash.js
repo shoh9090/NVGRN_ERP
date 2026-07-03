@@ -471,7 +471,7 @@ router.get('/api/wallets', async (req, res) => { res.json({ wallets: await walle
 
 // ---------- Журнал транзакций ----------
 router.get('/api/transactions', async (req, res) => {
-  const { from, to, wallet, counterparty, category, type, q } = req.query;
+  const { from, to, wallet, counterparty, category, type, q, classified } = req.query;
   const p = [], w = [];
   if (from) { p.push(from); w.push(`t.tx_date >= $${p.length}`); }
   if (to) { p.push(to); w.push(`t.tx_date <= $${p.length}`); }
@@ -479,8 +479,21 @@ router.get('/api/transactions', async (req, res) => {
   if (wallet) { p.push(parseInt(wallet)); w.push(`(t.wallet_id = $${p.length} OR t.wallet_to_id = $${p.length})`); }
   if (counterparty) { p.push(parseInt(counterparty)); w.push(`t.counterparty_id = $${p.length}`); }
   if (category) { p.push(parseInt(category)); w.push(`t.category_id = $${p.length}`); }
-  if (q) { p.push('%' + String(q).trim() + '%'); w.push(`t.purpose ILIKE $${p.length}`); }
+  if (classified === 'no') w.push(`(t.tx_type <> 'transfer' AND t.is_classified = false)`);
+  else if (classified === 'yes') w.push(`t.is_classified = true`);
+  if (q) { p.push('%' + String(q).trim() + '%'); w.push(`(t.purpose ILIKE $${p.length} OR t.payer_name ILIKE $${p.length})`); }
   const where = w.length ? 'WHERE ' + w.join(' AND ') : '';
+  // Итоги и общее число — по всей выборке (не по странице).
+  const agg = (await db.pool.query(
+    `SELECT COALESCE(SUM(amount) FILTER (WHERE tx_type='in'),0) AS tin,
+            COALESCE(SUM(amount) FILTER (WHERE tx_type='out'),0) AS tout,
+            COUNT(*) FILTER (WHERE tx_type <> 'transfer' AND is_classified = false) AS unclass,
+            COUNT(*) AS total
+     FROM cash_transactions t ${where}`, p)).rows[0];
+  const pageSize = [10, 20, 50, 100, 200].includes(parseInt(req.query.pageSize)) ? parseInt(req.query.pageSize) : 50;
+  const page = Math.max(1, parseInt(req.query.page) || 1);
+  const offset = (page - 1) * pageSize;
+  const pageP = p.slice(); pageP.push(pageSize, offset);
   const rows = (await db.pool.query(
     `SELECT t.*, w.name AS wallet_name, w.color AS wallet_color, w2.name AS wallet_to_name,
             cp.name AS cp_name, cat.code AS cat_code, cat.name AS cat_name
@@ -489,7 +502,7 @@ router.get('/api/transactions', async (req, res) => {
      LEFT JOIN cash_wallets w2 ON w2.id = t.wallet_to_id
      LEFT JOIN cash_counterparties cp ON cp.id = t.counterparty_id
      LEFT JOIN cash_categories cat ON cat.id = t.category_id
-     ${where} ORDER BY t.tx_date DESC, t.id DESC LIMIT 1000`, p)).rows;
+     ${where} ORDER BY t.tx_date DESC, t.id DESC LIMIT $${pageP.length - 1} OFFSET $${pageP.length}`, pageP)).rows;
   // Живое сопоставление контрагента для непривязанных строк — по ИНН и по юр.названию.
   // Что распознали, то и показываем (и сразу сохраняем), без всяких кнопок.
   const need = rows.filter((r) => !r.counterparty_id && (r.payer_inn || r.payer_name));
@@ -508,10 +521,13 @@ router.get('/api/transactions', async (req, res) => {
       }
     }
   }
-  // сводка по фильтру
-  const tot = { in: 0, out: 0 };
-  for (const r of rows) { if (r.tx_type === 'in') tot.in += Number(r.amount); else if (r.tx_type === 'out') tot.out += Number(r.amount); }
-  res.json({ items: rows, totals: tot, unclassified: rows.filter((r) => r.tx_type !== 'transfer' && !r.is_classified).length });
+  res.json({
+    items: rows,
+    totals: { in: Number(agg.tin), out: Number(agg.tout) },
+    unclassified: Number(agg.unclass),
+    total: Number(agg.total),
+    page, pageSize,
+  });
 });
 
 router.post('/api/tx', J, async (req, res) => {
