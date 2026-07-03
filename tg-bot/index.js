@@ -275,7 +275,10 @@ async function getPointDraft(sdId, mode) {
   if (!mine.length) return null;
   mine.sort((a, b) => String(b.dateCreate || "").localeCompare(String(a.dateCreate || "")));
   const last = mine[0];
-  const meta = { agent: last.agent && last.agent.SD_id, priceType: last.priceType && last.priceType.SD_id, warehouse: (last.store && last.store.SD_id) || (last.warehouse && last.warehouse.SD_id), clientCode: last.client && last.client.code_1C };
+  // Прайс-тип берём из последнего РУЧНОГО заказа агента (не из бот-заказов «TGBOT-…»):
+  // у ручных цены выставлены верно, а копирование из бот-заказов увековечивало неправильный прайс.
+  const priceSrc = mine.find((o) => !String((o.code_1C) || "").toUpperCase().startsWith("TGBOT-")) || last;
+  const meta = { agent: last.agent && last.agent.SD_id, priceType: priceSrc.priceType && priceSrc.priceType.SD_id, warehouse: (last.store && last.store.SD_id) || (last.warehouse && last.warehouse.SD_id), clientCode: last.client && last.client.code_1C };
   let raw;
   if (mode === "repeat") {
     raw = (last.orderProducts || []).filter((op) => op.product && op.product.SD_id && Number(op.quantity) > 0)
@@ -1082,6 +1085,8 @@ async function main() {
         const orders = await freshOrdersToday();
         const o = orders.find((x) => x.client && x.client.SD_id === val && x.status !== 5);
         let meta = o ? { agent: o.agent && o.agent.SD_id, priceType: o.priceType && o.priceType.SD_id, warehouse: (o.store && o.store.SD_id) || (o.warehouse && o.warehouse.SD_id), clientCode: o.client && o.client.code_1C } : null;
+        // Если сегодняшний заказ — бот-заказ, его прайс мог быть неверным: берём прайс из ручного заказа точки.
+        if (meta && o && String(o.code_1C || "").toUpperCase().startsWith("TGBOT-")) { const d = await getPointDraft(val, "avg"); if (d && d.priceType) meta.priceType = d.priceType; }
         if (!meta || !meta.agent) { const d = await getPointDraft(val, "avg"); if (d) meta = { agent: d.agent, priceType: d.priceType, warehouse: d.warehouse, clientCode: d.clientCode }; }
         const cart = { items: [], agent: meta && meta.agent, priceType: meta && meta.priceType, warehouse: meta && meta.warehouse, clientCode: meta && meta.clientCode, code: `TGBOT-${val}-${tzToday()}-${tzHHMM()}` };
         draftCache.set(key, cart);
