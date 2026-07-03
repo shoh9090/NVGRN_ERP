@@ -589,11 +589,13 @@ function parseAsiaAlliance(text) {
     if (credit > 0) { type = 'in'; amount = credit; }
     else if (debit > 0) { type = 'out'; amount = debit; }
     else continue;
-    const parts = String(tds[1] || '').split('/');
+    const parts = String(tds[1] || '').split('/').map((s) => s.trim());
+    // ИНН — 9-значный (или 14 для физлиц) кусок, а не «второй по счёту» вслепую.
+    const inn = parts.find((p) => /^\d{9}$/.test(p)) || parts.find((p) => /^\d{14}$/.test(p)) || '';
+    const payer = parts.filter((p) => /[A-Za-zА-Яа-я]{3,}/.test(p)).join(' ').trim();
     out.push({
       tx_date: date, amount, tx_type: type, doc_no: tds[2] || '', op: tds[3] || '', cp_code: (tds[4] || '').trim(),
-      inn: parts.length > 1 ? parts[1].trim() : '', payer: parts.length > 2 ? parts.slice(2).join('/').trim() : '',
-      purpose: tds[7] || '', contract_no: extractContract(tds[7]),
+      inn, payer, purpose: tds[7] || '', contract_no: extractContract(tds[7]),
     });
   }
   return out;
