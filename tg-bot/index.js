@@ -1076,13 +1076,20 @@ async function main() {
       // 2) Клиент?
       const res = await onboard(chatId, msg.from, phone9, c.phone_number, lang);
       if (res.linked) { bot.sendMessage(chatId, res.text, mainMenu(lang)); return; }
-      // 3) Неизвестный — создаём заявку сотрудника (админ подтвердит, если это сотрудник).
-      await db.query(`INSERT INTO telegram_staff (telegram_user_id, telegram_chat_id, telegram_username, telegram_first_name, telegram_last_name, phone_original, phone_normalized, status)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,'new_request')
-        ON CONFLICT (telegram_user_id) DO UPDATE SET telegram_chat_id=$2, telegram_username=$3, telegram_first_name=$4, telegram_last_name=$5, phone_original=$6, phone_normalized=$7, updated_at=now()`,
-        [msg.from.id, chatId, msg.from.username || null, msg.from.first_name || null, msg.from.last_name || null, c.phone_number, phone9]);
-      await db.logEvent("staff_request", chatId, { phone: phone9 });
-      bot.sendMessage(chatId, "Ваш номер пока не найден.\nЕсли вы клиент — обратитесь к вашему агенту Novagreen.\nЕсли вы сотрудник — заявка на доступ отправлена администратору.", { reply_markup: { remove_keyboard: true } });
+      // 3) Неизвестный номер — доступ ЗАКРЫТ. Никаких самозаявок: чужой не должен попадать
+      //    в очередь на подтверждение и тем более видеть клиентскую базу. Сотрудников заводит
+      //    администратор вручную (Hub → «Телеграм-сотрудники»), там же он назначает роль и агента.
+      await db.logEvent("access_denied", chatId, { phone: phone9 });
+      // Уведомим админа один раз на номер (информационно, без создания доступа).
+      try {
+        const key = "denied:" + phone9;
+        const seen = await db.query("SELECT 1 FROM notification_log WHERE dedup_key=$1", [key]);
+        if (!seen.rows.length && ADMIN_TG_ID) {
+          await bot.sendMessage(ADMIN_TG_ID, `⛔ Неизвестный номер пытался подключиться к боту:\nТел: ${c.phone_number}\nИмя: ${msg.from.first_name || ""} ${msg.from.last_name || ""}\nЮзер: @${msg.from.username || "—"}\n\nЕсли это наш сотрудник — добавьте его вручную в Hub → «Телеграм-сотрудники» (там назначьте роль и агента). Иначе — игнорируйте.`).catch(() => {});
+          await db.query("INSERT INTO notification_log (kind, dedup_key, target_chat_id) VALUES ('access_denied',$1,$2) ON CONFLICT (dedup_key) DO NOTHING", [key, ADMIN_TG_ID]).catch(() => {});
+        }
+      } catch (e) { /* уведомление не критично */ }
+      bot.sendMessage(chatId, "Ваш номер не зарегистрирован в системе Novagreen — доступ закрыт.\n\n• Клиенты оформляют заказы через своего агента.\n• Сотрудникам — обратитесь к администратору Novagreen.", { reply_markup: { remove_keyboard: true } });
     } catch (e) { console.error("[ОНБОРДИНГ]", e.message); bot.sendMessage(chatId, "Ошибка при подключении."); }
   });
 
