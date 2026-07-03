@@ -490,6 +490,24 @@ router.get('/api/transactions', async (req, res) => {
      LEFT JOIN cash_counterparties cp ON cp.id = t.counterparty_id
      LEFT JOIN cash_categories cat ON cat.id = t.category_id
      ${where} ORDER BY t.tx_date DESC, t.id DESC LIMIT 1000`, p)).rows;
+  // Живое сопоставление контрагента для непривязанных строк — по ИНН и по юр.названию.
+  // Что распознали, то и показываем (и сразу сохраняем), без всяких кнопок.
+  const need = rows.filter((r) => !r.counterparty_id && (r.payer_inn || r.payer_name));
+  if (need.length) {
+    const cps = (await db.pool.query("SELECT id, name, firm_name, inn FROM cash_counterparties WHERE status='active'")).rows;
+    const byInn = {}, byNm = {};
+    for (const c of cps) {
+      if (c.inn) { const k = String(c.inn).trim(); if (k && !(k in byInn)) byInn[k] = c; }
+      for (const nm of [c.firm_name, c.name]) { const k = normName(nm); if (k && k.length >= 4 && !(k in byNm)) byNm[k] = c; }
+    }
+    for (const r of need) {
+      const c = (r.payer_inn && byInn[String(r.payer_inn).trim()]) || (r.payer_name && byNm[normName(r.payer_name)]);
+      if (c) {
+        r.counterparty_id = c.id; r.cp_name = c.name;
+        db.pool.query('UPDATE cash_transactions SET counterparty_id=$1 WHERE id=$2 AND counterparty_id IS NULL', [c.id, r.id]).catch(() => {});
+      }
+    }
+  }
   // сводка по фильтру
   const tot = { in: 0, out: 0 };
   for (const r of rows) { if (r.tx_type === 'in') tot.in += Number(r.amount); else if (r.tx_type === 'out') tot.out += Number(r.amount); }
