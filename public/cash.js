@@ -295,20 +295,18 @@
     const date = finp(tx.tx_date ? String(tx.tx_date).slice(0, 10) : todayStr(), { type: 'date' });
     const amount = finp(tx.amount, { type: 'number', placeholder: 'Сумма' });
     const wallet = fsel((DICTS.wallets || []).map((x) => ({ v: x.id, t: x.name })), tx.wallet_id || '');
-    const cp = fsel(cpOptions(), tx.counterparty_id || ''); cp.style.flex = '1';
-    const cpWrap = el('div', { style: 'display:flex;gap:6px;align-items:center' }, [cp, el('button', { class: 'btn-ghost', style: 'padding:6px 11px;flex:none', onclick: () => openCpForm(null) }, '＋')]);
     const cat = fsel(catOptions(), tx.category_id || '');
     const purpose = finp(tx.purpose, { placeholder: 'Назначение' });
     const rows = [frow('Дата', date), frow('Сумма', amount)];
     if (!tx.id) rows.push(frow('Кошелёк', wallet));
-    // «Из выписки» — исходный текст банка (read-only). Кого система распознала — в «Контрагент».
+    // «Из выписки» — исходный текст банка (кто платил/получал), read-only.
     if (tx.payer_name) rows.push(frow('Из выписки', el('div', { class: 'cash-note-info' }, tx.payer_name)));
-    rows.push(frow('Контрагент', cpWrap), frow('Статья ДДС', cat), frow('Назначение', purpose));
+    rows.push(frow('Статья ДДС', cat), frow('Назначение', purpose));
     const body = el('div', { class: 'cashf' }, rows);
     const save = el('button', { class: 'btn-primary', onclick: async () => {
       try {
-        if (tx.id) await post('/tx/' + tx.id, { tx_date: date.value, amount: amount.value, counterparty_id: cp.value, category_id: cat.value, purpose: purpose.value });
-        else await post('/tx', { tx_type: type, tx_date: date.value, amount: amount.value, wallet_id: wallet.value, counterparty_id: cp.value, category_id: cat.value, purpose: purpose.value });
+        if (tx.id) await post('/tx/' + tx.id, { tx_date: date.value, amount: amount.value, counterparty_id: tx.counterparty_id || '', category_id: cat.value, purpose: purpose.value });
+        else await post('/tx', { tx_type: type, tx_date: date.value, amount: amount.value, wallet_id: wallet.value, category_id: cat.value, purpose: purpose.value });
         toast('Сохранено'); closeModal(); loadTx();
       } catch (e) { toast(e.message, true); }
     } }, 'Сохранить');
