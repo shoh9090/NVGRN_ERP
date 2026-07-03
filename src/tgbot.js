@@ -86,6 +86,13 @@ async function ensureTables() {
   )`);
   await db.pool.query(`CREATE INDEX IF NOT EXISTS idx_staff_phone ON tgbot.telegram_staff(phone_normalized)`);
   await db.pool.query(`ALTER TABLE tgbot.point_contacts ADD COLUMN IF NOT EXISTS agent_sd_id TEXT`);
+  // Экспедиторы (водители) из SD — для роли expeditor и напоминаний о доставке.
+  await db.pool.query(`CREATE TABLE IF NOT EXISTS tgbot.crm_expeditors (
+    sd_id TEXT PRIMARY KEY, code TEXT, name TEXT, phone_normalized TEXT,
+    is_active BOOLEAN NOT NULL DEFAULT true, last_synced_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  await db.pool.query(`CREATE INDEX IF NOT EXISTS idx_exp_phone ON tgbot.crm_expeditors(phone_normalized)`);
+  await db.pool.query(`ALTER TABLE tgbot.telegram_staff ADD COLUMN IF NOT EXISTS expeditor_sd_id TEXT`); // привязка водителя к экспедитору SD
   await db.pool.query(`ALTER TABLE tgbot.point_contacts ADD COLUMN IF NOT EXISTS active TEXT`);
   await db.pool.query(`ALTER TABLE tgbot.point_contacts ADD COLUMN IF NOT EXISTS last_order_date DATE`);
   await db.pool.query(`CREATE TABLE IF NOT EXISTS tgbot.salesdoctor_sync_log (

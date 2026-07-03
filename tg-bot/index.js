@@ -153,6 +153,7 @@ async function reloadCfg() {
 // ---------- Личность по номеру (Вариант Б) ----------
 async function phone9OfUser(tgId) { const r = await db.query("SELECT phone9 FROM tg_users WHERE telegram_id=$1", [tgId]); return r.rows[0] && r.rows[0].phone9; }
 async function pointsByPhone9(p9) { if (!p9) return []; const r = await db.query(`SELECT sd_id, point_name, firm_name FROM point_contacts WHERE ${PH9("zavsklad_phone")}=$1`, [p9]); return r.rows; }
+async function expeditorByPhone9(p9) { if (!p9) return null; const r = await db.query("SELECT sd_id, name FROM crm_expeditors WHERE phone_normalized=$1 AND is_active=true ORDER BY sd_id LIMIT 1", [p9]); return r.rows[0] || null; }
 async function chainsByPhone9(p9) { if (!p9) return []; const r = await db.query(`SELECT inn, firm_name FROM chain_managers WHERE ${PH9("manager_phone")}=$1`, [p9]); return r.rows; }
 async function pointsOfUser(tgId) { return pointsByPhone9(await phone9OfUser(tgId)); }
 
@@ -192,6 +193,22 @@ async function syncClientsBot() {
     console.log(`[СИНХРОНИЗАЦИЯ] клиентов: ${clients.length}`);
     return clients.length;
   } catch (e) { console.warn("[СИНХРОНИЗАЦИЯ]", e.message); return 0; }
+}
+// Синхронизация экспедиторов (водителей) из SD — для автопривязки и напоминаний о доставке.
+async function syncExpeditorsBot() {
+  try {
+    await db.query(`CREATE TABLE IF NOT EXISTS crm_expeditors (sd_id TEXT PRIMARY KEY, code TEXT, name TEXT, phone_normalized TEXT, is_active BOOLEAN NOT NULL DEFAULT true, last_synced_at TIMESTAMPTZ NOT NULL DEFAULT now())`).catch(() => {});
+    const exps = await sd.fetchAll("getExpeditor", {});
+    for (const e of exps) {
+      if (!e.SD_id) continue;
+      await db.query(`INSERT INTO crm_expeditors (sd_id, code, name, phone_normalized, is_active, last_synced_at)
+        VALUES ($1,$2,$3,$4,$5,now())
+        ON CONFLICT (sd_id) DO UPDATE SET code=$2, name=$3, phone_normalized=$4, is_active=$5, last_synced_at=now()`,
+        [e.SD_id, e.code_1C || null, e.name || e.SD_id, normPhone(e.tel), e.active === "Y"]);
+    }
+    console.log(`[ЭКСПЕДИТОРЫ] синхронизировано: ${exps.length}`);
+    return exps.length;
+  } catch (e) { console.warn("[ЭКСПЕДИТОРЫ]", e.message); return 0; }
 }
 const STAFF_MENU = {
   agent: [["👥 Мои клиенты"], ["🚫 Не заказали"], ["📩 Претензия за клиента"], ["📊 Моя сводка"], ["➕ Доп. заказы"], ["📉 Сигналы"]],
@@ -478,6 +495,8 @@ async function main() {
   setInterval(warmStock, 240000); // каждые 4 мин (TTL 5 мин)
   syncClientsBot(); // живая синхронизация клиентов/агентов из SD
   setInterval(syncClientsBot, 45 * 60 * 1000);
+  syncExpeditorsBot(); // экспедиторы (водители) из SD
+  setInterval(syncExpeditorsBot, 60 * 60 * 1000);
   notifyNewlyConfirmed(); // проактивное «вы подтверждены»
   setInterval(notifyNewlyConfirmed, 60000);
   setInterval(() => { _cache.delete("orders14"); getOrders14().catch(() => {}); }, 540000); // каждые 9 мин
@@ -1096,7 +1115,18 @@ async function main() {
         await db.query("INSERT INTO notification_log (kind, dedup_key, target_chat_id, target_role) VALUES ('confirm',$1,$2,$3) ON CONFLICT (dedup_key) DO NOTHING", [`confirm:${stf.id}`, chatId, stf.role]).catch(() => {});
         return;
       }
-      // 2) Клиент?
+      // 2) Экспедитор (водитель) — автопривязка по номеру из SD (безопасно: сверено с CRM).
+      const exp = await expeditorByPhone9(phone9);
+      if (exp) {
+        await db.query(`INSERT INTO telegram_staff (telegram_user_id, telegram_chat_id, telegram_username, telegram_first_name, telegram_last_name, phone_original, phone_normalized, role, status, expeditor_sd_id, confirmed_by, confirmed_at)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,'expeditor','confirmed',$8,'sd_auto',now())
+          ON CONFLICT (telegram_user_id) DO UPDATE SET telegram_chat_id=$2, telegram_username=$3, telegram_first_name=$4, telegram_last_name=$5, phone_original=$6, phone_normalized=$7, role='expeditor', status='confirmed', expeditor_sd_id=$8, updated_at=now()`,
+          [msg.from.id, chatId, msg.from.username || null, msg.from.first_name || null, msg.from.last_name || null, c.phone_number, phone9, exp.sd_id]);
+        await db.logEvent("expeditor_auth", chatId, { sd_id: exp.sd_id });
+        bot.sendMessage(chatId, `Здравствуйте, ${exp.name}! Вы подключены как экспедитор (водитель).`, staffMenu("expeditor"));
+        return;
+      }
+      // 3) Клиент?
       const res = await onboard(chatId, msg.from, phone9, c.phone_number, lang);
       if (res.linked) { bot.sendMessage(chatId, res.text, mainMenu(lang)); return; }
       // 3) Неизвестный номер — доступ ЗАКРЫТ. Никаких самозаявок: чужой не должен попадать
