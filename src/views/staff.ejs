@@ -52,18 +52,20 @@
     <div class="card">
       <div class="actions-bar">
         <form method="POST" action="/tgbot/staff/load-agents"><button class="btn-go" type="submit">Загрузить агентов из CRM</button></form>
+        <form method="POST" action="/tgbot/staff/load-expeditors"><button class="btn-go" type="submit">Загрузить экспедиторов из CRM</button></form>
         <form method="POST" action="/tgbot/staff/sync-clients"><button class="btn-go" type="submit">Синхронизировать клиентов</button></form>
         <a class="btn-ghost" href="/tgbot/staff">Обновить</a>
       </div>
-      <p class="muted" style="margin-top:10px">Агентов в справочнике: <%= agents.length %></p>
+      <p class="muted" style="margin-top:10px">Агентов в справочнике: <%= agents.length %> · Экспедиторов: <%= (typeof expeditors!=='undefined'?expeditors.length:0) %></p>
     </div>
 
     <div class="card">
       <h3>Добавить вручную (РОП / админ)</h3>
       <p class="muted">Для руководителя продаж и админа, которых может не быть среди агентов SalesDoctor.</p>
+      <p class="muted">Для РОПа/логистики/маркетинга/админа. Для водителя выберите его в «экспедитор SD» — имя и телефон подставятся из CRM.</p>
       <form method="POST" action="/tgbot/staff/add-manual" class="rowform">
-        <input type="text" name="name" placeholder="ФИО" style="width:200px" required>
-        <input type="text" name="phone" placeholder="Телефон (998..)" style="width:160px" required>
+        <input type="text" name="name" placeholder="ФИО (для водителя можно пусто)" style="width:200px">
+        <input type="text" name="phone" placeholder="Телефон (998..)" style="width:160px">
         <select name="role">
           <option value="head_of_sales">Руководитель продаж</option>
           <option value="logistics">Логистика (руководитель)</option>
@@ -71,6 +73,12 @@
           <option value="marketing">Маркетинг</option>
           <option value="admin">Админ</option>
           <option value="agent">Агент</option>
+        </select>
+        <select name="expeditor_sd_id">
+          <option value="">— экспедитор SD (для водителя) —</option>
+          <% (typeof expeditors!=='undefined'?expeditors:[]).forEach(function(e){ %>
+            <option value="<%= e.sd_id %>"><%= e.name %><%= e.phone_normalized ? ' · '+e.phone_normalized : '' %></option>
+          <% }); %>
         </select>
         <button class="btn-go" type="submit">Добавить</button>
       </form>
@@ -113,6 +121,12 @@
                     <option value="">— агент CRM —</option>
                     <% agents.forEach(function(a){ %>
                       <option value="<%= a.sd_agent_id %>" <%= s.crm_agent_id===a.sd_agent_id?'selected':'' %>><%= a.sd_agent_name %><%= a.sd_agent_code ? ' / '+a.sd_agent_code : '' %></option>
+                    <% }); %>
+                  </select>
+                  <select name="expeditor_sd_id">
+                    <option value="">— экспедитор SD —</option>
+                    <% (typeof expeditors!=='undefined'?expeditors:[]).forEach(function(e){ %>
+                      <option value="<%= e.sd_id %>" <%= s.expeditor_sd_id===e.sd_id?'selected':'' %>><%= e.name %><%= e.phone_normalized ? ' · '+e.phone_normalized : '' %></option>
                     <% }); %>
                   </select>
                   <button class="btn-sm" type="submit">Подтвердить</button>

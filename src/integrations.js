@@ -542,6 +542,27 @@ async function syncCrmAgents() {
   return n;
 }
 
+// Экспедиторы (водители) из SD — как агенты, но с телефоном (для роли expeditor).
+async function syncCrmExpeditors() {
+  const cfg = await getSdConfig();
+  if (!cfg.url || !cfg.login || !cfg.password) throw new Error('Сначала заполните доступ к SalesDoctor в разделе «Интеграции».');
+  const auth = await sdLogin(cfg);
+  await db.pool.query(`CREATE TABLE IF NOT EXISTS tgbot.crm_expeditors (sd_id TEXT PRIMARY KEY, code TEXT, name TEXT, phone_normalized TEXT, is_active BOOLEAN NOT NULL DEFAULT true, last_synced_at TIMESTAMPTZ NOT NULL DEFAULT now())`).catch(() => {});
+  const exps = await sdGetAll(cfg, auth, 'getExpeditor', 'expeditor', {});
+  const norm = (v) => { const d = String(v || '').replace(/\D/g, ''); return d.length > 9 ? d.slice(-9) : d; };
+  let n = 0;
+  for (const e of exps) {
+    if (!e.SD_id) continue;
+    await db.pool.query(
+      `INSERT INTO tgbot.crm_expeditors (sd_id, code, name, phone_normalized, is_active, last_synced_at)
+       VALUES ($1,$2,$3,$4,$5,now())
+       ON CONFLICT (sd_id) DO UPDATE SET code=$2, name=$3, phone_normalized=$4, is_active=$5, last_synced_at=now()`,
+      [e.SD_id, e.code_1C || null, e.name || e.SD_id, norm(e.tel), e.active === 'Y']);
+    n++;
+  }
+  return n;
+}
+
 async function syncClientsToContacts() {
   const cfg = await getSdConfig();
   if (!cfg.url || !cfg.login || !cfg.password) throw new Error('Сначала заполните доступ к SalesDoctor в разделе «Интеграции».');
@@ -601,4 +622,4 @@ async function syncCashClients() {
   return { created, updated, total: created + updated };
 }
 
-module.exports = { getSdConfig, saveSdConfig, testConnection, syncFinishedGoods, syncPrices, diagSD, getHorecaPoints, getAgentCoverage, syncCrmAgents, syncClientsToContacts, getSdProducts, syncCashClients };
+module.exports = { getSdConfig, saveSdConfig, testConnection, syncFinishedGoods, syncPrices, diagSD, getHorecaPoints, getAgentCoverage, syncCrmAgents, syncCrmExpeditors, syncClientsToContacts, getSdProducts, syncCashClients };

@@ -153,7 +153,6 @@ async function reloadCfg() {
 // ---------- Личность по номеру (Вариант Б) ----------
 async function phone9OfUser(tgId) { const r = await db.query("SELECT phone9 FROM tg_users WHERE telegram_id=$1", [tgId]); return r.rows[0] && r.rows[0].phone9; }
 async function pointsByPhone9(p9) { if (!p9) return []; const r = await db.query(`SELECT sd_id, point_name, firm_name FROM point_contacts WHERE ${PH9("zavsklad_phone")}=$1`, [p9]); return r.rows; }
-async function expeditorByPhone9(p9) { if (!p9) return null; const r = await db.query("SELECT sd_id, name FROM crm_expeditors WHERE phone_normalized=$1 AND is_active=true ORDER BY sd_id LIMIT 1", [p9]); return r.rows[0] || null; }
 async function chainsByPhone9(p9) { if (!p9) return []; const r = await db.query(`SELECT inn, firm_name FROM chain_managers WHERE ${PH9("manager_phone")}=$1`, [p9]); return r.rows; }
 async function pointsOfUser(tgId) { return pointsByPhone9(await phone9OfUser(tgId)); }
 
@@ -1115,18 +1114,7 @@ async function main() {
         await db.query("INSERT INTO notification_log (kind, dedup_key, target_chat_id, target_role) VALUES ('confirm',$1,$2,$3) ON CONFLICT (dedup_key) DO NOTHING", [`confirm:${stf.id}`, chatId, stf.role]).catch(() => {});
         return;
       }
-      // 2) Экспедитор (водитель) — автопривязка по номеру из SD (безопасно: сверено с CRM).
-      const exp = await expeditorByPhone9(phone9);
-      if (exp) {
-        await db.query(`INSERT INTO telegram_staff (telegram_user_id, telegram_chat_id, telegram_username, telegram_first_name, telegram_last_name, phone_original, phone_normalized, role, status, expeditor_sd_id, confirmed_by, confirmed_at)
-          VALUES ($1,$2,$3,$4,$5,$6,$7,'expeditor','confirmed',$8,'sd_auto',now())
-          ON CONFLICT (telegram_user_id) DO UPDATE SET telegram_chat_id=$2, telegram_username=$3, telegram_first_name=$4, telegram_last_name=$5, phone_original=$6, phone_normalized=$7, role='expeditor', status='confirmed', expeditor_sd_id=$8, updated_at=now()`,
-          [msg.from.id, chatId, msg.from.username || null, msg.from.first_name || null, msg.from.last_name || null, c.phone_number, phone9, exp.sd_id]);
-        await db.logEvent("expeditor_auth", chatId, { sd_id: exp.sd_id });
-        bot.sendMessage(chatId, `Здравствуйте, ${exp.name}! Вы подключены как экспедитор (водитель).`, staffMenu("expeditor"));
-        return;
-      }
-      // 3) Клиент?
+      // 2) Клиент?
       const res = await onboard(chatId, msg.from, phone9, c.phone_number, lang);
       if (res.linked) { bot.sendMessage(chatId, res.text, mainMenu(lang)); return; }
       // 3) Неизвестный номер — доступ ЗАКРЫТ. Никаких самозаявок: чужой не должен попадать

@@ -141,22 +141,25 @@ const cleanPhone = (v) => String(v || '').replace(/[^\d+]/g, '').trim();
 async function loadStaffData() {
   await ensureTables();
   const agents = (await db.pool.query("SELECT sd_agent_id, sd_agent_name, sd_agent_code FROM tgbot.crm_agents WHERE is_active ORDER BY sd_agent_name")).rows;
+  let expeditors = [];
+  try { expeditors = (await db.pool.query("SELECT sd_id, name, code, phone_normalized FROM tgbot.crm_expeditors WHERE is_active ORDER BY name")).rows; } catch (e) { /* таблицы ещё нет */ }
   const staff = (await db.pool.query(
-    `SELECT s.*, a.sd_agent_name FROM tgbot.telegram_staff s
+    `SELECT s.*, a.sd_agent_name, e.name AS expeditor_name FROM tgbot.telegram_staff s
      LEFT JOIN tgbot.crm_agents a ON a.sd_agent_id = s.crm_agent_id
+     LEFT JOIN tgbot.crm_expeditors e ON e.sd_id = s.expeditor_sd_id
      ORDER BY CASE s.status WHEN 'new_request' THEN 0 ELSE 1 END, s.created_at DESC`)).rows;
   const sync = (await db.pool.query("SELECT ran_at FROM tgbot.salesdoctor_sync_log WHERE sync_type <> 'agents' ORDER BY ran_at DESC LIMIT 1")).rows[0];
   const replacements = (await db.pool.query('SELECT * FROM tgbot.product_replacements ORDER BY product_name')).rows;
-  return { agents, staff, syncedAt: sync ? sync.ran_at : null, replacements };
+  return { agents, expeditors, staff, syncedAt: sync ? sync.ran_at : null, replacements };
 }
 async function render(res, req, settings, extra) {
-  let sd = { agents: [], staff: [], syncedAt: null, replacements: [] };
+  let sd = { agents: [], expeditors: [], staff: [], syncedAt: null, replacements: [] };
   try { sd = await loadStaffData(); } catch (e) { /* модалка будет пустой, не падаем */ }
   let products = [];
   if (extra && extra.openRepl) { try { products = await integrations.getSdProducts(); } catch (e) { /* список пуст */ } }
   res.render('tgbot', Object.assign({ settings, user: req.user, preview: null, result: null, error: null,
     botSettings: DEFAULT_BOT_SETTINGS, settingsSaved: false,
-    agents: sd.agents, staff: sd.staff, syncedAt: sd.syncedAt || null, replacements: sd.replacements || [], products, staffMsg: null, staffErr: null, openStaff: false, openSettings: false, openImport: false, openAgent: false, openRepl: false }, extra));
+    agents: sd.agents, expeditors: sd.expeditors || [], staff: sd.staff, syncedAt: sd.syncedAt || null, replacements: sd.replacements || [], products, staffMsg: null, staffErr: null, openStaff: false, openSettings: false, openImport: false, openAgent: false, openRepl: false }, extra));
 }
 
 // Страница плитки.
@@ -171,11 +174,14 @@ async function renderStaff(res, req, extra = {}) {
   await ensureTables();
   const settings = await db.getSettings();
   const agents = (await db.pool.query("SELECT sd_agent_id, sd_agent_name, sd_agent_code FROM tgbot.crm_agents WHERE is_active ORDER BY sd_agent_name")).rows;
+  let expeditors = [];
+  try { expeditors = (await db.pool.query("SELECT sd_id, name, code, phone_normalized FROM tgbot.crm_expeditors WHERE is_active ORDER BY name")).rows; } catch (e) { /* таблицы ещё нет */ }
   const staff = (await db.pool.query(
-    `SELECT s.*, a.sd_agent_name FROM tgbot.telegram_staff s
+    `SELECT s.*, a.sd_agent_name, e.name AS expeditor_name FROM tgbot.telegram_staff s
      LEFT JOIN tgbot.crm_agents a ON a.sd_agent_id = s.crm_agent_id
+     LEFT JOIN tgbot.crm_expeditors e ON e.sd_id = s.expeditor_sd_id
      ORDER BY CASE s.status WHEN 'new_request' THEN 0 ELSE 1 END, s.created_at DESC`)).rows;
-  res.render('staff', Object.assign({ settings, user: req.user, agents, staff, msg: null, err: null }, extra));
+  res.render('staff', Object.assign({ settings, user: req.user, agents, expeditors, staff, msg: null, err: null }, extra));
 }
 router.get('/staff', async (req, res) => {
   try { await renderStaff(res, req, { msg: req.query.msg || null, err: req.query.err || null }); }
@@ -183,6 +189,10 @@ router.get('/staff', async (req, res) => {
 });
 router.post('/staff/load-agents', async (req, res) => {
   try { const n = await integrations.syncCrmAgents(); res.redirect('/tgbot?staff=1&msg=' + encodeURIComponent('Загружено агентов из CRM: ' + n)); }
+  catch (e) { res.redirect('/tgbot?staff=1&err=' + encodeURIComponent(e.message)); }
+});
+router.post('/staff/load-expeditors', async (req, res) => {
+  try { const n = await integrations.syncCrmExpeditors(); res.redirect('/tgbot?staff=1&msg=' + encodeURIComponent('Загружено экспедиторов из CRM: ' + n)); }
   catch (e) { res.redirect('/tgbot?staff=1&err=' + encodeURIComponent(e.message)); }
 });
 router.post('/staff/sync-clients', async (req, res) => {
@@ -194,14 +204,15 @@ router.post('/staff/assign', async (req, res) => {
     const id = req.body.id;
     let role = ROLES.includes(req.body.role) ? req.body.role : null;
     const agentId = req.body.crm_agent_id || null;
+    const expId = req.body.expeditor_sd_id || null;
     if (agentId && !role) role = 'agent';
-    const confirmed = !!(role && (role !== 'agent' || agentId));
+    const confirmed = !!(role && (role !== 'agent' || agentId) && (role !== 'expeditor' || expId));
     await db.pool.query(
-      `UPDATE tgbot.telegram_staff SET crm_agent_id=$1, role=$2, status=$3,
+      `UPDATE tgbot.telegram_staff SET crm_agent_id=$1, expeditor_sd_id=$6, role=$2, status=$3,
         confirmed_by=CASE WHEN $3='confirmed' THEN $4 ELSE confirmed_by END,
         confirmed_at=CASE WHEN $3='confirmed' THEN now() ELSE confirmed_at END,
         updated_at=now() WHERE id=$5`,
-      [agentId, role, confirmed ? 'confirmed' : 'new_request', String(req.user.id), id]);
+      [agentId, role, confirmed ? 'confirmed' : 'new_request', String(req.user.id), id, expId]);
     res.redirect('/tgbot?staff=1');
   } catch (e) { res.redirect('/tgbot?staff=1&err=' + encodeURIComponent(e.message)); }
 });
@@ -213,10 +224,20 @@ router.post('/staff/confirm', async (req, res) => {
   try {
     const role = ROLES.includes(req.body.role) ? req.body.role : 'agent';
     const agentId = req.body.crm_agent_id || null;
+    const expId = req.body.expeditor_sd_id || null;
     if (role === 'agent' && !agentId) return res.redirect('/tgbot?staff=1&err=' + encodeURIComponent('Для роли «агент» выберите агента из CRM.'));
+    if (role === 'expeditor' && !expId) return res.redirect('/tgbot?staff=1&err=' + encodeURIComponent('Для роли «экспедитор» выберите водителя из SD.'));
     await db.pool.query(
-      `UPDATE tgbot.telegram_staff SET crm_agent_id=$1, role=$2, status='confirmed', confirmed_by=$3, confirmed_at=now(), disabled_at=NULL, updated_at=now() WHERE id=$4`,
-      [agentId, role, String(req.user.id), req.body.id]);
+      `UPDATE tgbot.telegram_staff SET crm_agent_id=$1, expeditor_sd_id=$2, role=$3, status='confirmed', confirmed_by=$4, confirmed_at=now(), disabled_at=NULL, updated_at=now() WHERE id=$5`,
+      [agentId, expId, role, String(req.user.id), req.body.id]);
+    // Если у экспедитора нет телефона — берём из SD (чтобы бот узнал его при подключении).
+    if (role === 'expeditor' && expId) {
+      await db.pool.query(
+        `UPDATE tgbot.telegram_staff s SET phone_normalized = e.phone_normalized
+         FROM tgbot.crm_expeditors e WHERE s.id=$1 AND e.sd_id=$2
+           AND COALESCE(s.phone_normalized,'')='' AND COALESCE(e.phone_normalized,'')<>''`,
+        [req.body.id, expId]).catch(() => {});
+    }
     res.redirect('/tgbot?staff=1&msg=' + encodeURIComponent('Сотрудник подтверждён.'));
   } catch (e) { res.redirect('/tgbot?staff=1&err=' + encodeURIComponent(e.message)); }
 });
@@ -235,14 +256,22 @@ router.post('/staff/role', async (req, res) => {
 });
 router.post('/staff/add-manual', async (req, res) => {
   try {
-    const name = String(req.body.name || '').trim();
-    const phone = String(req.body.phone || '').trim();
+    let name = String(req.body.name || '').trim();
+    let phone = String(req.body.phone || '').trim();
     const role = ROLES.includes(req.body.role) ? req.body.role : 'head_of_sales';
-    if (!name || !phone) return res.redirect('/tgbot?staff=1&err=' + encodeURIComponent('Укажите ФИО и телефон.'));
+    const agentId = req.body.crm_agent_id || null;
+    const expId = req.body.expeditor_sd_id || null;
+    // Для экспедитора можно только выбрать водителя из SD — имя/телефон подставим оттуда.
+    if (role === 'expeditor' && expId) {
+      const e = (await db.pool.query('SELECT name, phone_normalized FROM tgbot.crm_expeditors WHERE sd_id=$1', [expId])).rows[0];
+      if (e) { if (!name) name = e.name || ''; if (!phone) phone = e.phone_normalized || ''; }
+    }
+    if (!name || !phone) return res.redirect('/tgbot?staff=1&err=' + encodeURIComponent('Укажите ФИО и телефон (или выберите экспедитора из SD).'));
+    if (role === 'expeditor' && !expId) return res.redirect('/tgbot?staff=1&err=' + encodeURIComponent('Для роли «экспедитор» выберите водителя из SD.'));
     await db.pool.query(
-      `INSERT INTO tgbot.telegram_staff (telegram_first_name, phone_original, phone_normalized, crm_agent_id, role, status, confirmed_by, confirmed_at)
-       VALUES ($1,$2,$3,$4,$5,'confirmed',$6,now())`,
-      [name, phone, normPhone9(phone), req.body.crm_agent_id || null, role, String(req.user.id)]);
+      `INSERT INTO tgbot.telegram_staff (telegram_first_name, phone_original, phone_normalized, crm_agent_id, expeditor_sd_id, role, status, confirmed_by, confirmed_at)
+       VALUES ($1,$2,$3,$4,$5,$6,'confirmed',$7,now())`,
+      [name, phone, normPhone9(phone), agentId, expId, role, String(req.user.id)]);
     res.redirect('/tgbot?staff=1&msg=' + encodeURIComponent('Сотрудник добавлен. Пусть напишет боту и поделится номером.'));
   } catch (e) { res.redirect('/tgbot?staff=1&err=' + encodeURIComponent(e.message)); }
 });
