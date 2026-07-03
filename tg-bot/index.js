@@ -106,6 +106,10 @@ const freshStockMap = () => { _cache.delete("stock"); return getStockMap(); };
 // Остаток по складу заказа. Если склад не распознан — падаем на суммарный (старое поведение, без регресса).
 const getWhStock = async (whId) => { const d = await getStockData(); return (whId && d.byWh[whId]) ? d.byWh[whId] : d.map; };
 const freshWhStock = (whId) => { _cache.delete("stock"); return getWhStock(whId); };
+
+// Единый прайс-тип для всех заказов HoReCa через бота (SalesDoctor).
+// «Новый прайс 2026 / Продажа» = d0_16. Меняется через env без правки кода.
+const HORECA_PRICE_TYPE = process.env.SD_HORECA_PRICETYPE || "d0_16";
 const getReplacements = () => cached("repls", 300000, async () => {
   const rows = (await db.query("SELECT product_sd_id, replacement_sd_id, replacement_name FROM product_replacements WHERE active")).rows;
   const map = {};
@@ -275,10 +279,8 @@ async function getPointDraft(sdId, mode) {
   if (!mine.length) return null;
   mine.sort((a, b) => String(b.dateCreate || "").localeCompare(String(a.dateCreate || "")));
   const last = mine[0];
-  // Прайс-тип берём из последнего РУЧНОГО заказа агента (не из бот-заказов «TGBOT-…»):
-  // у ручных цены выставлены верно, а копирование из бот-заказов увековечивало неправильный прайс.
-  const priceSrc = mine.find((o) => !String((o.code_1C) || "").toUpperCase().startsWith("TGBOT-")) || last;
-  const meta = { agent: last.agent && last.agent.SD_id, priceType: priceSrc.priceType && priceSrc.priceType.SD_id, warehouse: (last.store && last.store.SD_id) || (last.warehouse && last.warehouse.SD_id), clientCode: last.client && last.client.code_1C };
+  // Прайс-тип — единый для всей HoReCa (см. HORECA_PRICE_TYPE), не копируем из заказов.
+  const meta = { agent: last.agent && last.agent.SD_id, priceType: HORECA_PRICE_TYPE, warehouse: (last.store && last.store.SD_id) || (last.warehouse && last.warehouse.SD_id), clientCode: last.client && last.client.code_1C };
   let raw;
   if (mode === "repeat") {
     raw = (last.orderProducts || []).filter((op) => op.product && op.product.SD_id && Number(op.quantity) > 0)
@@ -309,7 +311,7 @@ function buildOrder(sdId, draft, code) {
   return {
     code_1C: code || `TGBOT-${sdId}-${tzToday()}`, status: 1, dateShipment: tzTomorrow(),
     comment: "Заказ оформлен через Telegram-бот" + (draft.comment ? "\nКомментарий клиента: " + draft.comment : ""),
-    client: draft.clientCode ? { SD_id: sdId, code_1C: draft.clientCode } : { SD_id: sdId }, agent: { SD_id: draft.agent }, priceType: { SD_id: draft.priceType }, warehouse: { SD_id: draft.warehouse },
+    client: draft.clientCode ? { SD_id: sdId, code_1C: draft.clientCode } : { SD_id: sdId }, agent: { SD_id: draft.agent }, priceType: { SD_id: draft.priceType || HORECA_PRICE_TYPE }, warehouse: { SD_id: draft.warehouse },
     orderProducts: draft.items.filter((it) => it.qty > 0).map((it) => ({ product: { SD_id: it.productSdId }, quantity: Math.max(1, Math.round(it.qty)) })),
   };
 }
@@ -345,7 +347,7 @@ async function enqueuePending(order, sdId, chatId, isDop, err) {
 }
 async function createOrderFromDraft(sdId, draft, code, chatId, isDop) {
   if (!draft.items.length) throw new Error("список товаров пуст");
-  if (!draft.agent || !draft.priceType || !draft.warehouse) throw new Error("нет агента/прайса/склада — нужен прошлый заказ точки");
+  if (!draft.agent || !draft.warehouse) throw new Error("нет агента/склада — нужен прошлый заказ точки");
   let items = draft.items.filter((it) => it.qty > 0).map((it) => ({ ...it }));
   const removedBySd = [], cappedBySd = [];
   // SD-заказ атомарный: одна позиция без остатка валит весь заказ. Поэтому при отказе
@@ -1084,9 +1086,7 @@ async function main() {
         await bot.answerCallbackQuery(q.id); bot.sendChatAction(chatId, "typing");
         const orders = await freshOrdersToday();
         const o = orders.find((x) => x.client && x.client.SD_id === val && x.status !== 5);
-        let meta = o ? { agent: o.agent && o.agent.SD_id, priceType: o.priceType && o.priceType.SD_id, warehouse: (o.store && o.store.SD_id) || (o.warehouse && o.warehouse.SD_id), clientCode: o.client && o.client.code_1C } : null;
-        // Если сегодняшний заказ — бот-заказ, его прайс мог быть неверным: берём прайс из ручного заказа точки.
-        if (meta && o && String(o.code_1C || "").toUpperCase().startsWith("TGBOT-")) { const d = await getPointDraft(val, "avg"); if (d && d.priceType) meta.priceType = d.priceType; }
+        let meta = o ? { agent: o.agent && o.agent.SD_id, priceType: HORECA_PRICE_TYPE, warehouse: (o.store && o.store.SD_id) || (o.warehouse && o.warehouse.SD_id), clientCode: o.client && o.client.code_1C } : null;
         if (!meta || !meta.agent) { const d = await getPointDraft(val, "avg"); if (d) meta = { agent: d.agent, priceType: d.priceType, warehouse: d.warehouse, clientCode: d.clientCode }; }
         const cart = { items: [], agent: meta && meta.agent, priceType: meta && meta.priceType, warehouse: meta && meta.warehouse, clientCode: meta && meta.clientCode, code: `TGBOT-${val}-${tzToday()}-${tzHHMM()}` };
         draftCache.set(key, cart);
