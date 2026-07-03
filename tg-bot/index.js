@@ -691,6 +691,21 @@ async function main() {
     await bot.sendMessage(msg.chat.id, lastSetOrder.resp);
   });
 
+  // Диагностика логистики: экспедиторы SD (с телефонами) + отгруженные заказы (какое поле = дата доставки).
+  bot.onText(/\/logdiag/, async (msg) => {
+    if (!isAdmin(msg.chat.id)) { bot.sendMessage(msg.chat.id, "Только админ."); return; }
+    bot.sendChatAction(msg.chat.id, "typing");
+    try {
+      const exps = await sd.fetchAll("getExpeditor", {});
+      const el = exps.slice(0, 25).map((e) => `${e.SD_id} | ${e.name || "?"} | тел: ${e.tel || "—"} | ${e.active}`);
+      await bot.sendMessage(msg.chat.id, `Экспедиторы в SD (${exps.length}):\n` + (el.join("\n") || "—").slice(0, 3500));
+      const from = tzDateAgo(3), to = tzToday();
+      const orders = await sd.fetchAll("getOrder", { filter: { status: [2], period: { date: { from, to } } } });
+      const ol = orders.slice(0, 12).map((o) => `${o.code_1C || o.SD_id} | ${(o.client && (o.client.clientName || o.client.SD_id)) || "?"} | эксп: ${(o.expeditor && o.expeditor.SD_id) || "—"} | dDoc ${o.dateDocument || "—"} | consig ${o.consigDate || "—"} | dCreate ${o.dateCreate || "—"}`);
+      await bot.sendMessage(msg.chat.id, `Отгруженные (статус 2) за 3 дня: ${orders.length}\n\n` + (ol.join("\n") || "—").slice(0, 3500));
+    } catch (e) { bot.sendMessage(msg.chat.id, "Ошибка: " + e.message); }
+  });
+
   // Диагностика прайсов: список прайс-типов SD + реальные цены текущего прайса бота.
   bot.onText(/\/prices/, async (msg) => {
     if (!isAdmin(msg.chat.id)) { bot.sendMessage(msg.chat.id, "Только админ."); return; }
