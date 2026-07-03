@@ -66,6 +66,9 @@
         <input type="text" name="phone" placeholder="Телефон (998..)" style="width:160px" required>
         <select name="role">
           <option value="head_of_sales">Руководитель продаж</option>
+          <option value="logistics">Логистика (руководитель)</option>
+          <option value="expeditor">Экспедитор (водитель)</option>
+          <option value="marketing">Маркетинг</option>
           <option value="admin">Админ</option>
           <option value="agent">Агент</option>
         </select>
@@ -101,6 +104,9 @@
                   <select name="role">
                     <option value="agent">Агент</option>
                     <option value="head_of_sales">Руководитель продаж</option>
+                    <option value="logistics">Логистика (руководитель)</option>
+                    <option value="expeditor">Экспедитор (водитель)</option>
+                    <option value="marketing">Маркетинг</option>
                     <option value="admin">Админ</option>
                   </select>
                   <select name="crm_agent_id">
@@ -121,6 +127,9 @@
                   <select name="role">
                     <option value="agent" <%= s.role==='agent'?'selected':'' %>>Агент</option>
                     <option value="head_of_sales" <%= s.role==='head_of_sales'?'selected':'' %>>Руководитель продаж</option>
+                    <option value="logistics" <%= s.role==='logistics'?'selected':'' %>>Логистика (руководитель)</option>
+                    <option value="expeditor" <%= s.role==='expeditor'?'selected':'' %>>Экспедитор (водитель)</option>
+                    <option value="marketing" <%= s.role==='marketing'?'selected':'' %>>Маркетинг</option>
                     <option value="admin" <%= s.role==='admin'?'selected':'' %>>Админ</option>
                   </select>
                   <button class="btn-sm" type="submit">Изменить роль</button>

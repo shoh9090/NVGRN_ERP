@@ -196,10 +196,14 @@ async function syncClientsBot() {
 const STAFF_MENU = {
   agent: [["👥 Мои клиенты"], ["🚫 Не заказали"], ["📩 Претензия за клиента"], ["📊 Моя сводка"], ["➕ Доп. заказы"], ["📉 Сигналы"]],
   head_of_sales: [["📊 Сводка отдела"], ["👥 По агентам"], ["🚫 Не заказали"], ["➕ Доп. заказы"], ["📉 Сигналы"], ["⚠️ Ошибки", "🔄 Синхронизация"]],
+  logistics: [["🚚 Доставки сегодня"], ["📊 По экспедиторам"], ["⚙️ Напоминания"]],
+  expeditor: [["🚚 Мои доставки"]],
+  marketing: [["📊 Маркетинг"]],
   admin: [["🔄 Синхронизация"], ["👤 Telegram-сотрудники"], ["⚠️ Ошибки"], ["📦 Очередь заказов"], ["⚙️ Настройки"]],
 };
 const staffMenu = (role) => ({ reply_markup: { keyboard: STAFF_MENU[role] || [], resize_keyboard: true } });
-const roleTitle = (role) => role === "admin" ? "админ" : role === "head_of_sales" ? "руководитель продаж" : "торговый агент";
+const ROLE_TITLES = { admin: "админ", head_of_sales: "руководитель продаж", logistics: "логистика", expeditor: "экспедитор (водитель)", marketing: "маркетинг", agent: "торговый агент" };
+const roleTitle = (role) => ROLE_TITLES[role] || "торговый агент";
 
 // ---------- Языки ----------
 const STR = {
@@ -809,9 +813,13 @@ async function main() {
       return soon();
     }
     if (stf.role === "admin") {
-      if (txt === "👤 Telegram-сотрудники") return bot.sendMessage(chatId, "Управление сотрудниками: Hub → плитка «Бот HoReCa» → «Telegram-агенты».");
+      if (txt === "👤 Telegram-сотрудники") return bot.sendMessage(chatId, "Управление сотрудниками: Hub → плитка «Телеграм-бот: ассистент продаж» → «Telegram-сотрудники».");
       if (txt === "🔄 Синхронизация") { bot.sendMessage(chatId, "Запускаю синхронизацию…"); const n = await syncClientsBot(); return bot.sendMessage(chatId, `Готово. Клиентов обновлено: ${n}.`); }
       return soon();
+    }
+    // Логистика / экспедитор / маркетинг — меню есть, функции подключаем на Этапе 2.
+    if (stf.role === "logistics" || stf.role === "expeditor" || stf.role === "marketing") {
+      return bot.sendMessage(chatId, "🔜 Скоро — этот раздел заработает в ближайшем обновлении. Меню закреплено за вами.");
     }
     return bot.sendMessage(chatId, `Меню (${roleTitle(stf.role)}):`, staffMenu(stf.role));
   }

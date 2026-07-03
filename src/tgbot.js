@@ -114,7 +114,7 @@ async function ensureTables() {
 }
 
 function normPhone9(v) { const d = String(v || '').replace(/\D/g, ''); return d.length > 9 ? d.slice(-9) : d; }
-const ROLES = ['agent', 'head_of_sales', 'admin'];
+const ROLES = ['agent', 'head_of_sales', 'logistics', 'expeditor', 'marketing', 'admin'];
 
 const DEFAULT_BOT_SETTINGS = { reminder_times: '18:00,21:00,23:00', deadline: '00:00', avg_window_days: 14, enabled: true, digest_time: '08:30', digest_enabled: true, signals_enabled: true, signal1_days: 3, signal2_pct: 40, signal2_window: 7, order_alerts_enabled: true, quiet_from: '22:00', quiet_to: '08:00', lost_summary_freq: 'weekly' };
 async function getBotSettings() {
