@@ -211,11 +211,21 @@ router.post('/api/wipe', express.json(), async (req, res) => {
 router.get('/api/available', async (req, res) => {
   const r = await db.pool.query(
     `WITH mats AS (
-       SELECT 'raw' AS kind, rm.id, rm.code, rm.name, u.short_name AS unit
-       FROM ref_raw_materials rm LEFT JOIN ref_units u ON u.id = rm.unit_id WHERE rm.status='active'
+       SELECT 'raw' AS kind, rm.id, rm.code, rm.name, u.short_name AS unit,
+              rm.category_id, c.name AS category_name, c.parent_id AS pc_id, pc.name AS pc_name
+       FROM ref_raw_materials rm
+       LEFT JOIN ref_units u ON u.id = rm.unit_id
+       LEFT JOIN ref_categories c ON c.id = rm.category_id
+       LEFT JOIN ref_parent_categories pc ON pc.id = c.parent_id
+       WHERE rm.status='active'
        UNION ALL
-       SELECT 'packaging', pk.id, pk.code, pk.name, u.short_name
-       FROM ref_packaging pk LEFT JOIN ref_units u ON u.id = pk.unit_id WHERE pk.status='active'
+       SELECT 'packaging', pk.id, pk.code, pk.name, u.short_name,
+              pk.category_id, c.name, c.parent_id, pc.name
+       FROM ref_packaging pk
+       LEFT JOIN ref_units u ON u.id = pk.unit_id
+       LEFT JOIN ref_categories c ON c.id = pk.category_id
+       LEFT JOIN ref_parent_categories pc ON pc.id = c.parent_id
+       WHERE pk.status='active'
      ),
      mv AS (SELECT item_kind, item_id, SUM(qty) AS balance FROM stock_movements GROUP BY item_kind, item_id),
      reserved AS (
@@ -238,7 +248,9 @@ router.get('/api/available', async (req, res) => {
     zones = z.rows.map((x) => x.name);
   } catch (e) { /* нет справочника */ }
   if (!zones.length) zones = ['Производство 1 / грязный цех', 'Производство 2 / чистый цех'];
-  res.json({ items: r.rows, zones });
+  const parents = await db.pool.query("SELECT id, name FROM ref_parent_categories WHERE status='active' ORDER BY name");
+  const cats = await db.pool.query("SELECT id, name, parent_id FROM ref_categories WHERE kind='категория' AND (sd_sd_id IS NULL OR sd_sd_id='') ORDER BY name");
+  res.json({ items: r.rows, zones, parents: parents.rows, categories: cats.rows });
 });
 
 router.post('/api/issue', express.json({ limit: '2mb' }), async (req, res) => {

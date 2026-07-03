@@ -279,6 +279,7 @@
   };
   function iPill(s) { const [l, c] = ISTATUS[s] || [s, '']; return el('span', { class: 'status-pill ' + c }, l); }
 
+  let issPc = '', issCat = '', issAvail = false;
   async function viewIssue() {
     const main = $('#stk-main');
     main.innerHTML = '';
@@ -287,7 +288,20 @@
 
     const zoneSel = el('select', { class: 'stk-zone' }, data.zones.map((z) => el('option', { value: z }, z)));
     const entered = {};
-    const search = el('input', { placeholder: '🔍 Найти сырьё...', oninput: () => renderRows() });
+    const search = el('input', { placeholder: '🔍 Найти сырьё...', value: '', oninput: () => renderRows() });
+    // Каскадные фильтры: родит.категория → категория, и «только доступные».
+    const pcSel = el('select', {}, [el('option', { value: '' }, 'Все родит. категории'), ...(data.parents || []).map((p) => el('option', { value: p.id, selected: String(p.id) === issPc || null }, p.name))]);
+    const catSel = el('select', {});
+    function fillCats() {
+      catSel.innerHTML = '';
+      catSel.appendChild(el('option', { value: '' }, 'Все категории'));
+      (data.categories || []).filter((c) => !issPc || String(c.parent_id) === String(issPc)).forEach((c) => catSel.appendChild(el('option', { value: c.id, selected: String(c.id) === issCat || null }, c.name)));
+    }
+    fillCats();
+    pcSel.onchange = () => { issPc = pcSel.value; issCat = ''; fillCats(); renderRows(); };
+    catSel.onchange = () => { issCat = catSel.value; renderRows(); };
+    const availChk = el('input', { type: 'checkbox' }); availChk.checked = issAvail;
+    availChk.onchange = () => { issAvail = availChk.checked; renderRows(); };
     const wrap = el('div', { class: 'pur-content' });
     const sendBtn = el('button', { class: 'btn-primary stk-open', onclick: doSend }, '📤 Передать в производство');
 
@@ -298,7 +312,15 @@
     function renderRows() {
       const q = search.value.trim().toLowerCase();
       wrap.innerHTML = '';
-      const rows = data.items.filter((m) => !q || m.name.toLowerCase().includes(q) || String(m.code || '').toLowerCase().includes(q)).map((m) => {
+      const filtered = data.items.filter((m) => {
+        if (issPc && String(m.pc_id) !== String(issPc)) return false;
+        if (issCat && String(m.category_id) !== String(issCat)) return false;
+        if (issAvail && !(Number(m.available) > 0)) return false;
+        if (q && !(m.name.toLowerCase().includes(q) || String(m.code || '').toLowerCase().includes(q))) return false;
+        return true;
+      });
+      const cnt = $('#iss-count'); if (cnt) cnt.textContent = 'Позиций: ' + filtered.length;
+      const rows = filtered.map((m) => {
         const key = m.kind + ':' + m.id;
         const avail = Number(m.available);
         const inp = el('input', {
@@ -364,9 +386,14 @@
 
     main.appendChild(el('div', { class: 'pur-filters' }, [
       el('label', {}, ['Куда передать', zoneSel]),
+      el('label', {}, ['Родит. категория', pcSel]),
+      el('label', {}, ['Категория', catSel]),
+      el('label', { class: 'stk-check' }, [availChk, ' Только доступные']),
       el('label', { style: 'flex:1' }, ['Поиск', search]),
+      el('span', { id: 'iss-count', class: 'muted', style: 'align-self:center;font-size:13px' }, ''),
     ]));
     main.appendChild(wrap);
+    renderRows();
     main.appendChild(el('div', { style: 'margin-top:14px;text-align:right' }, [sendBtn]));
 
     // история передач со статусами
