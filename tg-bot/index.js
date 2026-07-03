@@ -110,6 +110,14 @@ const freshWhStock = (whId) => { _cache.delete("stock"); return getWhStock(whId)
 // Единый прайс-тип для всех заказов HoReCa через бота (SalesDoctor).
 // «Новый прайс 2026 / Продажа» = d0_16. Меняется через env без правки кода.
 const HORECA_PRICE_TYPE = process.env.SD_HORECA_PRICETYPE || "d0_16";
+// Карта цен прайса: SalesDoctor не применяет прайс-тип сам при setOrder — цену в каждую
+// позицию бот проставляет вручную (как агентское приложение). Ключ — SD_id товара.
+const getPriceMap = () => cached("pricemap:" + HORECA_PRICE_TYPE, 600000, async () => {
+  const rows = await sd.fetchAll("getPrice", { priceType: { SD_id: HORECA_PRICE_TYPE } });
+  const m = {};
+  for (const p of rows) { const id = p.product && p.product.SD_id; if (id) m[id] = Number(p.price) || 0; }
+  return m;
+});
 const getReplacements = () => cached("repls", 300000, async () => {
   const rows = (await db.query("SELECT product_sd_id, replacement_sd_id, replacement_name FROM product_replacements WHERE active")).rows;
   const map = {};
@@ -312,7 +320,11 @@ function buildOrder(sdId, draft, code) {
     code_1C: code || `TGBOT-${sdId}-${tzToday()}`, status: 1, dateShipment: tzTomorrow(),
     comment: "Заказ оформлен через Telegram-бот" + (draft.comment ? "\nКомментарий клиента: " + draft.comment : ""),
     client: draft.clientCode ? { SD_id: sdId, code_1C: draft.clientCode } : { SD_id: sdId }, agent: { SD_id: draft.agent }, priceType: { SD_id: draft.priceType || HORECA_PRICE_TYPE }, warehouse: { SD_id: draft.warehouse },
-    orderProducts: draft.items.filter((it) => it.qty > 0).map((it) => ({ product: { SD_id: it.productSdId }, quantity: Math.max(1, Math.round(it.qty)) })),
+    orderProducts: draft.items.filter((it) => it.qty > 0).map((it) => {
+      const op = { product: { SD_id: it.productSdId }, quantity: Math.max(1, Math.round(it.qty)) };
+      if (it.price != null && it.price > 0) op.price = it.price; // цена из прайса d0_16 (SD сам её не проставляет)
+      return op;
+    }),
   };
 }
 let lastSetOrder = null;
@@ -348,7 +360,9 @@ async function enqueuePending(order, sdId, chatId, isDop, err) {
 async function createOrderFromDraft(sdId, draft, code, chatId, isDop) {
   if (!draft.items.length) throw new Error("список товаров пуст");
   if (!draft.agent || !draft.warehouse) throw new Error("нет агента/склада — нужен прошлый заказ точки");
-  let items = draft.items.filter((it) => it.qty > 0).map((it) => ({ ...it }));
+  // Проставляем цену из прайса d0_16 в каждую позицию (SD сам её при setOrder не считает).
+  let priceMap = {}; try { priceMap = await getPriceMap(); } catch (e) { console.warn("[ПРАЙС]", e.message); }
+  let items = draft.items.filter((it) => it.qty > 0).map((it) => ({ ...it, price: priceMap[it.productSdId] != null ? priceMap[it.productSdId] : it.price }));
   const removedBySd = [], cappedBySd = [];
   // SD-заказ атомарный: одна позиция без остатка валит весь заказ. Поэтому при отказе
   // по остаткам подрезаем/убираем проблемные позиции по данным SD и повторяем.
