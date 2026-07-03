@@ -677,6 +677,22 @@ async function main() {
     await bot.sendMessage(msg.chat.id, lastSetOrder.resp);
   });
 
+  // Диагностика прайсов: список прайс-типов SD + реальные цены текущего прайса бота.
+  bot.onText(/\/prices/, async (msg) => {
+    if (!isAdmin(msg.chat.id)) { bot.sendMessage(msg.chat.id, "Только админ."); return; }
+    bot.sendChatAction(msg.chat.id, "typing");
+    try {
+      const types = await sd.fetchAll("getPriceType", {});
+      const tlines = types.map((t) => `${t.SD_id}${t.CS_id ? " (" + t.CS_id + ")" : ""} — ${t.name || "?"}`);
+      await bot.sendMessage(msg.chat.id, `Прайс-типы в SD (${types.length}):\n` + tlines.join("\n").slice(0, 3500));
+      const names = ((await getStockData()) || {}).names || {};
+      const prices = await sd.fetchAll("getPrice", { priceType: { SD_id: HORECA_PRICE_TYPE } });
+      const cur = types.find((t) => t.SD_id === HORECA_PRICE_TYPE);
+      const plines = prices.slice(0, 40).map((p) => `• ${names[p.product && p.product.SD_id] || (p.product && p.product.SD_id)}: ${Number(p.price || 0).toLocaleString("ru-RU")}`);
+      await bot.sendMessage(msg.chat.id, `Текущий прайс бота: ${HORECA_PRICE_TYPE}${cur ? " («" + cur.name + "»)" : ""}\nПозиций с ценой: ${prices.length}\n\n` + (plines.join("\n") || "— цен нет —").slice(0, 3500));
+    } catch (e) { bot.sendMessage(msg.chat.id, "Ошибка: " + e.message); }
+  });
+
   // Диагностика: чьё юр.лицо у точки в SD (только чтение)
   bot.onText(/\/clientinfo (.+)/, async (msg, m) => {
     if (!isAdmin(msg.chat.id)) { bot.sendMessage(msg.chat.id, "Только админ."); return; }
