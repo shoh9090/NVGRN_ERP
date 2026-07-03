@@ -371,6 +371,73 @@ router.post('/api/counterparty', J, async (req, res) => {
 });
 router.post('/api/counterparty/:id(\\d+)/archive', async (req, res) => { await db.pool.query("UPDATE cash_counterparties SET status='archived' WHERE id=$1", [req.params.id]); res.json({ ok: true }); });
 
+// Шаблон Excel для массовой загрузки контрагентов + лист-подсказка с кодами ДДС.
+router.get('/api/counterparties/template.xlsx', async (req, res) => {
+  const cats = (await db.pool.query("SELECT code, name, group_name FROM cash_categories WHERE status='active' AND direction_hint IS DISTINCT FROM 'transfer' ORDER BY sort_order, code")).rows;
+  const wb = XLSX.utils.book_new();
+  const main = XLSX.utils.aoa_to_sheet([
+    ['Название', 'ИНН', 'Статья ДДС (код)', 'Комментарий'],
+    ['Пример: ООО Ромашка', '301234567', '10', 'сырьё'],
+    ['', '', '', ''],
+  ]);
+  main['!cols'] = [{ wch: 40 }, { wch: 16 }, { wch: 16 }, { wch: 30 }];
+  XLSX.utils.book_append_sheet(wb, main, 'Контрагенты');
+  const help = XLSX.utils.aoa_to_sheet([['Код', 'Статья ДДС', 'Группа'], ...cats.map((c) => [c.code, c.name, c.group_name || ''])]);
+  help['!cols'] = [{ wch: 8 }, { wch: 40 }, { wch: 34 }];
+  XLSX.utils.book_append_sheet(wb, help, 'Коды ДДС');
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', 'attachment; filename="cash_counterparties_template.xlsx"');
+  res.send(buf);
+});
+
+// Массовый импорт контрагентов из Excel. Дедуп по ИНН (иначе по названию). Идемпотентно.
+router.post('/api/counterparties/import', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'Файл не выбран' });
+    const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
+    const sh = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(sh, { header: 1, raw: false, defval: '' });
+    if (!rows.length) return res.status(400).json({ error: 'Пустой файл' });
+    // Ищем строку заголовков и колонки по названиям.
+    let hi = rows.findIndex((r) => r.some((c) => /назв/i.test(String(c))) && r.some((c) => /инн/i.test(String(c))));
+    if (hi < 0) hi = 0;
+    const head = rows[hi].map((c) => String(c).toLowerCase());
+    const col = (re) => head.findIndex((h) => re.test(h));
+    const iName = col(/назв/), iInn = col(/инн/), iCode = col(/ддс|код|стать/), iCmt = col(/коммент/);
+    if (iName < 0) return res.status(400).json({ error: 'Не нашёл колонку «Название»' });
+    const codeToCat = {};
+    (await db.pool.query("SELECT id, code FROM cash_categories WHERE status='active'")).rows.forEach((c) => { codeToCat[String(c.code).trim()] = c.id; });
+    let created = 0, updated = 0, skipped = 0;
+    const badCodes = new Set();
+    for (let i = hi + 1; i < rows.length; i++) {
+      const r = rows[i];
+      const name = String((r[iName] != null ? r[iName] : '')).trim();
+      if (!name || /^пример/i.test(name)) { continue; }
+      const inn = iInn >= 0 ? String(r[iInn] || '').trim() : '';
+      const codeRaw = iCode >= 0 ? String(r[iCode] || '').trim().split('.')[0] : '';
+      const cmt = iCmt >= 0 ? String(r[iCmt] || '').trim() : '';
+      let catId = null;
+      if (codeRaw) { catId = codeToCat[codeRaw] || null; if (!catId) badCodes.add(codeRaw); }
+      // Ищем существующего: по ИНН, иначе по названию (не трогаем клиентов из SD).
+      let ex = { rows: [] };
+      if (inn) ex = await db.pool.query("SELECT id, default_category_id FROM cash_counterparties WHERE inn=$1 AND (cp_role IS DISTINCT FROM 'client') LIMIT 1", [inn]);
+      if (!ex.rows.length) ex = await db.pool.query("SELECT id, default_category_id FROM cash_counterparties WHERE lower(name)=lower($1) AND (cp_role IS DISTINCT FROM 'client') LIMIT 1", [name]);
+      if (ex.rows.length) {
+        await db.pool.query(
+          "UPDATE cash_counterparties SET name=$1, inn=COALESCE(NULLIF($2,''), inn), default_category_id=COALESCE($3, default_category_id), comment=COALESCE(NULLIF($4,''), comment), status='active' WHERE id=$5",
+          [name, inn, catId, cmt, ex.rows[0].id]);
+        updated++;
+      } else {
+        await db.pool.query("INSERT INTO cash_counterparties (name, inn, default_category_id, comment, status) VALUES ($1,$2,$3,$4,'active')", [name, inn || null, catId, cmt || null]);
+        created++;
+      }
+    }
+    await db.log(req.user.id, 'cash_counterparties_import', `создано ${created}, обновлено ${updated}`);
+    res.json({ ok: true, created, updated, skipped, badCodes: [...badCodes] });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 router.post('/api/contract', J, async (req, res) => {
   const b = req.body || {};
   if (!intOrNull(b.counterparty_id)) return res.status(400).json({ error: 'Выберите контрагента' });

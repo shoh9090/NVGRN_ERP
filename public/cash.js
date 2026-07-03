@@ -141,6 +141,8 @@
   let TAB = 'wallets';
   let SUB = 'categories';
   let cpView = 'main';
+  let cpFilterCat = '';
+  let cpFilterQ = '';
 
   function shell() {
     const main = $('#cash-main'); main.innerHTML = '';
@@ -336,6 +338,30 @@
     modal('Импорт выписки', body, [load]);
   }
 
+  function openCpImport() {
+    const file = el('input', { type: 'file', accept: '.xls,.xlsx', class: 'cashf-inp' });
+    const tpl = el('a', { href: '/cash/api/counterparties/template.xlsx', class: 'cash-link' }, '⬇ Скачать шаблон Excel');
+    const body = el('div', { class: 'cashf' }, [
+      el('div', { class: 'cash-sub' }, 'Скачайте шаблон, заполните (Название, ИНН, Код статьи ДДС, Комментарий) и загрузите. Совпадающих по ИНН/названию обновлю, новых добавлю. Клиентов из SD не трогаю.'),
+      el('div', {}, [tpl]),
+      frow('Файл', file),
+    ]);
+    const load = el('button', { class: 'btn-primary', onclick: async () => {
+      if (!file.files[0]) return toast('Выберите файл', true);
+      load.disabled = true; load.textContent = 'Загружаю…';
+      const fd = new FormData(); fd.append('file', file.files[0]);
+      try {
+        const res = await fetch('/cash/api/counterparties/import', { method: 'POST', body: fd });
+        const d = await res.json(); if (!res.ok) throw new Error(d.error || 'Ошибка');
+        let msg = `Добавлено ${d.created}, обновлено ${d.updated}`;
+        if (d.badCodes && d.badCodes.length) msg += ` · неизвестные коды: ${d.badCodes.join(', ')}`;
+        toast(msg);
+        closeModal(); await refreshDicts(); render();
+      } catch (e) { toast(e.message, true); load.disabled = false; load.textContent = 'Загрузить'; }
+    } }, 'Загрузить');
+    modal('Импорт контрагентов', body, [load]);
+  }
+
   function renderDicts() {
     const c = $('#cash-content'); c.innerHTML = '';
     const sub = (id, label) => el('button', { class: 'cash-subtab' + (SUB === id ? ' on' : ''), onclick: () => { SUB = id; renderDicts(); } }, label);
@@ -375,16 +401,43 @@
       catch (e) { toast(e.message, true); syncBtn.disabled = false; syncBtn.textContent = '🔄 Клиенты из SD'; }
     } }, '🔄 Клиенты из SD');
     const syncInfo = DICTS.clientsCount ? ('🟢 Клиентов из SD: ' + DICTS.clientsCount + (DICTS.clientsSyncedAt ? ' · синхр. ' + ruDate(DICTS.clientsSyncedAt) : '')) : '⚪ Клиенты из SD ещё не синхронизированы';
+    const headBtns = cpView === 'main'
+      ? [el('button', { class: 'btn-ghost cash-add', onclick: () => openCpImport() }, '📥 Импорт'), addBtn('+ Контрагент', () => openCpForm(null))]
+      : [syncBtn];
     box.appendChild(el('div', { class: 'cash-head' }, [
       el('div', {}, [el('div', { class: 'cash-h2' }, 'Контрагенты' + ' (' + list.length + ')'), el('div', { class: 'cash-sub' }, 'Поставщики, аренда, налоги, банк. Ключ автоклассификации — ИНН. ' + syncInfo)]),
-      el('div', { class: 'cash-tx-btns' }, [syncBtn, addBtn('+ Контрагент', () => openCpForm(null))]),
+      el('div', { class: 'cash-tx-btns' }, headBtns),
     ]));
     const chip = (id, label) => el('button', { class: 'cash-subtab' + (cpView === id ? ' on' : ''), onclick: () => { cpView = id; renderDicts(); } }, label);
     box.appendChild(el('div', { class: 'cash-subtabs' }, [chip('main', 'Поставщики и прочие'), chip('clients', 'Покупатели (клиенты из SD)')]));
     if (cpView === 'clients') { renderClients(box); return; }
-    if (!list.length) { box.appendChild(el('div', { class: 'cash-empty' }, 'Пока пусто. Контрагенты появятся при импорте выписки или добавьте вручную.')); return; }
+
+    // Фильтр по статье ДДС + поиск по названию/ИНН.
+    const catSel = el('select', { class: 'cashf-inp cash-filt' }, [
+      el('option', { value: '', selected: cpFilterCat === '' || null }, '— все статьи —'),
+      el('option', { value: '__none__', selected: cpFilterCat === '__none__' || null }, 'Без статьи'),
+      ...(DICTS.categories || []).map((c) => el('option', { value: String(c.id), selected: cpFilterCat === String(c.id) || null }, c.code + ' · ' + c.name)),
+    ]);
+    catSel.onchange = () => { cpFilterCat = catSel.value; renderDicts(); };
+    const q = el('input', { class: 'cashf-inp cash-filt-q', placeholder: 'Поиск по названию или ИНН', value: cpFilterQ });
+    q.oninput = () => { cpFilterQ = q.value; };
+    q.onchange = () => { cpFilterQ = q.value; renderDicts(); };
+    const applyBtn = el('button', { class: 'btn-ghost', onclick: () => { cpFilterQ = q.value; renderDicts(); } }, 'Найти');
+    const clearBtn = el('button', { class: 'btn-ghost', onclick: () => { cpFilterCat = ''; cpFilterQ = ''; renderDicts(); } }, 'Сброс');
+    box.appendChild(el('div', { class: 'cash-filters' }, [el('span', { class: 'cash-flab' }, 'Статья ДДС:'), catSel, q, applyBtn, clearBtn]));
+
+    const needle = cpFilterQ.trim().toLowerCase();
+    const shown = list.filter((x) => {
+      if (cpFilterCat === '__none__') { if (x.default_category_id) return false; }
+      else if (cpFilterCat) { if (String(x.default_category_id) !== cpFilterCat) return false; }
+      if (needle) { const hay = (String(x.name || '') + ' ' + String(x.inn || '')).toLowerCase(); if (!hay.includes(needle)) return false; }
+      return true;
+    });
+    if (!list.length) { box.appendChild(el('div', { class: 'cash-empty' }, 'Пока пусто. Загрузите контрагентов кнопкой «📥 Импорт» или добавьте вручную.')); return; }
+    box.appendChild(el('div', { class: 'cash-sub' }, 'Показано: ' + shown.length + ' из ' + list.length));
+    if (!shown.length) { box.appendChild(el('div', { class: 'cash-empty' }, 'Ничего не найдено по фильтру.')); return; }
     const head = el('div', { class: 'cash-row head cash-cp' }, ['Название', 'Код / ИНН', 'Статья', 'Комментарий'].map((h) => el('span', {}, h)));
-    box.appendChild(el('div', { class: 'cash-list' }, [head, ...list.map((x) => el('div', { class: 'cash-row cash-cp', style: 'cursor:pointer', onclick: () => openCpForm(x) }, [
+    box.appendChild(el('div', { class: 'cash-list' }, [head, ...shown.map((x) => el('div', { class: 'cash-row cash-cp', style: 'cursor:pointer', onclick: () => openCpForm(x) }, [
       el('span', {}, x.name),
       el('span', {}, (x.bank_code || '—') + (x.inn ? ' · ' + x.inn : '')),
       el('span', {}, x.cat_code ? (x.cat_code + ' ' + (x.cat_name || '')) : '—'),

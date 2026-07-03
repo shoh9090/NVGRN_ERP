@@ -90,6 +90,10 @@
 .cash-toast.err { background: #c0392b; }
 @media (max-width: 760px) { .cashf-row { grid-template-columns: 1fr; gap: 4px; } }
 
+/* Ссылка-шаблон */
+.cash-link { color: var(--forest); font-weight: 700; font-size: 13px; text-decoration: none; border-bottom: 1px dashed var(--forest); }
+.cash-link:hover { color: var(--lime); }
+
 /* Кошельки — итог */
 .cash-total { margin-top: 14px; font-weight: 700; color: var(--forest); font-size: 14px; }
 
