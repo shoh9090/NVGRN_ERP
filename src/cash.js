@@ -523,6 +523,27 @@ async function walletBalances() {
 }
 router.get('/api/wallets', async (req, res) => { res.json({ wallets: await walletBalances() }); });
 
+// ---------- Отчёт: агрегация по статьям ДДС за период (для Кэш-флоу и P&L) ----------
+router.get('/api/report', async (req, res) => {
+  const from = req.query.from || '1900-01-01';
+  const to = req.query.to || '2999-12-31';
+  // По каждой статье — приход и расход. Переводы (A2A, код 100) исключаем — это не поток.
+  const rows = (await db.pool.query(
+    `SELECT cat.id AS cat_id, cat.code, cat.name, cat.group_name, cat.flow_type,
+            COALESCE(SUM(t.amount) FILTER (WHERE t.tx_type='in'),0) AS inc,
+            COALESCE(SUM(t.amount) FILTER (WHERE t.tx_type='out'),0) AS exp,
+            COUNT(*) AS cnt
+     FROM cash_transactions t
+     LEFT JOIN cash_categories cat ON cat.id = t.category_id
+     WHERE t.tx_date BETWEEN $1 AND $2 AND t.tx_type IN ('in','out')
+       AND (cat.code IS NULL OR cat.code <> '100')
+     GROUP BY cat.id, cat.code, cat.name, cat.group_name, cat.flow_type
+     ORDER BY cat.code NULLS LAST`, [from, to])).rows
+    .map((r) => ({ cat_id: r.cat_id, code: r.code, name: r.name, group_name: r.group_name, flow_type: r.flow_type, inc: Number(r.inc), exp: Number(r.exp), cnt: Number(r.cnt) }));
+  const groups = (await db.pool.query("SELECT name FROM cash_groups WHERE status='active' ORDER BY sort_order, id")).rows.map((g) => g.name);
+  res.json({ from, to, rows, groups });
+});
+
 // ---------- Журнал транзакций ----------
 router.get('/api/transactions', async (req, res) => {
   const { from, to, wallet, counterparty, category, type, q, classified } = req.query;

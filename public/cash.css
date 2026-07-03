@@ -90,6 +90,23 @@
 .cash-toast.err { background: #c0392b; }
 @media (max-width: 760px) { .cashf-row { grid-template-columns: 1fr; gap: 4px; } }
 
+/* Отчёты */
+.cash-kpi { display: inline-flex; align-items: baseline; gap: 2px; }
+.cash-kpi-l { color: var(--muted); font-weight: 600; }
+.cash-flow-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 12px 0; }
+.cash-flow-card { background: #fbfaf5; border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+.cash-flow-card-l { font-size: 12px; color: var(--muted); font-weight: 700; }
+.cash-flow-card-v { font-family: 'Lora', Georgia, serif; font-size: 20px; font-weight: 600; margin-top: 4px; }
+.cash-grp-sum { font-weight: 700; color: var(--muted); font-size: 12px; margin-left: 8px; }
+.cash-rep { grid-template-columns: 2fr 1fr 1fr; }
+.cash-pnl { max-width: 620px; border: 1px solid var(--line); border-radius: 14px; overflow: hidden; background: #fff; margin-top: 6px; }
+.cash-pnl-row { display: flex; justify-content: space-between; gap: 12px; padding: 10px 16px; border-bottom: 1px solid #f0f2ef; font-size: 14px; }
+.cash-pnl-row.sub { color: #5a665c; padding-left: 28px; font-size: 13px; }
+.cash-pnl-row.bold { font-weight: 800; background: #f7faf6; }
+.cash-pnl-row span:last-child { font-variant-numeric: tabular-nums; font-weight: 700; }
+.cash-pnl-note { padding: 10px 16px; font-size: 12px; color: var(--muted); }
+@media (max-width: 760px) { .cash-flow-cards { grid-template-columns: 1fr; } }
+
 /* Пагинация */
 .cash-pager { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 12px; padding: 8px 4px; }
 .cash-page-btns { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
