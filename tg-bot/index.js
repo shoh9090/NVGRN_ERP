@@ -84,19 +84,28 @@ const getHorecaProdCat = () => cached("prodcat_horeca", 3600000, async () => {
 const getStockData = () => cached("stock", 300000, async () => {
   const catId = await getHorecaProdCat();
   const whs = await sd.fetchAll("getStock", catId ? { category: { SD_id: catId } } : {});
-  const map = {}, names = {};
-  for (const w of whs) for (const p of (w.products || [])) {
-    if (!p.SD_id) continue;
-    map[p.SD_id] = (map[p.SD_id] || 0) + (Number(p.quantity) || 0);
-    names[p.SD_id] = p.name || p.SD_id;
+  const map = {}, names = {}, byWh = {};
+  for (const w of whs) {
+    // Остаток нужен по конкретному складу: заказ уходит на один склад, а не на «сумму всех».
+    const whId = w.SD_id || (w.warehouse && w.warehouse.SD_id) || (w.store && w.store.SD_id) || null;
+    for (const p of (w.products || [])) {
+      if (!p.SD_id) continue;
+      const q = Number(p.quantity) || 0;
+      map[p.SD_id] = (map[p.SD_id] || 0) + q;
+      names[p.SD_id] = p.name || p.SD_id;
+      if (whId) { (byWh[whId] = byWh[whId] || {})[p.SD_id] = (byWh[whId][p.SD_id] || 0) + q; }
+    }
   }
   const catalog = Object.keys(map).filter((id) => map[id] > 0)
     .map((id) => ({ SD_id: id, name: names[id], qty: map[id] })).sort((a, b) => a.name.localeCompare(b.name));
-  return { map, catalog };
+  return { map, catalog, byWh, names };
 });
 const getCatalog = async () => (await getStockData()).catalog;
 const getStockMap = async () => (await getStockData()).map;
 const freshStockMap = () => { _cache.delete("stock"); return getStockMap(); };
+// Остаток по складу заказа. Если склад не распознан — падаем на суммарный (старое поведение, без регресса).
+const getWhStock = async (whId) => { const d = await getStockData(); return (whId && d.byWh[whId]) ? d.byWh[whId] : d.map; };
+const freshWhStock = (whId) => { _cache.delete("stock"); return getWhStock(whId); };
 const getReplacements = () => cached("repls", 300000, async () => {
   const rows = (await db.query("SELECT product_sd_id, replacement_sd_id, replacement_name FROM product_replacements WHERE active")).rows;
   const map = {};
@@ -277,7 +286,7 @@ async function getPointDraft(sdId, mode) {
     const days = mine.length;
     raw = Object.entries(agg).map(([id, v]) => ({ productSdId: id, name: v.name, qty: Math.round(v.sum / days) })).filter((it) => it.qty >= 1).sort((a, b) => b.qty - a.qty);
   }
-  const stock = await getStockMap();
+  const stock = await getWhStock(meta.warehouse);
   const replMap = await getReplacements();
   const items = [], oos = [], repls = [];
   for (const it of raw) {
@@ -309,8 +318,19 @@ async function submitOrderObj(order) {
     console.log("[ЗАКАЗ→SD] RESPONSE:", JSON.stringify(resp));
     lastSetOrder = { req: JSON.stringify(order), resp: JSON.stringify(resp), at: new Date().toISOString() };
     if (resp && resp.status === true) return { ok: true, resp };
+    // Разбираем нехватку остатков: SD возвращает по каждой проблемной позиции «Доступно: N».
+    const shortages = {};
+    const failed = resp && resp.result && Array.isArray(resp.result.failed) ? resp.result.failed : [];
+    for (const f of failed) {
+      const pid = f && f.data && f.data.product && f.data.product.SD_id;
+      const emsg = String((f && f.error) || "");
+      if (pid && /недостаточно|доступно/i.test(emsg)) {
+        const mm = emsg.match(/Доступно:\s*(\d+)/i);
+        shortages[pid] = mm ? Number(mm[1]) : 0;
+      }
+    }
     const m = (resp && (resp.error && (resp.error.message || resp.error)) || resp.message || (resp.errors && resp.errors[0] && (resp.errors[0].message || resp.errors[0]))) || "SD отклонил заказ";
-    return { ok: false, permanent: true, error: typeof m === "string" ? m : JSON.stringify(m).slice(0, 200) };
+    return { ok: false, permanent: true, error: typeof m === "string" ? m : JSON.stringify(m).slice(0, 200), shortages };
   } catch (e) { lastSetOrder = { req: JSON.stringify(order), resp: "ERROR: " + e.message, at: new Date().toISOString() }; return { ok: false, permanent: false, error: e.message }; }
 }
 const nextDelayMin = (attempts) => attempts <= 1 ? 1 : attempts === 2 ? 5 : attempts === 3 ? 15 : 60;
@@ -323,13 +343,38 @@ async function enqueuePending(order, sdId, chatId, isDop, err) {
 async function createOrderFromDraft(sdId, draft, code, chatId, isDop) {
   if (!draft.items.length) throw new Error("список товаров пуст");
   if (!draft.agent || !draft.priceType || !draft.warehouse) throw new Error("нет агента/прайса/склада — нужен прошлый заказ точки");
-  const order = buildOrder(sdId, draft, code);
-  const r = await submitOrderObj(order);
-  if (r.ok) { _cache.delete("ordersToday"); return { ok: true }; }
-  if (r.permanent) { console.error("[ЗАКАЗ] SD отклонил:", r.error); throw new Error(r.error); }
-  console.warn("[ЗАКАЗ] SD недоступен — в очередь:", r.error);
-  await enqueuePending(order, sdId, chatId, isDop, r.error);
-  return { queued: true };
+  let items = draft.items.filter((it) => it.qty > 0).map((it) => ({ ...it }));
+  const removedBySd = [], cappedBySd = [];
+  // SD-заказ атомарный: одна позиция без остатка валит весь заказ. Поэтому при отказе
+  // по остаткам подрезаем/убираем проблемные позиции по данным SD и повторяем.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const order = buildOrder(sdId, { ...draft, items }, code);
+    const r = await submitOrderObj(order);
+    if (r.ok) { _cache.delete("ordersToday"); return { ok: true, removedBySd, cappedBySd }; }
+    if (!r.permanent) {
+      console.warn("[ЗАКАЗ] SD недоступен — в очередь:", r.error);
+      await enqueuePending(order, sdId, chatId, isDop, r.error);
+      return { queued: true, removedBySd, cappedBySd };
+    }
+    const short = r.shortages || {};
+    if (Object.keys(short).length) {
+      const next = [];
+      for (const it of items) {
+        if (it.productSdId in short) {
+          const av = short[it.productSdId];
+          if (av >= 1) { cappedBySd.push(`${it.name}: ${av}`); next.push({ ...it, qty: av }); }
+          else removedBySd.push(it.name);
+        } else next.push(it);
+      }
+      items = next;
+      if (!items.length) throw new Error("ни одной позиции нет в наличии на складе");
+      console.warn("[ЗАКАЗ] нехватка остатков — корректирую и повторяю:", r.error);
+      continue;
+    }
+    console.error("[ЗАКАЗ] SD отклонил:", r.error);
+    throw new Error(r.error);
+  }
+  throw new Error("не удалось оформить даже после корректировки остатков");
 }
 
 function draftKeyboard(sdId, lang) {
@@ -1128,19 +1173,28 @@ async function main() {
         if (!draft) { await bot.editMessageText(t(lang, "order_err", "нет данных"), { chat_id: chatId, message_id: q.message.message_id }); return; }
         if (!draft.items.length) { await bot.editMessageText(t(lang, "empty_cart"), { chat_id: chatId, message_id: q.message.message_id }); return; }
         try {
-          const cap = capItemsToStock(draft.items, await freshStockMap());
+          const cap = capItemsToStock(draft.items, await freshWhStock(draft.warehouse));
           draft.items = cap.items;
           if (!draft.items.length) { await bot.editMessageText(t(lang, "none_now"), { chat_id: chatId, message_id: q.message.message_id }); return; }
           const res = await createOrderFromDraft(val, draft, draft.code, chatId, !!draft.code);
           await db.logEvent("order_created", chatId, { sdId: val, mode: act, dop: !!draft.code, queued: !!res.queued });
+          // Позиции, скорректированные нами (по нашей карте) и самим SD (при повторе).
+          const capped = [...cap.capped, ...(res.cappedBySd || [])];
+          const removed = [...cap.removed, ...(res.removedBySd || [])];
           if (res.queued) {
-            await bot.editMessageText("✅ Заказ принят. Отправляем в систему — подтверждение придёт автоматически.", { chat_id: chatId, message_id: q.message.message_id });
+            let qText = "✅ Заказ принят. Отправляем в систему — подтверждение придёт автоматически.";
+            if (capped.length || removed.length) {
+              qText += "\n\n⚠️ Скорректировано по остаткам:";
+              if (capped.length) qText += "\n• " + capped.join("\n• ");
+              if (removed.length) qText += "\nУбрано (нет в наличии): " + removed.join(", ");
+            }
+            await bot.editMessageText(qText, { chat_id: chatId, message_id: q.message.message_id });
           } else {
             let okText = t(lang, "order_ok");
-            if (cap.capped.length || cap.removed.length) {
+            if (capped.length || removed.length) {
               okText += "\n\n⚠️ Скорректировано по остаткам:";
-              if (cap.capped.length) okText += "\n• " + cap.capped.join("\n• ");
-              if (cap.removed.length) okText += "\nУбрано (нет в наличии): " + cap.removed.join(", ");
+              if (capped.length) okText += "\n• " + capped.join("\n• ");
+              if (removed.length) okText += "\nУбрано (нет в наличии): " + removed.join(", ");
             }
             await bot.editMessageText(okText, { chat_id: chatId, message_id: q.message.message_id });
             if (draft.code) {
