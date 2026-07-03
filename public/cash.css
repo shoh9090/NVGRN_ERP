@@ -107,6 +107,24 @@
 .cash-pnl-note { padding: 10px 16px; font-size: 12px; color: var(--muted); }
 @media (max-width: 760px) { .cash-flow-cards { grid-template-columns: 1fr; } }
 
+/* Графики отчётов */
+.cash-chart-card { display: flex; gap: 24px; align-items: center; flex-wrap: wrap; background: #fbfaf5; border: 1px solid var(--line); border-radius: 16px; padding: 16px 20px; margin: 8px 0 4px; }
+.cash-donut-wrap { flex: none; }
+.cash-donut { width: 200px; height: 200px; }
+.cash-donut-cap { fill: var(--muted); font-size: 12px; font-weight: 700; }
+.cash-donut-val { fill: var(--ink); font-size: 15px; font-weight: 800; font-family: 'Lora', Georgia, serif; }
+.cash-legend { flex: 1; min-width: 240px; display: flex; flex-direction: column; gap: 7px; }
+.cash-legend-row { display: grid; grid-template-columns: 14px 1fr auto; gap: 10px; align-items: center; font-size: 13px; }
+.cash-legend-dot { width: 12px; height: 12px; border-radius: 3px; }
+.cash-legend-l { color: var(--ink); font-weight: 600; }
+.cash-legend-v { color: var(--muted); font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* Заглушка P&L */
+.cash-pnl-stub { text-align: center; max-width: 560px; margin: 30px auto; background: #fbfaf5; border: 1px dashed var(--line); border-radius: 18px; padding: 36px 28px; }
+.cash-pnl-stub-ic { font-size: 42px; }
+.cash-pnl-stub-h { font-family: 'Lora', Georgia, serif; font-size: 22px; font-weight: 600; color: var(--forest); margin: 8px 0 10px; }
+.cash-pnl-stub-t { color: #5a665c; font-size: 14px; line-height: 1.5; }
+
 /* Пагинация */
 .cash-pager { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 12px; padding: 8px 4px; }
 .cash-page-btns { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }

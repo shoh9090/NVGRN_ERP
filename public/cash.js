@@ -147,6 +147,7 @@
   let cpView = 'main';
   let cpFilterCat = '';
   let cpFilterQ = '';
+  let cpFilterSrc = '';
 
   function shell() {
     const main = $('#cash-main'); main.innerHTML = '';
@@ -191,19 +192,40 @@
   const FLOW_RU = { operating: 'Операционный', investing: 'Инвестиции', financing: 'Финансы' };
 
   async function renderReport(kind) {
-    const c = $('#cash-content'); c.innerHTML = '<div class="cash-loading">Считаю…</div>';
+    const c = $('#cash-content');
+    if (kind === 'pnl') { c.innerHTML = ''; renderPnl(c); return; }
+    c.innerHTML = '<div class="cash-loading">Считаю…</div>';
     if (!repState.from) repState.from = monthStartStr();
     if (!repState.to) repState.to = todayStr();
     let d; try { d = await api('/report?from=' + repState.from + '&to=' + repState.to); } catch (e) { c.innerHTML = ''; c.appendChild(el('div', { class: 'cash-empty' }, 'Ошибка: ' + e.message)); return; }
     c.innerHTML = '';
-    const rows = d.rows || [];
-    if (kind === 'cashflow') renderCashflow(c, rows, d.groups || []);
-    else renderPnl(c, rows);
+    renderCashflow(c, d.rows || [], d.groups || []);
   }
 
   function kpiBar(items) {
     return el('div', { class: 'cash-tot-bar' }, items.map(([label, val, cls]) =>
       el('span', { class: 'cash-kpi' }, [el('span', { class: 'cash-kpi-l' }, label + ': '), el('span', { class: 'cash-' + cls }, money(val))])));
+  }
+
+  const CHART_COLORS = ['#163a28', '#8cc63f', '#2e7d32', '#b25b00', '#5b3da8', '#c0392b', '#0d7d8c', '#c77800', '#7c8579', '#3f6a16'];
+  function donutChart(items, capTitle) {
+    const total = items.reduce((s, i) => s + i.value, 0);
+    if (!total) return el('div', { class: 'cash-sub' }, 'Нет данных за период.');
+    const size = 200, r = size / 2 - 18, cx = size / 2, cy = size / 2, C = 2 * Math.PI * r;
+    let off = 0;
+    const segs = items.map((it) => {
+      const len = it.value / total * C;
+      const s = `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${it.color}" stroke-width="28" stroke-dasharray="${len.toFixed(2)} ${(C - len).toFixed(2)}" stroke-dashoffset="${(-off).toFixed(2)}" transform="rotate(-90 ${cx} ${cy})"/>`;
+      off += len; return s;
+    }).join('');
+    const svg = `<svg viewBox="0 0 ${size} ${size}" class="cash-donut"><g>${segs}</g><text x="${cx}" y="${cy - 2}" text-anchor="middle" class="cash-donut-cap">${capTitle || 'Итого'}</text><text x="${cx}" y="${cy + 18}" text-anchor="middle" class="cash-donut-val">${money(total)}</text></svg>`;
+    const chart = el('div', { class: 'cash-donut-wrap' }); chart.innerHTML = svg;
+    const legend = el('div', { class: 'cash-legend' }, items.map((it) => el('div', { class: 'cash-legend-row' }, [
+      el('span', { class: 'cash-legend-dot', style: 'background:' + it.color }),
+      el('span', { class: 'cash-legend-l' }, it.label),
+      el('span', { class: 'cash-legend-v' }, money(it.value) + ' · ' + Math.round(it.value / total * 100) + '%'),
+    ])));
+    return el('div', { class: 'cash-chart-card' }, [chart, legend]);
   }
 
   function renderCashflow(c, rows, groupsOrder) {
@@ -221,6 +243,15 @@
     rows.forEach((r) => { if (flows[r.flow_type] != null) flows[r.flow_type] += r.inc - r.exp; });
     c.appendChild(el('div', { class: 'cash-flow-cards' }, Object.keys(flows).map((f) =>
       el('div', { class: 'cash-flow-card' }, [el('div', { class: 'cash-flow-card-l' }, FLOW_RU[f]), el('div', { class: 'cash-flow-card-v ' + (flows[f] >= 0 ? 'cash-tot-in' : 'cash-tot-out') }, money(flows[f]))]))));
+
+    // Пончик: структура расходов по группам
+    const expByGroup = {};
+    rows.forEach((r) => { if (r.exp > 0) { const g = r.group_name || (r.cat_id ? 'Прочее' : 'Не разобрано'); expByGroup[g] = (expByGroup[g] || 0) + r.exp; } });
+    const donutItems = Object.entries(expByGroup).map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value).map((it, i) => ({ ...it, color: CHART_COLORS[i % CHART_COLORS.length] }));
+    if (donutItems.length) {
+      c.appendChild(el('div', { class: 'cash-h2', style: 'font-size:18px;margin-top:18px' }, 'Куда ушли деньги'));
+      c.appendChild(donutChart(donutItems, 'Расходы'));
+    }
 
     // Таблица по группам
     const byGroup = {};
@@ -242,42 +273,17 @@
     if (!rows.length) c.appendChild(el('div', { class: 'cash-empty' }, 'За период нет операций.'));
   }
 
-  function renderPnl(c, rows) {
+  function renderPnl(c) {
     c.appendChild(el('div', { class: 'cash-head' }, [el('div', {}, [
       el('div', { class: 'cash-h2' }, 'P&L — прибыль и убытки'),
-      el('div', { class: 'cash-sub' }, 'Упрощённо, по денежному потоку. Переводы (A2A) исключены; капекс показан отдельно.'),
+      el('div', { class: 'cash-sub' }, 'Реальный P&L — не только по деньгам, а с себестоимостью продукции.'),
     ])]));
-    c.appendChild(repPeriodBar());
-    const sumIf = (fn) => rows.filter(fn).reduce((s, r) => s + r.inc - r.exp, 0);
-    const expIf = (fn) => rows.filter(fn).reduce((s, r) => s + r.exp, 0);
-    const isG = (r, n) => (r.group_name || '').startsWith(n);
-    const revenue = rows.filter((r) => r.flow_type === 'operating' && r.inc > 0).reduce((s, r) => s + r.inc, 0);
-    const rawCost = expIf((r) => isG(r, '1.'));
-    const gross = revenue - rawCost;
-    const opex = expIf((r) => r.flow_type === 'operating' && !isG(r, '1.'));
-    const opProfit = gross - opex;
-    const fin = expIf((r) => r.flow_type === 'financing');
-    const finInc = rows.filter((r) => r.flow_type === 'financing' && r.inc > 0).reduce((s, r) => s + r.inc, 0);
-    const profit = opProfit - fin + finInc;
-    const capex = expIf((r) => r.flow_type === 'investing');
-    const line = (label, val, opts) => el('div', { class: 'cash-pnl-row' + (opts && opts.bold ? ' bold' : '') + (opts && opts.sub ? ' sub' : '') }, [
-      el('span', {}, label), el('span', { class: (val >= 0 ? 'cash-tot-in' : 'cash-tot-out') }, money(val)),
-    ]);
-    const box = el('div', { class: 'cash-pnl' }, [
-      line('Выручка', revenue, { bold: true }),
-      line('− Сырьё и переменные затраты', -rawCost, { sub: true }),
-      line('= Валовая прибыль', gross, { bold: true }),
-      line('− Операционные расходы', -opex, { sub: true }),
-      line('= Операционная прибыль', opProfit, { bold: true }),
-      line('− Финансовые (проценты, налоги)', -fin, { sub: true }),
-      finInc ? line('+ Финансовые поступления', finInc, { sub: true }) : null,
-      line('= Прибыль периода', profit, { bold: true }),
-      el('div', { class: 'cash-pnl-note' }, 'Отдельно — капекс (инвестиции): ' + money(capex) + '. В прибыль не входит.'),
-    ]);
-    c.appendChild(box);
-    const unclExp = rows.filter((r) => !r.cat_id).reduce((s, r) => s + r.exp + r.inc, 0);
-    if (unclExp > 0) c.appendChild(el('div', { class: 'cash-note-info', style: 'margin-top:10px;color:#b25b00' }, '⚠ Не разобрано на ' + money(unclExp) + ' — эти суммы не учтены в прибыли. Разберите их в «Транзакциях» (фильтр «Не разобрано»).'));
-    if (!rows.length) c.appendChild(el('div', { class: 'cash-empty' }, 'За период нет операций.'));
+    c.appendChild(el('div', { class: 'cash-pnl-stub' }, [
+      el('div', { class: 'cash-pnl-stub-ic' }, '📈'),
+      el('div', { class: 'cash-pnl-stub-h' }, 'Соберётся автоматически'),
+      el('div', { class: 'cash-pnl-stub-t' }, 'Честный P&L считается с себестоимостью: сырьё → выход готовой продукции → маржа. Эти данные дадут модули «Производство» и «Склад». Когда они заработают, P&L соберётся сам — из выручки, реальной себестоимости и расходов Кассы.'),
+      el('div', { class: 'cash-pnl-stub-t', style: 'margin-top:6px' }, 'Пока пользуйся вкладкой «Кэш-флоу (ДДС)» — там движение реальных денег за период.'),
+    ]));
   }
 
   async function renderWallets() {
@@ -569,9 +575,15 @@
     const q = el('input', { class: 'cashf-inp cash-filt-q', placeholder: 'Поиск по названию или ИНН', value: cpFilterQ });
     q.oninput = () => { cpFilterQ = q.value; };
     q.onchange = () => { cpFilterQ = q.value; renderDicts(); };
+    const srcSel = el('select', { class: 'cashf-inp cash-filt' }, [
+      el('option', { value: '', selected: cpFilterSrc === '' || null }, 'Все источники'),
+      el('option', { value: 'purchase', selected: cpFilterSrc === 'purchase' || null }, 'Из Закупа'),
+      el('option', { value: 'cash', selected: cpFilterSrc === 'cash' || null }, 'Прочие (Касса)'),
+    ]);
+    srcSel.onchange = () => { cpFilterSrc = srcSel.value; renderDicts(); };
     const applyBtn = el('button', { class: 'btn-ghost', onclick: () => { cpFilterQ = q.value; renderDicts(); } }, 'Найти');
-    const clearBtn = el('button', { class: 'btn-ghost', onclick: () => { cpFilterCat = ''; cpFilterQ = ''; renderDicts(); } }, 'Сброс');
-    box.appendChild(el('div', { class: 'cash-filters' }, [el('span', { class: 'cash-flab' }, 'Статья ДДС:'), catSel, q, applyBtn, clearBtn]));
+    const clearBtn = el('button', { class: 'btn-ghost', onclick: () => { cpFilterCat = ''; cpFilterQ = ''; cpFilterSrc = ''; renderDicts(); } }, 'Сброс');
+    box.appendChild(el('div', { class: 'cash-filters' }, [el('span', { class: 'cash-flab' }, 'Статья ДДС:'), catSel, el('span', { class: 'cash-flab' }, 'Источник:'), srcSel, q, applyBtn, clearBtn]));
     const listBox = el('div', {}); box.appendChild(listBox);
     renderSuppliersList(listBox);
   }
@@ -582,6 +594,7 @@
     const all = [...(data.suppliers || []), ...(data.others || [])];
     const needle = cpFilterQ.trim().toLowerCase();
     const shown = all.filter((x) => {
+      if (cpFilterSrc && x.source !== cpFilterSrc) return false;
       if (cpFilterCat === '__none__') { if (x.cat_id) return false; }
       else if (cpFilterCat) { if (String(x.cat_id) !== cpFilterCat) return false; }
       if (needle) { const hay = (String(x.name || '') + ' ' + String(x.inn || '')).toLowerCase(); if (!hay.includes(needle)) return false; }
