@@ -56,6 +56,7 @@ async function ensureCashSchema() {
   await q(`CREATE INDEX IF NOT EXISTS idx_cash_cp_bankcode ON cash_counterparties (bank_code)`);
   await q(`ALTER TABLE cash_counterparties ADD COLUMN IF NOT EXISTS cp_role TEXT`); // null=поставщик/прочее, 'client'=клиент из SD
   await q(`ALTER TABLE cash_counterparties ADD COLUMN IF NOT EXISTS firm_name TEXT`); // юр.лицо (для клиентов из SD)
+  await q(`ALTER TABLE cash_categories ADD COLUMN IF NOT EXISTS keywords TEXT`); // ключевые слова/фразы для авто-классификации
   await q(`CREATE INDEX IF NOT EXISTS idx_cash_cp_inn ON cash_counterparties (inn)`);
 
   await q(`CREATE TABLE IF NOT EXISTS cash_contracts (
@@ -118,7 +119,28 @@ async function ensureCashSchema() {
   await db.pool.query("UPDATE cash_categories SET direction_hint='in' WHERE code IN ('200','201','202','203') AND (direction_hint IS NULL OR direction_hint='')");
   await seedSupplierCashCats();
   await seedCashCounterparties();
+  await seedCategoryKeywords();
   _ready = true;
+}
+
+// Ключевые слова по умолчанию для авто-классификации по назначению/«от кого».
+// Ставим только там, где ещё не заполнено — ручные правки Шоха не трогаем.
+async function seedCategoryKeywords() {
+  const defs = {
+    '62': 'начислен, % банка, комиссия банк, оп.обс',
+    '60': 'проценты по кредит, процент за кредит',
+    '61': 'погашение кредит, возврат кредит',
+    '66': 'ндс, qqs',
+    '65': 'налог от зп, инпс, есп',
+    '67': 'налог на прибыль',
+    '52': 'страхов',
+    '23': 'электр',
+    '22': 'за воду, водоснаб',
+    '42': 'интернет, связь, telekom, телеком',
+  };
+  for (const [code, kw] of Object.entries(defs)) {
+    await db.pool.query("UPDATE cash_categories SET keywords=$1 WHERE code=$2 AND (keywords IS NULL OR keywords='')", [kw, code]).catch(() => {});
+  }
 }
 
 // Разовая загрузка контрагентов из справочника (поставщики + админ-расходы) в Кассу.
@@ -352,10 +374,10 @@ router.post('/api/category', J, async (req, res) => {
   if (!b.code || !String(b.code).trim()) return res.status(400).json({ error: 'Введите код' });
   if (!b.name || !String(b.name).trim()) return res.status(400).json({ error: 'Введите название' });
   const ft = ['operating', 'investing', 'financing'].includes(b.flow_type) ? b.flow_type : 'operating';
-  const args = [String(b.code).trim(), String(b.name).trim(), b.group_name || null, ft, !!b.only_transfer, parseInt(b.sort_order) || 0];
+  const args = [String(b.code).trim(), String(b.name).trim(), b.group_name || null, ft, !!b.only_transfer, parseInt(b.sort_order) || 0, (b.keywords != null ? String(b.keywords).trim() : null) || null];
   try {
-    if (b.id) await db.pool.query('UPDATE cash_categories SET code=$1, name=$2, group_name=$3, flow_type=$4, only_transfer=$5, sort_order=$6 WHERE id=$7', [...args, b.id]);
-    else await db.pool.query('INSERT INTO cash_categories (code, name, group_name, flow_type, only_transfer, sort_order) VALUES ($1,$2,$3,$4,$5,$6)', args);
+    if (b.id) await db.pool.query('UPDATE cash_categories SET code=$1, name=$2, group_name=$3, flow_type=$4, only_transfer=$5, sort_order=$6, keywords=$7 WHERE id=$8', [...args, b.id]);
+    else await db.pool.query('INSERT INTO cash_categories (code, name, group_name, flow_type, only_transfer, sort_order, keywords) VALUES ($1,$2,$3,$4,$5,$6,$7)', args);
   } catch (e) { return res.status(400).json({ error: 'Такой код уже есть или ошибка: ' + e.message }); }
   await db.log(req.user.id, 'cash_category_save', String(b.code));
   res.json({ ok: true });
@@ -868,17 +890,22 @@ async function runRelink() {
     const r = await db.pool.query("UPDATE cash_transactions SET category_id=$1, is_classified=true WHERE category_id IS NULL AND payer_inn=$2", [catId, inn]);
     byMap += r.rowCount || 0;
   }
-  // 5) Внутренние переводы своих юрлиц (напр. NOVAGREEN FOODS, межбанк) → ОБН (код 100).
-  let own = 0;
-  if (codeToCat['100']) {
-    const r = await db.pool.query(
-      "UPDATE cash_transactions SET category_id=$1, is_classified=true WHERE category_id IS NULL AND (payer_name ILIKE '%novagreen%')", [codeToCat['100']]);
-    own = r.rowCount || 0;
+  // 5) Ключевые слова из классификатора: фраза в назначении или «от кого» → статья.
+  let byKw = 0;
+  const kwCats = (await db.pool.query("SELECT id, keywords FROM cash_categories WHERE status='active' AND keywords IS NOT NULL AND keywords<>''")).rows;
+  for (const c of kwCats) {
+    const phrases = String(c.keywords).split(/[,\n;|]+/).map((s) => s.trim()).filter((s) => s.length >= 2);
+    for (const ph of phrases) {
+      const esc = ph.replace(/[\\%_]/g, '\\$&'); // экранируем спецсимволы LIKE
+      const r = await db.pool.query(
+        "UPDATE cash_transactions SET category_id=$1, is_classified=true WHERE category_id IS NULL AND (purpose ILIKE $2 OR payer_name ILIKE $2)", [c.id, '%' + esc + '%']);
+      byKw += r.rowCount || 0;
+    }
   }
-  return { linked: (link.rowCount || 0) + byNameCnt, byInn: link.rowCount || 0, byName: byNameCnt, byMap, own };
+  return { linked: (link.rowCount || 0) + byNameCnt, byInn: link.rowCount || 0, byName: byNameCnt, byMap, byKw };
 }
 router.post('/api/transactions/relink', J, async (req, res) => {
-  try { const r = await runRelink(); await db.log(req.user.id, 'cash_relink', `контрагентов ${r.linked} (ИНН ${r.byInn}, назв ${r.byName}), статей ${r.byMap}, ОБН ${r.own}`); res.json({ ok: true, ...r }); }
+  try { const r = await runRelink(); await db.log(req.user.id, 'cash_relink', `контрагентов ${r.linked} (ИНН ${r.byInn}, назв ${r.byName}), статей по ИНН ${r.byMap}, по словам ${r.byKw}`); res.json({ ok: true, ...r }); }
   catch (e) { res.status(400).json({ error: e.message }); }
 });
 
