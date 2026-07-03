@@ -532,14 +532,21 @@ async function seed() {
     );
   }
 
-  // Плитка «Бот HoReCa» — контакты точек и менеджеров для Telegram-бота
+  // Плитка «Телеграм-бот: ассистент продаж»
   const bt = await pool.query("SELECT id FROM tiles WHERE url = '/tgbot' LIMIT 1");
   if (bt.rows.length === 0) {
     await pool.query(
       `INSERT INTO tiles (title, description, icon, url, open_new_tab, sort_order)
-       VALUES ('Бот HoReCa', 'Контакты точек и менеджеров для Telegram-бота', '🤖', '/tgbot', FALSE, 80)`
+       VALUES ('Телеграм-бот: ассистент продаж', 'Заказы, претензии, напоминания и отчёты для отдела продаж', '/static/img/tgbot-icon.svg', '/tgbot', FALSE, 80)`
     );
   }
+  // Переименование старой плитки «Бот HoReCa» + фирменная иконка (только если ещё не менялась вручную).
+  await pool.query(
+    `UPDATE tiles SET title='Телеграм-бот: ассистент продаж',
+        description='Заказы, претензии, напоминания и отчёты для отдела продаж',
+        icon='/static/img/tgbot-icon.svg'
+     WHERE url='/tgbot' AND (title='Бот HoReCa' OR icon='🤖')`
+  );
 
   // Плитка «Закуп» — модуль ядра
   const pt = await pool.query("SELECT id FROM tiles WHERE url = '/purchase' LIMIT 1");

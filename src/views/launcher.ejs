@@ -48,7 +48,11 @@
       <div class="grid">
         <% g.tiles.forEach(function(t) { %>
           <a class="tile" href="<%= t.url %>" <% if (t.open_new_tab) { %>target="_blank" rel="noopener"<% } %>>
-            <div class="tile-icon"><%= t.icon %></div>
+            <% if (/^(https?:\/\/|\/)|\.(svg|png|jpe?g|webp)$/i.test(t.icon || '')) { %>
+              <div class="tile-icon"><img class="tile-icon-img" src="<%= t.icon %>" alt=""></div>
+            <% } else { %>
+              <div class="tile-icon"><%= t.icon %></div>
+            <% } %>
             <div class="tile-title"><%= t.title %></div>
             <div class="tile-desc"><%= t.description %></div>
           </a>
