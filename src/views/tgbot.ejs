@@ -312,14 +312,6 @@
               <td>
                 <form method="POST" action="/tgbot/staff/assign" class="tgm-assign">
                   <input type="hidden" name="id" value="<%= s.id %>">
-                  <select name="crm_agent_id" onchange="this.form.submit()" title="Агент CRM">
-                    <option value="">— агент CRM —</option>
-                    <% agents.forEach(function(a){ %><option value="<%= a.sd_agent_id %>" <%= s.crm_agent_id===a.sd_agent_id?'selected':'' %>><%= a.sd_agent_name %><%= a.sd_agent_code?(' / '+a.sd_agent_code):'' %></option><% }); %>
-                  </select>
-                  <select name="expeditor_sd_id" onchange="this.form.submit()" title="Экспедитор SD">
-                    <option value="">— экспедитор SD —</option>
-                    <% (typeof expeditors!=='undefined'?expeditors:[]).forEach(function(e){ %><option value="<%= e.sd_id %>" <%= s.expeditor_sd_id===e.sd_id?'selected':'' %>><%= e.name %><%= e.phone_normalized?(' · '+e.phone_normalized):'' %></option><% }); %>
-                  </select>
                   <select name="role" onchange="this.form.submit()" title="Роль">
                     <option value="agent" <%= s.role==='agent'?'selected':'' %>>Агент</option>
                     <option value="head_of_sales" <%= s.role==='head_of_sales'?'selected':'' %>>Руководитель продаж</option>
@@ -328,6 +320,17 @@
                     <option value="marketing" <%= s.role==='marketing'?'selected':'' %>>Маркетинг</option>
                     <option value="admin" <%= s.role==='admin'?'selected':'' %>>Админ</option>
                   </select>
+                  <% if (!s.role || s.role==='agent') { %>
+                    <select name="crm_agent_id" onchange="this.form.submit()" title="Агент CRM">
+                      <option value="">— выберите агента CRM —</option>
+                      <% agents.forEach(function(a){ %><option value="<%= a.sd_agent_id %>" <%= s.crm_agent_id===a.sd_agent_id?'selected':'' %>><%= a.sd_agent_name %><%= a.sd_agent_code?(' / '+a.sd_agent_code):'' %></option><% }); %>
+                    </select>
+                  <% } else if (s.role==='expeditor') { %>
+                    <select name="expeditor_sd_id" onchange="this.form.submit()" title="Экспедитор SD">
+                      <option value="">— выберите водителя SD —</option>
+                      <% (typeof expeditors!=='undefined'?expeditors:[]).forEach(function(e){ %><option value="<%= e.sd_id %>" <%= s.expeditor_sd_id===e.sd_id?'selected':'' %>><%= e.name %><%= e.phone_normalized?(' · '+e.phone_normalized):'' %></option><% }); %>
+                    </select>
+                  <% } %>
                 </form>
               </td>
               <td><span class="tgm-chip <%= on?'on':'' %>"><span class="d"></span><%= on?'подтверждён':'ожидает' %></span></td>
@@ -342,25 +345,41 @@
           </tbody>
         </table>
         <div class="tgm-add">
-          <div class="tgm-t" style="font-size:14px">Добавить вручную (РОП / админ)</div>
-          <div class="tgm-note" style="margin:4px 0 8px">Для тех, кого нет среди агентов SalesDoctor. Затем пусть напишет боту и поделится номером.</div>
-          <form method="POST" action="/tgbot/staff/add-manual" class="tgm-rowform">
-            <input type="text" name="name" placeholder="ФИО (водителю можно пусто)" style="width:190px">
-            <input type="text" name="phone" placeholder="998.." style="width:130px">
-            <select name="role">
+          <div class="tgm-t" style="font-size:14px">Добавить сотрудника</div>
+          <div class="tgm-note" style="margin:4px 0 8px">Выберите роль. Для агента/водителя выберите его из списка (у водителя ФИО и телефон подставятся из SD). Для РОПа/логистики/маркетинга/админа — впишите ФИО и телефон.</div>
+          <form method="POST" action="/tgbot/staff/add-manual" class="tgm-rowform" id="addStaffForm">
+            <select name="role" id="addRole" onchange="addStaffToggle()">
               <option value="head_of_sales">Руководитель продаж</option>
               <option value="logistics">Логистика</option>
-              <option value="expeditor">Экспедитор (водитель)</option>
               <option value="marketing">Маркетинг</option>
               <option value="admin">Админ</option>
               <option value="agent">Агент</option>
+              <option value="expeditor">Экспедитор (водитель)</option>
             </select>
-            <select name="expeditor_sd_id" title="Для водителя">
-              <option value="">— экспедитор SD —</option>
+            <select name="expeditor_sd_id" id="addExp" style="display:none">
+              <option value="">— выберите водителя SD —</option>
               <% (typeof expeditors!=='undefined'?expeditors:[]).forEach(function(e){ %><option value="<%= e.sd_id %>"><%= e.name %><%= e.phone_normalized?(' · '+e.phone_normalized):'' %></option><% }); %>
             </select>
+            <select name="crm_agent_id" id="addAgent" style="display:none">
+              <option value="">— выберите агента CRM —</option>
+              <% agents.forEach(function(a){ %><option value="<%= a.sd_agent_id %>"><%= a.sd_agent_name %><%= a.sd_agent_code?(' / '+a.sd_agent_code):'' %></option><% }); %>
+            </select>
+            <input type="text" name="name" id="addName" placeholder="ФИО" style="width:180px">
+            <input type="text" name="phone" id="addPhone" placeholder="998.." style="width:120px">
             <button class="tgm-sm go" type="submit">Добавить</button>
           </form>
+          <script>
+            function addStaffToggle(){
+              var r=document.getElementById('addRole').value;
+              document.getElementById('addExp').style.display = r==='expeditor'?'':'none';
+              document.getElementById('addAgent').style.display = r==='agent'?'':'none';
+              // водителю ФИО/телефон подставятся из SD — поля можно скрыть
+              var manual = (r!=='expeditor');
+              document.getElementById('addName').style.display = manual?'':'none';
+              document.getElementById('addPhone').style.display = manual?'':'none';
+            }
+            addStaffToggle();
+          </script>
         </div>
       </div>
       <div class="tgm-ft">

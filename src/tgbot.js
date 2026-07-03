@@ -203,9 +203,13 @@ router.post('/staff/assign', async (req, res) => {
   try {
     const id = req.body.id;
     let role = ROLES.includes(req.body.role) ? req.body.role : null;
-    const agentId = req.body.crm_agent_id || null;
-    const expId = req.body.expeditor_sd_id || null;
+    let agentId = req.body.crm_agent_id || null;
+    let expId = req.body.expeditor_sd_id || null;
     if (agentId && !role) role = 'agent';
+    if (expId && !role) role = 'expeditor';
+    // Один человек — одна роль — одна привязка. Не агент → без агента; не экспедитор → без водителя.
+    if (role !== 'agent') agentId = null;
+    if (role !== 'expeditor') expId = null;
     const confirmed = !!(role && (role !== 'agent' || agentId) && (role !== 'expeditor' || expId));
     await db.pool.query(
       `UPDATE tgbot.telegram_staff SET crm_agent_id=$1, expeditor_sd_id=$6, role=$2, status=$3,
@@ -223,8 +227,9 @@ router.post('/staff/delete', async (req, res) => {
 router.post('/staff/confirm', async (req, res) => {
   try {
     const role = ROLES.includes(req.body.role) ? req.body.role : 'agent';
-    const agentId = req.body.crm_agent_id || null;
-    const expId = req.body.expeditor_sd_id || null;
+    // Один человек — одна привязка.
+    const agentId = role === 'agent' ? (req.body.crm_agent_id || null) : null;
+    const expId = role === 'expeditor' ? (req.body.expeditor_sd_id || null) : null;
     if (role === 'agent' && !agentId) return res.redirect('/tgbot?staff=1&err=' + encodeURIComponent('Для роли «агент» выберите агента из CRM.'));
     if (role === 'expeditor' && !expId) return res.redirect('/tgbot?staff=1&err=' + encodeURIComponent('Для роли «экспедитор» выберите водителя из SD.'));
     await db.pool.query(
@@ -259,15 +264,17 @@ router.post('/staff/add-manual', async (req, res) => {
     let name = String(req.body.name || '').trim();
     let phone = String(req.body.phone || '').trim();
     const role = ROLES.includes(req.body.role) ? req.body.role : 'head_of_sales';
-    const agentId = req.body.crm_agent_id || null;
-    const expId = req.body.expeditor_sd_id || null;
-    // Для экспедитора можно только выбрать водителя из SD — имя/телефон подставим оттуда.
+    // Один человек — одна привязка: агент только для роли agent, водитель только для expeditor.
+    const agentId = role === 'agent' ? (req.body.crm_agent_id || null) : null;
+    const expId = role === 'expeditor' ? (req.body.expeditor_sd_id || null) : null;
+    // Для экспедитора берём ФИО/телефон из SD.
     if (role === 'expeditor' && expId) {
       const e = (await db.pool.query('SELECT name, phone_normalized FROM tgbot.crm_expeditors WHERE sd_id=$1', [expId])).rows[0];
       if (e) { if (!name) name = e.name || ''; if (!phone) phone = e.phone_normalized || ''; }
     }
-    if (!name || !phone) return res.redirect('/tgbot?staff=1&err=' + encodeURIComponent('Укажите ФИО и телефон (или выберите экспедитора из SD).'));
     if (role === 'expeditor' && !expId) return res.redirect('/tgbot?staff=1&err=' + encodeURIComponent('Для роли «экспедитор» выберите водителя из SD.'));
+    if (role === 'agent' && !agentId) return res.redirect('/tgbot?staff=1&err=' + encodeURIComponent('Для роли «агент» выберите агента из CRM.'));
+    if (!name || !phone) return res.redirect('/tgbot?staff=1&err=' + encodeURIComponent('Укажите ФИО и телефон.'));
     await db.pool.query(
       `INSERT INTO tgbot.telegram_staff (telegram_first_name, phone_original, phone_normalized, crm_agent_id, expeditor_sd_id, role, status, confirmed_by, confirmed_at)
        VALUES ($1,$2,$3,$4,$5,$6,'confirmed',$7,now())`,
