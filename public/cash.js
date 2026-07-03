@@ -200,7 +200,6 @@
         el('button', { class: 'btn-primary cash-add cash-out', onclick: () => openTxForm('out', null) }, '+ Расход'),
         el('button', { class: 'btn-ghost cash-add', onclick: () => openTransferForm(null) }, '↔ Перевод'),
         el('button', { class: 'btn-ghost cash-add', onclick: openImport }, '📥 Импорт выписки'),
-        el('button', { class: 'btn-ghost cash-add', title: 'Привязать контрагентов и проставить статьи ДДС по ИНН', onclick: doRelink }, '🔗 Привязать по ИНН'),
         ...((window.HUB_USER && window.HUB_USER.isAdmin) ? [el('button', { class: 'btn-ghost cash-add cashf-del', onclick: doWipe }, '🧹 Очистить')] : []),
       ]),
     ]));
@@ -277,15 +276,16 @@
     const cpWrap = el('div', { style: 'display:flex;gap:6px;align-items:center' }, [cp, el('button', { class: 'btn-ghost', style: 'padding:6px 11px;flex:none', onclick: () => openCpForm(null) }, '＋')]);
     const cat = fsel(catOptions(), tx.category_id || '');
     const purpose = finp(tx.purpose, { placeholder: 'Назначение' });
-    const payer = finp(tx.payer_name, { placeholder: 'Кто платит / получает' });
     const rows = [frow('Дата', date), frow('Сумма', amount)];
     if (!tx.id) rows.push(frow('Кошелёк', wallet));
-    rows.push(frow('От кого', payer), frow('Контрагент', cpWrap), frow('Статья ДДС', cat), frow('Назначение', purpose));
+    // «Из выписки» — исходный текст банка (read-only). Кого система распознала — в «Контрагент».
+    if (tx.payer_name) rows.push(frow('Из выписки', el('div', { class: 'cash-note-info' }, tx.payer_name)));
+    rows.push(frow('Контрагент', cpWrap), frow('Статья ДДС', cat), frow('Назначение', purpose));
     const body = el('div', { class: 'cashf' }, rows);
     const save = el('button', { class: 'btn-primary', onclick: async () => {
       try {
-        if (tx.id) await post('/tx/' + tx.id, { tx_date: date.value, amount: amount.value, counterparty_id: cp.value, category_id: cat.value, purpose: purpose.value, payer_name: payer.value });
-        else await post('/tx', { tx_type: type, tx_date: date.value, amount: amount.value, wallet_id: wallet.value, counterparty_id: cp.value, category_id: cat.value, purpose: purpose.value, payer_name: payer.value });
+        if (tx.id) await post('/tx/' + tx.id, { tx_date: date.value, amount: amount.value, counterparty_id: cp.value, category_id: cat.value, purpose: purpose.value });
+        else await post('/tx', { tx_type: type, tx_date: date.value, amount: amount.value, wallet_id: wallet.value, counterparty_id: cp.value, category_id: cat.value, purpose: purpose.value });
         toast('Сохранено'); closeModal(); loadTx();
       } catch (e) { toast(e.message, true); }
     } }, 'Сохранить');
@@ -337,14 +337,6 @@
       } catch (e) { toast(e.message, true); load.disabled = false; load.textContent = 'Загрузить'; }
     } }, 'Загрузить');
     modal('Импорт выписки', body, [load]);
-  }
-
-  async function doRelink() {
-    try {
-      const d = await post('/transactions/relink', {});
-      toast('Привязано контрагентов: ' + d.linked + ', статей по ИНН: ' + d.byMap);
-      render();
-    } catch (e) { toast(e.message, true); }
   }
 
   async function doWipe() {

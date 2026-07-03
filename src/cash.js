@@ -296,6 +296,7 @@ router.post('/api/sync-clients', async (req, res) => {
   try {
     const r = await integrations.syncCashClients();
     await db.setSetting('cash_clients_synced_at', new Date().toISOString());
+    try { await runRelink(); } catch (e) { /* авто-разбор не критичен */ }
     await db.log(req.user.id, 'cash_sync_clients', String(r.total));
     res.json({ ok: true, created: r.created, updated: r.updated, total: r.total });
   } catch (e) { res.status(400).json({ error: e.message }); }
@@ -765,6 +766,7 @@ router.post('/api/import/run', upload.single('file'), async (req, res) => {
       ins++;
     }
     await db.pool.query('UPDATE cash_import_batches SET count=$1 WHERE id=$2', [ins, batch]);
+    try { await runRelink(); } catch (e) { /* авто-разбор не критичен */ }
     await db.log(req.user.id, 'cash_import', `${bank}: +${ins}, пропущено ${skip}`);
     res.json({ ok: true, bank, inserted: ins, skipped: skip, newcp });
   } catch (e) { res.status(400).json({ error: e.message }); }
@@ -782,40 +784,49 @@ router.post('/api/transactions/wipe', J, async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
-// Привязать контрагентов и статьи ДДС к уже загруженным транзакциям по ИНН (не перетирая заполненное).
-router.post('/api/transactions/relink', J, async (req, res) => {
+// Авто-разбор транзакций: контрагент по ИНН + статья ДДС (дефолт контрагента → Закуп →
+// справочник ИНН) + внутренние переводы (свои юрлица) → ОБН. Не перетирает заполненное.
+// Запускается сам после импорта и синхронизации клиентов; кнопки для этого не нужно.
+async function runRelink() {
+  // 1) Контрагент по ИНН плательщика (где ещё не привязан).
+  const link = await db.pool.query(
+    `UPDATE cash_transactions t SET counterparty_id = cp.id
+     FROM cash_counterparties cp
+     WHERE t.counterparty_id IS NULL AND COALESCE(t.payer_inn,'')<>'' AND cp.inn = t.payer_inn AND cp.status='active'`);
+  // 2) Статья из дефолтной у привязанного контрагента.
+  await db.pool.query(
+    `UPDATE cash_transactions t SET category_id = cp.default_category_id, is_classified = true
+     FROM cash_counterparties cp
+     WHERE t.category_id IS NULL AND t.counterparty_id = cp.id AND cp.default_category_id IS NOT NULL`);
+  // 3) Статья из поставщика Закупа по ИНН.
   try {
-    // 1) Контрагент по ИНН плательщика (где ещё не привязан).
-    const link = await db.pool.query(
-      `UPDATE cash_transactions t SET counterparty_id = cp.id
-       FROM cash_counterparties cp
-       WHERE t.counterparty_id IS NULL AND COALESCE(t.payer_inn,'')<>'' AND cp.inn = t.payer_inn AND cp.status='active'`);
-    // 2) Статья из дефолтной у привязанного контрагента (где статьи ещё нет).
     await db.pool.query(
-      `UPDATE cash_transactions t SET category_id = cp.default_category_id, is_classified = true
-       FROM cash_counterparties cp
-       WHERE t.category_id IS NULL AND t.counterparty_id = cp.id AND cp.default_category_id IS NOT NULL`);
-    // 3) Статья из поставщика Закупа по ИНН.
-    try {
-      await db.pool.query(
-        `UPDATE cash_transactions t SET category_id = rc.cash_category_id, is_classified = true
-         FROM ref_counterparties rc
-         WHERE t.category_id IS NULL AND COALESCE(t.payer_inn,'')<>'' AND rc.inn = t.payer_inn AND rc.cash_category_id IS NOT NULL`);
-    } catch (e) { /* нет колонки */ }
-    // 4) Статья из справочника ИНН→код.
-    let innMap = {}; try { innMap = require('./data/cash_inn_categories.json') || {}; } catch (e) { /* нет файла */ }
-    const codeToCat = {};
-    (await db.pool.query("SELECT id, code FROM cash_categories WHERE status='active'")).rows.forEach((c) => { codeToCat[String(c.code)] = c.id; });
-    let byMap = 0;
-    for (const [inn, code] of Object.entries(innMap)) {
-      const catId = codeToCat[code]; if (!catId) continue;
-      const r = await db.pool.query(
-        "UPDATE cash_transactions SET category_id=$1, is_classified=true WHERE category_id IS NULL AND payer_inn=$2", [catId, inn]);
-      byMap += r.rowCount || 0;
-    }
-    await db.log(req.user.id, 'cash_relink', `контрагентов ${link.rowCount || 0}, статей по ИНН ${byMap}`);
-    res.json({ ok: true, linked: link.rowCount || 0, byMap });
-  } catch (e) { res.status(400).json({ error: e.message }); }
+      `UPDATE cash_transactions t SET category_id = rc.cash_category_id, is_classified = true
+       FROM ref_counterparties rc
+       WHERE t.category_id IS NULL AND COALESCE(t.payer_inn,'')<>'' AND rc.inn = t.payer_inn AND rc.cash_category_id IS NOT NULL`);
+  } catch (e) { /* нет колонки */ }
+  const codeToCat = {};
+  (await db.pool.query("SELECT id, code FROM cash_categories WHERE status='active'")).rows.forEach((c) => { codeToCat[String(c.code)] = c.id; });
+  // 4) Статья из справочника ИНН→код.
+  let innMap = {}; try { innMap = require('./data/cash_inn_categories.json') || {}; } catch (e) { /* нет файла */ }
+  let byMap = 0;
+  for (const [inn, code] of Object.entries(innMap)) {
+    const catId = codeToCat[code]; if (!catId) continue;
+    const r = await db.pool.query("UPDATE cash_transactions SET category_id=$1, is_classified=true WHERE category_id IS NULL AND payer_inn=$2", [catId, inn]);
+    byMap += r.rowCount || 0;
+  }
+  // 5) Внутренние переводы своих юрлиц (напр. NOVAGREEN FOODS, межбанк) → ОБН (код 100).
+  let own = 0;
+  if (codeToCat['100']) {
+    const r = await db.pool.query(
+      "UPDATE cash_transactions SET category_id=$1, is_classified=true WHERE category_id IS NULL AND (payer_name ILIKE '%novagreen%')", [codeToCat['100']]);
+    own = r.rowCount || 0;
+  }
+  return { linked: link.rowCount || 0, byMap, own };
+}
+router.post('/api/transactions/relink', J, async (req, res) => {
+  try { const r = await runRelink(); await db.log(req.user.id, 'cash_relink', `контрагентов ${r.linked}, статей ${r.byMap}, ОБН ${r.own}`); res.json({ ok: true, ...r }); }
+  catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 module.exports = router;
