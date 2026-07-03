@@ -97,6 +97,11 @@
 .cash-page-btn:hover:not(:disabled) { background: #eef4e9; }
 .cash-page-btn:disabled { opacity: .4; cursor: default; }
 
+/* Источник контрагента */
+.cash-src { font-size: 11px; font-weight: 700; padding: 2px 9px; border-radius: 999px; }
+.cash-src-p { background: #e8f5e9; color: #2e7d32; }
+.cash-src-c { background: #f1f4ee; color: var(--muted); }
+
 /* Ссылка-шаблон */
 .cash-link { color: var(--forest); font-weight: 700; font-size: 13px; text-decoration: none; border-bottom: 1px dashed var(--forest); }
 .cash-link:hover { color: var(--lime); }

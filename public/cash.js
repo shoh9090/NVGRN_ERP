@@ -432,7 +432,6 @@
   }
 
   function renderCounterparties(box) {
-    const list = DICTS.counterparties || [];
     const syncBtn = el('button', { class: 'btn-ghost cash-add', onclick: async () => {
       syncBtn.disabled = true; syncBtn.textContent = 'Синхронизирую…';
       try { const d = await post('/sync-clients', {}); toast('Клиенты SD: +' + d.created + ', обновлено ' + d.updated); await refreshDicts(); renderDicts(); }
@@ -440,10 +439,10 @@
     } }, '🔄 Клиенты из SD');
     const syncInfo = DICTS.clientsCount ? ('🟢 Клиентов из SD: ' + DICTS.clientsCount + (DICTS.clientsSyncedAt ? ' · синхр. ' + ruDate(DICTS.clientsSyncedAt) : '')) : '⚪ Клиенты из SD ещё не синхронизированы';
     const headBtns = cpView === 'main'
-      ? [el('button', { class: 'btn-ghost cash-add', onclick: () => openCpImport() }, '📥 Импорт'), addBtn('+ Контрагент', () => openCpForm(null))]
+      ? [el('button', { class: 'btn-ghost cash-add', onclick: () => openCpImport() }, '📥 Импорт'), addBtn('+ Прочий контрагент', () => openCpForm(null))]
       : [syncBtn];
     box.appendChild(el('div', { class: 'cash-head' }, [
-      el('div', {}, [el('div', { class: 'cash-h2' }, 'Контрагенты' + ' (' + list.length + ')'), el('div', { class: 'cash-sub' }, 'Поставщики, аренда, налоги, банк. Ключ автоклассификации — ИНН. ' + syncInfo)]),
+      el('div', {}, [el('div', { class: 'cash-h2' }, 'Контрагенты'), el('div', { class: 'cash-sub' }, 'Поставщики берутся из Закупа, прочие (банки/налоги) — здесь. Ключ автоклассификации — ИНН. ' + syncInfo)]),
       el('div', { class: 'cash-tx-btns' }, headBtns),
     ]));
     const chip = (id, label) => el('button', { class: 'cash-subtab' + (cpView === id ? ' on' : ''), onclick: () => { cpView = id; renderDicts(); } }, label);
@@ -463,24 +462,42 @@
     const applyBtn = el('button', { class: 'btn-ghost', onclick: () => { cpFilterQ = q.value; renderDicts(); } }, 'Найти');
     const clearBtn = el('button', { class: 'btn-ghost', onclick: () => { cpFilterCat = ''; cpFilterQ = ''; renderDicts(); } }, 'Сброс');
     box.appendChild(el('div', { class: 'cash-filters' }, [el('span', { class: 'cash-flab' }, 'Статья ДДС:'), catSel, q, applyBtn, clearBtn]));
+    const listBox = el('div', {}); box.appendChild(listBox);
+    renderSuppliersList(listBox);
+  }
 
+  async function renderSuppliersList(box) {
+    box.innerHTML = '<div class="cash-loading">Загружаю…</div>';
+    let data; try { data = await api('/suppliers-view'); } catch (e) { box.innerHTML = ''; box.appendChild(el('div', { class: 'cash-empty' }, 'Ошибка: ' + e.message)); return; }
+    const all = [...(data.suppliers || []), ...(data.others || [])];
     const needle = cpFilterQ.trim().toLowerCase();
-    const shown = list.filter((x) => {
-      if (cpFilterCat === '__none__') { if (x.default_category_id) return false; }
-      else if (cpFilterCat) { if (String(x.default_category_id) !== cpFilterCat) return false; }
+    const shown = all.filter((x) => {
+      if (cpFilterCat === '__none__') { if (x.cat_id) return false; }
+      else if (cpFilterCat) { if (String(x.cat_id) !== cpFilterCat) return false; }
       if (needle) { const hay = (String(x.name || '') + ' ' + String(x.inn || '')).toLowerCase(); if (!hay.includes(needle)) return false; }
       return true;
     });
-    if (!list.length) { box.appendChild(el('div', { class: 'cash-empty' }, 'Пока пусто. Загрузите контрагентов кнопкой «📥 Импорт» или добавьте вручную.')); return; }
-    box.appendChild(el('div', { class: 'cash-sub' }, 'Показано: ' + shown.length + ' из ' + list.length));
-    if (!shown.length) { box.appendChild(el('div', { class: 'cash-empty' }, 'Ничего не найдено по фильтру.')); return; }
-    const head = el('div', { class: 'cash-row head cash-cp' }, ['Название', 'Код / ИНН', 'Статья', 'Комментарий'].map((h) => el('span', {}, h)));
-    box.appendChild(el('div', { class: 'cash-list' }, [head, ...shown.map((x) => el('div', { class: 'cash-row cash-cp', style: 'cursor:pointer', onclick: () => openCpForm(x) }, [
+    box.innerHTML = '';
+    box.appendChild(el('div', { class: 'cash-sub' }, `Показано: ${shown.length} из ${all.length} · из Закупа: ${(data.suppliers || []).length}, прочие: ${(data.others || []).length}`));
+    if (!shown.length) { box.appendChild(el('div', { class: 'cash-empty' }, 'Ничего не найдено.')); return; }
+    const head = el('div', { class: 'cash-row head cash-cp' }, ['Название', 'ИНН', 'Статья ДДС', 'Источник'].map((h) => el('span', {}, h)));
+    box.appendChild(el('div', { class: 'cash-list' }, [head, ...shown.map((x) => el('div', { class: 'cash-row cash-cp', style: 'cursor:pointer', onclick: () => (x.source === 'cash' ? openCpForm(x) : openSupplierInfo(x)) }, [
       el('span', {}, x.name),
-      el('span', {}, (x.bank_code || '—') + (x.inn ? ' · ' + x.inn : '')),
+      el('span', {}, x.inn || '—'),
       el('span', {}, x.cat_code ? (x.cat_code + ' ' + (x.cat_name || '')) : '—'),
-      el('span', {}, x.comment || ''),
+      el('span', {}, x.source === 'purchase' ? el('span', { class: 'cash-src cash-src-p' }, 'Закуп') : el('span', { class: 'cash-src cash-src-c' }, 'Касса')),
     ]))]));
+  }
+
+  function openSupplierInfo(x) {
+    const body = el('div', { class: 'cashf' }, [
+      el('div', { class: 'cash-note-info' }, 'Это поставщик из раздела «Закуп». Редактируется там же: имя, телефон, сальдо и статья ДДС.'),
+      frow('Название', el('div', {}, x.name)),
+      frow('ИНН', el('div', {}, x.inn || '—')),
+      frow('Статья ДДС', el('div', {}, x.cat_code ? (x.cat_code + ' · ' + (x.cat_name || '')) : '— не задана —')),
+    ]);
+    const open = el('a', { href: '/purchase', class: 'btn-primary', style: 'text-decoration:none' }, 'Открыть Закуп');
+    modal('Поставщик (из Закупа)', body, [open]);
   }
 
   async function renderClients(box) {

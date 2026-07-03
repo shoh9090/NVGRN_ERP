@@ -114,7 +114,7 @@ async function ensureCashSchema() {
   await seedGroups();
   await seedCategories();
   await seedWallets();
-  // Код 100 «ОБН» — это перемещение между кошельками (подсказка для импорта).
+  // Код 100 «A2A» — перемещение денег между своими счетами/кошельками (не доход/расход).
   await db.pool.query("UPDATE cash_categories SET direction_hint='transfer' WHERE code='100' AND (direction_hint IS NULL OR direction_hint='')");
   await db.pool.query("UPDATE cash_categories SET direction_hint='in' WHERE code IN ('200','201','202','203') AND (direction_hint IS NULL OR direction_hint='')");
   await seedSupplierCashCats();
@@ -248,7 +248,7 @@ async function seedCategories() {
     ['80', 'День рождения', G8, 'operating', false],
     ['81', 'Питание «базар»', G8, 'operating', false],
     ['82', 'Проект уксус', G8, 'operating', false],
-    ['100', 'ОБН', G8, 'operating', false],
+    ['100', 'A2A (перевод между счетами)', G8, 'operating', false],
   ];
   let i = 0;
   for (const [code, name, grp, flow, onlyT] of CATS) {
@@ -332,6 +332,32 @@ router.get('/api/clients', async (req, res) => {
   if (q) { params.push('%' + q + '%'); w += ' AND (name ILIKE $1 OR firm_name ILIKE $1 OR inn ILIKE $1)'; }
   const rows = (await db.pool.query(`SELECT id, name, firm_name, inn FROM cash_counterparties WHERE ${w} ORDER BY name LIMIT 500`, params)).rows;
   res.json({ items: rows });
+});
+
+// Объединённый список для вкладки «Поставщики и прочие»:
+// поставщики берутся из Закупа (единый источник), плюс «прочие» из Кассы (банки/налоги),
+// которых нет в Закупе (дедуп по ИНН). Клиенты SD сюда не входят.
+router.get('/api/suppliers-view', async (req, res) => {
+  let suppliers = [];
+  try {
+    suppliers = (await db.pool.query(
+      `SELECT c.id, COALESCE(NULLIF(c.legal_name,''), c.name) AS name, c.inn, c.phone,
+              c.cash_category_id AS cat_id, cc.code AS cat_code, cc.name AS cat_name
+       FROM ref_counterparties c
+       LEFT JOIN cash_categories cc ON cc.id = c.cash_category_id
+       WHERE c.role_supplier = TRUE AND c.status = 'active'
+       ORDER BY name`)).rows.map((r) => ({ ...r, source: 'purchase' }));
+  } catch (e) { /* Закупа может не быть */ }
+  const supInns = new Set(suppliers.map((s) => String(s.inn || '').trim()).filter(Boolean));
+  const others = (await db.pool.query(
+    `SELECT k.id, k.name, k.inn, k.bank_code, k.comment, k.default_category_id,
+            k.default_category_id AS cat_id, cat.code AS cat_code, cat.name AS cat_name
+     FROM cash_counterparties k LEFT JOIN cash_categories cat ON cat.id = k.default_category_id
+     WHERE k.status = 'active' AND (k.cp_role IS DISTINCT FROM 'client')
+     ORDER BY k.name`)).rows
+    .filter((r) => !supInns.has(String(r.inn || '').trim()))
+    .map((r) => ({ ...r, source: 'cash' }));
+  res.json({ suppliers, others });
 });
 
 router.post('/api/group', J, async (req, res) => {
