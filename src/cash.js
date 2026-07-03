@@ -918,14 +918,21 @@ async function runRelink() {
     byMap += r.rowCount || 0;
   }
   // 5) Ключевые слова из классификатора: фраза в назначении или «от кого» → статья.
+  // Сначала A2A(100) заполняет только пустые; затем конкретные статьи могут переписать
+  // общую A2A на более точную (напр. «начислен» → 62 % банка).
   let byKw = 0;
+  const a2aId = codeToCat['100'] || null;
   const kwCats = (await db.pool.query("SELECT id, keywords FROM cash_categories WHERE status='active' AND keywords IS NOT NULL AND keywords<>''")).rows;
+  kwCats.sort((a, b) => (a.id === a2aId ? -1 : b.id === a2aId ? 1 : 0)); // A2A первым
   for (const c of kwCats) {
     const phrases = String(c.keywords).split(/[,\n;|]+/).map((s) => s.trim()).filter((s) => s.length >= 2);
+    const overrideA2A = a2aId && c.id !== a2aId;
     for (const ph of phrases) {
       const esc = ph.replace(/[\\%_]/g, '\\$&'); // экранируем спецсимволы LIKE
+      const cond = overrideA2A ? '(category_id IS NULL OR category_id = $3)' : 'category_id IS NULL';
+      const params = overrideA2A ? [c.id, '%' + esc + '%', a2aId] : [c.id, '%' + esc + '%'];
       const r = await db.pool.query(
-        "UPDATE cash_transactions SET category_id=$1, is_classified=true WHERE category_id IS NULL AND (purpose ILIKE $2 OR payer_name ILIKE $2)", [c.id, '%' + esc + '%']);
+        `UPDATE cash_transactions SET category_id=$1, is_classified=true WHERE ${cond} AND (purpose ILIKE $2 OR payer_name ILIKE $2)`, params);
       byKw += r.rowCount || 0;
     }
   }
