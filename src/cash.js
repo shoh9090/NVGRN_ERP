@@ -155,11 +155,12 @@ async function seedCashCounterparties() {
   const codeToCat = {};
   (await db.pool.query("SELECT id, code FROM cash_categories WHERE status='active'")).rows.forEach((c) => { codeToCat[String(c.code)] = c.id; });
   for (const [inn, v] of entries) {
-    const catId = codeToCat[String(v.code)] || null;
-    if (!catId) continue;
+    // Банкам НЕ ставим статью по умолчанию: банк как контрагент бывает и у комиссий (62),
+    // и у сквозных платежей физлицам — статью решают ключевые слова/ручной выбор.
+    const catId = BANK_INNS.includes(String(inn)) ? null : (codeToCat[String(v.code)] || null);
     const ex = await db.pool.query("SELECT id, default_category_id FROM cash_counterparties WHERE inn=$1 AND (cp_role IS DISTINCT FROM 'client') LIMIT 1", [inn]);
     if (ex.rows.length) {
-      if (ex.rows[0].default_category_id == null) {
+      if (ex.rows[0].default_category_id == null && catId) {
         await db.pool.query('UPDATE cash_counterparties SET default_category_id=$1 WHERE id=$2', [catId, ex.rows[0].id]);
       }
     } else {
@@ -168,7 +169,11 @@ async function seedCashCounterparties() {
         [v.name, inn, catId]);
     }
   }
+  // Чистим статью по умолчанию у банков (если раньше проставилась 62).
+  if (BANK_INNS.length) await db.pool.query('UPDATE cash_counterparties SET default_category_id=NULL WHERE inn = ANY($1)', [BANK_INNS]).catch(() => {});
 }
+// ИНН собственных обслуживающих банков — их операции не классифицируем по контрагенту.
+const BANK_INNS = ['207018693', '310331793']; // Asia Alliance, Hayot
 
 // Разовое заполнение статьи ДДС у поставщиков Закупа из справочника ИНН→код
 // (только там, где ещё не задано вручную — ручные значения не перетираем).
@@ -935,6 +940,15 @@ async function runRelink() {
         `UPDATE cash_transactions SET category_id=$1, is_classified=true WHERE ${cond} AND (purpose ILIKE $2 OR payer_name ILIKE $2)`, params);
       byKw += r.rowCount || 0;
     }
+  }
+  // 6) Сквозные платежи через банк (ИНН банка), ошибочно попавшие в 62 без признаков
+  //    комиссии — сбрасываем в «не разобрано», чтобы поставить верную статью вручную.
+  if (codeToCat['62'] && BANK_INNS.length) {
+    await db.pool.query(
+      `UPDATE cash_transactions SET category_id=NULL, is_classified=false
+       WHERE category_id=$1 AND payer_inn = ANY($2)
+         AND (COALESCE(purpose,'') || ' ' || COALESCE(payer_name,'')) !~* $3`,
+      [codeToCat['62'], BANK_INNS, 'начислен|% банка|комисс|оп\\.обс']).catch(() => {});
   }
   return { linked: (link.rowCount || 0) + byNameCnt, byInn: link.rowCount || 0, byName: byNameCnt, byMap, byKw };
 }
