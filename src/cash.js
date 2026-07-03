@@ -787,12 +787,29 @@ router.post('/api/transactions/wipe', J, async (req, res) => {
 // Авто-разбор транзакций: контрагент по ИНН + статья ДДС (дефолт контрагента → Закуп →
 // справочник ИНН) + внутренние переводы (свои юрлица) → ОБН. Не перетирает заполненное.
 // Запускается сам после импорта и синхронизации клиентов; кнопки для этого не нужно.
+function normName(s) {
+  return String(s || '').toUpperCase()
+    .replace(/["«»'`]/g, ' ')
+    .replace(/\b(OOO|ООО|МЧЖ|MCHJ|АЖ|AJ|XK|ХК|ЧП|OJ|MAS.?ULIYATI|CHEKLANGAN|JAMIYAT|XUSUSIY|KORXONA|OILAVIY|QO.?SHMA|XORIJIY|FERMER|XO.?JALIGI|LLC|АО|ATB|AKSIYADORLIK)\b/g, ' ')
+    .replace(/[^A-ZА-Я0-9]+/g, ' ').trim().replace(/\s+/g, ' ');
+}
 async function runRelink() {
   // 1) Контрагент по ИНН плательщика (где ещё не привязан).
   const link = await db.pool.query(
     `UPDATE cash_transactions t SET counterparty_id = cp.id
      FROM cash_counterparties cp
      WHERE t.counterparty_id IS NULL AND COALESCE(t.payer_inn,'')<>'' AND cp.inn = t.payer_inn AND cp.status='active'`);
+  // 1b) Кого не нашли по ИНН — по нормализованному юр.названию (у клиентов SD оно в firm_name).
+  let byNameCnt = 0;
+  const byName = {};
+  (await db.pool.query("SELECT id, name, firm_name FROM cash_counterparties WHERE status='active'")).rows.forEach((c) => {
+    for (const nm of [c.firm_name, c.name]) { const k = normName(nm); if (k && k.length >= 4 && !(k in byName)) byName[k] = c.id; }
+  });
+  const unl = (await db.pool.query("SELECT id, payer_name FROM cash_transactions WHERE counterparty_id IS NULL AND COALESCE(payer_name,'')<>''")).rows;
+  for (const t of unl) {
+    const cid = byName[normName(t.payer_name)];
+    if (cid) { await db.pool.query("UPDATE cash_transactions SET counterparty_id=$1 WHERE id=$2", [cid, t.id]); byNameCnt++; }
+  }
   // 2) Статья из дефолтной у привязанного контрагента.
   await db.pool.query(
     `UPDATE cash_transactions t SET category_id = cp.default_category_id, is_classified = true
@@ -822,10 +839,10 @@ async function runRelink() {
       "UPDATE cash_transactions SET category_id=$1, is_classified=true WHERE category_id IS NULL AND (payer_name ILIKE '%novagreen%')", [codeToCat['100']]);
     own = r.rowCount || 0;
   }
-  return { linked: link.rowCount || 0, byMap, own };
+  return { linked: (link.rowCount || 0) + byNameCnt, byInn: link.rowCount || 0, byName: byNameCnt, byMap, own };
 }
 router.post('/api/transactions/relink', J, async (req, res) => {
-  try { const r = await runRelink(); await db.log(req.user.id, 'cash_relink', `контрагентов ${r.linked}, статей ${r.byMap}, ОБН ${r.own}`); res.json({ ok: true, ...r }); }
+  try { const r = await runRelink(); await db.log(req.user.id, 'cash_relink', `контрагентов ${r.linked} (ИНН ${r.byInn}, назв ${r.byName}), статей ${r.byMap}, ОБН ${r.own}`); res.json({ ok: true, ...r }); }
   catch (e) { res.status(400).json({ error: e.message }); }
 });
 
