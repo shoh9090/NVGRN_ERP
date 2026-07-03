@@ -537,15 +537,15 @@ async function seed() {
   if (bt.rows.length === 0) {
     await pool.query(
       `INSERT INTO tiles (title, description, icon, url, open_new_tab, sort_order)
-       VALUES ('Телеграм-бот: ассистент продаж', 'Заказы, претензии, напоминания и отчёты для отдела продаж', '/static/img/tgbot-icon.svg', '/tgbot', FALSE, 80)`
+       VALUES ('Телеграм-бот: ассистент продаж', 'Заказы, претензии, напоминания и отчёты для отдела продаж', '🤖', '/tgbot', FALSE, 80)`
     );
   }
-  // Переименование старой плитки «Бот HoReCa» + фирменная иконка (только если ещё не менялась вручную).
+  // Переименование старой плитки «Бот HoReCa» → новое имя, классический значок.
   await pool.query(
     `UPDATE tiles SET title='Телеграм-бот: ассистент продаж',
         description='Заказы, претензии, напоминания и отчёты для отдела продаж',
-        icon='/static/img/tgbot-icon.svg'
-     WHERE url='/tgbot' AND (title='Бот HoReCa' OR icon='🤖')`
+        icon='🤖'
+     WHERE url='/tgbot' AND (title='Бот HoReCa' OR icon='/static/img/tgbot-icon.svg')`
   );
 
   // Плитка «Закуп» — модуль ядра
