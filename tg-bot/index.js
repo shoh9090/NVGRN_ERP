@@ -883,6 +883,11 @@ async function main() {
       return soon();
     }
     if (stf.role === "logistics") {
+      if (txt === "⚙️ Напоминания") {
+        await reloadCfg();
+        const st = botCfg.deliveryRemindEnabled ? "включены" : "выключены";
+        return bot.sendMessage(chatId, `⏰ Напоминания водителям: ${st}\nВремя: ${(botCfg.deliveryRemindTimes || []).join(", ") || "—"}\n\nИзменить время/вкл-выкл — в Hub → плитка «Телеграм-бот: ассистент продаж» → ⚙️ Настройки → блок «Напоминания водителям о доставке».`);
+      }
       if (txt === "🚚 Доставки сегодня" || txt === "📊 По экспедиторам") {
         bot.sendChatAction(chatId, "typing"); _cache.delete("orders14");
         const undel = await undeliveredShipped();

@@ -72,6 +72,8 @@ async function ensureTables() {
   await db.pool.query(`ALTER TABLE tgbot.bot_settings ADD COLUMN IF NOT EXISTS quiet_from TEXT NOT NULL DEFAULT '22:00'`);
   await db.pool.query(`ALTER TABLE tgbot.bot_settings ADD COLUMN IF NOT EXISTS quiet_to TEXT NOT NULL DEFAULT '08:00'`);
   await db.pool.query(`ALTER TABLE tgbot.bot_settings ADD COLUMN IF NOT EXISTS lost_summary_freq TEXT NOT NULL DEFAULT 'weekly'`);
+  await db.pool.query(`ALTER TABLE tgbot.bot_settings ADD COLUMN IF NOT EXISTS delivery_remind_times TEXT NOT NULL DEFAULT '21:00,22:00'`);
+  await db.pool.query(`ALTER TABLE tgbot.bot_settings ADD COLUMN IF NOT EXISTS delivery_remind_enabled BOOLEAN NOT NULL DEFAULT true`);
   await db.pool.query(`CREATE TABLE IF NOT EXISTS tgbot.crm_agents (
     sd_agent_id TEXT PRIMARY KEY, sd_agent_code TEXT, sd_agent_name TEXT,
     is_active BOOLEAN NOT NULL DEFAULT true, last_synced_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -123,7 +125,7 @@ async function ensureTables() {
 function normPhone9(v) { const d = String(v || '').replace(/\D/g, ''); return d.length > 9 ? d.slice(-9) : d; }
 const ROLES = ['agent', 'head_of_sales', 'logistics', 'expeditor', 'marketing', 'admin'];
 
-const DEFAULT_BOT_SETTINGS = { reminder_times: '18:00,21:00,23:00', deadline: '00:00', avg_window_days: 14, enabled: true, digest_time: '08:30', digest_enabled: true, signals_enabled: true, signal1_days: 3, signal2_pct: 40, signal2_window: 7, order_alerts_enabled: true, quiet_from: '22:00', quiet_to: '08:00', lost_summary_freq: 'weekly' };
+const DEFAULT_BOT_SETTINGS = { reminder_times: '18:00,21:00,23:00', deadline: '00:00', avg_window_days: 14, enabled: true, digest_time: '08:30', digest_enabled: true, signals_enabled: true, signal1_days: 3, signal2_pct: 40, signal2_window: 7, order_alerts_enabled: true, quiet_from: '22:00', quiet_to: '08:00', lost_summary_freq: 'weekly', delivery_remind_times: '21:00,22:00', delivery_remind_enabled: true };
 async function getBotSettings() {
   await ensureTables();
   const r = await db.pool.query('SELECT * FROM tgbot.bot_settings WHERE id=1');
@@ -374,6 +376,23 @@ router.post('/settings', async (req, res) => {
   }
 });
 
+router.post('/settings/delivery', async (req, res) => {
+  const settings = await db.getSettings();
+  try {
+    await ensureTables();
+    const times = normTimes(req.body.delivery_remind_times).slice(0, 6).join(',') || '21:00,22:00';
+    const en = ['on', 'true', '1'].includes(String(req.body.delivery_remind_enabled));
+    await db.pool.query(
+      `UPDATE tgbot.bot_settings SET delivery_remind_times=$1, delivery_remind_enabled=$2, updated_at=now(), updated_by=$3 WHERE id=1`,
+      [times, en, String(req.user.id)]);
+    await db.log(req.user.id, 'tgbot_delivery_settings', `times=${times} enabled=${en}`);
+    const botSettings = await getBotSettings();
+    await render(res, req, settings, { botSettings, settingsSaved: true, openAgent: true });
+  } catch (e) {
+    const botSettings = await getBotSettings().catch(() => DEFAULT_BOT_SETTINGS);
+    await render(res, req, settings, { botSettings, error: 'Не удалось сохранить: ' + e.message, openAgent: true });
+  }
+});
 router.post('/settings/agent', async (req, res) => {
   const settings = await db.getSettings();
   try {

@@ -149,9 +149,19 @@
           </div>
         </form>
         <div class="tgm-note" style="margin-top:12px">Сводка приходит каждому агенту в указанное время по его клиентам. Сигналы — не чаще раза в день на клиента. В тихий час оповещения об изменениях заказов не отправляются (данные всё равно копятся для дашборда).</div>
+
+        <div class="tgm-t" style="font-size:14px;margin-top:18px">🚚 Напоминания водителям о доставке</div>
+        <form method="POST" action="/tgbot/settings/delivery" id="deliveryForm">
+          <div class="tgm-fields" style="margin-top:8px">
+            <label class="tgm-check"><input type="checkbox" name="delivery_remind_enabled" <%= botSettings.delivery_remind_enabled!==false?'checked':'' %>> Напоминать водителям о недоставленных заказах</label>
+            <label class="tgm-remrow"><span>Время напоминаний (через запятую)</span><input type="text" name="delivery_remind_times" value="<%= botSettings.delivery_remind_times||'21:00,22:00' %>" placeholder="21:00,22:00"></label>
+          </div>
+        </form>
+        <div class="tgm-note" style="margin-top:8px">Заказ «Отгружен», но не отмечен «Доставлен» и дата доставки уже наступила → в это время бот напомнит водителю. Логист видит сводку по кнопке «По экспедиторам».</div>
       </div>
       <div class="tgm-ft">
-        <button class="tgm-btn tgm-green" type="submit" form="agentForm">Сохранить</button>
+        <button class="tgm-btn tgm-green" type="submit" form="agentForm">Сохранить сводки/сигналы</button>
+        <button class="tgm-btn tgm-green" type="submit" form="deliveryForm">Сохранить доставку</button>
         <div class="grow"></div>
         <button class="tgm-btn tgm-ghost" data-close-agent type="button">Закрыть</button>
       </div>
