@@ -177,15 +177,20 @@
   // Панель периода для отчётов (месяц по умолчанию — текущий).
   function repPeriodBar() {
     const dinp = (k) => el('input', { type: 'date', class: 'cashf-inp cash-filt', value: repState[k], onchange: (e) => { repState[k] = e.target.value; render(); } });
-    const preset = (label, from, to) => el('button', { class: 'btn-ghost', onclick: () => { repState.from = from; repState.to = to; render(); } }, label);
+    const preset = (label, from, to) => el('button', { class: 'cash-preset', onclick: () => { repState.from = from; repState.to = to; render(); } }, label);
     const now = new Date();
     const ym = (y, m) => new Date(Date.UTC(y, m, 1)).toISOString().slice(0, 10);
     const mEnd = (y, m) => new Date(Date.UTC(y, m + 1, 0)).toISOString().slice(0, 10);
+    const walletSel = el('select', { class: 'cashf-inp cash-filt', onchange: (e) => { repState.wallet = e.target.value; render(); } }, [
+      el('option', { value: '' }, 'Все кошельки'),
+      ...(DICTS.wallets || []).map((w) => el('option', { value: w.id, selected: String(w.id) === repState.wallet || null }, w.name)),
+    ]);
     return el('div', { class: 'cash-filters' }, [
       el('span', { class: 'cash-flab' }, 'С'), dinp('from'), el('span', { class: 'cash-flab' }, 'по'), dinp('to'),
       preset('Текущий месяц', monthStartStr(), todayStr()),
       preset('Прошлый месяц', ym(now.getFullYear(), now.getMonth() - 1), mEnd(now.getFullYear(), now.getMonth() - 1)),
       preset('Год', ym(now.getFullYear(), 0), todayStr()),
+      walletSel,
     ]);
   }
 
@@ -197,9 +202,10 @@
     c.innerHTML = '<div class="cash-loading">Считаю…</div>';
     if (!repState.from) repState.from = monthStartStr();
     if (!repState.to) repState.to = todayStr();
-    let d; try { d = await api('/report?from=' + repState.from + '&to=' + repState.to); } catch (e) { c.innerHTML = ''; c.appendChild(el('div', { class: 'cash-empty' }, 'Ошибка: ' + e.message)); return; }
+    const wq = repState.wallet ? '&wallet=' + repState.wallet : '';
+    let d; try { d = await api('/report?from=' + repState.from + '&to=' + repState.to + wq); } catch (e) { c.innerHTML = ''; c.appendChild(el('div', { class: 'cash-empty' }, 'Ошибка: ' + e.message)); return; }
     c.innerHTML = '';
-    renderCashflow(c, d.rows || [], d.groups || []);
+    renderCashflow(c, d.rows || [], d.groups || [], d.a2a || { inc: 0, exp: 0 });
   }
 
   function kpiBar(items) {
@@ -228,21 +234,29 @@
     return el('div', { class: 'cash-chart-card' }, [chart, legend]);
   }
 
-  function renderCashflow(c, rows, groupsOrder) {
+  function renderCashflow(c, rows, groupsOrder, a2a) {
+    a2a = a2a || { inc: 0, exp: 0 };
     c.appendChild(el('div', { class: 'cash-head' }, [el('div', {}, [
       el('div', { class: 'cash-h2' }, 'Кэш-флоу (ДДС)'),
-      el('div', { class: 'cash-sub' }, 'Движение денег по статьям за период. Переводы между счетами (A2A) исключены.'),
+      el('div', { class: 'cash-sub' }, 'Движение денег по статьям за период. Переводы между счетами (A2A) — отдельной карточкой, в поток не входят.'),
     ])]));
     c.appendChild(repPeriodBar());
     const totalIn = rows.reduce((s, r) => s + r.inc, 0);
     const totalOut = rows.reduce((s, r) => s + r.exp, 0);
     c.appendChild(kpiBar([['Поступления', totalIn, 'tot-in'], ['Выбытия', totalOut, 'tot-out'], ['Чистый поток', totalIn - totalOut, (totalIn - totalOut) >= 0 ? 'tot-in' : 'tot-out']]));
 
-    // Разбивка по типу потока
+    // Разбивка по типу потока + A2A (переводы между счетами)
     const flows = { operating: 0, investing: 0, financing: 0 };
     rows.forEach((r) => { if (flows[r.flow_type] != null) flows[r.flow_type] += r.inc - r.exp; });
-    c.appendChild(el('div', { class: 'cash-flow-cards' }, Object.keys(flows).map((f) =>
-      el('div', { class: 'cash-flow-card' }, [el('div', { class: 'cash-flow-card-l' }, FLOW_RU[f]), el('div', { class: 'cash-flow-card-v ' + (flows[f] >= 0 ? 'cash-tot-in' : 'cash-tot-out') }, money(flows[f]))]))));
+    const FLOW_HINT = { operating: 'Основная деятельность: продажи, сырьё, зарплаты, аренда', investing: 'Капвложения: оборудование, стройка', financing: 'Кредиты, проценты, налоги, взносы учредителей' };
+    const flowCard = (l, hint, val) => el('div', { class: 'cash-flow-card', title: hint }, [el('div', { class: 'cash-flow-card-l' }, l), el('div', { class: 'cash-flow-card-hint' }, hint), el('div', { class: 'cash-flow-card-v ' + (val >= 0 ? 'cash-tot-in' : 'cash-tot-out') }, money(val))]);
+    const a2aNet = (a2a.inc || 0) - (a2a.exp || 0);
+    c.appendChild(el('div', { class: 'cash-flow-cards cash-flow-cards-4' }, [
+      flowCard('Операционный', FLOW_HINT.operating, flows.operating),
+      flowCard('Инвестиции', FLOW_HINT.investing, flows.investing),
+      flowCard('Финансы', FLOW_HINT.financing, flows.financing),
+      flowCard('A2A (переводы)', 'Перемещения между своими счетами/картами — не доход и не расход', a2aNet),
+    ]));
 
     // Пончик: структура расходов по группам
     const expByGroup = {};
@@ -308,7 +322,7 @@
 
   // ================= ТРАНЗАКЦИИ =================
   const txState = { from: '', to: '', wallet: '', type: '', q: '', category: '', counterparty: '', classified: '', page: 1, pageSize: 50 };
-  const repState = { from: '', to: '' };
+  const repState = { from: '', to: '', wallet: '' };
   let txSel = new Set();
   async function renderTransactions() {
     const c = $('#cash-content'); c.innerHTML = '';

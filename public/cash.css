@@ -94,9 +94,15 @@
 .cash-kpi { display: inline-flex; align-items: baseline; gap: 2px; }
 .cash-kpi-l { color: var(--muted); font-weight: 600; }
 .cash-flow-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 12px 0; }
+.cash-flow-cards-4 { grid-template-columns: repeat(4, 1fr); }
 .cash-flow-card { background: #fbfaf5; border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
-.cash-flow-card-l { font-size: 12px; color: var(--muted); font-weight: 700; }
-.cash-flow-card-v { font-family: 'Lora', Georgia, serif; font-size: 20px; font-weight: 600; margin-top: 4px; }
+.cash-flow-card-l { font-size: 13px; color: var(--ink); font-weight: 800; }
+.cash-flow-card-hint { font-size: 10.5px; color: var(--muted); line-height: 1.25; margin-top: 2px; min-height: 26px; }
+.cash-flow-card-v { font-family: 'Lora', Georgia, serif; font-size: 19px; font-weight: 600; margin-top: 4px; }
+/* Пресеты периода — заметные */
+.cash-preset { background: #eef4e9; border: 1px solid var(--forest); color: var(--forest); border-radius: 8px; padding: 7px 12px; font-size: 13px; font-weight: 700; cursor: pointer; white-space: nowrap; }
+.cash-preset:hover { background: var(--forest); color: #fff; }
+@media (max-width: 760px) { .cash-flow-cards, .cash-flow-cards-4 { grid-template-columns: 1fr 1fr; } }
 .cash-grp-sum { font-weight: 700; color: var(--muted); font-size: 12px; margin-left: 8px; }
 .cash-rep { grid-template-columns: 2fr 1fr 1fr; }
 .cash-pnl { max-width: 620px; border: 1px solid var(--line); border-radius: 14px; overflow: hidden; background: #fff; margin-top: 6px; }
