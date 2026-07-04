@@ -125,12 +125,18 @@
   <div class="tgm-overlay <%= openAgent ? 'on' : '' %>" id="agentOverlay">
     <div class="tgm-modal" style="max-width:560px">
       <div class="tgm-hd">
-        <div style="flex:1"><div class="tgm-t">Сводки и сигналы для торговой команды</div><div class="tgm-s">Что и когда получают агенты и РОП</div></div>
+        <div style="flex:1"><div class="tgm-t">Настройки оповещений</div><div class="tgm-s">Сводки и сигналы · доставка · кто что получает</div></div>
         <button class="tgm-icon" data-close-agent type="button"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
       </div>
       <div class="tgm-body">
         <% if (settingsSaved && openAgent) { %><div class="tgm-bn ok">Сохранено. Бот применит в течение минуты.</div><% } %>
         <% if (typeof error!=='undefined' && error && openAgent) { %><div class="tgm-bn err"><%= error %></div><% } %>
+        <div class="tgm-tabs" id="setTabs">
+          <button type="button" class="tgm-tab on" data-p="digest">📊 Сводки и сигналы</button>
+          <button type="button" class="tgm-tab" data-p="delivery">🚚 Доставка</button>
+          <button type="button" class="tgm-tab" data-p="notif">🔔 Оповещения</button>
+        </div>
+        <div class="tgm-pane" data-pane="digest">
         <form method="POST" action="/tgbot/settings/agent" id="agentForm">
           <div class="tgm-fields">
             <label class="tgm-remrow"><span>Сводка агенту — время</span><input type="time" name="digest_time" value="<%= botSettings.digest_time||'08:30' %>"></label>
@@ -156,8 +162,11 @@
           </div>
         </form>
         <div class="tgm-note" style="margin-top:12px">Сводка приходит каждому агенту в указанное время по его клиентам. Сигналы — не чаще раза в день на клиента. В тихий час оповещения об изменениях заказов не отправляются (данные всё равно копятся для дашборда).</div>
+        <button class="tgm-btn tgm-green" type="submit" form="agentForm" style="margin-top:12px">Сохранить</button>
+        </div>
 
-        <div class="tgm-t" style="font-size:14px;margin-top:18px">🚚 Напоминания водителям о доставке</div>
+        <div class="tgm-pane" data-pane="delivery" style="display:none">
+        <div class="tgm-t" style="font-size:14px">🚚 Напоминания водителям о доставке</div>
         <form method="POST" action="/tgbot/settings/delivery" id="deliveryForm">
           <div class="tgm-fields" style="margin-top:8px">
             <label class="tgm-check"><input type="checkbox" name="delivery_remind_enabled" <%= botSettings.delivery_remind_enabled!==false?'checked':'' %>> Напоминать водителям о недоставленных заказах</label>
@@ -165,8 +174,11 @@
           </div>
         </form>
         <div class="tgm-note" style="margin-top:8px">Заказ «Отгружен», но не отмечен «Доставлен» и дата доставки уже наступила → в это время бот напомнит водителю. Логист видит сводку по кнопке «По экспедиторам».</div>
+        <button class="tgm-btn tgm-green" type="submit" form="deliveryForm" style="margin-top:12px">Сохранить</button>
+        </div>
 
-        <div class="tgm-t" style="font-size:14px;margin-top:18px">🔔 Кто получает оповещения</div>
+        <div class="tgm-pane" data-pane="notif" style="display:none">
+        <div class="tgm-t" style="font-size:14px">🔔 Кто получает оповещения</div>
         <form method="POST" action="/tgbot/settings/notif-subs" id="notifSubsForm">
           <table class="tgm-subs">
             <thead><tr><th>Тип оповещения</th><% notifRoles.forEach(function(r){ %><th><%= r.label %></th><% }); %></tr></thead>
@@ -183,11 +195,20 @@
           </table>
         </form>
         <div class="tgm-note" style="margin-top:6px">Отметьте, какие роли получают какой тип. Напр. добавьте «Логистика» в правки заказа или снимите «Админ», если ему это не нужно. Свои клиентские оповещения агент получает всегда.</div>
+        <button class="tgm-btn tgm-green" type="submit" form="notifSubsForm" style="margin-top:12px">Сохранить</button>
+        </div>
+        <script>
+          (function(){
+            var t=document.getElementById('setTabs'); if(!t) return;
+            t.querySelectorAll('.tgm-tab').forEach(function(b){ b.addEventListener('click',function(){
+              var p=b.getAttribute('data-p');
+              document.querySelectorAll('#agentOverlay .tgm-pane').forEach(function(pn){ pn.style.display = pn.getAttribute('data-pane')===p?'':'none'; });
+              t.querySelectorAll('.tgm-tab').forEach(function(x){ x.classList.toggle('on', x===b); });
+            }); });
+          })();
+        </script>
       </div>
       <div class="tgm-ft">
-        <button class="tgm-btn tgm-green" type="submit" form="agentForm">Сохранить сводки/сигналы</button>
-        <button class="tgm-btn tgm-green" type="submit" form="deliveryForm">Сохранить доставку</button>
-        <button class="tgm-btn tgm-green" type="submit" form="notifSubsForm">Сохранить оповещения</button>
         <div class="grow"></div>
         <button class="tgm-btn tgm-ghost" data-close-agent type="button">Закрыть</button>
       </div>
