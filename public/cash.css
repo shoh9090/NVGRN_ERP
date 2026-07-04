@@ -117,6 +117,11 @@
 .cash-chart-card { display: flex; gap: 24px; align-items: center; flex-wrap: wrap; background: #fbfaf5; border: 1px solid var(--line); border-radius: 16px; padding: 16px 20px; margin: 8px 0 4px; }
 .cash-donut-wrap { flex: none; }
 .cash-donut { width: 200px; height: 200px; }
+.cash-donut .cash-seg { transition: opacity .12s, stroke-width .12s; }
+.cash-donut:hover .cash-seg { opacity: .5; }
+.cash-donut .cash-seg:hover { opacity: 1; stroke-width: 33; }
+.cash-rep-click { cursor: pointer; transition: background .12s; }
+.cash-rep-click:hover { background: #eef4e9; }
 .cash-donut-cap { fill: var(--muted); font-size: 12px; font-weight: 700; }
 .cash-donut-val { fill: var(--ink); font-size: 15px; font-weight: 800; font-family: 'Lora', Georgia, serif; }
 .cash-legend { flex: 1; min-width: 240px; display: flex; flex-direction: column; gap: 7px; }

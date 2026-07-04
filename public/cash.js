@@ -213,15 +213,28 @@
       el('span', { class: 'cash-kpi' }, [el('span', { class: 'cash-kpi-l' }, label + ': '), el('span', { class: 'cash-' + cls }, money(val))])));
   }
 
+  // Проваливание из отчёта в транзакции: фильтр по статье за тот же период/кошелёк.
+  function drillToTx(r) {
+    txState.from = repState.from || monthStartStr();
+    txState.to = repState.to || todayStr();
+    txState.wallet = repState.wallet || '';
+    txState.type = ''; txState.q = ''; txState.counterparty = ''; txState.page = 1;
+    if (r.cat_id) { txState.category = String(r.cat_id); txState.classified = ''; }
+    else { txState.category = ''; txState.classified = 'no'; }
+    TAB = 'tx'; render();
+  }
+
   const CHART_COLORS = ['#163a28', '#8cc63f', '#2e7d32', '#b25b00', '#5b3da8', '#c0392b', '#0d7d8c', '#c77800', '#7c8579', '#3f6a16'];
   function donutChart(items, capTitle) {
     const total = items.reduce((s, i) => s + i.value, 0);
     if (!total) return el('div', { class: 'cash-sub' }, 'Нет данных за период.');
     const size = 200, r = size / 2 - 18, cx = size / 2, cy = size / 2, C = 2 * Math.PI * r;
     let off = 0;
+    const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     const segs = items.map((it) => {
       const len = it.value / total * C;
-      const s = `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${it.color}" stroke-width="28" stroke-dasharray="${len.toFixed(2)} ${(C - len).toFixed(2)}" stroke-dashoffset="${(-off).toFixed(2)}" transform="rotate(-90 ${cx} ${cy})"/>`;
+      const pct = Math.round(it.value / total * 100);
+      const s = `<circle class="cash-seg" cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${it.color}" stroke-width="28" stroke-dasharray="${len.toFixed(2)} ${(C - len).toFixed(2)}" stroke-dashoffset="${(-off).toFixed(2)}" transform="rotate(-90 ${cx} ${cy})"><title>${esc(it.label)}: ${money(it.value)} · ${pct}%</title></circle>`;
       off += len; return s;
     }).join('');
     const svg = `<svg viewBox="0 0 ${size} ${size}" class="cash-donut"><g>${segs}</g><text x="${cx}" y="${cy - 2}" text-anchor="middle" class="cash-donut-cap">${capTitle || 'Итого'}</text><text x="${cx}" y="${cy + 18}" text-anchor="middle" class="cash-donut-val">${money(total)}</text></svg>`;
@@ -277,8 +290,8 @@
       const gi = list.reduce((s, r) => s + r.inc, 0), ge = list.reduce((s, r) => s + r.exp, 0);
       const block = el('div', { class: 'cash-grp' });
       block.appendChild(el('div', { class: 'cash-grp-h' }, [g, el('span', { class: 'cash-grp-sum' }, (gi ? ' +' + money(gi) : '') + (ge ? '  −' + money(ge) : ''))]));
-      block.appendChild(el('div', { class: 'cash-list' }, list.filter((r) => r.inc || r.exp).map((r) => el('div', { class: 'cash-row cash-rep' + (!r.cat_id ? ' unclass' : '') }, [
-        el('span', {}, r.code ? (r.code + ' · ' + r.name) : 'без статьи'),
+      block.appendChild(el('div', { class: 'cash-list' }, list.filter((r) => r.inc || r.exp).map((r) => el('div', { class: 'cash-row cash-rep cash-rep-click' + (!r.cat_id ? ' unclass' : ''), title: 'Открыть транзакции этой статьи', onclick: () => drillToTx(r) }, [
+        el('span', {}, (r.code ? (r.code + ' · ' + r.name) : 'без статьи') + ' →'),
         el('span', { class: 'cash-amt-in' }, r.inc ? '+' + money(r.inc) : ''),
         el('span', { class: 'cash-amt-out' }, r.exp ? '−' + money(r.exp) : ''),
       ]))));
