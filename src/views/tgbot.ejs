@@ -60,6 +60,9 @@
     .tgm-sm.go{background:#163a28;color:#fff;border-color:#163a28}
     .tgm-sm.danger{color:#b5462c;border-color:#e6c2b8;background:#fff}
     .tgm-note{font-size:12.5px;color:#52605a;margin-bottom:14px;line-height:1.55}
+    .tgm-tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+    .tgm-tab{border:1px solid #e6e2d6;background:#fbfaf4;color:#52605a;border-radius:30px;padding:6px 14px;font-size:12.5px;font-weight:700;cursor:pointer}
+    .tgm-tab.on{background:#163a28;color:#fff;border-color:#163a28}
     .tgm-bn{padding:10px 14px;border-radius:8px;margin-bottom:14px;font-size:13px}
     .tgm-bn.ok{background:#eef6df;border-left:4px solid #6aa82f;color:#3f6a16}
     .tgm-bn.err{background:#fbece5;border-left:4px solid #c0492f;color:#a53d24}
@@ -299,13 +302,19 @@
   <div class="tgm-overlay <%= openStaff ? 'on' : '' %>" id="staffOverlay">
     <div class="tgm-modal">
       <div class="tgm-hd">
-        <div style="flex:1"><div class="tgm-t">Telegram-агенты</div><div class="tgm-s">Заявки на доступ к боту и подтверждённые сотрудники</div></div>
+        <div style="flex:1"><div class="tgm-t">Telegram-сотрудники</div><div class="tgm-s">Заявки на доступ к боту и подтверждённые сотрудники</div></div>
         <button class="tgm-icon" data-close-staff type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
       </div>
       <div class="tgm-body">
         <% if (staffMsg) { %><div class="tgm-bn ok"><%= staffMsg %></div><% } %>
         <% if (staffErr) { %><div class="tgm-bn err"><%= staffErr %></div><% } %>
         <div class="tgm-note">Нажмите <b>«Загрузить агентов»</b> и <b>«Загрузить экспедиторов»</b> — подтянутся списки из SalesDoctor. Сотрудников заводит только админ: добавьте вручную (ФИО, телефон, роль) или, для агента/водителя, выберите из списка. Затем сотрудник пишет боту и делится номером — доступ откроется по телефону. Неизвестные номера доступа не получают.</div>
+        <div class="tgm-tabs" id="staffTabs">
+          <button type="button" class="tgm-tab on" data-f="all">Все</button>
+          <button type="button" class="tgm-tab" data-f="agent">Агенты</button>
+          <button type="button" class="tgm-tab" data-f="expeditor">Экспедиторы</button>
+          <button type="button" class="tgm-tab" data-f="other">Прочие (РОП/логистика/др.)</button>
+        </div>
         <table>
           <thead><tr><th>Телефон</th><th>Имя в Telegram</th><th>Агент в CRM (имя/код) и роль</th><th>Статус</th><th></th></tr></thead>
           <tbody>
@@ -315,8 +324,9 @@
             <% staff.forEach(function(s){
                  var tgname=[s.telegram_first_name,s.telegram_last_name].filter(Boolean).join(' ')+(s.telegram_username?' (@'+s.telegram_username+')':'');
                  var on=s.status==='confirmed';
+                 var grp = s.role==='agent'?'agent':(s.role==='expeditor'?'expeditor':'other');
             %>
-            <tr>
+            <tr data-grp="<%= grp %>">
               <td><%= s.phone_original||s.phone_normalized||'—' %></td>
               <td><%= tgname||'—' %></td>
               <td>
@@ -354,6 +364,18 @@
             <% }); %>
           </tbody>
         </table>
+        <script>
+          (function(){
+            var tabs=document.getElementById('staffTabs'); if(!tabs) return;
+            function apply(f){
+              document.querySelectorAll('#staffOverlay tbody tr[data-grp]').forEach(function(tr){
+                tr.style.display = (f==='all'||tr.getAttribute('data-grp')===f)?'':'none';
+              });
+              tabs.querySelectorAll('.tgm-tab').forEach(function(b){ b.classList.toggle('on', b.getAttribute('data-f')===f); });
+            }
+            tabs.querySelectorAll('.tgm-tab').forEach(function(b){ b.addEventListener('click',function(){ apply(b.getAttribute('data-f')); }); });
+          })();
+        </script>
         <div class="tgm-add">
           <div class="tgm-t" style="font-size:14px">Добавить сотрудника</div>
           <div class="tgm-note" style="margin:4px 0 8px">Выберите роль. Для агента/водителя выберите его из списка (у водителя ФИО и телефон подставятся из SD). Для РОПа/логистики/маркетинга/админа — впишите ФИО и телефон.</div>
