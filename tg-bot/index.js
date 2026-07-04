@@ -164,6 +164,13 @@ async function phone9OfUser(tgId) { const r = await db.query("SELECT phone9 FROM
 async function pointsByPhone9(p9) { if (!p9) return []; const r = await db.query(`SELECT sd_id, point_name, firm_name FROM point_contacts WHERE ${PH9("zavsklad_phone")}=$1`, [p9]); return r.rows; }
 async function chainsByPhone9(p9) { if (!p9) return []; const r = await db.query(`SELECT inn, firm_name FROM chain_managers WHERE ${PH9("manager_phone")}=$1`, [p9]); return r.rows; }
 async function pointsOfUser(tgId) { return pointsByPhone9(await phone9OfUser(tgId)); }
+// Авторизован ли пользователь как клиент: его номер привязан к точке ИЛИ к сети (менеджер).
+async function isClientUser(tgId) {
+  const p9 = await phone9OfUser(tgId);
+  if (!p9) return false;
+  if ((await pointsByPhone9(p9)).length) return true;
+  return (await chainsByPhone9(p9)).length > 0;
+}
 
 // ---------- Бандл 1: сотрудники, роли, синхронизация ----------
 async function getStaff(tgId) {
@@ -1156,6 +1163,7 @@ async function main() {
     const stf = await getStaff(msg.from.id);
     if (stf) { bot.sendMessage(msg.chat.id, `Меню (${roleTitle(stf.role)}):`, staffMenu(stf.role)); return; }
     const lang = await getLang(msg.chat.id);
+    if (!(await isClientUser(msg.from.id))) { bot.sendMessage(msg.chat.id, lang === "uz" ? "Botdan foydalanish uchun raqamingizni yuboring yoki agentingizga murojaat qiling." : "Чтобы пользоваться ботом, поделитесь номером или обратитесь к вашему агенту.", askContact(lang)); return; }
     bot.sendMessage(msg.chat.id, lang === "uz" ? "Menyu:" : "Меню:", mainMenu(lang));
   });
   bot.onText(/\/zakaz|\/order|\/заказ/i, async (msg) => doZakaz(msg.chat.id, msg.from.id, await getLang(msg.chat.id)));
@@ -1389,6 +1397,12 @@ async function main() {
     const stf = await getStaff(msg.from.id);
     if (stf) return handleStaffText(chatId, msg.from.id, stf, txt);
     const lang = await getLang(chatId);
+    // Не сотрудник и не привязанный клиент/сеть — доступа к меню и данным нет.
+    if (!(await isClientUser(msg.from.id))) {
+      return bot.sendMessage(chatId, lang === "uz"
+        ? "Botdan foydalanish uchun pastdagi tugma bilan raqamingizni yuboring. Raqamingiz Novagreen bazasida bo‘lmasa — agentingizga murojaat qiling."
+        : "Чтобы пользоваться ботом, поделитесь номером телефона кнопкой ниже. Если вашего номера нет в базе Novagreen — обратитесь к вашему агенту.", askContact(lang));
+    }
     if (txt === STR.menu_order.ru || txt === STR.menu_order.uz) return doZakaz(chatId, msg.from.id, lang);
     if (txt === STR.menu_myorder.ru || txt === STR.menu_myorder.uz) return doMyOrder(chatId, msg.from.id, lang);
     await db.logEvent("message", chatId, { text: msg.text });
