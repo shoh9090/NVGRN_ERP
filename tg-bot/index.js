@@ -620,7 +620,7 @@ async function main() {
     let text = `📉 Упущенные продажи ${days === 7 ? "за неделю" : "за сутки"}\nВсего упущено: ${fmt(tot.amt)} сум · позиций: ${tot.c}\n\nЧаще не хватало:\n`;
     text += rows.map((r) => `• ${r.product_name}: ${fmt(r.amt)} сум (${fmt(r.qty)})`).join("\n");
     text += `\n\nПодробно — в Hub → «Бот HoReCa» → «Упущенные продажи».`;
-    await notifyManagers(text.slice(0, 3900));
+    await notifyByKind('lost_sales', text.slice(0, 3900));
   }
   async function lostSummaryTick() {
     try {
@@ -696,7 +696,7 @@ async function main() {
       const a = (await db.query("SELECT telegram_chat_id FROM telegram_staff WHERE crm_agent_id=$1 AND role='agent' AND status='confirmed' AND telegram_chat_id IS NOT NULL ORDER BY id DESC LIMIT 1", [agentSd])).rows[0];
       if (a) bot.sendMessage(a.telegram_chat_id, text).catch(() => {});
     }
-    await notifyManagers(text); // РОПам и админу
+    await notifyByKind('order_change', text); // по подпискам (роли настраиваются в Hub)
   }
   async function recordLostSales(o, prevItems, nowItems) {
     const lost = computeLost(prevItems, nowItems);
@@ -964,6 +964,20 @@ async function main() {
       for (const r of rops) { const c = r.telegram_chat_id; if (c && !seen.has(String(c))) { seen.add(String(c)); bot.sendMessage(c, text).catch(() => {}); } }
     } catch (e) { console.warn("[ЭСКАЛАЦИЯ]", e.message); }
     if (ADMIN_TG_ID && !seen.has(String(ADMIN_TG_ID))) bot.sendMessage(ADMIN_TG_ID, text).catch(() => {});
+  }
+  // Рассылка по подпискам: кто из ролей подписан на данный тип оповещения (настраивается в Hub).
+  async function notifyByKind(kind, text) {
+    const seen = new Set();
+    try {
+      await db.query("CREATE TABLE IF NOT EXISTS notif_subs (kind TEXT NOT NULL, role TEXT NOT NULL, PRIMARY KEY (kind, role))").catch(() => {});
+      const rows = (await db.query(
+        `SELECT DISTINCT s.telegram_chat_id FROM telegram_staff s
+         JOIN notif_subs ns ON ns.role = s.role
+         WHERE ns.kind=$1 AND s.status='confirmed' AND s.telegram_chat_id IS NOT NULL`, [kind])).rows;
+      for (const r of rows) { const c = r.telegram_chat_id; if (c && !seen.has(String(c))) { seen.add(String(c)); bot.sendMessage(c, text).catch(() => {}); } }
+      const admOn = (await db.query("SELECT 1 FROM notif_subs WHERE kind=$1 AND role='admin'", [kind])).rows.length;
+      if (admOn && ADMIN_TG_ID && !seen.has(String(ADMIN_TG_ID))) bot.sendMessage(ADMIN_TG_ID, text).catch(() => {});
+    } catch (e) { console.warn("[ОПОВЕЩ]", e.message); }
   }
   // --- Бандл 2 (шаг 2): сводка агенту + сигналы ---
   async function buildDigest(crmAgentId) {

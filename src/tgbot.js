@@ -74,6 +74,17 @@ async function ensureTables() {
   await db.pool.query(`ALTER TABLE tgbot.bot_settings ADD COLUMN IF NOT EXISTS lost_summary_freq TEXT NOT NULL DEFAULT 'weekly'`);
   await db.pool.query(`ALTER TABLE tgbot.bot_settings ADD COLUMN IF NOT EXISTS delivery_remind_times TEXT NOT NULL DEFAULT '21:00,22:00'`);
   await db.pool.query(`ALTER TABLE tgbot.bot_settings ADD COLUMN IF NOT EXISTS delivery_remind_enabled BOOLEAN NOT NULL DEFAULT true`);
+  // Подписки на оповещения: какая роль получает какой тип. Наличие строки = подписан.
+  await db.pool.query(`CREATE TABLE IF NOT EXISTS tgbot.notif_subs (kind TEXT NOT NULL, role TEXT NOT NULL, PRIMARY KEY (kind, role))`);
+  const subsExist = (await db.pool.query('SELECT 1 FROM tgbot.notif_subs LIMIT 1')).rows.length;
+  if (!subsExist) {
+    // Дефолт = текущее поведение: правки заказа и упущенные — РОПу и админу.
+    for (const kind of ['order_change', 'lost_sales']) {
+      for (const role of ['head_of_sales', 'admin']) {
+        await db.pool.query('INSERT INTO tgbot.notif_subs (kind, role) VALUES ($1,$2) ON CONFLICT DO NOTHING', [kind, role]);
+      }
+    }
+  }
   await db.pool.query(`CREATE TABLE IF NOT EXISTS tgbot.crm_agents (
     sd_agent_id TEXT PRIMARY KEY, sd_agent_code TEXT, sd_agent_name TEXT,
     is_active BOOLEAN NOT NULL DEFAULT true, last_synced_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -154,13 +165,22 @@ async function loadStaffData() {
   const replacements = (await db.pool.query('SELECT * FROM tgbot.product_replacements ORDER BY product_name')).rows;
   return { agents, expeditors, staff, syncedAt: sync ? sync.ran_at : null, replacements };
 }
+// Типы оповещений и роли для матрицы подписок.
+const NOTIF_KINDS = [{ kind: 'order_change', label: 'Правки состава заказа (склад)' }, { kind: 'lost_sales', label: 'Сводка упущенных продаж' }];
+const NOTIF_ROLES = [{ role: 'head_of_sales', label: 'РОП' }, { role: 'logistics', label: 'Логистика' }, { role: 'marketing', label: 'Маркетинг' }, { role: 'admin', label: 'Админ' }];
+async function loadNotifSubs() {
+  const map = {};
+  try { (await db.pool.query('SELECT kind, role FROM tgbot.notif_subs')).rows.forEach((r) => { map[r.kind + '|' + r.role] = true; }); } catch (e) { /* нет таблицы */ }
+  return map;
+}
 async function render(res, req, settings, extra) {
   let sd = { agents: [], expeditors: [], staff: [], syncedAt: null, replacements: [] };
   try { sd = await loadStaffData(); } catch (e) { /* модалка будет пустой, не падаем */ }
   let products = [];
   if (extra && extra.openRepl) { try { products = await integrations.getSdProducts(); } catch (e) { /* список пуст */ } }
+  const notifSubs = await loadNotifSubs();
   res.render('tgbot', Object.assign({ settings, user: req.user, preview: null, result: null, error: null,
-    botSettings: DEFAULT_BOT_SETTINGS, settingsSaved: false,
+    botSettings: DEFAULT_BOT_SETTINGS, settingsSaved: false, notifKinds: NOTIF_KINDS, notifRoles: NOTIF_ROLES, notifSubs,
     agents: sd.agents, expeditors: sd.expeditors || [], staff: sd.staff, syncedAt: sd.syncedAt || null, replacements: sd.replacements || [], products, staffMsg: null, staffErr: null, openStaff: false, openSettings: false, openImport: false, openAgent: false, openRepl: false }, extra));
 }
 
@@ -386,6 +406,26 @@ router.post('/settings/delivery', async (req, res) => {
       `UPDATE tgbot.bot_settings SET delivery_remind_times=$1, delivery_remind_enabled=$2, updated_at=now(), updated_by=$3 WHERE id=1`,
       [times, en, String(req.user.id)]);
     await db.log(req.user.id, 'tgbot_delivery_settings', `times=${times} enabled=${en}`);
+    const botSettings = await getBotSettings();
+    await render(res, req, settings, { botSettings, settingsSaved: true, openAgent: true });
+  } catch (e) {
+    const botSettings = await getBotSettings().catch(() => DEFAULT_BOT_SETTINGS);
+    await render(res, req, settings, { botSettings, error: 'Не удалось сохранить: ' + e.message, openAgent: true });
+  }
+});
+router.post('/settings/notif-subs', async (req, res) => {
+  const settings = await db.getSettings();
+  try {
+    await ensureTables();
+    await db.pool.query('DELETE FROM tgbot.notif_subs');
+    for (const k of NOTIF_KINDS) {
+      for (const r of NOTIF_ROLES) {
+        if (['on', 'true', '1'].includes(String(req.body[`sub_${k.kind}_${r.role}`]))) {
+          await db.pool.query('INSERT INTO tgbot.notif_subs (kind, role) VALUES ($1,$2) ON CONFLICT DO NOTHING', [k.kind, r.role]);
+        }
+      }
+    }
+    await db.log(req.user.id, 'tgbot_notif_subs', 'updated');
     const botSettings = await getBotSettings();
     await render(res, req, settings, { botSettings, settingsSaved: true, openAgent: true });
   } catch (e) {

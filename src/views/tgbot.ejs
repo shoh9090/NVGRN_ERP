@@ -63,6 +63,10 @@
     .tgm-tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
     .tgm-tab{border:1px solid #e6e2d6;background:#fbfaf4;color:#52605a;border-radius:30px;padding:6px 14px;font-size:12.5px;font-weight:700;cursor:pointer}
     .tgm-tab.on{background:#163a28;color:#fff;border-color:#163a28}
+    .tgm-subs{width:100%;border-collapse:collapse;margin-top:8px;font-size:13px}
+    .tgm-subs th,.tgm-subs td{border:1px solid #e6e2d6;padding:7px 10px}
+    .tgm-subs th{background:#fbfaf4;color:#52605a;font-size:12px}
+    .tgm-subs td:first-child{font-weight:600;color:#163a28}
     .tgm-bn{padding:10px 14px;border-radius:8px;margin-bottom:14px;font-size:13px}
     .tgm-bn.ok{background:#eef6df;border-left:4px solid #6aa82f;color:#3f6a16}
     .tgm-bn.err{background:#fbece5;border-left:4px solid #c0492f;color:#a53d24}
@@ -161,10 +165,29 @@
           </div>
         </form>
         <div class="tgm-note" style="margin-top:8px">Заказ «Отгружен», но не отмечен «Доставлен» и дата доставки уже наступила → в это время бот напомнит водителю. Логист видит сводку по кнопке «По экспедиторам».</div>
+
+        <div class="tgm-t" style="font-size:14px;margin-top:18px">🔔 Кто получает оповещения</div>
+        <form method="POST" action="/tgbot/settings/notif-subs" id="notifSubsForm">
+          <table class="tgm-subs">
+            <thead><tr><th>Тип оповещения</th><% notifRoles.forEach(function(r){ %><th><%= r.label %></th><% }); %></tr></thead>
+            <tbody>
+              <% notifKinds.forEach(function(k){ %>
+              <tr>
+                <td><%= k.label %></td>
+                <% notifRoles.forEach(function(r){ %>
+                <td style="text-align:center"><input type="checkbox" name="sub_<%= k.kind %>_<%= r.role %>" <%= notifSubs[k.kind+'|'+r.role]?'checked':'' %>></td>
+                <% }); %>
+              </tr>
+              <% }); %>
+            </tbody>
+          </table>
+        </form>
+        <div class="tgm-note" style="margin-top:6px">Отметьте, какие роли получают какой тип. Напр. добавьте «Логистика» в правки заказа или снимите «Админ», если ему это не нужно. Свои клиентские оповещения агент получает всегда.</div>
       </div>
       <div class="tgm-ft">
         <button class="tgm-btn tgm-green" type="submit" form="agentForm">Сохранить сводки/сигналы</button>
         <button class="tgm-btn tgm-green" type="submit" form="deliveryForm">Сохранить доставку</button>
+        <button class="tgm-btn tgm-green" type="submit" form="notifSubsForm">Сохранить оповещения</button>
         <div class="grow"></div>
         <button class="tgm-btn tgm-ghost" data-close-agent type="button">Закрыть</button>
       </div>
