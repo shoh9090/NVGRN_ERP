@@ -437,11 +437,22 @@
     // «Из выписки» — исходный текст банка (кто платил/получал), read-only.
     if (tx.payer_name) rows.push(frow('Из выписки', el('div', { class: 'cash-note-info' }, tx.payer_name)));
     rows.push(frow('Статья ДДС', cat), frow('Назначение', purpose));
+    // A2A (перевод между счетами) — показываем «Откуда/Куда» по кошелькам.
+    const a2aCat = (DICTS.categories || []).find((c) => c.code === '100');
+    const a2aId = a2aCat ? String(a2aCat.id) : '';
+    const walletTo = fsel([{ v: '', t: '— кошелёк-получатель —' }].concat((DICTS.wallets || []).map((x) => ({ v: x.id, t: x.name }))), tx.wallet_to_id || '');
+    const fromW = (DICTS.wallets || []).find((x) => String(x.id) === String(tx.wallet_id));
+    const a2aRow = el('div', {}, [frow('Откуда', el('div', { class: 'cash-note-info' }, (fromW && fromW.name) || tx.wallet_name || '—')), frow('Куда (кошелёк)', walletTo)]);
+    const toggleA2A = () => { a2aRow.style.display = (a2aId && String(cat.value) === a2aId) ? '' : 'none'; };
+    cat.onchange = toggleA2A;
+    rows.push(a2aRow);
     const body = el('div', { class: 'cashf' }, rows);
+    toggleA2A();
     const save = el('button', { class: 'btn-primary', onclick: async () => {
       try {
-        if (tx.id) await post('/tx/' + tx.id, { tx_date: date.value, amount: amount.value, counterparty_id: tx.counterparty_id || '', category_id: cat.value, purpose: purpose.value });
-        else await post('/tx', { tx_type: type, tx_date: date.value, amount: amount.value, wallet_id: wallet.value, category_id: cat.value, purpose: purpose.value });
+        const isA2A = a2aId && String(cat.value) === a2aId;
+        if (tx.id) await post('/tx/' + tx.id, { tx_date: date.value, amount: amount.value, counterparty_id: tx.counterparty_id || '', category_id: cat.value, purpose: purpose.value, wallet_to_id: isA2A ? walletTo.value : '' });
+        else await post('/tx', { tx_type: type, tx_date: date.value, amount: amount.value, wallet_id: wallet.value, category_id: cat.value, purpose: purpose.value, wallet_to_id: isA2A ? walletTo.value : '' });
         toast('Сохранено'); closeModal(); loadTx();
       } catch (e) { toast(e.message, true); }
     } }, 'Сохранить');
@@ -460,11 +471,15 @@
     if (tx.id) { from.disabled = true; to.disabled = true; }
     const purpose = finp(tx.purpose, { placeholder: 'Комментарий (необязательно)' });
     const rows = [frow('Дата', date), frow('Сумма', amount), frow('Откуда', from), frow('Куда', to), frow('Комментарий', purpose)];
-    const body = el('div', { class: 'cashf' }, [...rows, el('div', { class: 'cash-note-info' }, 'Перевод между своими кошельками не считается доходом/расходом.')]);
+    // Комиссия/% банка за перевод — только при создании (отдельным расходом со статьёй ДДС).
+    const feeAmt = finp('', { type: 'number', placeholder: '0 — если комиссии нет' });
+    const feeCat = fsel(catOptions(), '');
+    if (!tx.id) rows.push(frow('Комиссия / % банка', feeAmt), frow('Статья комиссии', feeCat));
+    const body = el('div', { class: 'cashf' }, [...rows, el('div', { class: 'cash-note-info' }, 'Перевод между своими кошельками не считается доходом/расходом. Комиссия банка — реальный расход, укажите её сумму и статью (напр. 62 % банка или 64 % за наличку).')]);
     const save = el('button', { class: 'btn-primary', onclick: async () => {
       try {
         if (tx.id) await post('/tx/' + tx.id, { tx_date: date.value, amount: amount.value, purpose: purpose.value });
-        else await post('/tx', { tx_type: 'transfer', tx_date: date.value, amount: amount.value, wallet_id: from.value, wallet_to_id: to.value, purpose: purpose.value });
+        else await post('/tx', { tx_type: 'transfer', tx_date: date.value, amount: amount.value, wallet_id: from.value, wallet_to_id: to.value, purpose: purpose.value, fee_amount: feeAmt.value, fee_category_id: feeCat.value });
         toast('Сохранено'); closeModal(); loadTx();
       } catch (e) { toast(e.message, true); }
     } }, 'Сохранить');

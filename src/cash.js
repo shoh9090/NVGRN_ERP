@@ -632,12 +632,21 @@ router.post('/api/tx', J, async (req, res) => {
       `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, wallet_to_id, purpose, source, is_classified, created_by)
        VALUES ($1,$2,'transfer',$3,$4,$5,'manual',true,$6)`,
       [date, amount, wallet, to, b.purpose || null, req.user.id]);
+    // Комиссия/% банка за перевод — отдельным расходом со своей статьёй ДДС (если указана).
+    const fee = Number(b.fee_amount);
+    if (fee > 0) {
+      const feeCat = intOrNull(b.fee_category_id);
+      await db.pool.query(
+        `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, category_id, purpose, source, is_classified, created_by)
+         VALUES ($1,$2,'out',$3,$4,$5,'manual',$6,$7)`,
+        [date, fee, wallet, feeCat, 'Комиссия/% за перевод' + (b.purpose ? ' — ' + b.purpose : ''), !!feeCat, req.user.id]);
+    }
   } else {
     const cat = intOrNull(b.category_id);
     await db.pool.query(
-      `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, counterparty_id, contract_id, category_id, purpose, source, is_classified, payer_name, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'manual',$9,$10,$11)`,
-      [date, amount, type, wallet, intOrNull(b.counterparty_id), intOrNull(b.contract_id), cat, b.purpose || null, !!cat, b.payer_name || null, req.user.id]);
+      `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, wallet_to_id, counterparty_id, contract_id, category_id, purpose, source, is_classified, payer_name, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'manual',$10,$11,$12)`,
+      [date, amount, type, wallet, intOrNull(b.wallet_to_id), intOrNull(b.counterparty_id), intOrNull(b.contract_id), cat, b.purpose || null, !!cat, b.payer_name || null, req.user.id]);
   }
   await db.log(req.user.id, 'cash_tx_add', type + ' ' + amount);
   res.json({ ok: true });
@@ -649,8 +658,9 @@ router.post('/api/tx/:id(\\d+)', J, async (req, res) => {
   const cat = intOrNull(b.category_id);
   await db.pool.query(
     `UPDATE cash_transactions SET tx_date=COALESCE($1,tx_date), amount=COALESCE($2,amount),
-       counterparty_id=$3, contract_id=$4, category_id=$5, purpose=$6, is_classified=$7, payer_name=COALESCE($9,payer_name) WHERE id=$8`,
-    [b.tx_date || null, b.amount ? Number(b.amount) : null, intOrNull(b.counterparty_id), intOrNull(b.contract_id), cat, b.purpose || null, !!cat, req.params.id, b.payer_name != null ? b.payer_name : null]);
+       counterparty_id=$3, contract_id=$4, category_id=$5, purpose=$6, is_classified=$7,
+       payer_name=COALESCE($9,payer_name), wallet_to_id=$10 WHERE id=$8`,
+    [b.tx_date || null, b.amount ? Number(b.amount) : null, intOrNull(b.counterparty_id), intOrNull(b.contract_id), cat, b.purpose || null, !!cat, req.params.id, b.payer_name != null ? b.payer_name : null, intOrNull(b.wallet_to_id)]);
   await db.log(req.user.id, 'cash_tx_edit', '#' + req.params.id);
   res.json({ ok: true });
 });
