@@ -11,7 +11,7 @@ const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const ADMIN_TG_ID = process.env.ADMIN_TG_ID;
 const WINDOW_DAYS = Number(process.env.AVG_WINDOW_DAYS || 14);
 const TZ_OFFSET_MS = 5 * 3600 * 1000; // Asia/Tashkent = UTC+5
-let botCfg = { times: ["18:00", "21:00", "23:00"], deadline: "00:00", window: WINDOW_DAYS, enabled: true, digestTime: "08:30", digestEnabled: true, signalsEnabled: true, sig1Days: 3, sig2Pct: 40, sig2Win: 7, orderAlerts: true, quietFrom: "22:00", quietTo: "08:00", lostFreq: "weekly" };
+let botCfg = { times: ["18:00", "21:00", "23:00"], deadline: "00:00", window: WINDOW_DAYS, enabled: true, digestTime: "08:30", digestEnabled: true, signalsEnabled: true, sig1Days: 3, sig2Pct: 40, sig2Win: 7, orderAlerts: true, quietFrom: "22:00", quietTo: "08:00", lostFreq: "weekly", deliveryRemindTimes: ["21:00", "22:00"], deliveryRemindEnabled: true };
 
 if (!TOKEN) { console.error("[СТАРТ] Нет TELEGRAM_BOT_TOKEN."); process.exit(1); }
 if (!process.env.DATABASE_URL) { console.error("[СТАРТ] Нет DATABASE_URL."); process.exit(1); }
@@ -134,6 +134,13 @@ const getOrdersToday = () => cached("ordersToday", 120000, () => {
 });
 const freshOrdersToday = () => { _cache.delete("ordersToday"); return getOrdersToday(); };
 const getClientsAll = () => cached("clients", 600000, () => sd.fetchAll("getClient", {}));
+// Отгруженные, но не отмеченные «Доставлен» (статус 2, дата доставки dateDocument ≤ сегодня).
+async function undeliveredShipped() {
+  const today = tzToday();
+  const orders = await getOrders14();
+  return orders.filter((o) => Number(o.status) === 2 && String(o.dateDocument || o.dateShipment || "").slice(0, 10) <= today);
+}
+const ordLine = (o, i) => `${i + 1}. ${o.code_1C || o.SD_id} — ${(o.client && (o.client.clientName || o.client.SD_id)) || "?"}`;
 async function reloadCfg() {
   try {
     const r = await db.query("SELECT * FROM bot_settings WHERE id=1");
@@ -142,10 +149,12 @@ async function reloadCfg() {
       const times = String(s.reminder_times || "").split(",").map((x) => x.trim()).filter(Boolean);
       const win = Number(s.avg_window_days) || WINDOW_DAYS;
       if (win !== botCfg.window) _cache.delete("orders14");
+      const delivTimes = String(s.delivery_remind_times || "21:00,22:00").split(",").map((x) => x.trim()).filter(Boolean);
       botCfg = { times, deadline: s.deadline || "00:00", window: win, enabled: s.enabled !== false,
         digestTime: s.digest_time || "08:30", digestEnabled: s.digest_enabled !== false, signalsEnabled: s.signals_enabled !== false,
         sig1Days: Number(s.signal1_days) || 3, sig2Pct: Number(s.signal2_pct) || 40, sig2Win: Number(s.signal2_window) || 7,
-        orderAlerts: s.order_alerts_enabled !== false, quietFrom: s.quiet_from || "22:00", quietTo: s.quiet_to || "08:00", lostFreq: s.lost_summary_freq || "weekly" };
+        orderAlerts: s.order_alerts_enabled !== false, quietFrom: s.quiet_from || "22:00", quietTo: s.quiet_to || "08:00", lostFreq: s.lost_summary_freq || "weekly",
+        deliveryRemindTimes: delivTimes, deliveryRemindEnabled: s.delivery_remind_enabled !== false };
     }
   } catch (e) { console.warn("[НАСТРОЙКИ]", e.message); }
 }
@@ -158,7 +167,7 @@ async function pointsOfUser(tgId) { return pointsByPhone9(await phone9OfUser(tgI
 
 // ---------- Бандл 1: сотрудники, роли, синхронизация ----------
 async function getStaff(tgId) {
-  const r = await db.query("SELECT role, crm_agent_id, status FROM telegram_staff WHERE telegram_user_id=$1", [tgId]);
+  const r = await db.query("SELECT role, crm_agent_id, expeditor_sd_id, status FROM telegram_staff WHERE telegram_user_id=$1", [tgId]);
   const s = r.rows[0];
   return (s && s.status === "confirmed" && s.role) ? s : null;
 }
@@ -560,6 +569,35 @@ async function main() {
   setInterval(schedulerTick, 60000);
   setInterval(agentDailyTick, 60000); // сводка агентам + сигналы (раз в день в digestTime)
 
+  // ===== Напоминание водителям о недоставленных заказах (в 21:00/22:00, настраивается) =====
+  async function deliveryReminderTick() {
+    try {
+      await reloadCfg();
+      if (!botCfg.deliveryRemindEnabled || !(botCfg.deliveryRemindTimes || []).length) return;
+      const hhmm = tzNow().toISOString().slice(11, 16);
+      if (!botCfg.deliveryRemindTimes.includes(hhmm)) return;
+      _cache.delete("orders14");
+      const undel = await undeliveredShipped();
+      const byExp = {};
+      for (const o of undel) { const ex = o.expeditor && o.expeditor.SD_id; if (!ex) continue; (byExp[ex] = byExp[ex] || []).push(o); }
+      let sent = 0;
+      for (const [expSd, list] of Object.entries(byExp)) {
+        const st = (await db.query("SELECT telegram_chat_id FROM telegram_staff WHERE role='expeditor' AND status='confirmed' AND expeditor_sd_id=$1 AND telegram_chat_id IS NOT NULL ORDER BY id DESC LIMIT 1", [expSd])).rows[0];
+        if (!st || !st.telegram_chat_id) continue;
+        const key = `deliv:${expSd}:${tzToday()}:${hhmm}`;
+        const seen = await db.query("SELECT 1 FROM notification_log WHERE dedup_key=$1", [key]);
+        if (seen.rows.length) continue;
+        const lines = list.slice(0, 30).map(ordLine);
+        const text = `🚚 Напоминание по доставке\nУ вас ${list.length} заказ(ов) со статусом «Отгружен», не отмечены «Доставлен»:\n\n${lines.join("\n")}\n\nЕсли доставили — отметьте «Доставлен» в приложении SalesDoctor. Неоформленная вовремя доставка — ваша ответственность.`;
+        await bot.sendMessage(st.telegram_chat_id, text).catch(() => {});
+        await db.query("INSERT INTO notification_log (kind, dedup_key, target_chat_id) VALUES ('delivery_remind',$1,$2) ON CONFLICT (dedup_key) DO NOTHING", [key, st.telegram_chat_id]).catch(() => {});
+        sent++;
+      }
+      if (sent) console.log(`[ДОСТАВКА] Напоминаний водителям (${hhmm}): ${sent}`);
+    } catch (e) { console.error("[ДОСТАВКА]", e.message); }
+  }
+  setInterval(deliveryReminderTick, 60000);
+
   // ===== Сводка упущенных продаж РОПу и админу (ежедневно/еженедельно) =====
   let lastLostDay = "";
   async function sendLostSummary(days) {
@@ -835,10 +873,30 @@ async function main() {
       if (txt === "🔄 Синхронизация") { bot.sendMessage(chatId, "Запускаю синхронизацию…"); const n = await syncClientsBot(); return bot.sendMessage(chatId, `Готово. Клиентов обновлено: ${n}.`); }
       return soon();
     }
-    // Логистика / экспедитор / маркетинг — меню есть, функции подключаем на Этапе 2.
-    if (stf.role === "logistics" || stf.role === "expeditor" || stf.role === "marketing") {
-      return bot.sendMessage(chatId, "🔜 Скоро — этот раздел заработает в ближайшем обновлении. Меню закреплено за вами.");
+    if (stf.role === "expeditor") {
+      if (txt === "🚚 Мои доставки") {
+        bot.sendChatAction(chatId, "typing"); _cache.delete("orders14");
+        const mine = (await undeliveredShipped()).filter((o) => o.expeditor && o.expeditor.SD_id === stf.expeditor_sd_id);
+        if (!mine.length) return bot.sendMessage(chatId, "✅ У вас нет незакрытых доставок. Отлично!");
+        return bot.sendMessage(chatId, `🚚 Ваши недоставленные заказы (${mine.length}):\n\n${mine.slice(0, 40).map(ordLine).join("\n")}\n\nОтметьте «Доставлен» в приложении SalesDoctor.`);
+      }
+      return soon();
     }
+    if (stf.role === "logistics") {
+      if (txt === "🚚 Доставки сегодня" || txt === "📊 По экспедиторам") {
+        bot.sendChatAction(chatId, "typing"); _cache.delete("orders14");
+        const undel = await undeliveredShipped();
+        if (!undel.length) return bot.sendMessage(chatId, "✅ Все отгруженные заказы отмечены «Доставлен».");
+        const nameOf = {}; (await db.query("SELECT sd_id, name FROM crm_expeditors")).rows.forEach((e) => { nameOf[e.sd_id] = e.name; });
+        const byExp = {};
+        for (const o of undel) { const ex = (o.expeditor && o.expeditor.SD_id) || "—"; (byExp[ex] = byExp[ex] || []).push(o); }
+        const blocks = Object.entries(byExp).sort((a, b) => b[1].length - a[1].length)
+          .map(([ex, list]) => `👤 ${nameOf[ex] || (ex === "—" ? "без экспедитора" : ex)} — ${list.length}\n` + list.slice(0, 15).map(ordLine).join("\n"));
+        return bot.sendMessage(chatId, `🚚 Отгружено, но не «Доставлен» (${undel.length}):\n\n` + blocks.join("\n\n"));
+      }
+      return soon();
+    }
+    if (stf.role === "marketing") return soon();
     return bot.sendMessage(chatId, `Меню (${roleTitle(stf.role)}):`, staffMenu(stf.role));
   }
 
