@@ -214,13 +214,25 @@
   }
 
   // Проваливание из отчёта в транзакции: фильтр по статье за тот же период/кошелёк.
-  function drillToTx(r) {
+  function drillBase() {
     txState.from = repState.from || monthStartStr();
     txState.to = repState.to || todayStr();
     txState.wallet = repState.wallet || '';
     txState.type = ''; txState.q = ''; txState.counterparty = ''; txState.page = 1;
-    if (r.cat_id) { txState.category = String(r.cat_id); txState.classified = ''; }
-    else { txState.category = ''; txState.classified = 'no'; }
+    txState.category = ''; txState.catgroup = ''; txState.classified = '';
+  }
+  function drillToTx(r) {
+    drillBase();
+    if (r.cat_id) txState.category = String(r.cat_id);
+    else txState.classified = 'no';
+    TAB = 'tx'; render();
+  }
+  // Клик по группе в легенде пончика → все транзакции этой группы.
+  function drillToGroup(label) {
+    drillBase();
+    if (label === 'Не разобрано') txState.classified = 'no';
+    else if (label === 'Прочее') txState.catgroup = '__nogroup__';
+    else txState.catgroup = label;
     TAB = 'tx'; render();
   }
 
@@ -239,9 +251,9 @@
     }).join('');
     const svg = `<svg viewBox="0 0 ${size} ${size}" class="cash-donut"><g>${segs}</g><text x="${cx}" y="${cy - 2}" text-anchor="middle" class="cash-donut-cap">${capTitle || 'Итого'}</text><text x="${cx}" y="${cy + 18}" text-anchor="middle" class="cash-donut-val">${money(total)}</text></svg>`;
     const chart = el('div', { class: 'cash-donut-wrap' }); chart.innerHTML = svg;
-    const legend = el('div', { class: 'cash-legend' }, items.map((it) => el('div', { class: 'cash-legend-row' }, [
+    const legend = el('div', { class: 'cash-legend' }, items.map((it) => el('div', { class: 'cash-legend-row cash-legend-click', title: 'Открыть транзакции: ' + it.label, onclick: () => drillToGroup(it.label) }, [
       el('span', { class: 'cash-legend-dot', style: 'background:' + it.color }),
-      el('span', { class: 'cash-legend-l' }, it.label),
+      el('span', { class: 'cash-legend-l' }, it.label + ' →'),
       el('span', { class: 'cash-legend-v' }, money(it.value) + ' · ' + Math.round(it.value / total * 100) + '%'),
     ])));
     return el('div', { class: 'cash-chart-card' }, [chart, legend]);
@@ -334,7 +346,7 @@
   }
 
   // ================= ТРАНЗАКЦИИ =================
-  const txState = { from: '', to: '', wallet: '', type: '', q: '', category: '', counterparty: '', classified: '', page: 1, pageSize: 50 };
+  const txState = { from: '', to: '', wallet: '', type: '', q: '', category: '', catgroup: '', counterparty: '', classified: '', page: 1, pageSize: 50 };
   const repState = { from: '', to: '', wallet: '' };
   let txSel = new Set();
   async function renderTransactions() {
@@ -355,7 +367,7 @@
     const dateInp = (k) => el('input', { type: 'date', class: 'cashf-inp cash-filt', value: txState[k], onchange: (e) => { txState[k] = e.target.value; reload1(); } });
     const walletSel = el('select', { class: 'cashf-inp cash-filt', onchange: (e) => { txState.wallet = e.target.value; reload1(); } }, [el('option', { value: '' }, 'Все кошельки'), ...(DICTS.wallets || []).map((x) => el('option', { value: x.id, selected: String(x.id) === txState.wallet || null }, x.name))]);
     const typeSel = el('select', { class: 'cashf-inp cash-filt', onchange: (e) => { txState.type = e.target.value; reload1(); } }, [{ v: '', t: 'Все типы' }, { v: 'in', t: 'Приходы' }, { v: 'out', t: 'Расходы' }, { v: 'transfer', t: 'Переводы' }].map((o) => el('option', { value: o.v, selected: o.v === txState.type || null }, o.t)));
-    const catSel = el('select', { class: 'cashf-inp cash-filt', onchange: (e) => { txState.category = e.target.value; reload1(); } }, [el('option', { value: '' }, 'Все статьи ДДС'), ...(DICTS.categories || []).map((x) => el('option', { value: x.id, selected: String(x.id) === txState.category || null }, x.code + ' · ' + x.name))]);
+    const catSel = el('select', { class: 'cashf-inp cash-filt', onchange: (e) => { txState.category = e.target.value; txState.catgroup = ''; reload1(); } }, [el('option', { value: '' }, 'Все статьи ДДС'), ...(DICTS.categories || []).map((x) => el('option', { value: x.id, selected: String(x.id) === txState.category || null }, x.code + ' · ' + x.name))]);
     const classSel = el('select', { class: 'cashf-inp cash-filt', onchange: (e) => { txState.classified = e.target.value; reload1(); } }, [{ v: '', t: 'Все' }, { v: 'no', t: 'Не разобрано' }, { v: 'yes', t: 'Разобрано' }].map((o) => el('option', { value: o.v, selected: o.v === txState.classified || null }, o.t)));
     const search = el('input', { type: 'search', class: 'cashf-inp cash-filt cash-filt-q', placeholder: 'Поиск по назначению / от кого…', value: txState.q, oninput: (e) => { txState.q = e.target.value; clearTimeout(window.__cashT); window.__cashT = setTimeout(reload1, 350); } });
     const sizeSel = el('select', { class: 'cashf-inp cash-filt', onchange: (e) => { txState.pageSize = parseInt(e.target.value); txState.page = 1; loadTx(); } }, [10, 20, 50, 100, 200].map((n) => el('option', { value: n, selected: n === txState.pageSize || null }, 'по ' + n)));
@@ -372,7 +384,7 @@
   async function loadTx() {
     const wrap = $('#cash-tx-wrap'); if (!wrap) return;
     const p = new URLSearchParams();
-    ['from', 'to', 'wallet', 'type', 'q', 'category', 'counterparty', 'classified'].forEach((k) => { if (txState[k]) p.set(k, txState[k]); });
+    ['from', 'to', 'wallet', 'type', 'q', 'category', 'catgroup', 'counterparty', 'classified'].forEach((k) => { if (txState[k]) p.set(k, txState[k]); });
     p.set('page', txState.page); p.set('pageSize', txState.pageSize);
     let data; try { data = await api('/transactions?' + p.toString()); } catch (e) { toast(e.message, true); return; }
     txItems = data.items || []; txSel.clear();

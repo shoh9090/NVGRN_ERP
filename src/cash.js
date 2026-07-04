@@ -564,6 +564,8 @@ router.get('/api/transactions', async (req, res) => {
   if (wallet) { p.push(parseInt(wallet)); w.push(`(t.wallet_id = $${p.length} OR t.wallet_to_id = $${p.length})`); }
   if (counterparty) { p.push(parseInt(counterparty)); w.push(`t.counterparty_id = $${p.length}`); }
   if (category) { p.push(parseInt(category)); w.push(`t.category_id = $${p.length}`); }
+  if (req.query.catgroup === '__nogroup__') w.push(`EXISTS (SELECT 1 FROM cash_categories cg WHERE cg.id = t.category_id AND cg.group_name IS NULL)`);
+  else if (req.query.catgroup) { p.push(req.query.catgroup); w.push(`EXISTS (SELECT 1 FROM cash_categories cg WHERE cg.id = t.category_id AND cg.group_name = $${p.length})`); }
   if (classified === 'no') w.push(`(t.tx_type <> 'transfer' AND t.is_classified = false)`);
   else if (classified === 'yes') w.push(`t.is_classified = true`);
   if (q) { p.push('%' + String(q).trim() + '%'); w.push(`(t.purpose ILIKE $${p.length} OR t.payer_name ILIKE $${p.length})`); }

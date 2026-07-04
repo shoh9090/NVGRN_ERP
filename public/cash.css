@@ -125,7 +125,9 @@
 .cash-donut-cap { fill: var(--muted); font-size: 12px; font-weight: 700; }
 .cash-donut-val { fill: var(--ink); font-size: 15px; font-weight: 800; font-family: 'Lora', Georgia, serif; }
 .cash-legend { flex: 1; min-width: 240px; display: flex; flex-direction: column; gap: 7px; }
-.cash-legend-row { display: grid; grid-template-columns: 14px 1fr auto; gap: 10px; align-items: center; font-size: 13px; }
+.cash-legend-row { display: grid; grid-template-columns: 14px 1fr auto; gap: 10px; align-items: center; font-size: 13px; border-radius: 8px; padding: 4px 8px; }
+.cash-legend-click { cursor: pointer; transition: background .12s; }
+.cash-legend-click:hover { background: #eef4e9; }
 .cash-legend-dot { width: 12px; height: 12px; border-radius: 3px; }
 .cash-legend-l { color: var(--ink); font-weight: 600; }
 .cash-legend-v { color: var(--muted); font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
