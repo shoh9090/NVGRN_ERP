@@ -50,9 +50,32 @@ async function ensureSchema() {
   )`);
   await q(`CREATE INDEX IF NOT EXISTS idx_hr_emp_dept ON hr_employees (department_id)`);
   await q(`CREATE INDEX IF NOT EXISTS idx_hr_emp_status ON hr_employees (status)`);
+  // Начисление зарплаты сотруднику за месяц (одна строка = сотрудник × период).
+  await q(`CREATE TABLE IF NOT EXISTS hr_payroll (
+    id SERIAL PRIMARY KEY,
+    employee_id INT NOT NULL REFERENCES hr_employees(id) ON DELETE CASCADE,
+    period TEXT NOT NULL,                          -- YYYY-MM
+    status TEXT NOT NULL DEFAULT 'draft',          -- draft | approved | paid | cancelled
+    plan_days NUMERIC, fact_days NUMERIC, plan_hours NUMERIC, fact_hours NUMERIC,
+    accr_salary NUMERIC, accr_fact NUMERIC, accr_bonus NUMERIC, accr_premium NUMERIC,
+    accr_gsm NUMERIC, accr_company_debt NUMERIC, accr_other NUMERIC,
+    ded_fine NUMERIC, ded_advance_card NUMERIC, ded_advance_cash NUMERIC,
+    ded_hold NUMERIC, ded_emp_debt NUMERIC, ded_other NUMERIC,
+    paid_cash NUMERIC, paid_card NUMERIC, pay_date DATE, pay_method TEXT,
+    amount_1c NUMERIC, comment TEXT,
+    created_by INT, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (employee_id, period)
+  )`);
+  await q(`CREATE INDEX IF NOT EXISTS idx_hr_payroll_period ON hr_payroll (period)`);
   await seedDepartments();
   _ready = true;
 }
+// Поля начислений/удержаний/выплат — для расчётов и сохранения.
+const ACCR = ['accr_salary', 'accr_fact', 'accr_bonus', 'accr_premium', 'accr_gsm', 'accr_company_debt', 'accr_other'];
+const DED = ['ded_fine', 'ded_advance_card', 'ded_advance_cash', 'ded_hold', 'ded_emp_debt', 'ded_other'];
+const PAID = ['paid_cash', 'paid_card'];
+const PAYROLL_NUM = [...ACCR, ...DED, ...PAID, 'plan_days', 'fact_days', 'plan_hours', 'fact_hours', 'amount_1c'];
+const sumF = (row, fields) => fields.reduce((s, f) => s + (Number(row[f]) || 0), 0);
 async function seedDepartments() {
   const D = ['АУП', 'Производство', 'Производство смена', 'Склад', 'Продажи', 'Маркетинг', 'Бухгалтерия', 'Закупки', 'Логистика', 'Другое'];
   let i = 0;
@@ -125,6 +148,57 @@ router.post('/api/employee/:id(\\d+)/status', J, async (req, res) => {
   await db.pool.query('UPDATE hr_employees SET status=$1, fire_date=COALESCE($2, fire_date), updated_at=now() WHERE id=$3', [st, fire, req.params.id]);
   await db.log(req.user.id, 'hr_employee_status', `#${req.params.id} → ${st}`);
   res.json({ ok: true });
+});
+
+// ---------- Зарплата ----------
+function withTotals(row) {
+  const accrued = sumF(row, ACCR), deducted = sumF(row, DED), paid = sumF(row, PAID);
+  return Object.assign({}, row, { accrued, deducted, paid, to_pay: accrued - deducted - paid });
+}
+router.get('/api/payroll', async (req, res) => {
+  const period = /^\d{4}-\d{2}$/.test(req.query.period) ? req.query.period : new Date().toISOString().slice(0, 7);
+  const p = [period], w = ["e.status <> 'archived'"];
+  if (req.query.department) { p.push(parseInt(req.query.department)); w.push(`e.department_id = $${p.length}`); }
+  if (req.query.q) { p.push('%' + String(req.query.q).trim() + '%'); w.push(`e.full_name ILIKE $${p.length}`); }
+  const rows = (await db.pool.query(
+    `SELECT e.id AS emp_id, e.full_name, e.position, e.base_salary, d.name AS department_name, pr.*
+     FROM hr_employees e
+     LEFT JOIN hr_departments d ON d.id = e.department_id
+     LEFT JOIN hr_payroll pr ON pr.employee_id = e.id AND pr.period = $1
+     WHERE ${w.join(' AND ')} ORDER BY e.full_name`, p)).rows.map(withTotals);
+  let items = rows;
+  if (req.query.status) {
+    if (req.query.status === 'none') items = rows.filter((r) => !r.id);
+    else items = rows.filter((r) => (r.status || 'draft') === req.query.status && r.id);
+  }
+  const sum = (f) => items.reduce((s, r) => s + (Number(r[f]) || 0), 0);
+  const summary = {
+    accrued: sum('accrued'), deducted: sum('deducted'), paid: sum('paid'), to_pay: sum('to_pay'),
+    bonus: sum('accr_bonus'), advances: items.reduce((s, r) => s + (Number(r.ded_advance_card) || 0) + (Number(r.ded_advance_cash) || 0), 0),
+    amount_1c: sum('amount_1c'), count: items.length,
+  };
+  res.json({ period, items, summary });
+});
+router.post('/api/payroll', J, async (req, res) => {
+  const b = req.body || {};
+  const empId = intOrNull(b.employee_id);
+  const period = /^\d{4}-\d{2}$/.test(b.period) ? b.period : null;
+  if (!empId || !period) return res.status(400).json({ error: 'Нет сотрудника или периода' });
+  const status = ['draft', 'approved', 'paid', 'cancelled'].includes(b.status) ? b.status : 'draft';
+  const cols = ['plan_days', 'fact_days', 'plan_hours', 'fact_hours', ...ACCR, ...DED, ...PAID, 'amount_1c'];
+  const vals = cols.map((c) => numOrNull(b[c]));
+  const allCols = ['employee_id', 'period', 'status', ...cols, 'pay_date', 'pay_method', 'comment'];
+  const allVals = [empId, period, status, ...vals, b.pay_date || null, b.pay_method || null, b.comment || null];
+  const ph = allVals.map((_, i) => '$' + (i + 1)).join(',');
+  const upd = allCols.slice(2).map((c) => `${c}=EXCLUDED.${c}`).join(', ');
+  try {
+    await db.pool.query(
+      `INSERT INTO hr_payroll (${allCols.join(',')}, created_by) VALUES (${ph}, $${allVals.length + 1})
+       ON CONFLICT (employee_id, period) DO UPDATE SET ${upd}, updated_at=now()`,
+      [...allVals, req.user.id]);
+    await db.log(req.user.id, 'hr_payroll_save', `emp ${empId} ${period} ${status}`);
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 // ---------- Отделы ----------
