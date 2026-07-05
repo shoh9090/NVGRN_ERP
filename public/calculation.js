@@ -1,4 +1,4 @@
-// calculation.js — planned costing by recipes.
+// calculation.js — рабочий лист плановой калькуляции.
 (function () {
   const $ = (s) => document.querySelector(s);
 
@@ -25,7 +25,7 @@
     if (v === null || v === undefined || v === '' || Number.isNaN(Number(v))) return '—';
     return Number(v).toLocaleString('ru-RU', { maximumFractionDigits: max });
   };
-  const money = (v) => fmt(v, 2) + (v === null || v === undefined || v === '' ? '' : ' сум');
+  const money = (v) => (v === null || v === undefined || v === '' || Number.isNaN(Number(v)) ? '—' : fmt(v, 2) + ' сум');
   const pct = (v) => (v === null || v === undefined || Number.isNaN(Number(v)) ? '—' : fmt(v, 1) + '%');
   const num = (v) => (v === null || v === undefined || v === '' || Number.isNaN(Number(v)) ? 0 : Number(v));
   const ruDate = (d) => d ? String(d).slice(0, 10).split('-').reverse().join('.') : '';
@@ -58,33 +58,8 @@
     }, 2800);
   }
 
-  function modal(title, body, acts) {
-    const root = $('#calc-modal-root');
-    const ov = el('div', { class: 'calcm-overlay', onclick: (e) => { if (e.target === ov) close(); } });
-    const panel = el('div', { class: 'calcm-panel' }, [
-      el('div', { class: 'calcm-head' }, [
-        el('h3', {}, title),
-        el('button', { class: 'calcm-x', onclick: () => close() }, '×'),
-      ]),
-      el('div', { class: 'calcm-body' }, body),
-      acts && acts.length ? el('div', { class: 'calcm-acts' }, acts) : null,
-    ]);
-    ov.appendChild(panel);
-    root.appendChild(ov);
-    function close() { ov.remove(); }
-    ov._close = close;
-    return { close };
-  }
-
-  const closeModal = () => {
-    const root = $('#calc-modal-root');
-    if (root.lastChild && root.lastChild._close) root.lastChild._close();
-  };
-
   const inp = (val, attrs) => el('input', Object.assign({ class: 'calcf-inp', value: val == null ? '' : String(val) }, attrs || {}));
   const area = (val, attrs) => el('textarea', Object.assign({ class: 'calcf-inp calc-textarea' }, attrs || {}), val == null ? '' : String(val));
-  const frow = (label, ctrl) => el('label', { class: 'calcf-row' }, [el('span', {}, label), ctrl]);
-
   function select(options, value, attrs) {
     return el('select', Object.assign({ class: 'calcf-inp' }, attrs || {}), options.map((o) =>
       el('option', { value: o.v, selected: String(o.v) === String(value || '') || null }, o.t)
@@ -97,9 +72,27 @@
   let RECIPES = [];
   let CURRENT_ID = null;
   let CURRENT = null;
+  let DRAFT = null;
   let recipeQ = '';
   let materialQ = '';
   let materialKind = '';
+
+  const productLabel = (p) => (p ? ((p.code ? p.code + ' · ' : '') + p.name) : '');
+  const materialLabel = (m) => (m ? ((m.code ? m.code + ' · ' : '') + m.name) : '');
+  const materialByKey = () => Object.fromEntries(MATERIALS.map((m) => [m.kind + ':' + m.id, m]));
+  const productById = () => Object.fromEntries((DICTS.products || []).map((p) => [String(p.id), p]));
+
+  function findProductByLabel(label) {
+    const s = String(label || '').trim().toLowerCase();
+    if (!s) return null;
+    return (DICTS.products || []).find((p) => productLabel(p).toLowerCase() === s || String(p.name || '').toLowerCase() === s) || null;
+  }
+
+  function findMaterialByLabel(kind, label) {
+    const s = String(label || '').trim().toLowerCase();
+    if (!s) return null;
+    return MATERIALS.find((m) => m.kind === kind && (materialLabel(m).toLowerCase() === s || String(m.name || '').toLowerCase() === s)) || null;
+  }
 
   async function boot() {
     try {
@@ -123,7 +116,7 @@
     main.innerHTML = '';
     const tab = (id, label) => el('button', {
       class: 'calc-tab' + (TAB === id ? ' on' : ''),
-      onclick: () => { TAB = id; render(); },
+      onclick: () => { syncDraftFromDom(); TAB = id; render(); },
     }, label);
     main.appendChild(el('div', { class: 'calc-tabs' }, [
       tab('recipes', 'Рецептуры'),
@@ -133,8 +126,17 @@
     main.appendChild(el('div', { id: 'calc-content' }));
   }
 
+  function datalists() {
+    return el('div', { class: 'calc-datalists' }, [
+      el('datalist', { id: 'calc-products' }, (DICTS.products || []).map((p) => el('option', { value: productLabel(p) }))),
+      el('datalist', { id: 'calc-materials-raw' }, MATERIALS.filter((m) => m.kind === 'raw').map((m) => el('option', { value: materialLabel(m) }))),
+      el('datalist', { id: 'calc-materials-packaging' }, MATERIALS.filter((m) => m.kind === 'packaging').map((m) => el('option', { value: materialLabel(m) }))),
+    ]);
+  }
+
   function render() {
     shell();
+    $('#calc-main').appendChild(datalists());
     if (TAB === 'prices') return renderPrices();
     if (TAB === 'settings') return renderSettings();
     return renderRecipes();
@@ -148,8 +150,55 @@
   }
 
   function recipeName(row) {
-    const r = row.recipe || row;
+    const r = row.recipe || row || {};
     return r.fg_name || r.product_name || 'Без названия';
+  }
+
+  function makeDraft(data) {
+    const r = data && data.recipe ? data.recipe : {};
+    const pb = productById();
+    const product = r.product_id ? pb[String(r.product_id)] : null;
+    return {
+      id: r.id || null,
+      product_id: r.product_id || '',
+      product_label: product ? productLabel(product) : '',
+      product_name: r.product_name || '',
+      pack_weight_g: r.pack_weight_g || '',
+      pack_unit: r.pack_unit || 'шт',
+      sale_price_type_id: r.sale_price_type_id || '',
+      sale_price_override: r.sale_price_override == null ? '' : r.sale_price_override,
+      retro_pct: r.retro_pct ?? DICTS.settings.retro_pct ?? 0,
+      vat_pct: r.vat_pct ?? DICTS.settings.vat_pct ?? 12,
+      profit_tax_pct: r.profit_tax_pct ?? DICTS.settings.profit_tax_pct ?? 15,
+      waste_pct: r.waste_pct ?? DICTS.settings.waste_pct ?? 3,
+      labor_coeff: r.labor_coeff ?? 1,
+      production_coeff: r.production_coeff ?? 1,
+      overhead_coeff: r.overhead_coeff ?? 1,
+      comment: r.comment || '',
+      items: ((data && data.items) || []).map((it) => ({ ...it })),
+    };
+  }
+
+  async function loadRecipe(id) {
+    try {
+      CURRENT_ID = id;
+      CURRENT = await api('/recipe/' + id);
+      DRAFT = makeDraft(CURRENT);
+      render();
+    } catch (e) {
+      toast(e.message, true);
+    }
+  }
+
+  function startNewRecipe() {
+    CURRENT_ID = null;
+    CURRENT = null;
+    DRAFT = makeDraft(null);
+    DRAFT.items = [
+      { item_kind: 'raw', qty: '', unit: 'г', waste_pct: 0, manual_price: '' },
+      { item_kind: 'packaging', qty: '', unit: 'шт', waste_pct: 0, manual_price: '' },
+    ];
+    render();
   }
 
   function renderRecipes() {
@@ -159,280 +208,300 @@
     const avgMarginRows = RECIPES.filter((x) => x.summary.margin_pct !== null && x.summary.margin_pct !== undefined);
     const avgMargin = avgMarginRows.length ? avgMarginRows.reduce((s, x) => s + num(x.summary.margin_pct), 0) / avgMarginRows.length : null;
 
-    c.appendChild(el('div', { class: 'calc-head' }, [
+    c.appendChild(el('div', { class: 'calc-head calc-head-tight' }, [
       el('div', {}, [
-        el('div', { class: 'calc-h2' }, 'Плановая калькуляция'),
-        el('div', { class: 'calc-sub' }, 'Собираем себестоимость из рецептуры, цены калькуляции и текущего рынка.'),
+        el('div', { class: 'calc-h2' }, 'Калькуляция как рабочий лист'),
+        el('div', { class: 'calc-sub' }, 'Выбираем товар, забиваем состав строками, видим себестоимость и рынок рядом.'),
       ]),
-      el('button', { class: 'btn-primary calc-add', onclick: () => openRecipeModal(null) }, '+ Рецептура'),
+      el('button', { class: 'btn-primary calc-add', onclick: startNewRecipe }, '+ Новая рецептура'),
     ]));
-    c.appendChild(el('div', { class: 'calc-kpis' }, [
+    c.appendChild(el('div', { class: 'calc-kpis calc-kpis-compact' }, [
       kpi('Рецептур', RECIPES.length, ''),
       kpi('Средняя себестоимость', money(avgCost), 'green'),
       kpi('Рынок выше калькуляции', marketUp, marketUp ? 'warn' : ''),
       kpi('Средняя чистая маржа', pct(avgMargin), ''),
     ]));
 
-    const q = inp(recipeQ, {
-      placeholder: 'Поиск по готовой продукции',
-      oninput: (e) => { recipeQ = e.target.value; clearTimeout(window.__calcRq); window.__calcRq = setTimeout(render, 180); },
-    });
-    c.appendChild(el('div', { class: 'calc-filters' }, [q]));
-
-    const grid = el('div', { class: 'calc-layout' });
-    grid.appendChild(recipeList());
-    grid.appendChild(recipeEditor());
+    const grid = el('div', { class: 'calc-workspace' });
+    grid.appendChild(recipeNavigator());
+    grid.appendChild(recipeSheet());
     c.appendChild(grid);
   }
 
-  function recipeList() {
+  function recipeNavigator() {
+    const q = inp(recipeQ, {
+      placeholder: 'Найти рецептуру',
+      oninput: (e) => { recipeQ = e.target.value; clearTimeout(window.__calcRq); window.__calcRq = setTimeout(render, 180); },
+    });
     const needle = recipeQ.trim().toLowerCase();
     const rows = RECIPES.filter((x) => !needle || recipeName(x).toLowerCase().includes(needle));
-    if (!rows.length) {
-      return el('div', { class: 'calc-empty calc-side' }, 'Пока нет рецептур. Добавьте первую и соберите состав.');
-    }
-    const head = el('div', { class: 'calc-row calc-recipe-row head' }, [
-      el('span', {}, 'Товар'),
-      el('span', {}, 'Себестоимость'),
-      el('span', {}, 'Рынок'),
-      el('span', {}, 'Маржа'),
-    ]);
-    const body = rows.map((x) => {
+    const list = rows.map((x) => {
       const r = x.recipe;
       const s = x.summary || {};
       const delta = num(s.market_delta);
-      return el('div', {
-        class: 'calc-row calc-recipe-row' + (String(CURRENT_ID) === String(r.id) ? ' on' : ''),
+      return el('button', {
+        class: 'calc-recipe-card' + (String(CURRENT_ID) === String(r.id) ? ' on' : ''),
         onclick: () => loadRecipe(r.id),
       }, [
-        el('span', {}, [
-          el('b', {}, recipeName(x)),
-          el('small', {}, (r.fg_code ? r.fg_code + ' · ' : '') + (x.item_count || 0) + ' поз.'),
+        el('span', { class: 'calc-recipe-title' }, recipeName(x)),
+        el('span', { class: 'calc-recipe-meta' }, (r.fg_code ? r.fg_code + ' · ' : '') + (x.item_count || 0) + ' строк'),
+        el('span', { class: 'calc-recipe-numbers' }, [
+          el('b', {}, money(s.cost_calc)),
+          el('small', { class: delta > 0 ? 'bad' : delta < 0 ? 'good' : '' }, 'рынок ' + money(s.cost_market)),
         ]),
-        el('span', { class: 'tnum' }, money(s.cost_calc)),
-        el('span', { class: 'tnum ' + (delta > 0 ? 'bad' : delta < 0 ? 'good' : '') }, money(s.cost_market)),
-        el('span', { class: 'tnum' }, pct(s.margin_pct)),
       ]);
     });
-    return el('div', { class: 'calc-list calc-side' }, [head, ...body]);
+    return el('aside', { class: 'calc-nav' }, [
+      el('div', { class: 'calc-nav-title' }, 'Рецептуры'),
+      q,
+      el('div', { class: 'calc-nav-list' }, list.length ? list : [el('div', { class: 'calc-empty calc-empty-mini' }, 'Пока нет рецептур')]),
+    ]);
   }
 
-  async function loadRecipe(id) {
-    try {
-      CURRENT_ID = id;
-      CURRENT = await api('/recipe/' + id);
-      render();
-    } catch (e) {
-      toast(e.message, true);
-    }
-  }
-
-  function recipeEditor() {
-    if (!CURRENT) {
-      return el('div', { class: 'calc-panel calc-empty' }, [
-        el('div', { class: 'calc-empty-big' }, 'Выберите рецептуру'),
-        el('div', {}, 'Здесь будет состав, себестоимость, сравнение с рынком и маржа.'),
+  function recipeSheet() {
+    if (!DRAFT) {
+      return el('section', { class: 'calc-sheet calc-empty' }, [
+        el('div', { class: 'calc-empty-big' }, 'Выберите рецептуру или создайте новую'),
+        el('div', {}, 'После выбора здесь будет один рабочий лист без модалки: параметры, состав и итоги.'),
       ]);
     }
-    const r = CURRENT.recipe;
-    const s = CURRENT.summary || {};
-    const panel = el('div', { class: 'calc-panel' });
-    panel.appendChild(el('div', { class: 'calc-editor-head' }, [
-      el('div', {}, [
-        el('div', { class: 'calc-h3' }, recipeName(r)),
-        el('div', { class: 'calc-sub' }, (r.price_type_name || 'Без типа цены') + (r.sd_sale_price ? ' · цена из SD ' + money(r.sd_sale_price) : '')),
-      ]),
-      el('div', { class: 'calc-editor-actions' }, [
-        el('button', { class: 'btn-ghost', onclick: () => openRecipeModal(r) }, 'Параметры'),
-        el('button', { class: 'btn-ghost calc-danger', onclick: archiveRecipe }, 'В архив'),
-      ]),
-    ]));
-    panel.appendChild(el('div', { class: 'calc-kpis calc-kpis-3' }, [
-      kpi('Себестоимость в калькуляции', money(s.cost_calc), 'green'),
-      kpi('Если взять рынок сейчас', money(s.cost_market), num(s.market_delta) > 0 ? 'warn' : ''),
-      kpi('Разница', (num(s.market_delta) > 0 ? '+' : '') + money(s.market_delta), num(s.market_delta) > 0 ? 'warn' : 'green'),
-      kpi('Цена продажи', money(s.sale_price), ''),
-      kpi('Чистая прибыль', money(s.net_profit), num(s.net_profit) < 0 ? 'bad' : 'green'),
-      kpi('Чистая маржа', pct(s.margin_pct), ''),
-    ]));
-    panel.appendChild(costBreakdown(s));
-    panel.appendChild(itemsEditor());
-    return panel;
+    const s = (CURRENT && CURRENT.summary) || {};
+    return el('section', { class: 'calc-sheet' }, [
+      sheetToolbar(),
+      sheetMeta(),
+      sheetSummary(s),
+      sheetItems(),
+    ]);
   }
 
-  function costBreakdown(s) {
+  function sheetToolbar() {
+    return el('div', { class: 'calc-sheet-toolbar' }, [
+      el('div', {}, [
+        el('div', { class: 'calc-h3' }, DRAFT.id ? 'Рецептура #' + DRAFT.id : 'Новая рецептура'),
+        el('div', { class: 'calc-sub' }, DRAFT.id ? 'Редактируйте прямо в таблице и нажмите «Сохранить лист»' : 'Заполните товар и состав, затем сохраните лист'),
+      ]),
+      el('div', { class: 'calc-sheet-actions' }, [
+        DRAFT.id ? el('button', { class: 'btn-ghost calc-danger', onclick: archiveRecipe }, 'В архив') : null,
+        el('button', { class: 'btn-primary calc-save-big', onclick: saveWholeRecipe }, 'Сохранить лист'),
+      ]),
+    ]);
+  }
+
+  function cell(label, control, cls) {
+    return el('label', { class: 'calc-cell ' + (cls || '') }, [el('span', {}, label), control]);
+  }
+
+  function sheetMeta() {
+    const priceTypes = [{ v: '', t: '— тип цены —' }, ...(DICTS.priceTypes || []).map((p) => ({ v: p.id, t: p.name }))];
+    return el('div', { class: 'calc-meta-grid' }, [
+      cell('Готовый товар', inp(DRAFT.product_label, { name: 'product_label', list: 'calc-products', placeholder: 'начните вводить товар' }), 'wide'),
+      cell('Если товара нет', inp(DRAFT.product_name, { name: 'product_name', placeholder: 'название вручную' }), 'wide'),
+      cell('Тип цены', select(priceTypes, DRAFT.sale_price_type_id, { name: 'sale_price_type_id' })),
+      cell('Цена вручную', inp(DRAFT.sale_price_override, { name: 'sale_price_override', type: 'number', step: '0.01', placeholder: 'если не из SD' })),
+      cell('Вес, г', inp(DRAFT.pack_weight_g, { name: 'pack_weight_g', type: 'number', step: '0.1' })),
+      cell('Ед.', inp(DRAFT.pack_unit, { name: 'pack_unit' })),
+      cell('Потери %', inp(DRAFT.waste_pct, { name: 'waste_pct', type: 'number', step: '0.1' })),
+      cell('Ретро %', inp(DRAFT.retro_pct, { name: 'retro_pct', type: 'number', step: '0.1' })),
+      cell('НДС %', inp(DRAFT.vat_pct, { name: 'vat_pct', type: 'number', step: '0.1' })),
+      cell('Налог %', inp(DRAFT.profit_tax_pct, { name: 'profit_tax_pct', type: 'number', step: '0.1' })),
+      cell('ФОТ x', inp(DRAFT.labor_coeff, { name: 'labor_coeff', type: 'number', step: '0.1' })),
+      cell('Производство x', inp(DRAFT.production_coeff, { name: 'production_coeff', type: 'number', step: '0.1' })),
+      cell('Накладные x', inp(DRAFT.overhead_coeff, { name: 'overhead_coeff', type: 'number', step: '0.1' })),
+      cell('Комментарий', area(DRAFT.comment, { name: 'comment', placeholder: 'заметки по рецептуре' }), 'wide'),
+    ]);
+  }
+
+  function sheetSummary(s) {
     const rows = [
-      ['Сырьё и упаковка', s.item_calc, s.item_market],
+      ['Сырьё + упаковка', s.item_calc, s.item_market],
       ['ФОТ', s.labor, s.labor],
       ['Производство', s.production, s.production],
       ['Накладные', s.overhead, s.overhead],
+      ['Итого себестоимость', s.cost_calc, s.cost_market, 'total'],
+      ['Цена продажи', s.sale_price, s.sale_price],
       ['Ретро-бонус', s.retro, s.retro],
       ['НДС', s.vat, s.vat],
+      ['Прибыль до налога', s.profit, s.profit],
       ['Налог на прибыль', s.profit_tax, s.profit_tax],
+      ['Чистая прибыль', s.net_profit, s.net_profit, 'total'],
+      ['Чистая маржа', s.margin_pct == null ? null : pct(s.margin_pct), s.margin_pct == null ? null : pct(s.margin_pct)],
     ];
-    return el('div', { class: 'calc-break' }, [
-      el('div', { class: 'calc-sec-title' }, 'Разбор суммы'),
-      ...rows.map((r) => el('div', { class: 'calc-break-row' }, [
-        el('span', {}, r[0]),
-        el('span', { class: 'tnum' }, money(r[1])),
-        el('span', { class: 'tnum muted' }, money(r[2])),
-      ])),
+    return el('div', { class: 'calc-summary-strip' }, [
+      kpi('Себестоимость', money(s.cost_calc), 'green'),
+      kpi('Рынок сейчас', money(s.cost_market), num(s.market_delta) > 0 ? 'warn' : ''),
+      kpi('Разница рынка', (num(s.market_delta) > 0 ? '+' : '') + money(s.market_delta), num(s.market_delta) > 0 ? 'warn' : 'green'),
+      kpi('Чистая прибыль', money(s.net_profit), num(s.net_profit) < 0 ? 'bad' : 'green'),
+      el('div', { class: 'calc-summary-table' }, [
+        el('div', { class: 'calc-summary-row head' }, [el('span', {}, 'Статья'), el('span', {}, 'Калькуляция'), el('span', {}, 'Рынок')]),
+        ...rows.map((r) => el('div', { class: 'calc-summary-row ' + (r[3] || '') }, [
+          el('span', {}, r[0]),
+          el('span', { class: 'tnum' }, typeof r[1] === 'string' ? r[1] : money(r[1])),
+          el('span', { class: 'tnum muted' }, typeof r[2] === 'string' ? r[2] : money(r[2])),
+        ])),
+      ]),
     ]);
   }
 
-  function itemsEditor() {
-    const items = CURRENT.items || [];
-    return el('div', { class: 'calc-items' }, [
+  function sheetItems() {
+    const items = DRAFT.items || [];
+    return el('div', { class: 'calc-sheet-items' }, [
       el('div', { class: 'calc-items-head' }, [
-        el('div', { class: 'calc-sec-title' }, 'Состав рецептуры'),
+        el('div', {}, [
+          el('div', { class: 'calc-sec-title' }, 'Состав рецептуры'),
+          el('div', { class: 'calc-sub' }, 'Сырьё вводится в граммах на единицу, упаковка — в штуках.'),
+        ]),
         el('div', { class: 'calc-head-btns' }, [
-          el('button', { class: 'btn-ghost', onclick: () => addItem('raw') }, '+ Сырьё'),
-          el('button', { class: 'btn-ghost', onclick: () => addItem('packaging') }, '+ Упаковка'),
-          el('button', { class: 'btn-primary', onclick: saveItems }, 'Сохранить состав'),
+          el('button', { class: 'btn-ghost calc-line-add', onclick: () => addItem('raw') }, '+ строка сырья'),
+          el('button', { class: 'btn-ghost calc-line-add', onclick: () => addItem('packaging') }, '+ упаковка'),
         ]),
       ]),
-      items.length ? el('div', { class: 'calc-item-table' }, [
+      el('div', { class: 'calc-item-table calc-excel-table' }, [
         el('div', { class: 'calc-item-row head' }, [
-          el('span', {}, 'Тип'), el('span', {}, 'Позиция'), el('span', {}, 'Кол-во'), el('span', {}, 'Ед.'), el('span', {}, 'Потери %'), el('span', {}, 'Цена вручную'), el('span', {}, 'Сумма'), el('span', {}, ''),
+          el('span', {}, '#'),
+          el('span', {}, 'Тип'),
+          el('span', {}, 'Сырьё / упаковка'),
+          el('span', {}, 'Норма'),
+          el('span', {}, 'Ед.'),
+          el('span', {}, 'Потери %'),
+          el('span', {}, 'Цена кальк.'),
+          el('span', {}, 'Рынок'),
+          el('span', {}, 'Сумма кальк.'),
+          el('span', {}, 'Сумма рынок'),
+          el('span', {}, 'Ручная цена'),
+          el('span', {}, ''),
         ]),
         ...items.map((it, i) => itemRow(it, i)),
-      ]) : el('div', { class: 'calc-empty calc-empty-soft' }, 'Состав пока пустой. Добавьте сырьё и упаковку.'),
+      ]),
     ]);
+  }
+
+  function itemMaterialLabel(it) {
+    const m = materialByKey()[`${it.item_kind}:${it.item_id}`];
+    return it.material_label || materialLabel(m);
   }
 
   function itemRow(it, i) {
     const kind = it.item_kind === 'packaging' ? 'packaging' : 'raw';
+    const m = materialByKey()[`${kind}:${it.item_id}`] || {};
     const kindSel = select([{ v: 'raw', t: 'Сырьё' }, { v: 'packaging', t: 'Упаковка' }], kind, {
       name: 'item_kind',
       onchange: (e) => {
-        CURRENT.items = readItemsFromDom();
-        CURRENT.items[i].item_kind = e.target.value;
-        CURRENT.items[i].item_id = '';
+        syncDraftFromDom();
+        DRAFT.items[i].item_kind = e.target.value;
+        DRAFT.items[i].item_id = '';
+        DRAFT.items[i].material_label = '';
+        DRAFT.items[i].unit = e.target.value === 'raw' ? 'г' : 'шт';
         render();
       },
     });
-    const matSel = materialSelect(kind, it.item_id);
-    matSel.setAttribute('name', 'item_id');
-    return el('div', { class: 'calc-item-row', 'data-index': i }, [
+    return el('div', { class: 'calc-item-row', 'data-index': i, 'data-item-id': it.item_id || '' }, [
+      el('span', { class: 'calc-row-num' }, String(i + 1)),
       kindSel,
-      matSel,
+      inp(itemMaterialLabel(it), { name: 'material_label', list: 'calc-materials-' + kind, placeholder: 'начните вводить позицию' }),
       inp(it.qty, { name: 'qty', type: 'number', step: '0.001', placeholder: kind === 'raw' ? 'г' : 'шт' }),
       inp(it.unit || (kind === 'raw' ? 'г' : 'шт'), { name: 'unit' }),
       inp(it.waste_pct, { name: 'waste_pct', type: 'number', step: '0.1' }),
+      el('span', { class: 'tnum muted' }, money(it.manual_price != null && it.manual_price !== '' ? it.manual_price : m.calc_price)),
+      el('span', { class: 'tnum muted' }, money(it.manual_price != null && it.manual_price !== '' ? it.manual_price : m.market_price)),
+      el('span', { class: 'tnum' }, money(it.calc_cost)),
+      el('span', { class: 'tnum muted' }, money(it.market_cost)),
       inp(it.manual_price, { name: 'manual_price', type: 'number', step: '0.01', placeholder: 'авто' }),
-      el('span', { class: 'tnum muted' }, money(it.calc_cost)),
-      el('button', { class: 'calc-icon-btn', title: 'Удалить', onclick: () => { CURRENT.items = readItemsFromDom(); CURRENT.items.splice(i, 1); render(); } }, '×'),
+      el('button', { class: 'calc-icon-btn', title: 'Удалить строку', onclick: () => { syncDraftFromDom(); DRAFT.items.splice(i, 1); render(); } }, '×'),
     ]);
   }
 
-  function materialSelect(kind, value) {
-    const list = MATERIALS.filter((m) => m.kind === kind);
-    return select([
-      { v: '', t: '— выберите —' },
-      ...list.map((m) => ({ v: m.id, t: (m.code ? m.code + ' · ' : '') + m.name })),
-    ], value);
+  function readRecipeFromDom() {
+    const root = $('.calc-sheet');
+    if (!root || !DRAFT) return DRAFT;
+    const productInput = root.querySelector('[name="product_label"]');
+    const product = findProductByLabel(productInput && productInput.value);
+    return {
+      ...DRAFT,
+      product_id: product ? product.id : '',
+      product_label: productInput ? productInput.value : '',
+      product_name: root.querySelector('[name="product_name"]').value,
+      pack_weight_g: root.querySelector('[name="pack_weight_g"]').value,
+      pack_unit: root.querySelector('[name="pack_unit"]').value,
+      sale_price_type_id: root.querySelector('[name="sale_price_type_id"]').value,
+      sale_price_override: root.querySelector('[name="sale_price_override"]').value,
+      retro_pct: root.querySelector('[name="retro_pct"]').value,
+      vat_pct: root.querySelector('[name="vat_pct"]').value,
+      profit_tax_pct: root.querySelector('[name="profit_tax_pct"]').value,
+      waste_pct: root.querySelector('[name="waste_pct"]').value,
+      labor_coeff: root.querySelector('[name="labor_coeff"]').value,
+      production_coeff: root.querySelector('[name="production_coeff"]').value,
+      overhead_coeff: root.querySelector('[name="overhead_coeff"]').value,
+      comment: root.querySelector('[name="comment"]').value,
+      items: readItemsFromDom(),
+    };
   }
 
   function readItemsFromDom() {
-    return [...document.querySelectorAll('.calc-item-row[data-index]')].map((row) => ({
-      item_kind: row.querySelector('[name="item_kind"]').value,
-      item_id: row.querySelector('[name="item_id"]').value,
-      qty: row.querySelector('[name="qty"]').value,
-      unit: row.querySelector('[name="unit"]').value,
-      waste_pct: row.querySelector('[name="waste_pct"]').value,
-      manual_price: row.querySelector('[name="manual_price"]').value,
-    }));
+    return [...document.querySelectorAll('.calc-item-row[data-index]')].map((row) => {
+      const kind = row.querySelector('[name="item_kind"]').value;
+      const label = row.querySelector('[name="material_label"]').value;
+      const found = findMaterialByLabel(kind, label);
+      const prevId = row.getAttribute('data-item-id') || '';
+      const prev = prevId ? materialByKey()[kind + ':' + prevId] : null;
+      const sameAsPrev = prev && materialLabel(prev) === String(label || '').trim();
+      return {
+        item_kind: kind,
+        item_id: found ? found.id : (sameAsPrev ? prevId : ''),
+        material_label: label,
+        qty: row.querySelector('[name="qty"]').value,
+        unit: row.querySelector('[name="unit"]').value,
+        waste_pct: row.querySelector('[name="waste_pct"]').value,
+        manual_price: row.querySelector('[name="manual_price"]').value,
+      };
+    });
+  }
+
+  function syncDraftFromDom() {
+    if (!DRAFT || !$('.calc-sheet')) return;
+    DRAFT = readRecipeFromDom();
   }
 
   function addItem(kind) {
-    CURRENT.items = readItemsFromDom();
-    CURRENT.items.push({ item_kind: kind, item_id: '', qty: '', unit: kind === 'raw' ? 'г' : 'шт', waste_pct: 0, manual_price: '' });
+    syncDraftFromDom();
+    if (!DRAFT) startNewRecipe();
+    DRAFT.items = DRAFT.items || [];
+    DRAFT.items.push({ item_kind: kind, item_id: '', material_label: '', qty: '', unit: kind === 'raw' ? 'г' : 'шт', waste_pct: 0, manual_price: '' });
     render();
   }
 
-  async function saveItems() {
-    if (!CURRENT_ID) return;
+  async function saveWholeRecipe() {
+    syncDraftFromDom();
+    if (!DRAFT) return;
+    const productName = String(DRAFT.product_name || '').trim() || (!DRAFT.product_id ? String(DRAFT.product_label || '').trim() : '');
+    if (!DRAFT.product_id && !productName) return toast('Выберите товар или напишите название вручную', true);
+    const bad = (DRAFT.items || []).filter((it) => String(it.qty || '').trim() && !it.item_id);
+    if (bad.length) return toast('В составе есть строки без выбранной позиции из справочника', true);
     try {
-      await post('/recipe/' + CURRENT_ID + '/items', { items: readItemsFromDom() });
-      toast('Состав сохранён');
+      const saved = await post('/recipe', {
+        id: DRAFT.id,
+        product_id: DRAFT.product_id,
+        product_name: productName,
+        pack_weight_g: DRAFT.pack_weight_g,
+        pack_unit: DRAFT.pack_unit,
+        sale_price_type_id: DRAFT.sale_price_type_id,
+        sale_price_override: DRAFT.sale_price_override,
+        retro_pct: DRAFT.retro_pct,
+        vat_pct: DRAFT.vat_pct,
+        profit_tax_pct: DRAFT.profit_tax_pct,
+        waste_pct: DRAFT.waste_pct,
+        labor_coeff: DRAFT.labor_coeff,
+        production_coeff: DRAFT.production_coeff,
+        overhead_coeff: DRAFT.overhead_coeff,
+        comment: DRAFT.comment,
+      });
+      const id = saved.id;
+      await post('/recipe/' + id + '/items', { items: DRAFT.items });
+      toast('Лист калькуляции сохранён');
       await reloadBase();
-      CURRENT = await api('/recipe/' + CURRENT_ID);
-      render();
+      await loadRecipe(id);
     } catch (e) {
       toast(e.message, true);
     }
-  }
-
-  function openRecipeModal(recipe) {
-    recipe = recipe || {};
-    const product = select([
-      { v: '', t: '— товар из справочника —' },
-      ...DICTS.products.map((p) => ({ v: p.id, t: (p.code ? p.code + ' · ' : '') + p.name })),
-    ], recipe.product_id || '');
-    const productName = inp(recipe.product_name || '', { placeholder: 'или название вручную' });
-    const priceType = select([
-      { v: '', t: '— тип цены —' },
-      ...DICTS.priceTypes.map((p) => ({ v: p.id, t: p.name })),
-    ], recipe.sale_price_type_id || '');
-    const weight = inp(recipe.pack_weight_g, { type: 'number', step: '0.1', placeholder: 'например 250' });
-    const unit = inp(recipe.pack_unit || 'шт');
-    const saleOverride = inp(recipe.sale_price_override, { type: 'number', step: '0.01', placeholder: 'если цена не из SD' });
-    const retro = inp(recipe.retro_pct ?? DICTS.settings.retro_pct, { type: 'number', step: '0.1' });
-    const vat = inp(recipe.vat_pct ?? DICTS.settings.vat_pct, { type: 'number', step: '0.1' });
-    const profitTax = inp(recipe.profit_tax_pct ?? DICTS.settings.profit_tax_pct, { type: 'number', step: '0.1' });
-    const waste = inp(recipe.waste_pct ?? DICTS.settings.waste_pct, { type: 'number', step: '0.1' });
-    const laborCoeff = inp(recipe.labor_coeff ?? 1, { type: 'number', step: '0.1' });
-    const prodCoeff = inp(recipe.production_coeff ?? 1, { type: 'number', step: '0.1' });
-    const overheadCoeff = inp(recipe.overhead_coeff ?? 1, { type: 'number', step: '0.1' });
-    const comment = area(recipe.comment || '', { placeholder: 'Комментарий' });
-    const body = el('div', { class: 'calcf' }, [
-      frow('Готовый товар', product),
-      frow('Название вручную', productName),
-      frow('Вес упаковки, г', weight),
-      frow('Единица', unit),
-      frow('Тип цены продажи', priceType),
-      frow('Цена вручную', saleOverride),
-      el('div', { class: 'calcf-sec' }, 'Проценты'),
-      frow('Ретро-бонус %', retro),
-      frow('НДС %', vat),
-      frow('Налог на прибыль %', profitTax),
-      frow('Потери по рецептуре %', waste),
-      el('div', { class: 'calcf-sec' }, 'Коэффициенты расходов'),
-      frow('ФОТ, коэффициент', laborCoeff),
-      frow('Производство, коэффициент', prodCoeff),
-      frow('Накладные, коэффициент', overheadCoeff),
-      frow('Комментарий', comment),
-    ]);
-    const save = el('button', { class: 'btn-primary', onclick: async () => {
-      try {
-        const res = await post('/recipe', {
-          id: recipe.id,
-          product_id: product.value,
-          product_name: productName.value,
-          pack_weight_g: weight.value,
-          pack_unit: unit.value,
-          sale_price_type_id: priceType.value,
-          sale_price_override: saleOverride.value,
-          retro_pct: retro.value,
-          vat_pct: vat.value,
-          profit_tax_pct: profitTax.value,
-          waste_pct: waste.value,
-          labor_coeff: laborCoeff.value,
-          production_coeff: prodCoeff.value,
-          overhead_coeff: overheadCoeff.value,
-          comment: comment.value,
-        });
-        CURRENT_ID = res.id;
-        toast('Рецептура сохранена');
-        closeModal();
-        await reloadBase();
-        CURRENT = await api('/recipe/' + CURRENT_ID);
-        render();
-      } catch (e) {
-        toast(e.message, true);
-      }
-    } }, 'Сохранить');
-    modal(recipe.id ? 'Параметры рецептуры' : 'Новая рецептура', body, [save]);
   }
 
   async function archiveRecipe() {
@@ -441,6 +510,7 @@
       await post('/recipe/' + CURRENT_ID + '/archive');
       CURRENT_ID = null;
       CURRENT = null;
+      DRAFT = null;
       await reloadBase();
       toast('Рецептура в архиве');
       render();
@@ -455,10 +525,10 @@
     c.appendChild(el('div', { class: 'calc-head' }, [
       el('div', {}, [
         el('div', { class: 'calc-h2' }, 'Цены сырья и упаковки'),
-        el('div', { class: 'calc-sub' }, 'Цена калькуляции фиксируется отдельно, рынок можно обновлять по закупу или вручную.'),
+        el('div', { class: 'calc-sub' }, 'Последняя закупка подтягивается из закупа. Цена калькуляции фиксируется отдельно и меняется только кнопкой «Принять рынок» или вручную.'),
       ]),
     ]));
-    c.appendChild(el('div', { class: 'calc-kpis' }, [
+    c.appendChild(el('div', { class: 'calc-kpis calc-kpis-compact' }, [
       kpi('Позиций', MATERIALS.length, ''),
       kpi('Есть отличие рынка', changed, changed ? 'warn' : ''),
       kpi('Сырьё', MATERIALS.filter((m) => m.kind === 'raw').length, ''),
@@ -473,13 +543,13 @@
       placeholder: 'Поиск по названию или артикулу',
       oninput: (e) => { materialQ = e.target.value; clearTimeout(window.__calcMq); window.__calcMq = setTimeout(render, 180); },
     });
-    c.appendChild(el('div', { class: 'calc-filters' }, [kind, q]));
+    c.appendChild(el('div', { class: 'calc-filters calc-filters-sticky' }, [kind, q]));
 
     const needle = materialQ.trim().toLowerCase();
     const rows = MATERIALS.filter((m) => (!materialKind || m.kind === materialKind) && (!needle || (m.name || '').toLowerCase().includes(needle) || (m.code || '').toLowerCase().includes(needle)));
-    const table = el('div', { class: 'calc-price-table' }, [
+    const table = el('div', { class: 'calc-price-table calc-excel-table' }, [
       el('div', { class: 'calc-price-row head' }, [
-        el('span', {}, 'Тип'), el('span', {}, 'Позиция'), el('span', {}, 'Цена калькуляции'), el('span', {}, 'Рынок сейчас'), el('span', {}, 'Последняя закупка'), el('span', {}, 'Разница'), el('span', {}, 'Комментарий'), el('span', {}, ''),
+        el('span', {}, 'Тип'), el('span', {}, 'Позиция'), el('span', {}, 'Цена кальк.'), el('span', {}, 'Рынок сейчас'), el('span', {}, 'Последняя закупка'), el('span', {}, 'Разница'), el('span', {}, 'Комментарий'), el('span', {}, ''),
       ]),
       ...rows.map(priceRow),
     ]);
@@ -506,8 +576,8 @@
       el('span', { class: 'tnum ' + (delta > 0 ? 'bad' : delta < 0 ? 'good' : '') }, (delta > 0 ? '+' : '') + money(delta)),
       comment,
       el('div', { class: 'calc-row-actions' }, [
-        el('button', { class: 'btn-ghost', onclick: () => { calc.value = market.value; savePrice(m, row); } }, 'Принять'),
-        el('button', { class: 'btn-primary', onclick: () => savePrice(m, row) }, 'Сохранить'),
+        el('button', { class: 'calc-accept-btn', onclick: () => { calc.value = market.value; savePrice(m, row); } }, 'Принять рынок'),
+        el('button', { class: 'btn-primary calc-mini-save', onclick: () => savePrice(m, row) }, 'Сохранить'),
       ]),
     ]);
     return row;
@@ -533,44 +603,60 @@
   function renderSettings() {
     const c = $('#calc-content');
     const s = DICTS.settings || {};
+    const groups = [
+      {
+        title: 'План и расходы на единицу',
+        hint: 'Эти суммы попадают в каждую рецептуру через коэффициенты.',
+        fields: [
+          ['monthly_units', 'План выпуска, шт/мес'],
+          ['labor_per_unit', 'ФОТ на единицу, сум'],
+          ['production_per_unit', 'Производство на единицу, сум'],
+          ['overhead_per_unit', 'Накладные на единицу, сум'],
+        ],
+      },
+      {
+        title: 'Проценты по умолчанию',
+        hint: 'Подставляются в новые рецептуры, но в каждой рецептуре можно поменять.',
+        fields: [
+          ['retro_pct', 'Ретро-бонус, %'],
+          ['vat_pct', 'НДС, %'],
+          ['profit_tax_pct', 'Налог на прибыль, %'],
+          ['waste_pct', 'Потери рецептуры, %'],
+        ],
+      },
+    ];
     c.appendChild(el('div', { class: 'calc-head' }, [
       el('div', {}, [
         el('div', { class: 'calc-h2' }, 'Настройки калькуляции'),
-        el('div', { class: 'calc-sub' }, 'Временные коэффициенты для плановой себестоимости. Позже сюда подтянем ФОТ и производство напрямую.'),
+        el('div', { class: 'calc-sub' }, 'Минимальный набор коэффициентов. ФОТ и производство позже подтянем из своих плиток.'),
       ]),
+      el('button', { class: 'btn-primary calc-save-settings', onclick: saveSettings }, 'Сохранить настройки'),
     ]));
-    const fields = [
-      ['monthly_units', 'План выпуска в месяц, шт', 'Для ориентира и будущего распределения расходов'],
-      ['labor_per_unit', 'ФОТ на единицу, сум', 'Сейчас вручную, позже свяжем с плиткой “Персонал”'],
-      ['production_per_unit', 'Производственные расходы на единицу, сум', 'Электричество, вода, расходники и прочее'],
-      ['overhead_per_unit', 'Накладные на единицу, сум', 'Административные и общие расходы'],
-      ['retro_pct', 'Ретро-бонус по умолчанию, %', 'Подставляется в новую рецептуру'],
-      ['vat_pct', 'НДС по умолчанию, %', 'Подставляется в новую рецептуру'],
-      ['profit_tax_pct', 'Налог на прибыль, %', 'Считается только если прибыль положительная'],
-      ['waste_pct', 'Потери по рецептуре, %', 'Общий процент сверху после состава'],
-    ];
-    const form = el('div', { class: 'calc-settings' }, fields.map(([key, label, hint]) => {
-      const control = inp(s[key], { type: 'number', step: '0.01', name: key });
-      return el('label', { class: 'calc-setting-row' }, [
-        el('span', {}, [el('b', {}, label), el('small', {}, hint)]),
-        control,
-      ]);
-    }));
-    const save = el('button', { class: 'btn-primary calc-save-settings', onclick: async () => {
-      const body = {};
-      fields.forEach(([key]) => { body[key] = form.querySelector('[name="' + key + '"]').value; });
-      try {
-        const res = await post('/settings', body);
-        DICTS.settings = res.settings || body;
-        toast('Настройки сохранены');
-        await reloadBase();
-        render();
-      } catch (e) {
-        toast(e.message, true);
-      }
-    } }, 'Сохранить настройки');
+    const form = el('div', { class: 'calc-settings-grid' }, groups.map((g) => el('section', { class: 'calc-settings-card' }, [
+      el('div', { class: 'calc-settings-title' }, g.title),
+      el('div', { class: 'calc-sub' }, g.hint),
+      ...g.fields.map(([key, label]) => el('label', { class: 'calc-setting-tile' }, [
+        el('span', {}, label),
+        inp(s[key], { type: 'number', step: '0.01', name: key }),
+      ])),
+    ])));
     c.appendChild(form);
-    c.appendChild(save);
+  }
+
+  async function saveSettings() {
+    const form = $('.calc-settings-grid');
+    const keys = ['monthly_units', 'labor_per_unit', 'production_per_unit', 'overhead_per_unit', 'retro_pct', 'vat_pct', 'profit_tax_pct', 'waste_pct'];
+    const body = {};
+    keys.forEach((key) => { body[key] = form.querySelector('[name="' + key + '"]').value; });
+    try {
+      const res = await post('/settings', body);
+      DICTS.settings = res.settings || body;
+      toast('Настройки сохранены');
+      await reloadBase();
+      render();
+    } catch (e) {
+      toast(e.message, true);
+    }
   }
 
   boot();
