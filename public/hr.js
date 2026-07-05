@@ -41,7 +41,7 @@
   const fsel = (opts, val) => el('select', { class: 'hrf-inp' }, opts.map((o) => el('option', { value: o.v, selected: String(o.v) === String(val) || null }, o.t)));
 
   let DICTS = { departments: [], schedules: [], statuses: [] };
-  let TAB = 'employees';
+  let TAB = 'dashboard';
   const empFilter = { department: '', schedule: '', status: '', q: '' };
   let empSel = new Set();
   const isAdmin = !!(window.HUB_USER && window.HUB_USER.isAdmin);
@@ -60,21 +60,65 @@
     const main = $('#hr-main'); main.innerHTML = '';
     const tab = (id, label) => el('button', { class: 'hr-tab' + (TAB === id ? ' on' : ''), onclick: () => { TAB = id; render(); } }, label);
     main.appendChild(el('div', { class: 'hr-tabs' }, [
+      tab('dashboard', '📊 Дашборд'),
       tab('employees', '👥 Сотрудники'),
       tab('salary', '💵 Зарплата'),
       tab('timesheet', '🕒 Табель'),
       tab('payouts', '💳 Выплаты'),
-      tab('reports', '📊 Отчёты'),
       tab('departments', '🏢 Отделы'),
     ]));
     main.appendChild(el('div', { id: 'hr-content' }));
   }
   function render() {
     shell();
+    if (TAB === 'dashboard') return renderDashboard();
     if (TAB === 'employees') return renderEmployees();
     if (TAB === 'salary') return renderSalary();
     if (TAB === 'departments') return renderDepartments();
     return renderSoon();
+  }
+
+  // ================= ДАШБОРД =================
+  const HR_COLORS = ['#163a28', '#8cc63f', '#2e7d32', '#b25b00', '#5b3da8', '#c0392b', '#0d7d8c', '#c77800', '#7c8579', '#3f6a16'];
+  const dashState = { period: '' };
+  function donut(items, cap) {
+    const total = items.reduce((s, i) => s + i.value, 0);
+    if (!total) return el('div', { class: 'hr-sub' }, 'Нет данных.');
+    const size = 200, r = size / 2 - 18, cx = size / 2, cy = size / 2, C = 2 * Math.PI * r; let off = 0;
+    const segs = items.map((it) => { const len = it.value / total * C; const pct = Math.round(it.value / total * 100); const s = `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${it.color}" stroke-width="28" stroke-dasharray="${len.toFixed(2)} ${(C - len).toFixed(2)}" stroke-dashoffset="${(-off).toFixed(2)}" transform="rotate(-90 ${cx} ${cy})"><title>${it.label}: ${money(it.value)} · ${pct}%</title></circle>`; off += len; return s; }).join('');
+    const wrap = el('div', { class: 'hr-donut-wrap' }); wrap.innerHTML = `<svg viewBox="0 0 ${size} ${size}" class="hr-donut"><g>${segs}</g><text x="${cx}" y="${cy - 2}" text-anchor="middle" class="hr-donut-cap">${cap || ''}</text><text x="${cx}" y="${cy + 18}" text-anchor="middle" class="hr-donut-val">${money(total)}</text></svg>`;
+    const legend = el('div', { class: 'hr-legend' }, items.map((it) => el('div', { class: 'hr-legend-row' }, [el('span', { class: 'hr-legend-dot', style: 'background:' + it.color }), el('span', {}, it.label), el('span', { class: 'hr-legend-v' }, money(it.value) + ' · ' + Math.round(it.value / total * 100) + '%')])));
+    return el('div', { class: 'hr-chart-card' }, [wrap, legend]);
+  }
+  async function renderDashboard() {
+    const c = $('#hr-content');
+    if (!dashState.period) dashState.period = curMonth();
+    c.appendChild(el('div', { class: 'hr-head' }, [el('div', {}, [el('div', { class: 'hr-h2' }, 'Дашборд — ' + monthLabel(dashState.period)), el('div', { class: 'hr-sub' }, 'ФОТ и персонал за месяц.')])]));
+    const mInp = el('input', { type: 'month', class: 'hrf-inp hr-filt', value: dashState.period, onchange: (e) => { dashState.period = e.target.value || curMonth(); render(); } });
+    c.appendChild(el('div', { class: 'hr-filters' }, [el('span', { class: 'hr-flab' }, 'Месяц:'), mInp]));
+    const box = el('div', {}); c.appendChild(box);
+    box.innerHTML = '<div class="hr-loading">Считаю…</div>';
+    let d; try { d = await api('/dashboard?period=' + dashState.period); } catch (e) { box.innerHTML = ''; box.appendChild(el('div', { class: 'hr-empty' }, 'Ошибка: ' + e.message)); return; }
+    box.innerHTML = '';
+    const t = d.totals;
+    box.appendChild(el('div', { class: 'hr-kpis hr-kpis-4' }, [
+      kpi('ФОТ (начислено)', money(t.accrued), 'green'), kpi('К выплате', money(t.to_pay), 'green'),
+      kpi('Выплачено', money(t.paid), 'ink'), kpi('Сотрудников', t.count, 'ink'),
+    ]));
+    if (!d.byDept.length) { box.appendChild(el('div', { class: 'hr-empty' }, 'Нет данных за месяц.')); return; }
+    const items = d.byDept.filter((x) => x.accrued > 0).map((x, i) => ({ label: x.name, value: x.accrued, color: HR_COLORS[i % HR_COLORS.length] }));
+    box.appendChild(el('div', { class: 'hr-h2', style: 'font-size:18px;margin:16px 0 4px' }, 'ФОТ по отделам'));
+    if (items.length) box.appendChild(donut(items, 'ФОТ'));
+    // Таблица по отделам
+    box.appendChild(el('div', { class: 'hr-h2', style: 'font-size:18px;margin:18px 0 4px' }, 'Отделы'));
+    const head = el('div', { class: 'hr-row head hr-dash' }, ['Отдел', 'Человек', 'ФОТ', 'К выплате', 'Выплачено'].map((h) => el('span', {}, h)));
+    box.appendChild(el('div', { class: 'hr-list' }, [head, ...d.byDept.map((x) => el('div', { class: 'hr-row hr-dash cash-rep-click', title: 'Открыть зарплату отдела', onclick: () => { salState.period = dashState.period; salState.department = String((DICTS.departments.find((dd) => dd.name === x.name) || {}).id || ''); TAB = 'salary'; render(); } }, [
+      el('span', { style: 'font-weight:700' }, x.name + ' →'),
+      el('span', { class: 'tnum' }, x.count),
+      el('span', { class: 'tnum' }, money(x.accrued)),
+      el('span', { class: 'tnum', style: 'color:#2e7d32;font-weight:700' }, money(x.to_pay)),
+      el('span', { class: 'tnum muted' }, money(x.paid)),
+    ]))]));
   }
   function renderSoon() {
     $('#hr-content').appendChild(el('div', { class: 'hr-soon' }, [

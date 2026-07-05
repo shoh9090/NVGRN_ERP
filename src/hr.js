@@ -80,6 +80,38 @@ async function seedDepartments() {
   const D = ['АУП', 'Производство', 'Производство смена', 'Склад', 'Продажи', 'Маркетинг', 'Бухгалтерия', 'Закупки', 'Логистика', 'Другое'];
   let i = 0;
   for (const name of D) { i += 10; await db.pool.query('INSERT INTO hr_departments (name, sort_order) VALUES ($1,$2) ON CONFLICT (name) DO NOTHING', [name, i]); }
+  await seedJune2026();
+}
+// Разовая загрузка сотрудников и начислений за июнь 2026 из файла Шоха.
+async function seedJune2026() {
+  try {
+    const flag = (await db.pool.query("SELECT value FROM settings WHERE key='hr_seed_june2026'")).rows[0];
+    if (flag && flag.value === 'done') return;
+    let data; try { data = require('./data/hr_seed_june2026.json'); } catch (e) { return; }
+    const emps = data.employees || [];
+    if (!emps.length) return;
+    const deptMap = {};
+    (await db.pool.query('SELECT id, name FROM hr_departments')).rows.forEach((d) => { deptMap[d.name.toLowerCase()] = d.id; });
+    for (const e of emps) {
+      if (!e.full_name) continue;
+      const ex = await db.pool.query('SELECT id FROM hr_employees WHERE lower(full_name)=lower($1) LIMIT 1', [e.full_name]);
+      if (ex.rows.length) continue; // не дублируем
+      const deptId = e.department ? (deptMap[e.department.toLowerCase()] || null) : null;
+      const ins = await db.pool.query(
+        `INSERT INTO hr_employees (full_name, department_id, position, schedule_type, base_salary, salary_official, salary_unofficial)
+         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+        [e.full_name, deptId, e.position || null, e.schedule || null, e.base_salary, e.salary_official, e.salary_unofficial]);
+      await db.pool.query(
+        `INSERT INTO hr_payroll (employee_id, period, status, plan_days, fact_days, fact_hours,
+           accr_salary, accr_fact, accr_bonus, accr_premium, accr_gsm, accr_company_debt,
+           ded_fine, ded_advance_card, ded_advance_cash, ded_hold, paid_cash, paid_card, amount_1c)
+         VALUES ($1,$2,'draft',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+         ON CONFLICT (employee_id, period) DO NOTHING`,
+        [ins.rows[0].id, data.period, e.plan_days, e.fact_days, e.fact_hours, e.accr_salary, e.accr_fact, e.accr_bonus, e.accr_premium, e.accr_gsm, e.accr_company_debt, e.ded_fine, e.ded_advance_card, e.ded_advance_cash, e.ded_hold, e.paid_cash, e.paid_card, e.amount_1c]);
+    }
+    await db.setSetting('hr_seed_june2026', 'done');
+    console.log('[HR SEED] Загружено сотрудников за июнь 2026:', emps.length);
+  } catch (e) { console.warn('[HR SEED]', e.message); }
 }
 
 router.use(async (req, res, next) => { try { await ensureSchema(); } catch (e) { /* не роняем модуль */ } next(); });
@@ -199,6 +231,24 @@ router.post('/api/payroll', J, async (req, res) => {
     await db.log(req.user.id, 'hr_payroll_save', `emp ${empId} ${period} ${status}`);
     res.json({ ok: true });
   } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// ---------- Дашборд ----------
+router.get('/api/dashboard', async (req, res) => {
+  const period = /^\d{4}-\d{2}$/.test(req.query.period) ? req.query.period : new Date().toISOString().slice(0, 7);
+  const rows = (await db.pool.query(
+    `SELECT d.name AS dept, pr.*
+     FROM hr_employees e LEFT JOIN hr_departments d ON d.id = e.department_id
+     LEFT JOIN hr_payroll pr ON pr.employee_id = e.id AND pr.period = $1
+     WHERE e.status = 'active'`, [period])).rows.map(withTotals);
+  const byDept = {};
+  rows.forEach((r) => { const d = r.dept || 'Без отдела'; const o = byDept[d] = byDept[d] || { name: d, count: 0, accrued: 0, to_pay: 0, paid: 0 }; o.count++; o.accrued += r.accrued; o.to_pay += r.to_pay; o.paid += r.paid; });
+  const deptArr = Object.values(byDept).sort((a, b) => b.accrued - a.accrued);
+  const totals = {
+    accrued: rows.reduce((s, r) => s + r.accrued, 0), to_pay: rows.reduce((s, r) => s + r.to_pay, 0),
+    paid: rows.reduce((s, r) => s + r.paid, 0), deducted: rows.reduce((s, r) => s + r.deducted, 0), count: rows.length,
+  };
+  res.json({ period, byDept: deptArr, totals });
 });
 
 // ---------- Отделы ----------
