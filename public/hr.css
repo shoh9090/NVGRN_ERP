@@ -1,0 +1,73 @@
+/* hr.css — модуль «Персонал». Палитра Hub. */
+:root { --ink:#14241b; --paper:#f4f2ea; --forest:#163a28; --lime:#8cc63f; --muted:#7c8579; --line:#e3e0d4; }
+#hr-main { max-width: 1180px; margin: 0 auto; padding: 16px; }
+
+.hr-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 16px; border-bottom: 1px solid var(--line); }
+.hr-tab { background: none; border: none; padding: 10px 15px; font-size: 14px; font-weight: 700; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.hr-tab.on { color: var(--forest); border-bottom-color: var(--lime); }
+
+.hr-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+.hr-h2 { font-family: 'Lora', Georgia, serif; font-weight: 600; font-size: 24px; margin: 2px 0 4px; color: var(--ink); }
+.hr-sub { color: var(--muted); font-size: 13px; }
+.hr-add { white-space: nowrap; padding: 9px 15px; border-radius: 10px; font-weight: 700; font-size: 13px; cursor: pointer; }
+
+.hr-filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+.hr-filt { width: auto; }
+.hr-filt-q { flex: 1; min-width: 200px; }
+.hrf-inp { padding: 8px 9px; border: 1px solid #d8dcd6; border-radius: 8px; font-size: 13px; background: #fff; box-sizing: border-box; }
+
+.hr-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 12px; }
+.hr-kpi { background: #fbfaf5; border: 1px solid var(--line); border-radius: 12px; padding: 11px 14px; }
+.hr-kpi-l { font-size: 12px; color: var(--muted); font-weight: 700; }
+.hr-kpi-v { font-family: 'Lora', Georgia, serif; font-size: 20px; font-weight: 600; margin-top: 3px; }
+.hr-kpi-green { color: #2e7d32; }
+.hr-kpi-muted { color: var(--muted); }
+
+.hr-list { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: #fff; }
+.hr-row { display: grid; gap: 10px; align-items: center; padding: 10px 12px; border-bottom: 1px solid #f0f2ef; font-size: 13px; }
+.hr-row:last-child { border-bottom: none; }
+.hr-row.head { background: #f2f5f1; font-weight: 700; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .02em; }
+.hr-row:not(.head) { cursor: pointer; }
+.hr-row:not(.head):hover { background: #f7faf6; }
+.hr-row.dim { opacity: .55; }
+.hr-emp { grid-template-columns: 1.6fr 1fr 1.2fr 1fr 0.9fr 0.8fr; }
+.hr-dept { grid-template-columns: 1fr 100px 40px; }
+.tnum { text-align: right; font-variant-numeric: tabular-nums; }
+.muted { color: var(--muted); }
+
+.hr-st { font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px; }
+.hr-st-active { background: #e8f5e9; color: #2e7d32; }
+.hr-st-fired { background: #fdecea; color: #c0392b; }
+.hr-st-archived { background: #f1f4ee; color: var(--muted); }
+
+.hr-loading, .hr-empty { padding: 30px; text-align: center; color: var(--muted); }
+.hr-soon { text-align: center; max-width: 520px; margin: 40px auto; background: #fbfaf5; border: 1px dashed var(--line); border-radius: 16px; padding: 34px; }
+.hr-soon-h { font-family: 'Lora', Georgia, serif; font-size: 22px; font-weight: 600; color: var(--forest); margin: 8px 0 8px; }
+.hr-soon-t { color: #5a665c; font-size: 14px; line-height: 1.5; }
+
+/* Модалка */
+.hrm-overlay { position: fixed; inset: 0; background: rgba(20,36,27,.45); display: flex; align-items: flex-start; justify-content: center; padding: 40px 14px; z-index: 60; overflow: auto; }
+.hrm-panel { background: #fff; border-radius: 16px; width: 100%; max-width: 560px; box-shadow: 0 20px 60px rgba(0,0,0,.25); }
+.hrm-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--line); }
+.hrm-head h3 { margin: 0; font-size: 16px; }
+.hrm-x { background: none; border: none; font-size: 18px; color: var(--muted); cursor: pointer; }
+.hrm-body { padding: 16px 18px; }
+.hrm-acts { display: flex; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); flex-wrap: wrap; }
+.hrm-acts .btn-primary { margin-left: auto; }
+.hrf { display: flex; flex-direction: column; gap: 10px; }
+.hrf-row { display: grid; grid-template-columns: 150px 1fr; align-items: center; gap: 10px; font-size: 13px; color: #5a665c; }
+.hrf-row .hrf-inp { width: 100%; }
+.hrf-sec { font-size: 12px; font-weight: 800; letter-spacing: .02em; color: var(--forest); margin-top: 6px; text-transform: uppercase; }
+.hrf-warn { color: #b25b00; border-color: #e6d3b0; }
+
+/* Тост */
+.hr-toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%) translateY(20px); background: var(--forest); color: #fff; padding: 10px 18px; border-radius: 10px; font-size: 13px; opacity: 0; transition: opacity .25s, transform .25s; z-index: 80; }
+.hr-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.hr-toast.err { background: #c0392b; }
+
+@media (max-width: 760px) {
+  .hr-kpis { grid-template-columns: 1fr 1fr; }
+  .hr-emp { grid-template-columns: 1.4fr 1fr 0.8fr; }
+  .hr-emp > *:nth-child(4), .hr-emp > *:nth-child(5), .hr-emp > *:nth-child(6) { display: none; }
+  .hrf-row { grid-template-columns: 1fr; gap: 4px; }
+}

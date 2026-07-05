@@ -584,6 +584,15 @@ async function seed() {
     );
   }
 
+  // Плитка «Персонал» — сотрудники, зарплата, табель
+  const hrt = await pool.query("SELECT id FROM tiles WHERE url = '/hr' LIMIT 1");
+  if (hrt.rows.length === 0) {
+    await pool.query(
+      `INSERT INTO tiles (title, description, icon, url, open_new_tab, sort_order)
+       VALUES ('Персонал', 'Сотрудники, зарплата, табель и выплаты', '👥', '/hr', FALSE, 55)`
+    );
+  }
+
   // Первая плитка — Счета-фактуры (адрес меняется в админке)
   const t = await pool.query('SELECT id FROM tiles LIMIT 1');
   if (t.rows.length === 0) {
@@ -606,6 +615,7 @@ async function seed() {
     ['/stock', 'Склад и закуп'],
     ['/dictionaries', 'Справочники и настройки'],
     ['/cash', 'Финансы'],
+    ['/hr', 'Финансы'],
   ];
   for (const [u, sec] of tileSections) {
     await pool.query("UPDATE tiles SET section = $1 WHERE url = $2 AND (section IS NULL OR section = '')", [sec, u]);
