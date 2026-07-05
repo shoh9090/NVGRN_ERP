@@ -71,10 +71,12 @@ async function ensureSchema() {
   _ready = true;
 }
 // Поля начислений/удержаний/выплат — для расчётов и сохранения.
-const ACCR = ['accr_salary', 'accr_fact', 'accr_bonus', 'accr_premium', 'accr_gsm', 'accr_company_debt', 'accr_other'];
+// ВАЖНО: accr_salary (Фикса) — базовая ставка, НЕ входит в сумму «начислено».
+const ACCR_ALL = ['accr_salary', 'accr_fact', 'accr_bonus', 'accr_premium', 'accr_gsm', 'accr_company_debt', 'accr_other'];
+const ACCR = ['accr_fact', 'accr_bonus', 'accr_premium', 'accr_gsm', 'accr_company_debt', 'accr_other']; // счётные
 const DED = ['ded_fine', 'ded_advance_card', 'ded_advance_cash', 'ded_hold', 'ded_emp_debt', 'ded_other'];
 const PAID = ['paid_cash', 'paid_card'];
-const PAYROLL_NUM = [...ACCR, ...DED, ...PAID, 'plan_days', 'fact_days', 'plan_hours', 'fact_hours', 'amount_1c'];
+const PAYROLL_NUM = [...ACCR_ALL, ...DED, ...PAID, 'plan_days', 'fact_days', 'plan_hours', 'fact_hours', 'amount_1c'];
 const sumF = (row, fields) => fields.reduce((s, f) => s + (Number(row[f]) || 0), 0);
 async function seedDepartments() {
   const D = ['АУП', 'Производство', 'Производство смена', 'Склад', 'Продажи', 'Маркетинг', 'Бухгалтерия', 'Закупки', 'Логистика', 'Другое'];
@@ -191,6 +193,7 @@ router.get('/api/payroll', async (req, res) => {
   const period = /^\d{4}-\d{2}$/.test(req.query.period) ? req.query.period : new Date().toISOString().slice(0, 7);
   const p = [period], w = ["e.status <> 'archived'"];
   if (req.query.department) { p.push(parseInt(req.query.department)); w.push(`e.department_id = $${p.length}`); }
+  if (req.query.schedule && SCHEDULE_CODES.includes(req.query.schedule)) { p.push(req.query.schedule); w.push(`e.schedule_type = $${p.length}`); }
   if (req.query.q) { p.push('%' + String(req.query.q).trim() + '%'); w.push(`e.full_name ILIKE $${p.length}`); }
   const rows = (await db.pool.query(
     `SELECT e.id AS emp_id, e.full_name, e.position, e.base_salary, d.name AS department_name, pr.*
@@ -217,7 +220,7 @@ router.post('/api/payroll', J, async (req, res) => {
   const period = /^\d{4}-\d{2}$/.test(b.period) ? b.period : null;
   if (!empId || !period) return res.status(400).json({ error: 'Нет сотрудника или периода' });
   const status = ['draft', 'approved', 'paid', 'cancelled'].includes(b.status) ? b.status : 'draft';
-  const cols = ['plan_days', 'fact_days', 'plan_hours', 'fact_hours', ...ACCR, ...DED, ...PAID, 'amount_1c'];
+  const cols = ['plan_days', 'fact_days', 'plan_hours', 'fact_hours', ...ACCR_ALL, ...DED, ...PAID, 'amount_1c'];
   const vals = cols.map((c) => numOrNull(b[c]));
   const allCols = ['employee_id', 'period', 'status', ...cols, 'pay_date', 'pay_method', 'comment'];
   const allVals = [empId, period, status, ...vals, b.pay_date || null, b.pay_method || null, b.comment || null];
@@ -231,6 +234,15 @@ router.post('/api/payroll', J, async (req, res) => {
     await db.log(req.user.id, 'hr_payroll_save', `emp ${empId} ${period} ${status}`);
     res.json({ ok: true });
   } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Массовое удаление начислений (сотрудники остаются).
+router.post('/api/payroll/bulk-delete', J, async (req, res) => {
+  const ids = (Array.isArray(req.body.ids) ? req.body.ids : []).map((x) => parseInt(x)).filter(Boolean);
+  if (!ids.length) return res.status(400).json({ error: 'Ничего не выбрано' });
+  const r = await db.pool.query('DELETE FROM hr_payroll WHERE id = ANY($1)', [ids]);
+  await db.log(req.user.id, 'hr_payroll_bulk_delete', String(ids.length));
+  res.json({ ok: true, affected: r.rowCount });
 });
 
 // ---------- Дашборд ----------

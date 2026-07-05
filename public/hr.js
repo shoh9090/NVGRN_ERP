@@ -17,6 +17,13 @@
     return n;
   }
   const money = (v) => (v == null || v === '' ? '—' : Math.round(Number(v) || 0).toLocaleString('ru-RU'));
+  // Компактно для сводок: 426.9 млн / 320 тыс — крупные суммы читаются легче.
+  const moneyShort = (v) => {
+    const n = Math.round(Number(v) || 0);
+    if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(1).replace('.0', '') + ' млн';
+    if (Math.abs(n) >= 1e4) return Math.round(n / 1e3) + ' тыс';
+    return n.toLocaleString('ru-RU');
+  };
   const ruDate = (d) => d ? String(d).slice(0, 10).split('-').reverse().join('.') : '';
 
   async function api(path) { const r = await fetch('/hr/api' + path); const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || 'Ошибка'); return d; }
@@ -81,15 +88,16 @@
   // ================= ДАШБОРД =================
   const HR_COLORS = ['#163a28', '#8cc63f', '#2e7d32', '#b25b00', '#5b3da8', '#c0392b', '#0d7d8c', '#c77800', '#7c8579', '#3f6a16'];
   const dashState = { period: '' };
-  function donut(items, cap) {
+  function donut(items, cap, onClick) {
     const total = items.reduce((s, i) => s + i.value, 0);
     if (!total) return el('div', { class: 'hr-sub' }, 'Нет данных.');
     const size = 200, r = size / 2 - 18, cx = size / 2, cy = size / 2, C = 2 * Math.PI * r; let off = 0;
     const segs = items.map((it) => { const len = it.value / total * C; const pct = Math.round(it.value / total * 100); const s = `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${it.color}" stroke-width="28" stroke-dasharray="${len.toFixed(2)} ${(C - len).toFixed(2)}" stroke-dashoffset="${(-off).toFixed(2)}" transform="rotate(-90 ${cx} ${cy})"><title>${it.label}: ${money(it.value)} · ${pct}%</title></circle>`; off += len; return s; }).join('');
-    const wrap = el('div', { class: 'hr-donut-wrap' }); wrap.innerHTML = `<svg viewBox="0 0 ${size} ${size}" class="hr-donut"><g>${segs}</g><text x="${cx}" y="${cy - 2}" text-anchor="middle" class="hr-donut-cap">${cap || ''}</text><text x="${cx}" y="${cy + 18}" text-anchor="middle" class="hr-donut-val">${money(total)}</text></svg>`;
-    const legend = el('div', { class: 'hr-legend' }, items.map((it) => el('div', { class: 'hr-legend-row' }, [el('span', { class: 'hr-legend-dot', style: 'background:' + it.color }), el('span', {}, it.label), el('span', { class: 'hr-legend-v' }, money(it.value) + ' · ' + Math.round(it.value / total * 100) + '%')])));
+    const wrap = el('div', { class: 'hr-donut-wrap' }); wrap.innerHTML = `<svg viewBox="0 0 ${size} ${size}" class="hr-donut"><g>${segs}</g><text x="${cx}" y="${cy - 2}" text-anchor="middle" class="hr-donut-cap">${cap || ''}</text><text x="${cx}" y="${cy + 18}" text-anchor="middle" class="hr-donut-val">${moneyShort(total)}</text></svg>`;
+    const legend = el('div', { class: 'hr-legend' }, items.map((it) => el('div', { class: 'hr-legend-row' + (onClick ? ' hr-legend-click' : ''), title: onClick ? 'Открыть: ' + it.label : '', onclick: onClick ? () => onClick(it) : null }, [el('span', { class: 'hr-legend-dot', style: 'background:' + it.color }), el('span', {}, it.label + (onClick ? ' →' : '')), el('span', { class: 'hr-legend-v' }, money(it.value) + ' · ' + Math.round(it.value / total * 100) + '%')])));
     return el('div', { class: 'hr-chart-card' }, [wrap, legend]);
   }
+  function drillDept(name) { salState.period = dashState.period; salState.department = String((DICTS.departments.find((dd) => dd.name === name) || {}).id || ''); salState.status = ''; salState.q = ''; TAB = 'salary'; render(); }
   async function renderDashboard() {
     const c = $('#hr-content');
     if (!dashState.period) dashState.period = curMonth();
@@ -102,17 +110,18 @@
     box.innerHTML = '';
     const t = d.totals;
     box.appendChild(el('div', { class: 'hr-kpis hr-kpis-4' }, [
-      kpi('ФОТ (начислено)', money(t.accrued), 'green'), kpi('К выплате', money(t.to_pay), 'green'),
-      kpi('Выплачено', money(t.paid), 'ink'), kpi('Сотрудников', t.count, 'ink'),
+      kpi('ФОТ (начислено)', moneyShort(t.accrued), 'green'), kpi('К выплате', moneyShort(t.to_pay), 'green'),
+      kpi('Выплачено', moneyShort(t.paid), 'ink'), kpi('Сотрудников', t.count, 'ink'),
     ]));
     if (!d.byDept.length) { box.appendChild(el('div', { class: 'hr-empty' }, 'Нет данных за месяц.')); return; }
     const items = d.byDept.filter((x) => x.accrued > 0).map((x, i) => ({ label: x.name, value: x.accrued, color: HR_COLORS[i % HR_COLORS.length] }));
     box.appendChild(el('div', { class: 'hr-h2', style: 'font-size:18px;margin:16px 0 4px' }, 'ФОТ по отделам'));
-    if (items.length) box.appendChild(donut(items, 'ФОТ'));
+    if (items.length) box.appendChild(donut(items, 'ФОТ', (it) => drillDept(it.label)));
     // Таблица по отделам
     box.appendChild(el('div', { class: 'hr-h2', style: 'font-size:18px;margin:18px 0 4px' }, 'Отделы'));
-    const head = el('div', { class: 'hr-row head hr-dash' }, ['Отдел', 'Человек', 'ФОТ', 'К выплате', 'Выплачено'].map((h) => el('span', {}, h)));
-    box.appendChild(el('div', { class: 'hr-list' }, [head, ...d.byDept.map((x) => el('div', { class: 'hr-row hr-dash cash-rep-click', title: 'Открыть зарплату отдела', onclick: () => { salState.period = dashState.period; salState.department = String((DICTS.departments.find((dd) => dd.name === x.name) || {}).id || ''); TAB = 'salary'; render(); } }, [
+    const head = el('div', { class: 'hr-row head hr-dash' }, ['#', 'Отдел', 'Человек', 'ФОТ', 'К выплате', 'Выплачено'].map((h) => el('span', {}, h)));
+    box.appendChild(el('div', { class: 'hr-list' }, [head, ...d.byDept.map((x, i) => el('div', { class: 'hr-row hr-dash', title: 'Открыть зарплату отдела', onclick: () => drillDept(x.name) }, [
+      el('span', { class: 'hr-idx' }, String(i + 1)),
       el('span', { style: 'font-weight:700' }, x.name + ' →'),
       el('span', { class: 'tnum' }, x.count),
       el('span', { class: 'tnum' }, money(x.accrued)),
@@ -156,7 +165,7 @@
       // Сводки
       box.appendChild(el('div', { class: 'hr-kpis' }, [
         kpi('Показано', d.items.length, 'ink'),
-        kpi('ФОТ (оклады, актив.)', money(d.fot) + ' сум', 'green'),
+        kpi('ФОТ (оклады, актив.)', moneyShort(d.fot), 'green'),
         kpi('Активных', DICTS.counts.active || 0, 'ink'),
         kpi('Уволенных', DICTS.counts.fired || 0, 'muted'),
       ]));
@@ -178,11 +187,12 @@
       box.appendChild(bulk);
       const selAll = el('input', { type: 'checkbox', class: 'hr-chk' });
       selAll.onclick = (ev) => { const on = ev.target.checked; empSel = new Set(on ? d.items.map((x) => x.id) : []); box.querySelectorAll('.hr-rowchk').forEach((c) => { c.checked = on; }); updBulk(); };
-      const head = el('div', { class: 'hr-row head hr-emp' }, [selAll, ...['ФИО', 'Отдел', 'Должность', 'График', 'Оклад/ставка', 'Статус'].map((h) => el('span', {}, h))]);
-      box.appendChild(el('div', { class: 'hr-list' }, [head, ...d.items.map((e) => {
+      const head = el('div', { class: 'hr-row head hr-emp' }, [selAll, el('span', {}, '#'), ...['ФИО', 'Отдел', 'Должность', 'График', 'Оклад/ставка', 'Статус'].map((h) => el('span', {}, h))]);
+      box.appendChild(el('div', { class: 'hr-list' }, [head, ...d.items.map((e, i) => {
         const chk = el('input', { type: 'checkbox', class: 'hr-chk hr-rowchk', onclick: (ev) => { ev.stopPropagation(); if (ev.target.checked) empSel.add(e.id); else empSel.delete(e.id); updBulk(); } });
         return el('div', { class: 'hr-row hr-emp' + (e.status !== 'active' ? ' dim' : '') }, [
           chk,
+          el('span', { class: 'hr-idx' }, String(i + 1)),
           el('span', { style: 'font-weight:700; cursor:pointer', onclick: () => openEmp(e) }, e.full_name),
           el('span', { onclick: () => openEmp(e) }, e.department_name || '—'),
           el('span', { onclick: () => openEmp(e) }, e.position || '—'),
@@ -259,10 +269,12 @@
 
   // ================= ЗАРПЛАТА =================
   const PR_STATUS = { draft: 'Черновик', approved: 'Утверждено', paid: 'Выплачено', cancelled: 'Отменено' };
-  const ACCR_FIELDS = [['accr_salary', 'Оклад / фикса'], ['accr_fact', 'Факт по табелю'], ['accr_bonus', 'Бонусы KPI'], ['accr_premium', 'Премия'], ['accr_gsm', 'ГСМ / компенсации'], ['accr_company_debt', 'Долг компании'], ['accr_other', 'Другое начисление']];
+  // Фикса — справочно, НЕ входит в сумму «начислено». Счётные — ниже.
+  const ACCR_FIELDS = [['accr_fact', 'Факт по табелю'], ['accr_bonus', 'Бонусы KPI'], ['accr_premium', 'Премия'], ['accr_gsm', 'ГСМ / компенсации'], ['accr_company_debt', 'Долг компании'], ['accr_other', 'Другое начисление']];
   const DED_FIELDS = [['ded_fine', 'Штраф за опоздание'], ['ded_advance_card', 'Аванс на карту'], ['ded_advance_cash', 'Аванс наличными'], ['ded_hold', 'Удержание'], ['ded_emp_debt', 'Долг сотрудника'], ['ded_other', 'Другое удержание']];
   const PAID_FIELDS = [['paid_cash', 'Выплачено наличными'], ['paid_card', 'Выплачено на карту']];
-  const salState = { period: '', department: '', status: '', q: '' };
+  const salState = { period: '', department: '', schedule: '', status: '', q: '' };
+  let salSel = new Set();
   const curMonth = () => new Date().toISOString().slice(0, 7);
   const monthLabel = (ym) => { const [y, m] = ym.split('-'); return ['', 'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'][Number(m)] + ' ' + y; };
 
@@ -274,37 +286,54 @@
     ]));
     const mInp = el('input', { type: 'month', class: 'hrf-inp hr-filt', value: salState.period, onchange: (e) => { salState.period = e.target.value || curMonth(); load(); } });
     const dSel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { salState.department = e.target.value; load(); } }, [el('option', { value: '' }, 'Все отделы'), ...DICTS.departments.map((d) => el('option', { value: d.id, selected: String(d.id) === salState.department || null }, d.name))]);
+    const schSel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { salState.schedule = e.target.value; load(); } }, [el('option', { value: '' }, 'Все графики'), ...(DICTS.schedules || []).map((s) => el('option', { value: s.code, selected: s.code === salState.schedule || null }, s.name))]);
     const stSel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { salState.status = e.target.value; load(); } }, [{ v: '', t: 'Все статусы' }, { v: 'none', t: 'Без начисления' }, { v: 'draft', t: 'Черновик' }, { v: 'approved', t: 'Утверждено' }, { v: 'paid', t: 'Выплачено' }].map((o) => el('option', { value: o.v, selected: o.v === salState.status || null }, o.t)));
     const q = el('input', { class: 'hrf-inp hr-filt hr-filt-q', placeholder: 'Поиск по ФИО', value: salState.q, oninput: (e) => { salState.q = e.target.value; clearTimeout(window.__hrS); window.__hrS = setTimeout(load, 300); } });
-    c.appendChild(el('div', { class: 'hr-filters' }, [el('span', { class: 'hr-flab' }, 'Месяц:'), mInp, dSel, stSel, q]));
+    c.appendChild(el('div', { class: 'hr-filters' }, [el('span', { class: 'hr-flab' }, 'Месяц:'), mInp, dSel, schSel, stSel, q]));
     const box = el('div', { id: 'hr-sal-box' }); c.appendChild(box);
     load();
 
     async function load() {
       box.innerHTML = '<div class="hr-loading">Считаю…</div>';
+      salSel = new Set();
       const p = new URLSearchParams({ period: salState.period });
-      ['department', 'status', 'q'].forEach((k) => { if (salState[k]) p.set(k, salState[k]); });
+      ['department', 'schedule', 'status', 'q'].forEach((k) => { if (salState[k]) p.set(k, salState[k]); });
       let d; try { d = await api('/payroll?' + p.toString()); } catch (e) { box.innerHTML = ''; box.appendChild(el('div', { class: 'hr-empty' }, 'Ошибка: ' + e.message)); return; }
       box.innerHTML = '';
       const s = d.summary;
       box.appendChild(el('div', { class: 'hr-kpis hr-kpis-6' }, [
-        kpi('ФОТ (начислено)', money(s.accrued), 'green'), kpi('Бонусы/KPI', money(s.bonus), 'ink'), kpi('Удержания', money(s.deducted), 'muted'),
-        kpi('Авансы', money(s.advances), 'muted'), kpi('Выплачено', money(s.paid), 'ink'), kpi('К выплате', money(s.to_pay), 'green'),
+        kpi('ФОТ (начислено)', moneyShort(s.accrued), 'green'), kpi('Бонусы/KPI', moneyShort(s.bonus), 'ink'), kpi('Удержания', moneyShort(s.deducted), 'muted'),
+        kpi('Авансы', moneyShort(s.advances), 'muted'), kpi('Выплачено', moneyShort(s.paid), 'ink'), kpi('К выплате', moneyShort(s.to_pay), 'green'),
       ]));
       box.appendChild(el('div', { class: 'hr-kpis hr-kpis-2', style: 'margin-bottom:14px' }, [kpi('Сотрудников', s.count, 'ink'), kpi('По 1С', money(s.amount_1c), 'muted')]));
       if (!d.items.length) { box.appendChild(el('div', { class: 'hr-empty' }, 'Нет сотрудников по фильтру.')); return; }
-      const head = el('div', { class: 'hr-row head hr-sal' }, ['ФИО', 'Отдел', 'Дн. п/ф', 'Начислено', 'Удержано', 'Аванс', 'Выплачено', 'К выплате', 'Статус'].map((h) => el('span', {}, h)));
-      box.appendChild(el('div', { class: 'hr-list' }, [head, ...d.items.map((r) => el('div', { class: 'hr-row hr-sal', onclick: () => openPayroll(r) }, [
-        el('span', { style: 'font-weight:700' }, r.full_name),
-        el('span', { class: 'muted' }, r.department_name || '—'),
-        el('span', { class: 'tnum' }, (r.plan_days || 0) + '/' + (r.fact_days || 0)),
-        el('span', { class: 'tnum' }, money(r.accrued)),
-        el('span', { class: 'tnum' }, money(r.deducted)),
-        el('span', { class: 'tnum' }, money((Number(r.ded_advance_card) || 0) + (Number(r.ded_advance_cash) || 0))),
-        el('span', { class: 'tnum' }, money(r.paid)),
-        el('span', { class: 'tnum', style: 'font-weight:800;color:#2e7d32' }, money(r.to_pay)),
-        el('span', {}, el('span', { class: 'hr-st hr-pr-' + (r.id ? (r.status || 'draft') : 'none') }, r.id ? PR_STATUS[r.status || 'draft'] : 'нет')),
-      ]))]));
+      const bulk = el('div', { id: 'hr-sal-bulk', class: 'hr-bulkbar', style: 'display:none' });
+      const bulkN = el('span', { class: 'hr-bulk-n' }, '');
+      const updBulk = () => { bulk.style.display = salSel.size ? 'flex' : 'none'; bulkN.textContent = 'Выбрано начислений: ' + salSel.size; };
+      bulk.appendChild(bulkN);
+      bulk.appendChild(el('button', { class: 'btn-ghost hr-del', onclick: async () => { if (!salSel.size) return; if (!confirm('Удалить выбранные начисления (' + salSel.size + ')? Сотрудники останутся.')) return; try { const rr = await post('/payroll/bulk-delete', { ids: [...salSel] }); toast('Удалено: ' + rr.affected); load(); } catch (e) { toast(e.message, true); } } }, '🗑 Удалить начисления'));
+      bulk.appendChild(el('button', { class: 'btn-ghost', onclick: () => { salSel.clear(); load(); } }, 'Снять'));
+      box.appendChild(bulk);
+      const withId = d.items.filter((x) => x.id);
+      const selAll = el('input', { type: 'checkbox', class: 'hr-chk' });
+      selAll.onclick = (ev) => { const on = ev.target.checked; salSel = new Set(on ? withId.map((x) => x.id) : []); box.querySelectorAll('.hr-salchk').forEach((cc) => { cc.checked = on; }); updBulk(); };
+      const head = el('div', { class: 'hr-row head hr-sal' }, [selAll, el('span', {}, '#'), ...['ФИО', 'Отдел', 'Дн. п/ф', 'Начислено', 'Удержано', 'Аванс', 'Выплачено', 'К выплате', 'Статус'].map((h) => el('span', {}, h))]);
+      box.appendChild(el('div', { class: 'hr-list' }, [head, ...d.items.map((r, i) => {
+        const chk = r.id ? el('input', { type: 'checkbox', class: 'hr-chk hr-salchk', onclick: (ev) => { ev.stopPropagation(); if (ev.target.checked) salSel.add(r.id); else salSel.delete(r.id); updBulk(); } }) : el('span', {});
+        return el('div', { class: 'hr-row hr-sal', onclick: () => openPayroll(r) }, [
+          chk,
+          el('span', { class: 'hr-idx' }, String(i + 1)),
+          el('span', { style: 'font-weight:700' }, r.full_name),
+          el('span', { class: 'muted' }, r.department_name || '—'),
+          el('span', { class: 'tnum' }, (r.plan_days || 0) + '/' + (r.fact_days || 0)),
+          el('span', { class: 'tnum' }, money(r.accrued)),
+          el('span', { class: 'tnum' }, money(r.deducted)),
+          el('span', { class: 'tnum' }, money((Number(r.ded_advance_card) || 0) + (Number(r.ded_advance_cash) || 0))),
+          el('span', { class: 'tnum' }, money(r.paid)),
+          el('span', { class: 'tnum', style: 'font-weight:800;color:#2e7d32' }, money(r.to_pay)),
+          el('span', {}, el('span', { class: 'hr-st hr-pr-' + (r.id ? (r.status || 'draft') : 'none') }, r.id ? PR_STATUS[r.status || 'draft'] : 'нет')),
+        ]);
+      })]));
     }
   }
 
@@ -328,11 +357,13 @@
     };
     const block = (title, fields) => el('div', {}, [el('div', { class: 'hrf-sec' }, title), ...fields.map(([k, label]) => { const i = inp(k); i.addEventListener('input', recompute); return frow(label, i); })]);
     const tab = block('Табель', [['plan_days', 'План дней'], ['fact_days', 'Факт дней'], ['plan_hours', 'План часов'], ['fact_hours', 'Факт часов']]);
+    const fixa = inp('accr_salary'); // Фикса — справочно, не в сумме
     const body = el('div', { class: 'hrf' }, [
       el('div', { class: 'hr-note' }, r.full_name + ' · ' + (r.department_name || '—') + ' · ' + monthLabel(salState.period)),
       frow('Статус', status),
+      frow('Оклад / фикса (справочно)', fixa),
       tab,
-      block('Начисления', ACCR_FIELDS),
+      block('Начисления (входят в сумму)', ACCR_FIELDS),
       block('Удержания', DED_FIELDS),
       block('Выплаты', PAID_FIELDS),
       frow('Дата выплаты', dinp('pay_date')),
@@ -348,7 +379,7 @@
     ]);
     recompute();
     const save = el('button', { class: 'btn-primary', onclick: async () => {
-      const payload = { employee_id: r.emp_id, period: salState.period, status: status.value, pay_date: F.pay_date.value, comment: comment.value };
+      const payload = { employee_id: r.emp_id, period: salState.period, status: status.value, pay_date: F.pay_date.value, comment: comment.value, accr_salary: fixa.value };
       [...ACCR_FIELDS, ...DED_FIELDS, ...PAID_FIELDS].forEach(([k]) => { payload[k] = F[k].value; });
       ['plan_days', 'fact_days', 'plan_hours', 'fact_hours', 'amount_1c'].forEach((k) => { payload[k] = F[k].value; });
       try { await post('/payroll', payload); toast('Сохранено'); closeModal(); renderSalary(); } catch (e) { toast(e.message, true); }
@@ -364,8 +395,9 @@
       el('button', { class: 'btn-primary hr-add', onclick: () => openDept(null) }, '+ Отдел'),
     ]));
     if (!DICTS.departments.length) { c.appendChild(el('div', { class: 'hr-empty' }, 'Отделов нет.')); return; }
-    const head = el('div', { class: 'hr-row head hr-dept' }, ['Отдел', 'Порядок', ''].map((h) => el('span', {}, h)));
-    c.appendChild(el('div', { class: 'hr-list' }, [head, ...DICTS.departments.map((d) => el('div', { class: 'hr-row hr-dept', style: 'cursor:pointer', onclick: () => openDept(d) }, [
+    const head = el('div', { class: 'hr-row head hr-dept' }, ['#', 'Отдел', 'Порядок', ''].map((h) => el('span', {}, h)));
+    c.appendChild(el('div', { class: 'hr-list' }, [head, ...DICTS.departments.map((d, i) => el('div', { class: 'hr-row hr-dept', style: 'cursor:pointer', onclick: () => openDept(d) }, [
+      el('span', { class: 'hr-idx' }, String(i + 1)),
       el('span', { style: 'font-weight:700' }, d.name),
       el('span', { class: 'muted' }, String(d.sort_order)),
       el('span', {}, '✏️'),
