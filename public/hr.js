@@ -25,6 +25,14 @@
     return n.toLocaleString('ru-RU');
   };
   const ruDate = (d) => d ? String(d).slice(0, 10).split('-').reverse().join('.') : '';
+  // Денежное поле с разделителями разрядов прямо при вводе (15 000 000).
+  const fmtDigits = (s) => { const neg = /^-/.test(String(s).replace(/[^\d-]/g, '')); const d = String(s).replace(/[^\d]/g, ''); return d ? (neg ? '-' : '') + Number(d).toLocaleString('ru-RU') : ''; };
+  const mval = (i) => { const d = String(i.value || '').replace(/[^\d-]/g, ''); return d === '' || d === '-' ? '' : d; };
+  function minp(val, attrs) {
+    const i = finp((val == null || val === '') ? '' : Number(val).toLocaleString('ru-RU'), Object.assign({ inputmode: 'numeric', placeholder: '0' }, attrs || {}));
+    i.addEventListener('input', () => { i.value = fmtDigits(i.value); });
+    return i;
+  }
 
   async function api(path) { const r = await fetch('/hr/api' + path); const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || 'Ошибка'); return d; }
   async function post(path, body) { const r = await fetch('/hr/api' + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) }); const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || 'Ошибка'); return d; }
@@ -234,9 +242,13 @@
     const pos = finp(e.position, { placeholder: 'Должность' });
     const sched = fsel([{ v: '', t: '— график —' }, ...(DICTS.schedules || []).map((s) => ({ v: s.code, t: s.name }))], e.schedule_type || '');
     const hire = finp(e.hire_date ? String(e.hire_date).slice(0, 10) : '', { type: 'date' });
-    const base = finp(e.base_salary, { type: 'number', placeholder: 'Оклад / ставка' });
-    const off = finp(e.salary_official, { type: 'number', placeholder: 'Официальная часть' });
-    const unoff = finp(e.salary_unofficial, { type: 'number', placeholder: 'Неофициальная часть' });
+    const base = minp(e.base_salary, { placeholder: 'Оклад / ставка' });
+    const off = minp(e.salary_official, { placeholder: 'Официальная часть' });
+    const unoff = minp(e.salary_unofficial, { placeholder: 'Неофициальная часть' });
+    // Оклад = официальная + неофициальная (пересчитывается автоматически при правке частей).
+    const recalcBase = () => { base.value = fmtDigits(String((Number(mval(off)) || 0) + (Number(mval(unoff)) || 0))); };
+    off.addEventListener('input', recalcBase);
+    unoff.addEventListener('input', recalcBase);
     const phone = finp(e.phone, { placeholder: '998…' });
     const tg = finp(e.telegram_id, { placeholder: 'Telegram ID (если есть)' });
     const comment = finp(e.comment, { placeholder: 'Комментарий' });
@@ -249,7 +261,7 @@
     ]);
     const save = el('button', { class: 'btn-primary', onclick: async () => {
       try {
-        await post('/employee', { id: e.id, full_name: name.value, department_id: dept.value, position: pos.value, schedule_type: sched.value, hire_date: hire.value, base_salary: base.value, salary_official: off.value, salary_unofficial: unoff.value, phone: phone.value, telegram_id: tg.value, comment: comment.value });
+        await post('/employee', { id: e.id, full_name: name.value, department_id: dept.value, position: pos.value, schedule_type: sched.value, hire_date: hire.value, base_salary: mval(base), salary_official: mval(off), salary_unofficial: mval(unoff), phone: phone.value, telegram_id: tg.value, comment: comment.value });
         toast('Сохранено'); closeModal(); await reloadDicts(); render();
       } catch (err) { toast(err.message, true); }
     } }, 'Сохранить');
@@ -339,7 +351,7 @@
 
   function openPayroll(r) {
     const F = {};
-    const inp = (k) => { const i = finp(r[k] != null ? r[k] : '', { type: 'number', placeholder: '0' }); F[k] = i; return i; };
+    const inp = (k) => { const i = minp(r[k] != null ? r[k] : '', { placeholder: '0' }); F[k] = i; return i; };
     const dinp = (k) => { const i = finp(r[k] ? String(r[k]).slice(0, 10) : '', { type: 'date' }); F[k] = i; return i; };
     const status = fsel(Object.keys(PR_STATUS).map((k) => ({ v: k, t: PR_STATUS[k] })), r.status || 'draft'); F.status = status;
     const comment = finp(r.comment, { placeholder: 'Комментарий' }); F.comment = comment;
@@ -347,7 +359,7 @@
     // Итоги (живой пересчёт)
     const totAccr = el('b', {}), totDed = el('b', {}), totPaid = el('b', {}), totPay = el('b', { style: 'color:#2e7d32' }), diff1c = el('b', {});
     const recompute = () => {
-      const val = (k) => Number(F[k] && F[k].value) || 0;
+      const val = (k) => (F[k] ? Number(mval(F[k])) : 0) || 0;
       const a = ACCR_FIELDS.reduce((s, [k]) => s + val(k), 0);
       const de = DED_FIELDS.reduce((s, [k]) => s + val(k), 0);
       const pd = PAID_FIELDS.reduce((s, [k]) => s + val(k), 0);
@@ -379,9 +391,9 @@
     ]);
     recompute();
     const save = el('button', { class: 'btn-primary', onclick: async () => {
-      const payload = { employee_id: r.emp_id, period: salState.period, status: status.value, pay_date: F.pay_date.value, comment: comment.value, accr_salary: fixa.value };
-      [...ACCR_FIELDS, ...DED_FIELDS, ...PAID_FIELDS].forEach(([k]) => { payload[k] = F[k].value; });
-      ['plan_days', 'fact_days', 'plan_hours', 'fact_hours', 'amount_1c'].forEach((k) => { payload[k] = F[k].value; });
+      const payload = { employee_id: r.emp_id, period: salState.period, status: status.value, pay_date: F.pay_date.value, comment: comment.value, accr_salary: mval(fixa) };
+      [...ACCR_FIELDS, ...DED_FIELDS, ...PAID_FIELDS].forEach(([k]) => { payload[k] = mval(F[k]); });
+      ['plan_days', 'fact_days', 'plan_hours', 'fact_hours', 'amount_1c'].forEach((k) => { payload[k] = mval(F[k]); });
       try { await post('/payroll', payload); toast('Сохранено'); closeModal(); renderSalary(); } catch (e) { toast(e.message, true); }
     } }, 'Сохранить');
     modal('💵 Начисление — ' + r.full_name, body, [save]);
