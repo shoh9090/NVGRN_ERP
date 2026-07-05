@@ -1,0 +1,104 @@
+/* calculation.css — module palette follows NVGRN Hub. */
+:root { --ink:#14241b; --paper:#f4f2ea; --forest:#163a28; --lime:#8cc63f; --muted:#7c8579; --line:#e3e0d4; }
+#calc-main { max-width: 1320px; margin: 0 auto; padding: 16px; }
+
+.calc-tabs { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:16px; border-bottom:1px solid var(--line); }
+.calc-tab { background:none; border:0; padding:10px 15px; font-size:14px; font-weight:800; color:var(--muted); cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-1px; }
+.calc-tab.on { color:var(--forest); border-bottom-color:var(--lime); }
+
+.calc-head { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; margin-bottom:12px; flex-wrap:wrap; }
+.calc-h2 { font-family:'Lora', Georgia, serif; font-size:25px; font-weight:600; color:var(--ink); margin:2px 0 4px; }
+.calc-h3 { font-family:'Lora', Georgia, serif; font-size:21px; font-weight:600; color:var(--ink); margin:0 0 4px; }
+.calc-sub { color:var(--muted); font-size:13px; line-height:1.4; }
+.calc-add, .calc-save-settings { white-space:nowrap; padding:9px 15px; border-radius:10px; font-weight:800; font-size:13px; cursor:pointer; }
+
+.calc-kpis { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:10px; margin-bottom:12px; }
+.calc-kpis-3 { grid-template-columns:repeat(3, minmax(0, 1fr)); }
+.calc-kpi { background:#fbfaf5; border:1px solid var(--line); border-radius:12px; padding:11px 14px; min-width:0; }
+.calc-kpi-l { font-size:12px; color:var(--muted); font-weight:800; }
+.calc-kpi-v { font-family:'Lora', Georgia, serif; font-size:20px; font-weight:600; margin-top:3px; color:var(--ink); overflow-wrap:anywhere; }
+.calc-kpi-v.green, .good { color:#2e7d32; }
+.calc-kpi-v.warn, .warn { color:#b25b00; }
+.calc-kpi-v.bad, .bad { color:#c0392b; }
+
+.calc-filters { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
+.calcf-inp { padding:8px 9px; border:1px solid #d8dcd6; border-radius:8px; font-size:13px; background:#fff; box-sizing:border-box; width:100%; min-width:0; }
+.calc-filters .calcf-inp { max-width:360px; }
+.calc-filters input.calcf-inp { flex:1; min-width:220px; max-width:none; }
+.calc-textarea { min-height:74px; resize:vertical; }
+.tnum { text-align:right; font-variant-numeric:tabular-nums; }
+.muted { color:var(--muted); }
+
+.calc-layout { display:grid; grid-template-columns:minmax(340px, 0.9fr) minmax(0, 1.7fr); gap:12px; align-items:start; }
+.calc-side, .calc-panel, .calc-price-table, .calc-settings { background:#fff; border:1px solid var(--line); border-radius:12px; overflow:hidden; }
+.calc-panel { padding:14px; overflow:visible; }
+.calc-list { display:flex; flex-direction:column; }
+.calc-row { display:grid; gap:10px; align-items:center; padding:10px 12px; border-bottom:1px solid #f0f2ef; font-size:13px; }
+.calc-row:last-child { border-bottom:0; }
+.calc-row.head { background:#f2f5f1; color:var(--muted); font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:.02em; }
+.calc-recipe-row { grid-template-columns:minmax(0, 1.45fr) .85fr .85fr .7fr; cursor:pointer; }
+.calc-recipe-row:not(.head):hover, .calc-recipe-row.on { background:#f7faf6; }
+.calc-row b, .calc-price-row b { display:block; color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.calc-row small, .calc-price-row small, .calc-setting-row small { display:block; color:var(--muted); font-size:11px; margin-top:2px; line-height:1.35; }
+
+.calc-editor-head, .calc-items-head { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; margin-bottom:12px; flex-wrap:wrap; }
+.calc-editor-actions, .calc-head-btns, .calc-row-actions { display:flex; gap:7px; flex-wrap:wrap; justify-content:flex-end; }
+.calc-danger { color:#c0392b; border-color:#e6c6c6; }
+.calc-sec-title { font-size:12px; font-weight:900; letter-spacing:.02em; color:var(--forest); text-transform:uppercase; margin:2px 0 8px; }
+
+.calc-break { border:1px solid var(--line); border-radius:12px; padding:10px 12px; margin-bottom:14px; background:#fbfaf5; }
+.calc-break-row { display:grid; grid-template-columns:1fr 130px 130px; gap:10px; align-items:center; padding:6px 0; border-top:1px solid #efede4; font-size:13px; }
+.calc-break-row:first-of-type { border-top:0; }
+
+.calc-item-table { border:1px solid var(--line); border-radius:12px; overflow:hidden; background:#fff; }
+.calc-item-row { display:grid; grid-template-columns:105px minmax(190px, 1.5fr) 90px 72px 82px 105px 105px 34px; gap:8px; align-items:center; padding:8px 10px; border-bottom:1px solid #f0f2ef; font-size:13px; }
+.calc-item-row:last-child { border-bottom:0; }
+.calc-item-row.head { background:#f2f5f1; color:var(--muted); font-size:11px; font-weight:800; text-transform:uppercase; }
+.calc-icon-btn { width:30px; height:30px; border:1px solid #e0d8d2; border-radius:8px; background:#fff; color:#c0392b; font-size:18px; line-height:1; cursor:pointer; }
+
+.calc-price-table { display:flex; flex-direction:column; }
+.calc-price-row { display:grid; grid-template-columns:86px minmax(220px, 1.4fr) 130px 130px 120px 110px minmax(150px, .8fr) 170px; gap:9px; align-items:center; padding:9px 11px; border-bottom:1px solid #f0f2ef; font-size:13px; }
+.calc-price-row:last-child { border-bottom:0; }
+.calc-price-row.head { background:#f2f5f1; color:var(--muted); font-size:11px; font-weight:800; text-transform:uppercase; }
+
+.calc-settings { max-width:840px; display:flex; flex-direction:column; }
+.calc-setting-row { display:grid; grid-template-columns:minmax(0, 1fr) 180px; gap:12px; align-items:center; padding:12px 14px; border-bottom:1px solid #f0f2ef; font-size:13px; }
+.calc-setting-row:last-child { border-bottom:0; }
+.calc-save-settings { margin-top:12px; }
+
+.calc-empty { padding:30px; text-align:center; color:var(--muted); }
+.calc-empty-big { font-family:'Lora', Georgia, serif; font-size:22px; color:var(--forest); margin-bottom:8px; }
+.calc-empty-soft { border:1px dashed var(--line); border-radius:12px; background:#fbfaf5; padding:20px; }
+
+.calcm-overlay { position:fixed; inset:0; background:rgba(20,36,27,.45); display:flex; align-items:flex-start; justify-content:center; padding:40px 14px; z-index:60; overflow:auto; }
+.calcm-panel { background:#fff; border-radius:16px; width:100%; max-width:620px; box-shadow:0 20px 60px rgba(0,0,0,.25); }
+.calcm-head { display:flex; align-items:center; justify-content:space-between; padding:14px 18px; border-bottom:1px solid var(--line); }
+.calcm-head h3 { margin:0; font-size:16px; }
+.calcm-x { background:none; border:0; font-size:22px; color:var(--muted); cursor:pointer; }
+.calcm-body { padding:16px 18px; }
+.calcm-acts { display:flex; gap:8px; padding:12px 18px; border-top:1px solid var(--line); justify-content:flex-end; flex-wrap:wrap; }
+.calcf { display:flex; flex-direction:column; gap:10px; }
+.calcf-row { display:grid; grid-template-columns:175px 1fr; align-items:center; gap:10px; font-size:13px; color:#5a665c; }
+.calcf-sec { font-size:12px; font-weight:900; letter-spacing:.02em; color:var(--forest); margin-top:6px; text-transform:uppercase; }
+
+.calc-toast { position:fixed; bottom:22px; left:50%; transform:translateX(-50%) translateY(20px); background:var(--forest); color:#fff; padding:10px 18px; border-radius:10px; font-size:13px; opacity:0; transition:opacity .25s, transform .25s; z-index:80; }
+.calc-toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+.calc-toast.err { background:#c0392b; }
+
+@media (max-width: 1100px) {
+  .calc-layout { grid-template-columns:1fr; }
+  .calc-price-table { overflow:auto; }
+  .calc-price-row { min-width:1060px; }
+  .calc-item-table { overflow:auto; }
+  .calc-item-row { min-width:850px; }
+}
+
+@media (max-width: 760px) {
+  #calc-main { padding:12px; }
+  .calc-kpis, .calc-kpis-3 { grid-template-columns:1fr 1fr; }
+  .calc-recipe-row { grid-template-columns:minmax(0, 1.2fr) .8fr .8fr; }
+  .calc-recipe-row > *:nth-child(4) { display:none; }
+  .calc-break-row { grid-template-columns:1fr 110px; }
+  .calc-break-row > *:nth-child(3) { display:none; }
+  .calc-setting-row, .calcf-row { grid-template-columns:1fr; gap:5px; }
+}

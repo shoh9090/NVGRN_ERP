@@ -96,7 +96,7 @@ app.post('/logout', (req, res) => {
 // ---------- Лаунчер ----------
 
 // Группировка плиток по разделам. Порядок разделов — заданный, остальное по алфавиту, «Прочее» в конце.
-const SECTION_ORDER = ['HoReCa', 'Склад и закуп', 'Справочники и настройки'];
+const SECTION_ORDER = ['HoReCa', 'Склад и закуп', 'Финансы', 'Справочники и настройки'];
 function groupTiles(rows) {
   const map = new Map();
   for (const t of rows) {
@@ -524,6 +524,22 @@ async function requireCashAccess(req, res, next) {
 }
 const cashRouter = require('./src/cash');
 app.use('/cash', requireCashAccess, cashRouter);
+
+// Блок «Калькуляция» — плановая себестоимость по рецептурам, цены сырья, маржа
+async function requireCalculationAccess(req, res, next) {
+  if (!req.user) return res.redirect('/login');
+  if (req.user.isAdmin) return next();
+  const r = await db.pool.query(
+    `SELECT 1 FROM tiles t
+     JOIN role_tiles rt ON rt.tile_id = t.id
+     JOIN user_roles ur ON ur.role_id = rt.role_id
+     WHERE ur.user_id = $1 AND t.url = '/calculation' LIMIT 1`,
+    [req.user.id]
+  );
+  if (r.rows.length === 0) return res.status(403).send('Нет доступа к блоку «Калькуляция». Обратитесь к администратору.');
+  next();
+}
+app.use('/calculation', requireCalculationAccess, require('./src/calculation'));
 
 // Блок «Персонал» — сотрудники, зарплата, табель
 async function requireHrAccess(req, res, next) {
