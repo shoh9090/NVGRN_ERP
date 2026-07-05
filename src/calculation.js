@@ -35,9 +35,23 @@ async function ensureSchema() {
     PRIMARY KEY (item_kind, item_id)
   )`);
 
+  // Группы товаров для калькуляции (розница / хорека / …) — заводит пользователь в настройках.
+  await q(`CREATE TABLE IF NOT EXISTS calc_groups (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    sort_order INT NOT NULL DEFAULT 100,
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  for (const [name, sort] of [['Розница', 10], ['Хорека', 20]]) {
+    await q(`INSERT INTO calc_groups (name, sort_order)
+             SELECT $1, $2 WHERE NOT EXISTS (SELECT 1 FROM calc_groups WHERE lower(name)=lower($1))`, [name, sort]);
+  }
+
   await q(`CREATE TABLE IF NOT EXISTS calc_recipes (
     id SERIAL PRIMARY KEY,
     product_id INT REFERENCES ref_finished_goods(id),
+    group_id INT REFERENCES calc_groups(id),
     product_name TEXT,
     pack_weight_g NUMERIC DEFAULT 0,
     pack_unit TEXT DEFAULT 'шт',
@@ -71,6 +85,7 @@ async function ensureSchema() {
     comment TEXT
   )`);
   await q(`CREATE INDEX IF NOT EXISTS idx_calc_recipe_items_recipe ON calc_recipe_items(recipe_id)`);
+  await q(`ALTER TABLE calc_recipes ADD COLUMN IF NOT EXISTS group_id INT REFERENCES calc_groups(id)`);
 
   const defaults = {
     monthly_units: '70000',
@@ -211,11 +226,13 @@ async function getMaterials() {
 
 async function recipeRows(whereSql = "r.status = 'active'", params = []) {
   const rows = await db.pool.query(
-    `SELECT r.*, g.name AS fg_name, g.code AS fg_code, pt.name AS price_type_name, rp.price AS sd_sale_price
+    `SELECT r.*, g.name AS fg_name, g.code AS fg_code, pt.name AS price_type_name, rp.price AS sd_sale_price,
+            grp.name AS group_name
      FROM calc_recipes r
      LEFT JOIN ref_finished_goods g ON g.id = r.product_id
      LEFT JOIN ref_price_types pt ON pt.id = r.sale_price_type_id
      LEFT JOIN ref_prices rp ON rp.price_type_id = r.sale_price_type_id AND rp.product_id = r.product_id
+     LEFT JOIN calc_groups grp ON grp.id = r.group_id
      WHERE ${whereSql}
      ORDER BY r.updated_at DESC, r.id DESC`,
     params
@@ -319,7 +336,32 @@ router.get('/api/dicts', async (req, res) => {
      WHERE g.status='active'
      ORDER BY g.name LIMIT 3000`
   )).rows;
-  res.json({ priceTypes, products, settings: await settingsMap() });
+  const groups = (await db.pool.query("SELECT id, name, sort_order FROM calc_groups WHERE status='active' ORDER BY sort_order, name")).rows;
+  res.json({ priceTypes, products, groups, settings: await settingsMap() });
+});
+
+// Группы товаров (розница/хорека/…) — CRUD из настроек.
+router.get('/api/groups', async (req, res) => {
+  const rows = (await db.pool.query("SELECT id, name, sort_order, status FROM calc_groups WHERE status='active' ORDER BY sort_order, name")).rows;
+  res.json({ items: rows });
+});
+router.post('/api/group', J, async (req, res) => {
+  const name = String(req.body.name || '').trim();
+  if (!name) return res.status(400).json({ error: 'Пустое название' });
+  const id = intOrNull(req.body.id);
+  const sort = numOrNull(req.body.sort_order) ?? 100;
+  if (id) {
+    await db.pool.query('UPDATE calc_groups SET name=$1, sort_order=$2 WHERE id=$3', [name, sort, id]);
+  } else {
+    await db.pool.query('INSERT INTO calc_groups (name, sort_order) VALUES ($1,$2)', [name, sort]);
+  }
+  await db.log(req.user.id, 'calc_group_save', name);
+  res.json({ ok: true });
+});
+router.post('/api/group/:id(\\d+)/archive', async (req, res) => {
+  await db.pool.query("UPDATE calc_groups SET status='archived' WHERE id=$1", [req.params.id]);
+  await db.log(req.user.id, 'calc_group_archive', '#' + req.params.id);
+  res.json({ ok: true });
 });
 
 router.get('/api/materials', async (req, res) => {
@@ -370,6 +412,7 @@ router.post('/api/recipe', J, async (req, res) => {
   const settings = await settingsMap();
   const args = [
     productId,
+    intOrNull(b.group_id),
     productName || null,
     numOrNull(b.pack_weight_g),
     String(b.pack_unit || 'шт').trim() || 'шт',
@@ -387,18 +430,18 @@ router.post('/api/recipe', J, async (req, res) => {
   ];
   if (id) {
     await db.pool.query(
-      `UPDATE calc_recipes SET product_id=$1, product_name=$2, pack_weight_g=$3, pack_unit=$4,
-       sale_price_type_id=$5, sale_price_override=$6, retro_pct=$7, vat_pct=$8, profit_tax_pct=$9,
-       waste_pct=$10, labor_coeff=$11, production_coeff=$12, overhead_coeff=$13, comment=$14,
-       updated_by=$15, updated_at=now() WHERE id=$16`,
+      `UPDATE calc_recipes SET product_id=$1, group_id=$2, product_name=$3, pack_weight_g=$4, pack_unit=$5,
+       sale_price_type_id=$6, sale_price_override=$7, retro_pct=$8, vat_pct=$9, profit_tax_pct=$10,
+       waste_pct=$11, labor_coeff=$12, production_coeff=$13, overhead_coeff=$14, comment=$15,
+       updated_by=$16, updated_at=now() WHERE id=$17`,
       [...args, id]
     );
   } else {
     const r = await db.pool.query(
-      `INSERT INTO calc_recipes (product_id, product_name, pack_weight_g, pack_unit, sale_price_type_id,
+      `INSERT INTO calc_recipes (product_id, group_id, product_name, pack_weight_g, pack_unit, sale_price_type_id,
        sale_price_override, retro_pct, vat_pct, profit_tax_pct, waste_pct, labor_coeff, production_coeff,
        overhead_coeff, comment, created_by, updated_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$15) RETURNING id`,
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$16) RETURNING id`,
       args
     );
     id = r.rows[0].id;

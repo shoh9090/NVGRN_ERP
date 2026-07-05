@@ -74,8 +74,10 @@
   let CURRENT = null;
   let DRAFT = null;
   let recipeQ = '';
+  let recipeGroup = '';
   let materialQ = '';
   let materialKind = '';
+  let materialCat = '';
 
   const productLabel = (p) => (p ? ((p.code ? p.code + ' · ' : '') + p.name) : '');
   const materialLabel = (m) => (m ? ((m.code ? m.code + ' · ' : '') + m.name) : '');
@@ -106,8 +108,10 @@
     const overhead = num(s.overhead_per_unit) * num(draft.overhead_coeff);
     const fixed = labor + production + overhead;
     const wasteMult = 1 + num(draft.waste_pct) / 100;
-    const costCalc = (itemCalc + fixed) * wasteMult;
-    const costMarket = (itemMarket + fixed) * wasteMult;
+    const costRaw = itemCalc + fixed;          // с/с без брака
+    const costRawMarket = itemMarket + fixed;
+    const costCalc = costRaw * wasteMult;      // с/с с браком
+    const costMarket = costRawMarket * wasteMult;
     // Цена продажи: ручная либо последняя загруженная из SD (по типу цены).
     const sdPrice = CURRENT && CURRENT.recipe ? num(CURRENT.recipe.sd_sale_price) : 0;
     const salePrice = String(draft.sale_price_override || '').trim() !== '' ? num(draft.sale_price_override) : sdPrice;
@@ -118,7 +122,9 @@
     const netProfit = profit - profitTax;
     return {
       item_calc: itemCalc, item_market: itemMarket, labor, production, overhead, fixed,
+      cost_raw: costRaw, cost_raw_market: costRawMarket,
       cost_calc: costCalc, cost_market: costMarket, market_delta: costMarket - costCalc,
+      markup_pct: costCalc ? (salePrice - costCalc) / costCalc * 100 : null,
       sale_price: salePrice, retro, vat, profit, profit_tax: profitTax, net_profit: netProfit,
       margin_pct: salePrice ? netProfit / salePrice * 100 : null,
     };
@@ -203,6 +209,7 @@
     return {
       id: r.id || null,
       product_id: r.product_id || '',
+      group_id: r.group_id || '',
       product_label: product ? productLabel(product) : '',
       product_name: r.product_name || '',
       pack_weight_g: r.pack_weight_g || '',
@@ -275,8 +282,12 @@
       placeholder: 'Найти рецептуру',
       oninput: (e) => { recipeQ = e.target.value; clearTimeout(window.__calcRq); window.__calcRq = setTimeout(render, 180); },
     });
+    const grpSel = select([{ v: '', t: 'Все группы' }, ...(DICTS.groups || []).map((g) => ({ v: g.id, t: g.name }))], recipeGroup, {
+      onchange: (e) => { recipeGroup = e.target.value; render(); },
+    });
     const needle = recipeQ.trim().toLowerCase();
-    const rows = RECIPES.filter((x) => !needle || recipeName(x).toLowerCase().includes(needle));
+    const rows = RECIPES.filter((x) => (!needle || recipeName(x).toLowerCase().includes(needle))
+      && (!recipeGroup || String(x.recipe.group_id || '') === String(recipeGroup)));
     const list = rows.map((x) => {
       const r = x.recipe;
       const s = x.summary || {};
@@ -286,7 +297,7 @@
         onclick: () => loadRecipe(r.id),
       }, [
         el('span', { class: 'calc-recipe-title' }, recipeName(x)),
-        el('span', { class: 'calc-recipe-meta' }, (r.fg_code ? r.fg_code + ' · ' : '') + (x.item_count || 0) + ' строк'),
+        el('span', { class: 'calc-recipe-meta' }, (r.group_name ? r.group_name + ' · ' : '') + (r.fg_code ? r.fg_code + ' · ' : '') + (x.item_count || 0) + ' строк'),
         el('span', { class: 'calc-recipe-numbers' }, [
           el('b', {}, money(s.cost_calc)),
           el('small', { class: delta > 0 ? 'bad' : delta < 0 ? 'good' : '' }, 'рынок ' + money(s.cost_market)),
@@ -296,6 +307,7 @@
     return el('aside', { class: 'calc-nav' }, [
       el('div', { class: 'calc-nav-title' }, 'Рецептуры'),
       q,
+      grpSel,
       el('div', { class: 'calc-nav-list' }, list.length ? list : [el('div', { class: 'calc-empty calc-empty-mini' }, 'Пока нет рецептур')]),
     ]);
   }
@@ -353,9 +365,11 @@
 
   function sheetMeta() {
     const priceTypes = [{ v: '', t: '— тип цены —' }, ...(DICTS.priceTypes || []).map((p) => ({ v: p.id, t: p.name }))];
+    const groups = [{ v: '', t: '— группа —' }, ...(DICTS.groups || []).map((g) => ({ v: g.id, t: g.name }))];
     return el('div', { class: 'calc-meta-grid' }, [
       cell('Товар', inp(DRAFT.product_label, { name: 'product_label', list: 'calc-products', placeholder: 'начните вводить товар' }), 'wide'),
       cell('Название вручную', inp(DRAFT.product_name, { name: 'product_name', placeholder: 'если товара нет в справочнике' }), 'wide'),
+      cell('Группа', select(groups, DRAFT.group_id, { name: 'group_id' })),
       cell('Тип цены', select(priceTypes, DRAFT.sale_price_type_id, { name: 'sale_price_type_id' })),
       cell('Цена вручную', inp(DRAFT.sale_price_override, { name: 'sale_price_override', type: 'number', step: '0.01', placeholder: 'если не из SD' })),
       cell('Вес, г', inp(DRAFT.pack_weight_g, { name: 'pack_weight_g', type: 'number', step: '0.1' })),
@@ -377,14 +391,16 @@
       ['ФОТ', s.labor, s.labor],
       ['Производство', s.production, s.production],
       ['Накладные', s.overhead, s.overhead],
-      ['Итого себестоимость', s.cost_calc, s.cost_market, 'total'],
+      ['с/с (без брака)', s.cost_raw, s.cost_raw_market],
+      ['с/с с браком', s.cost_calc, s.cost_market, 'total'],
+      ['Наценка %', s.markup_pct == null ? null : pct(s.markup_pct), s.markup_pct == null ? null : pct(s.markup_pct)],
       ['Цена продажи', s.sale_price, s.sale_price],
       ['Ретро-бонус', s.retro, s.retro],
       ['НДС', s.vat, s.vat],
       ['Прибыль до налога', s.profit, s.profit],
       ['Налог на прибыль', s.profit_tax, s.profit_tax],
       ['Чистая прибыль', s.net_profit, s.net_profit, 'total'],
-      ['Чистая маржа', s.margin_pct == null ? null : pct(s.margin_pct), s.margin_pct == null ? null : pct(s.margin_pct)],
+      ['Чистая маржа (ЧП %)', s.margin_pct == null ? null : pct(s.margin_pct), s.margin_pct == null ? null : pct(s.margin_pct)],
     ];
     return el('div', { class: 'calc-summary-strip' }, [
       kpi('Себестоимость', money(s.cost_calc), 'green'),
@@ -478,6 +494,7 @@
     return {
       ...DRAFT,
       product_id: product ? product.id : '',
+      group_id: root.querySelector('[name="group_id"]') ? root.querySelector('[name="group_id"]').value : DRAFT.group_id,
       product_label: productInput ? productInput.value : '',
       product_name: root.querySelector('[name="product_name"]').value,
       pack_weight_g: root.querySelector('[name="pack_weight_g"]').value,
@@ -540,6 +557,7 @@
       const saved = await post('/recipe', {
         id: DRAFT.id,
         product_id: DRAFT.product_id,
+        group_id: DRAFT.group_id,
         product_name: productName,
         pack_weight_g: DRAFT.pack_weight_g,
         pack_unit: DRAFT.pack_unit,
@@ -599,14 +617,20 @@
       { v: 'raw', t: 'Сырьё' },
       { v: 'packaging', t: 'Упаковка' },
     ], materialKind, { onchange: (e) => { materialKind = e.target.value; render(); } });
+    const cats = [...new Set(MATERIALS.map((m) => m.category_name).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ru'));
+    const catSel = select([{ v: '', t: 'Все категории' }, ...cats.map((cn) => ({ v: cn, t: cn }))], materialCat, {
+      onchange: (e) => { materialCat = e.target.value; render(); },
+    });
     const q = inp(materialQ, {
       placeholder: 'Поиск по названию или артикулу',
       oninput: (e) => { materialQ = e.target.value; clearTimeout(window.__calcMq); window.__calcMq = setTimeout(render, 180); },
     });
-    c.appendChild(el('div', { class: 'calc-filters calc-filters-sticky' }, [kind, q]));
+    c.appendChild(el('div', { class: 'calc-filters calc-filters-sticky' }, [kind, catSel, q]));
 
     const needle = materialQ.trim().toLowerCase();
-    const rows = MATERIALS.filter((m) => (!materialKind || m.kind === materialKind) && (!needle || (m.name || '').toLowerCase().includes(needle) || (m.code || '').toLowerCase().includes(needle)));
+    const rows = MATERIALS.filter((m) => (!materialKind || m.kind === materialKind)
+      && (!materialCat || m.category_name === materialCat)
+      && (!needle || (m.name || '').toLowerCase().includes(needle) || (m.code || '').toLowerCase().includes(needle)));
     const table = el('div', { class: 'calc-price-table calc-excel-table' }, [
       el('div', { class: 'calc-price-row head' }, [
         el('span', {}, 'Тип'), el('span', {}, 'Позиция'), el('span', {}, 'Цена кальк.'), el('span', {}, 'Рынок сейчас'), el('span', {}, 'Последняя закупка'), el('span', {}, 'Разница'), el('span', {}, 'Комментарий'), el('span', {}, ''),
@@ -701,6 +725,39 @@
       ])),
     ])));
     c.appendChild(form);
+    c.appendChild(groupsCard());
+  }
+
+  // Настройки → группы товаров (розница/хорека/…): добавление, переименование, архив.
+  function groupsCard() {
+    const list = (DICTS.groups || []).map((g) => {
+      const name = inp(g.name, { name: 'g_name' });
+      return el('div', { class: 'calc-setting-tile' }, [
+        name,
+        el('div', { class: 'calc-row-actions' }, [
+          el('button', { class: 'btn-primary calc-mini-save', onclick: () => saveGroup(g.id, name.value) }, 'Сохранить'),
+          el('button', { class: 'btn-ghost calc-danger', onclick: () => archiveGroup(g.id, g.name) }, 'Архив'),
+        ]),
+      ]);
+    });
+    const newName = inp('', { placeholder: 'например, Опт' });
+    return el('section', { class: 'calc-settings-card', style: 'max-width:520px;margin-top:12px' }, [
+      el('div', { class: 'calc-settings-title' }, 'Группы товаров'),
+      el('div', { class: 'calc-sub' }, 'Розница, Хорека и любые свои. Группу выбираем в рецептуре и по ней фильтруем список.'),
+      ...list,
+      el('div', { class: 'calc-setting-tile' }, [
+        newName,
+        el('button', { class: 'btn-primary calc-mini-save', onclick: () => saveGroup(null, newName.value) }, '+ Добавить'),
+      ]),
+    ]);
+  }
+  async function saveGroup(id, name) {
+    if (!String(name || '').trim()) return toast('Пустое название', true);
+    try { await post('/group', { id, name }); toast('Готово'); await reloadBase(); render(); } catch (e) { toast(e.message, true); }
+  }
+  async function archiveGroup(id, name) {
+    if (!confirm('Убрать группу «' + name + '» в архив? Рецептуры останутся, но потеряют группу.')) return;
+    try { await post('/group/' + id + '/archive'); toast('В архиве'); await reloadBase(); render(); } catch (e) { toast(e.message, true); }
   }
 
   async function saveSettings() {
