@@ -592,6 +592,9 @@ async function seed() {
        VALUES ('Персонал', 'Сотрудники, зарплата, табель и выплаты', '👥', '/hr', FALSE, 55)`
     );
   }
+  // Форсируем видимость (на случай старой скрытой строки).
+  await pool.query("UPDATE tiles SET is_visible = TRUE WHERE url = '/hr' AND is_visible IS DISTINCT FROM TRUE").catch(() => {});
+  console.log('[SEED] Плитка /hr обеспечена');
 
   // Первая плитка — Счета-фактуры (адрес меняется в админке)
   const t = await pool.query('SELECT id FROM tiles LIMIT 1');
