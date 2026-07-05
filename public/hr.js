@@ -43,6 +43,8 @@
   let DICTS = { departments: [], schedules: [], statuses: [] };
   let TAB = 'employees';
   const empFilter = { department: '', schedule: '', status: '', q: '' };
+  let empSel = new Set();
+  const isAdmin = !!(window.HUB_USER && window.HUB_USER.isAdmin);
 
   const SCHED_NAME = {};
   const STATUS_NAME = { active: 'Активен', fired: 'Уволен', archived: 'Архив' };
@@ -85,8 +87,11 @@
   async function renderEmployees() {
     const c = $('#hr-content');
     c.appendChild(el('div', { class: 'hr-head' }, [
-      el('div', {}, [el('div', { class: 'hr-h2' }, 'Сотрудники'), el('div', { class: 'hr-sub' }, 'Единый справочник. Клик — карточка. Сотрудников не удаляем — только увольняем/в архив.')]),
-      el('button', { class: 'btn-primary hr-add', onclick: () => openEmp(null) }, '+ Сотрудник'),
+      el('div', {}, [el('div', { class: 'hr-h2' }, 'Сотрудники'), el('div', { class: 'hr-sub' }, 'Единый справочник. Клик — карточка. Галочками — массовые действия.')]),
+      el('div', { class: 'hr-head-btns' }, [
+        el('button', { class: 'btn-ghost hr-add', onclick: () => openEmpImport() }, '📥 Импорт'),
+        el('button', { class: 'btn-primary hr-add', onclick: () => openEmp(null) }, '+ Сотрудник'),
+      ]),
     ]));
     // Фильтры
     const dSel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { empFilter.department = e.target.value; load(); } }, [el('option', { value: '' }, 'Все отделы'), ...DICTS.departments.map((d) => el('option', { value: d.id, selected: String(d.id) === empFilter.department || null }, d.name))]);
@@ -110,19 +115,62 @@
         kpi('Активных', DICTS.counts.active || 0, 'ink'),
         kpi('Уволенных', DICTS.counts.fired || 0, 'muted'),
       ]));
-      if (!d.items.length) { box.appendChild(el('div', { class: 'hr-empty' }, 'Никого не найдено. Добавьте сотрудника или измените фильтры.')); return; }
-      const head = el('div', { class: 'hr-row head hr-emp' }, ['ФИО', 'Отдел', 'Должность', 'График', 'Оклад/ставка', 'Статус'].map((h) => el('span', {}, h)));
-      box.appendChild(el('div', { class: 'hr-list' }, [head, ...d.items.map((e) => el('div', { class: 'hr-row hr-emp' + (e.status !== 'active' ? ' dim' : ''), onclick: () => openEmp(e) }, [
-        el('span', { style: 'font-weight:700' }, e.full_name),
-        el('span', {}, e.department_name || '—'),
-        el('span', {}, e.position || '—'),
-        el('span', { class: 'muted' }, SCHED_NAME[e.schedule_type] || '—'),
-        el('span', { class: 'tnum' }, money(e.base_salary)),
-        el('span', {}, el('span', { class: 'hr-st hr-st-' + e.status }, STATUS_NAME[e.status] || e.status)),
-      ]))]));
+      if (!d.items.length) { box.appendChild(el('div', { class: 'hr-empty' }, 'Никого не найдено. Добавьте сотрудника, импортируйте из Excel или измените фильтры.')); return; }
+      empSel = new Set();
+      // Панель массовых действий
+      const bulk = el('div', { id: 'hr-bulk', class: 'hr-bulkbar', style: 'display:none' });
+      const bulkN = el('span', { class: 'hr-bulk-n' }, '');
+      const updBulk = () => { bulk.style.display = empSel.size ? 'flex' : 'none'; bulkN.textContent = 'Выбрано: ' + empSel.size; };
+      async function doBulk(action, confirmMsg) {
+        if (!empSel.size) return; if (confirmMsg && !confirm(confirmMsg + ' (' + empSel.size + ')?')) return;
+        try { const r = await post('/employees/bulk', { ids: [...empSel], action }); toast('Готово: ' + r.affected); await reloadDicts(); load(); } catch (e) { toast(e.message, true); }
+      }
+      bulk.appendChild(bulkN);
+      bulk.appendChild(el('button', { class: 'btn-ghost hrf-warn', onclick: () => doBulk('archived', 'В архив') }, 'В архив'));
+      bulk.appendChild(el('button', { class: 'btn-ghost hrf-warn', onclick: () => doBulk('fired', 'Уволить') }, 'Уволить'));
+      if (isAdmin) bulk.appendChild(el('button', { class: 'btn-ghost hr-del', onclick: () => doBulk('delete', 'УДАЛИТЬ безвозвратно') }, '🗑 Удалить'));
+      bulk.appendChild(el('button', { class: 'btn-ghost', onclick: () => { empSel.clear(); load(); } }, 'Снять'));
+      box.appendChild(bulk);
+      const selAll = el('input', { type: 'checkbox', class: 'hr-chk' });
+      selAll.onclick = (ev) => { const on = ev.target.checked; empSel = new Set(on ? d.items.map((x) => x.id) : []); box.querySelectorAll('.hr-rowchk').forEach((c) => { c.checked = on; }); updBulk(); };
+      const head = el('div', { class: 'hr-row head hr-emp' }, [selAll, ...['ФИО', 'Отдел', 'Должность', 'График', 'Оклад/ставка', 'Статус'].map((h) => el('span', {}, h))]);
+      box.appendChild(el('div', { class: 'hr-list' }, [head, ...d.items.map((e) => {
+        const chk = el('input', { type: 'checkbox', class: 'hr-chk hr-rowchk', onclick: (ev) => { ev.stopPropagation(); if (ev.target.checked) empSel.add(e.id); else empSel.delete(e.id); updBulk(); } });
+        return el('div', { class: 'hr-row hr-emp' + (e.status !== 'active' ? ' dim' : '') }, [
+          chk,
+          el('span', { style: 'font-weight:700; cursor:pointer', onclick: () => openEmp(e) }, e.full_name),
+          el('span', { onclick: () => openEmp(e) }, e.department_name || '—'),
+          el('span', { onclick: () => openEmp(e) }, e.position || '—'),
+          el('span', { class: 'muted' }, SCHED_NAME[e.schedule_type] || '—'),
+          el('span', { class: 'tnum' }, money(e.base_salary)),
+          el('span', {}, el('span', { class: 'hr-st hr-st-' + e.status }, STATUS_NAME[e.status] || e.status)),
+        ]);
+      })]));
     }
   }
   function kpi(label, val, cls) { return el('div', { class: 'hr-kpi' }, [el('div', { class: 'hr-kpi-l' }, label), el('div', { class: 'hr-kpi-v hr-kpi-' + cls }, String(val))]); }
+
+  function openEmpImport() {
+    const file = el('input', { type: 'file', accept: '.xls,.xlsx', class: 'hrf-inp' });
+    const tpl = el('a', { href: '/hr/api/employees/template.xlsx', class: 'hr-link' }, '⬇ Скачать шаблон Excel');
+    const body = el('div', { class: 'hrf' }, [
+      el('div', { class: 'hr-sub' }, 'Скачайте шаблон, заполните (ФИО, Отдел, Должность, График, Оклад, Официальная, Неофициальная, Телефон) и загрузите. Отделы найдутся по названию или создадутся.'),
+      el('div', {}, tpl),
+      frow('Файл', file),
+    ]);
+    const load = el('button', { class: 'btn-primary', onclick: async () => {
+      if (!file.files[0]) return toast('Выберите файл', true);
+      load.disabled = true; load.textContent = 'Загружаю…';
+      const fd = new FormData(); fd.append('file', file.files[0]);
+      try {
+        const res = await fetch('/hr/api/employees/import', { method: 'POST', body: fd });
+        const d = await res.json(); if (!res.ok) throw new Error(d.error || 'Ошибка');
+        toast('Добавлено сотрудников: ' + d.created);
+        closeModal(); await reloadDicts(); render();
+      } catch (e) { toast(e.message, true); load.disabled = false; load.textContent = 'Загрузить'; }
+    } }, 'Загрузить');
+    modal('Импорт сотрудников', body, [load]);
+  }
 
   function openEmp(e) {
     e = e || {};

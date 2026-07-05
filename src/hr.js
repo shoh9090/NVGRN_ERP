@@ -1,9 +1,12 @@
 // hr.js — модуль «Персонал»: сотрудники, отделы (Этап 1). Зарплата/табель — далее.
 const express = require('express');
+const multer = require('multer');
+const XLSX = require('xlsx');
 const db = require('./db');
 
 const router = express.Router();
 const J = express.json();
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 16 * 1024 * 1024 } });
 const intOrNull = (v) => (v === '' || v == null ? null : parseInt(v, 10));
 const numOrNull = (v) => (v === '' || v == null ? null : Number(v));
 
@@ -138,6 +141,96 @@ router.post('/api/department', J, async (req, res) => {
 router.post('/api/department/:id(\\d+)/archive', async (req, res) => {
   await db.pool.query("UPDATE hr_departments SET status='archived' WHERE id=$1", [req.params.id]);
   res.json({ ok: true });
+});
+
+// ---------- Массовые операции ----------
+function schedFromText(s) {
+  const t = String(s || '').toLowerCase();
+  if (/смен/.test(t)) return 'shift';
+  if (/производ|цех/.test(t)) return 'production';
+  if (/офис|ауп/.test(t)) return 'office';
+  return null;
+}
+
+// Шаблон Excel для загрузки сотрудников.
+router.get('/api/employees/template.xlsx', async (req, res) => {
+  const wb = XLSX.utils.book_new();
+  const main = XLSX.utils.aoa_to_sheet([
+    ['ФИО', 'Отдел', 'Должность', 'График', 'Оклад/ставка', 'Официальная', 'Неофициальная', 'Телефон', 'Комментарий'],
+    ['Пример: Иванов Иван', 'Производство', 'Оператор', 'смена', 4000000, 3000000, 1000000, '998901234567', ''],
+    ['', '', '', '', '', '', '', '', ''],
+  ]);
+  main['!cols'] = [{ wch: 26 }, { wch: 20 }, { wch: 18 }, { wch: 12 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 16 }, { wch: 24 }];
+  XLSX.utils.book_append_sheet(wb, main, 'Сотрудники');
+  const help = XLSX.utils.aoa_to_sheet([['График — пишите:'], ['офис — Офис (5/2)'], ['производство — Производство'], ['смена — Производство-смена']]);
+  XLSX.utils.book_append_sheet(wb, help, 'Подсказка');
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', 'attachment; filename="hr_employees_template.xlsx"');
+  res.send(buf);
+});
+
+// Оптовый импорт сотрудников из Excel. Отдел ищем по названию (создаём, если нет).
+router.post('/api/employees/import', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'Файл не выбран' });
+    const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
+    const sh = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(sh, { header: 1, raw: false, defval: '' });
+    if (!rows.length) return res.status(400).json({ error: 'Пустой файл' });
+    let hi = rows.findIndex((r) => r.some((c) => /фио|имя/i.test(String(c))));
+    if (hi < 0) hi = 0;
+    const head = rows[hi].map((c) => String(c).toLowerCase());
+    const col = (re) => head.findIndex((h) => re.test(h));
+    const iName = col(/фио|имя/), iDept = col(/отдел/), iPos = col(/должн/), iSched = col(/график/),
+      iBase = col(/оклад|ставк/), iOff = col(/офиц/), iUn = col(/неофиц/), iPhone = col(/тел/), iCmt = col(/коммент/);
+    if (iName < 0) return res.status(400).json({ error: 'Не нашёл колонку «ФИО»' });
+    // Карта отделов (по названию, регистронезависимо).
+    const deptMap = {};
+    (await db.pool.query('SELECT id, name FROM hr_departments')).rows.forEach((d) => { deptMap[d.name.toLowerCase()] = d.id; });
+    const num = (v) => { const n = Number(String(v == null ? '' : v).replace(/\s/g, '').replace(',', '.')); return isFinite(n) && n !== 0 ? n : null; };
+    let created = 0, skipped = 0;
+    for (let i = hi + 1; i < rows.length; i++) {
+      const r = rows[i];
+      const name = String((r[iName] != null ? r[iName] : '')).trim();
+      if (!name || /^пример/i.test(name)) { continue; }
+      let deptId = null;
+      if (iDept >= 0) {
+        const dn = String(r[iDept] || '').trim();
+        if (dn) {
+          deptId = deptMap[dn.toLowerCase()];
+          if (!deptId) { const ins = await db.pool.query('INSERT INTO hr_departments (name, sort_order) VALUES ($1, 200) ON CONFLICT (name) DO UPDATE SET name=EXCLUDED.name RETURNING id', [dn]); deptId = ins.rows[0].id; deptMap[dn.toLowerCase()] = deptId; }
+        }
+      }
+      await db.pool.query(
+        `INSERT INTO hr_employees (full_name, department_id, position, schedule_type, base_salary, salary_official, salary_unofficial, phone, comment)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [name, deptId, iPos >= 0 ? (String(r[iPos] || '').trim() || null) : null, iSched >= 0 ? schedFromText(r[iSched]) : null,
+         iBase >= 0 ? num(r[iBase]) : null, iOff >= 0 ? num(r[iOff]) : null, iUn >= 0 ? num(r[iUn]) : null,
+         iPhone >= 0 ? (String(r[iPhone] || '').trim() || null) : null, iCmt >= 0 ? (String(r[iCmt] || '').trim() || null) : null]);
+      created++;
+    }
+    await db.log(req.user.id, 'hr_employees_import', `создано ${created}`);
+    res.json({ ok: true, created, skipped });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Оптовое удаление (только админ) или архивирование выбранных.
+router.post('/api/employees/bulk', J, async (req, res) => {
+  const ids = (Array.isArray(req.body.ids) ? req.body.ids : []).map((x) => parseInt(x)).filter(Boolean);
+  const action = req.body.action;
+  if (!ids.length) return res.status(400).json({ error: 'Ничего не выбрано' });
+  if (action === 'delete') {
+    if (!req.user || !req.user.isAdmin) return res.status(403).json({ error: 'Удаление — только администратор' });
+    const r = await db.pool.query('DELETE FROM hr_employees WHERE id = ANY($1)', [ids]);
+    await db.log(req.user.id, 'hr_employees_bulk_delete', String(ids.length));
+    return res.json({ ok: true, affected: r.rowCount });
+  }
+  const st = ['active', 'fired', 'archived'].includes(action) ? action : null;
+  if (!st) return res.status(400).json({ error: 'Неверное действие' });
+  const r = await db.pool.query('UPDATE hr_employees SET status=$1, updated_at=now() WHERE id = ANY($2)', [st, ids]);
+  await db.log(req.user.id, 'hr_employees_bulk_status', `${st}: ${ids.length}`);
+  res.json({ ok: true, affected: r.rowCount });
 });
 
 module.exports = router;
