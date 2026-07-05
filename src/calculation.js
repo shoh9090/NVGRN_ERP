@@ -86,6 +86,11 @@ async function ensureSchema() {
   )`);
   await q(`CREATE INDEX IF NOT EXISTS idx_calc_recipe_items_recipe ON calc_recipe_items(recipe_id)`);
   await q(`ALTER TABLE calc_recipes ADD COLUMN IF NOT EXISTS group_id INT REFERENCES calc_groups(id)`);
+  // Постоянные затраты на единицу — свои у каждой группы (розница/хорека/…).
+  // NULL = брать общую настройку по умолчанию.
+  for (const col of ['monthly_units', 'labor_per_unit', 'production_per_unit', 'overhead_per_unit']) {
+    await q(`ALTER TABLE calc_groups ADD COLUMN IF NOT EXISTS ${col} NUMERIC`);
+  }
 
   const defaults = {
     monthly_units: '70000',
@@ -227,7 +232,9 @@ async function getMaterials() {
 async function recipeRows(whereSql = "r.status = 'active'", params = []) {
   const rows = await db.pool.query(
     `SELECT r.*, g.name AS fg_name, g.code AS fg_code, pt.name AS price_type_name, rp.price AS sd_sale_price,
-            grp.name AS group_name
+            grp.name AS group_name,
+            grp.labor_per_unit AS g_labor, grp.production_per_unit AS g_production,
+            grp.overhead_per_unit AS g_overhead, grp.monthly_units AS g_monthly
      FROM calc_recipes r
      LEFT JOIN ref_finished_goods g ON g.id = r.product_id
      LEFT JOIN ref_price_types pt ON pt.id = r.sale_price_type_id
@@ -276,9 +283,11 @@ function recipeSummary(recipe, items, materials, settings) {
 
   const itemCalc = itemRows.reduce((s, x) => s + asNum(x.calc_cost), 0);
   const itemMarket = itemRows.reduce((s, x) => s + asNum(x.market_cost), 0);
-  const labor = asNum(settings.labor_per_unit) * asNum(recipe.labor_coeff);
-  const production = asNum(settings.production_per_unit) * asNum(recipe.production_coeff);
-  const overhead = asNum(settings.overhead_per_unit) * asNum(recipe.overhead_coeff);
+  // Постоянные затраты берём из группы рецептуры; если у группы пусто — из общих настроек.
+  const perUnit = (groupVal, settingKey) => (groupVal != null ? asNum(groupVal) : asNum(settings[settingKey]));
+  const labor = perUnit(recipe.g_labor, 'labor_per_unit') * asNum(recipe.labor_coeff);
+  const production = perUnit(recipe.g_production, 'production_per_unit') * asNum(recipe.production_coeff);
+  const overhead = perUnit(recipe.g_overhead, 'overhead_per_unit') * asNum(recipe.overhead_coeff);
   const fixed = labor + production + overhead;
   const wasteMult = 1 + asNum(recipe.waste_pct) / 100;
   const costCalc = (itemCalc + fixed) * wasteMult;
@@ -336,13 +345,17 @@ router.get('/api/dicts', async (req, res) => {
      WHERE g.status='active'
      ORDER BY g.name LIMIT 3000`
   )).rows;
-  const groups = (await db.pool.query("SELECT id, name, sort_order FROM calc_groups WHERE status='active' ORDER BY sort_order, name")).rows;
+  const groups = (await db.pool.query(
+    "SELECT id, name, sort_order, monthly_units, labor_per_unit, production_per_unit, overhead_per_unit FROM calc_groups WHERE status='active' ORDER BY sort_order, name"
+  )).rows;
   res.json({ priceTypes, products, groups, settings: await settingsMap() });
 });
 
 // Группы товаров (розница/хорека/…) — CRUD из настроек.
 router.get('/api/groups', async (req, res) => {
-  const rows = (await db.pool.query("SELECT id, name, sort_order, status FROM calc_groups WHERE status='active' ORDER BY sort_order, name")).rows;
+  const rows = (await db.pool.query(
+    "SELECT id, name, sort_order, status, monthly_units, labor_per_unit, production_per_unit, overhead_per_unit FROM calc_groups WHERE status='active' ORDER BY sort_order, name"
+  )).rows;
   res.json({ items: rows });
 });
 router.post('/api/group', J, async (req, res) => {
@@ -350,10 +363,15 @@ router.post('/api/group', J, async (req, res) => {
   if (!name) return res.status(400).json({ error: 'Пустое название' });
   const id = intOrNull(req.body.id);
   const sort = numOrNull(req.body.sort_order) ?? 100;
+  const fx = [numOrNull(req.body.monthly_units), numOrNull(req.body.labor_per_unit), numOrNull(req.body.production_per_unit), numOrNull(req.body.overhead_per_unit)];
   if (id) {
-    await db.pool.query('UPDATE calc_groups SET name=$1, sort_order=$2 WHERE id=$3', [name, sort, id]);
+    await db.pool.query(
+      'UPDATE calc_groups SET name=$1, sort_order=$2, monthly_units=$3, labor_per_unit=$4, production_per_unit=$5, overhead_per_unit=$6 WHERE id=$7',
+      [name, sort, ...fx, id]);
   } else {
-    await db.pool.query('INSERT INTO calc_groups (name, sort_order) VALUES ($1,$2)', [name, sort]);
+    await db.pool.query(
+      'INSERT INTO calc_groups (name, sort_order, monthly_units, labor_per_unit, production_per_unit, overhead_per_unit) VALUES ($1,$2,$3,$4,$5,$6)',
+      [name, sort, ...fx]);
   }
   await db.log(req.user.id, 'calc_group_save', name);
   res.json({ ok: true });
@@ -362,6 +380,78 @@ router.post('/api/group/:id(\\d+)/archive', async (req, res) => {
   await db.pool.query("UPDATE calc_groups SET status='archived' WHERE id=$1", [req.params.id]);
   await db.log(req.user.id, 'calc_group_archive', '#' + req.params.id);
   res.json({ ok: true });
+});
+
+// Разовая загрузка листовых рецептур (100г, розница) из таблицы Шоха.
+// Идемпотентно: рецептуру с таким же названием второй раз не создаёт.
+// Цены зелени/упаковки фиксируются в строке (manual_price), чтобы с/с совпал с Excel.
+const LEAFY_SEED = [
+  // name, зелень-поиск, граммы, цена зелени сум/кг, цена продажи, laborCoeff, prodCoeff
+  ['Латук 100г', 'латук', 100, 17000, 21000, 1, 1],
+  ['Романо 100г', 'романо', 100, 20000, 24000, 1, 1],
+  ['Рукола 100г', 'рукол', 100, 30000, 20500, 0.5, 0.5],
+  ['Шпинат 100г', 'шпинат', 100, 25000, 28700, 1, 1],
+  ['Кейл 100г', 'кейл', 100, 35000, 25500, 1, 1],
+  ['Мангольд 100г', 'мангольд', 100, 50000, 22400, 1, 1],
+  ['Лоло-россо 100г', 'лоло', 100, 17000, 24600, 1, 1],
+  ['Айсберг 150г', 'айсберг', 150, 12000, 20500, 1, 1],
+];
+router.post('/api/seed-leafy', async (req, res) => {
+  const PACK_PRICE = 1007.25;
+  const grp = (await db.pool.query("SELECT id FROM calc_groups WHERE lower(name)='розница' AND status='active' LIMIT 1")).rows[0];
+  if (!grp) return res.status(400).json({ error: 'Нет группы «Розница»' });
+  // Постоянные затраты группы «Розница» (линия бэби-лиф) — только если ещё пусто.
+  await db.pool.query(
+    `UPDATE calc_groups SET labor_per_unit=COALESCE(labor_per_unit,4792.98),
+       production_per_unit=COALESCE(production_per_unit,290.56),
+       overhead_per_unit=COALESCE(overhead_per_unit,409.80),
+       monthly_units=COALESCE(monthly_units,55000) WHERE id=$1`, [grp.id]);
+  const pack = (await db.pool.query(
+    "SELECT id FROM ref_packaging WHERE status='active' AND (name ILIKE '%вак%' OR name ILIKE '%пакет%') ORDER BY name LIMIT 1"
+  )).rows[0];
+  const findGreen = async (needle) => (await db.pool.query(
+    "SELECT id FROM ref_raw_materials WHERE status='active' AND name ILIKE $1 ORDER BY (lower(name)=lower($2)) DESC, length(name) ASC LIMIT 1",
+    ['%' + needle + '%', needle]
+  )).rows[0];
+
+  const created = [], skipped = [], noGreen = [];
+  const client = await db.pool.connect();
+  try {
+    for (const [name, needle, grams, greenPrice, salePrice, laborC, prodC] of LEAFY_SEED) {
+      const exists = (await client.query('SELECT id FROM calc_recipes WHERE lower(product_name)=lower($1) LIMIT 1', [name])).rows[0];
+      if (exists) { skipped.push(name); continue; }
+      const green = await findGreen(needle);
+      if (!green) noGreen.push(name);
+      await client.query('BEGIN');
+      const r = await client.query(
+        `INSERT INTO calc_recipes (group_id, product_name, pack_weight_g, pack_unit, sale_price_override,
+           retro_pct, vat_pct, profit_tax_pct, waste_pct, labor_coeff, production_coeff, overhead_coeff, created_by, updated_by)
+         VALUES ($1,$2,$3,'шт',$4,21,12,15,50,$5,$6,1,$7,$7) RETURNING id`,
+        [grp.id, name, grams, salePrice, laborC, prodC, req.user.id]);
+      const rid = r.rows[0].id;
+      let sort = 0;
+      if (green) {
+        await client.query(
+          `INSERT INTO calc_recipe_items (recipe_id, item_kind, item_id, qty, unit, waste_pct, manual_price, sort_order)
+           VALUES ($1,'raw',$2,$3,'г',0,$4,10)`, [rid, green.id, grams, greenPrice]);
+        sort = 10;
+      }
+      if (pack) {
+        await client.query(
+          `INSERT INTO calc_recipe_items (recipe_id, item_kind, item_id, qty, unit, waste_pct, manual_price, sort_order)
+           VALUES ($1,'packaging',$2,1,'шт',0,$3,$4)`, [rid, pack.id, PACK_PRICE, sort + 10]);
+      }
+      await client.query('COMMIT');
+      created.push(name);
+    }
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    return res.status(400).json({ error: e.message });
+  } finally {
+    client.release();
+  }
+  await db.log(req.user.id, 'calc_seed_leafy', `created=${created.length} skipped=${skipped.length}`);
+  res.json({ ok: true, created, skipped, noGreen, packFound: !!pack });
 });
 
 router.get('/api/materials', async (req, res) => {

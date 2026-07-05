@@ -103,9 +103,12 @@
     const items = (draft.items || []).map(computeLine);
     const itemCalc = items.reduce((a, x) => a + x.calc_cost, 0);
     const itemMarket = items.reduce((a, x) => a + x.market_cost, 0);
-    const labor = num(s.labor_per_unit) * num(draft.labor_coeff);
-    const production = num(s.production_per_unit) * num(draft.production_coeff);
-    const overhead = num(s.overhead_per_unit) * num(draft.overhead_coeff);
+    // Постоянные затраты — из группы рецептуры, иначе из общих настроек.
+    const grp = (DICTS.groups || []).find((g) => String(g.id) === String(draft.group_id)) || {};
+    const perUnit = (gv, sv) => (gv != null && gv !== '' ? num(gv) : num(s[sv]));
+    const labor = perUnit(grp.labor_per_unit, 'labor_per_unit') * num(draft.labor_coeff);
+    const production = perUnit(grp.production_per_unit, 'production_per_unit') * num(draft.production_coeff);
+    const overhead = perUnit(grp.overhead_per_unit, 'overhead_per_unit') * num(draft.overhead_coeff);
     const fixed = labor + production + overhead;
     const wasteMult = 1 + num(draft.waste_pct) / 100;
     const costRaw = itemCalc + fixed;          // с/с без брака
@@ -728,32 +731,65 @@
     c.appendChild(groupsCard());
   }
 
-  // Настройки → группы товаров (розница/хорека/…): добавление, переименование, архив.
+  // Настройки → группы товаров (розница/хорека/…): название + свои постоянные затраты.
   function groupsCard() {
     const list = (DICTS.groups || []).map((g) => {
-      const name = inp(g.name, { name: 'g_name' });
-      return el('div', { class: 'calc-setting-tile' }, [
-        name,
-        el('div', { class: 'calc-row-actions' }, [
-          el('button', { class: 'btn-primary calc-mini-save', onclick: () => saveGroup(g.id, name.value) }, 'Сохранить'),
+      const f = {};
+      const gi = (key, ph) => { const i = inp(g[key] == null ? '' : g[key], { type: 'number', step: '0.01', placeholder: ph }); f[key] = i; return i; };
+      return el('div', { class: 'calc-group-edit' }, [
+        el('div', { class: 'calc-group-edit-top' }, [
+          inp(g.name, { name: 'g_name', class: 'calcf-inp calc-group-name' }),
+          el('button', { class: 'btn-primary calc-mini-save', onclick: (e) => saveGroup(g.id, e.target.closest('.calc-group-edit')) }, 'Сохранить'),
           el('button', { class: 'btn-ghost calc-danger', onclick: () => archiveGroup(g.id, g.name) }, 'Архив'),
+        ]),
+        el('div', { class: 'calc-group-fx' }, [
+          el('label', {}, [el('span', {}, 'ФОТ/ед.'), gi('labor_per_unit', '0')]),
+          el('label', {}, [el('span', {}, 'Произв./ед.'), gi('production_per_unit', '0')]),
+          el('label', {}, [el('span', {}, 'Накладные/ед.'), gi('overhead_per_unit', '0')]),
+          el('label', {}, [el('span', {}, 'План шт/мес'), gi('monthly_units', '0')]),
         ]),
       ]);
     });
-    const newName = inp('', { placeholder: 'например, Опт' });
-    return el('section', { class: 'calc-settings-card', style: 'max-width:520px;margin-top:12px' }, [
+    const newName = inp('', { placeholder: 'например, Хорека 250г', class: 'calcf-inp calc-group-name' });
+    return el('section', { class: 'calc-settings-card', style: 'max-width:720px;margin-top:12px', id: 'calc-groups-card' }, [
       el('div', { class: 'calc-settings-title' }, 'Группы товаров'),
-      el('div', { class: 'calc-sub' }, 'Розница, Хорека и любые свои. Группу выбираем в рецептуре и по ней фильтруем список.'),
+      el('div', { class: 'calc-sub' }, 'Розница, Хорека и любые свои. У каждой группы свои постоянные затраты — рецептура берёт их из своей группы. Пусто = общие настройки выше.'),
       ...list,
-      el('div', { class: 'calc-setting-tile' }, [
+      el('div', { class: 'calc-group-edit-top', style: 'margin-top:8px' }, [
         newName,
-        el('button', { class: 'btn-primary calc-mini-save', onclick: () => saveGroup(null, newName.value) }, '+ Добавить'),
+        el('button', { class: 'btn-primary calc-mini-save', onclick: () => saveGroup(null, null, newName.value) }, '+ Добавить'),
       ]),
+      el('div', { class: 'calc-sub', style: 'margin-top:14px' }, 'Разовая загрузка: 8 листовых рецептур (Латук…Айсберг) в «Розницу» с ценами из вашей таблицы.'),
+      el('button', { class: 'btn-ghost calc-line-add', style: 'margin-top:6px', onclick: seedLeafy }, '⬇ Загрузить листовые рецептуры'),
     ]);
   }
-  async function saveGroup(id, name) {
-    if (!String(name || '').trim()) return toast('Пустое название', true);
-    try { await post('/group', { id, name }); toast('Готово'); await reloadBase(); render(); } catch (e) { toast(e.message, true); }
+  async function seedLeafy() {
+    if (!confirm('Создать 8 листовых рецептур в группе «Розница»? Повторно уже созданные пропустит.')) return;
+    try {
+      const r = await post('/seed-leafy');
+      let msg = 'Создано: ' + r.created.length + (r.skipped.length ? ', пропущено (уже есть): ' + r.skipped.length : '');
+      if (!r.packFound) msg += '. Упаковка «вак.пакет» не найдена в справочнике!';
+      if (r.noGreen && r.noGreen.length) msg += '. Не нашли зелень для: ' + r.noGreen.join(', ');
+      alert(msg);
+      await reloadBase();
+      TAB = 'recipes';
+      render();
+    } catch (e) { toast(e.message, true); }
+  }
+  async function saveGroup(id, rowEl, plainName) {
+    const body = { id };
+    if (rowEl) {
+      body.name = rowEl.querySelector('[name="g_name"]').value;
+      const nums = rowEl.querySelectorAll('.calc-group-fx input[type="number"]');
+      body.labor_per_unit = nums[0] ? nums[0].value : '';
+      body.production_per_unit = nums[1] ? nums[1].value : '';
+      body.overhead_per_unit = nums[2] ? nums[2].value : '';
+      body.monthly_units = nums[3] ? nums[3].value : '';
+    } else {
+      body.name = plainName;
+    }
+    if (!String(body.name || '').trim()) return toast('Пустое название', true);
+    try { await post('/group', body); toast('Готово'); await reloadBase(); render(); } catch (e) { toast(e.message, true); }
   }
   async function archiveGroup(id, name) {
     if (!confirm('Убрать группу «' + name + '» в архив? Рецептуры останутся, но потеряют группу.')) return;
