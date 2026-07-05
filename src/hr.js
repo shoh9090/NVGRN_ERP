@@ -351,13 +351,14 @@ router.post('/api/employees/import', upload.single('file'), async (req, res) => 
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
-// Оптовое удаление (только админ) или архивирование выбранных.
+// Оптовое удаление или архивирование выбранных.
+// Доступ к модулю «Персонал» уже проверен requireHrAccess (галочка плитки),
+// поэтому внутри — полные права: кому выдан доступ, тот может и удалять.
 router.post('/api/employees/bulk', J, async (req, res) => {
   const ids = (Array.isArray(req.body.ids) ? req.body.ids : []).map((x) => parseInt(x)).filter(Boolean);
   const action = req.body.action;
   if (!ids.length) return res.status(400).json({ error: 'Ничего не выбрано' });
   if (action === 'delete') {
-    if (!req.user || !req.user.isAdmin) return res.status(403).json({ error: 'Удаление — только администратор' });
     const r = await db.pool.query('DELETE FROM hr_employees WHERE id = ANY($1)', [ids]);
     await db.log(req.user.id, 'hr_employees_bulk_delete', String(ids.length));
     return res.json({ ok: true, affected: r.rowCount });

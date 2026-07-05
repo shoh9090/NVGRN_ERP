@@ -190,7 +190,7 @@
       bulk.appendChild(bulkN);
       bulk.appendChild(el('button', { class: 'btn-ghost hrf-warn', onclick: () => doBulk('archived', 'В архив') }, 'В архив'));
       bulk.appendChild(el('button', { class: 'btn-ghost hrf-warn', onclick: () => doBulk('fired', 'Уволить') }, 'Уволить'));
-      if (isAdmin) bulk.appendChild(el('button', { class: 'btn-ghost hr-del', onclick: () => doBulk('delete', 'УДАЛИТЬ безвозвратно') }, '🗑 Удалить'));
+      bulk.appendChild(el('button', { class: 'btn-ghost hr-del', onclick: () => doBulk('delete', 'УДАЛИТЬ безвозвратно') }, '🗑 Удалить'));
       bulk.appendChild(el('button', { class: 'btn-ghost', onclick: () => { empSel.clear(); load(); } }, 'Снять'));
       box.appendChild(bulk);
       const selAll = el('input', { type: 'checkbox', class: 'hr-chk' });
