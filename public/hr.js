@@ -89,6 +89,7 @@
     if (TAB === 'dashboard') return renderDashboard();
     if (TAB === 'employees') return renderEmployees();
     if (TAB === 'salary') return renderSalary();
+    if (TAB === 'timesheet') return renderTimesheet();
     if (TAB === 'departments') return renderDepartments();
     return renderSoon();
   }
@@ -277,6 +278,57 @@
     const labels = { fired: 'Уволить', archived: 'В архив', active: 'Вернуть в актив' };
     if (!confirm(labels[st] + ' сотрудника «' + e.full_name + '»?')) return;
     try { await post('/employee/' + e.id + '/status', { status: st }); toast('Готово'); closeModal(); await reloadDicts(); render(); } catch (err) { toast(err.message, true); }
+  }
+
+  // ================= ТАБЕЛЬ =================
+  const tsState = { period: '', department: '', schedule: '', q: '' };
+  async function renderTimesheet() {
+    const c = $('#hr-content');
+    if (!tsState.period) tsState.period = curMonth();
+    c.appendChild(el('div', { class: 'hr-head' }, [
+      el('div', {}, [el('div', { class: 'hr-h2' }, 'Табель — ' + monthLabel(tsState.period)), el('div', { class: 'hr-sub' }, 'Отработанные дни и часы за месяц. Эти цифры видны в расчёте зарплаты. Деньги начислений не затрагиваются.')]),
+    ]));
+    const mInp = el('input', { type: 'month', class: 'hrf-inp hr-filt', value: tsState.period, onchange: (e) => { tsState.period = e.target.value || curMonth(); load(); } });
+    const dSel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { tsState.department = e.target.value; load(); } }, [el('option', { value: '' }, 'Все отделы'), ...DICTS.departments.map((d) => el('option', { value: d.id, selected: String(d.id) === tsState.department || null }, d.name))]);
+    const schSel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { tsState.schedule = e.target.value; load(); } }, [el('option', { value: '' }, 'Все графики'), ...(DICTS.schedules || []).map((s) => el('option', { value: s.code, selected: s.code === tsState.schedule || null }, s.name))]);
+    const q = el('input', { class: 'hrf-inp hr-filt hr-filt-q', placeholder: 'Поиск по ФИО', value: tsState.q, oninput: (e) => { tsState.q = e.target.value; clearTimeout(window.__hrT); window.__hrT = setTimeout(load, 300); } });
+    c.appendChild(el('div', { class: 'hr-filters' }, [el('span', { class: 'hr-flab' }, 'Месяц:'), mInp, dSel, schSel, q]));
+    const box = el('div', { id: 'hr-ts-box' }); c.appendChild(box);
+    load();
+
+    async function load() {
+      box.innerHTML = '<div class="hr-loading">Загружаю…</div>';
+      const p = new URLSearchParams({ period: tsState.period });
+      ['department', 'schedule', 'q'].forEach((k) => { if (tsState[k]) p.set(k, tsState[k]); });
+      let d; try { d = await api('/payroll?' + p.toString()); } catch (e) { box.innerHTML = ''; box.appendChild(el('div', { class: 'hr-empty' }, 'Ошибка: ' + e.message)); return; }
+      box.innerHTML = '';
+      if (!d.items.length) { box.appendChild(el('div', { class: 'hr-empty' }, 'Нет сотрудников по фильтру.')); return; }
+      const rowsModel = d.items.map((r) => ({ employee_id: r.emp_id, inputs: {} }));
+      // Быстрое заполнение плана дней всем сразу.
+      const planAll = el('input', { class: 'hrf-inp hr-filt', type: 'number', min: '0', style: 'width:90px', placeholder: 'напр. 26' });
+      const fillBtn = el('button', { class: 'btn-ghost', onclick: () => { const v = planAll.value; if (v === '') return; rowsModel.forEach((m) => { m.inputs.plan_days.value = v; }); toast('План проставлен всем — не забудьте сохранить'); } }, 'Заполнить план');
+      const saveBtn = el('button', { class: 'btn-primary', onclick: save }, '💾 Сохранить табель');
+      box.appendChild(el('div', { class: 'hr-filters', style: 'justify-content:flex-end' }, [el('span', { class: 'hr-flab' }, 'План дней всем:'), planAll, fillBtn, saveBtn]));
+      const numIn = (m, key, val) => { const i = el('input', { class: 'hrf-inp hr-ts-inp', type: 'number', min: '0', step: key.indexOf('hours') >= 0 ? '0.5' : '1', value: val == null ? '' : String(val) }); m.inputs[key] = i; return i; };
+      const head = el('div', { class: 'hr-row head hr-ts' }, ['#', 'ФИО', 'Отдел', 'План дн.', 'Факт дн.', 'План ч.', 'Факт ч.'].map((h) => el('span', {}, h)));
+      box.appendChild(el('div', { class: 'hr-list' }, [head, ...d.items.map((r, i) => {
+        const m = rowsModel[i];
+        return el('div', { class: 'hr-row hr-ts' }, [
+          el('span', { class: 'hr-idx' }, String(i + 1)),
+          el('span', { style: 'font-weight:700' }, r.full_name),
+          el('span', { class: 'muted' }, r.department_name || '—'),
+          numIn(m, 'plan_days', r.plan_days), numIn(m, 'fact_days', r.fact_days),
+          numIn(m, 'plan_hours', r.plan_hours), numIn(m, 'fact_hours', r.fact_hours),
+        ]);
+      })]));
+
+      async function save() {
+        const rows = rowsModel.map((m) => ({ employee_id: m.employee_id, plan_days: m.inputs.plan_days.value, fact_days: m.inputs.fact_days.value, plan_hours: m.inputs.plan_hours.value, fact_hours: m.inputs.fact_hours.value }));
+        saveBtn.disabled = true; saveBtn.textContent = 'Сохраняю…';
+        try { const rr = await post('/timesheet', { period: tsState.period, rows }); toast('Сохранено: ' + rr.saved); load(); }
+        catch (e) { toast(e.message, true); saveBtn.disabled = false; saveBtn.textContent = '💾 Сохранить табель'; }
+      }
+    }
   }
 
   // ================= ЗАРПЛАТА =================

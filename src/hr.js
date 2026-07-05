@@ -236,6 +236,37 @@ router.post('/api/payroll', J, async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
+// ---------- Табель ----------
+// Сохранение табеля: трогаем ТОЛЬКО дни/часы, деньги начислений не задеваем.
+// (Обычный /api/payroll перезаписывает все колонки — для табеля он не годится.)
+router.post('/api/timesheet', J, async (req, res) => {
+  const period = /^\d{4}-\d{2}$/.test(req.body.period) ? req.body.period : null;
+  if (!period) return res.status(400).json({ error: 'Нет периода' });
+  const rows = Array.isArray(req.body.rows) ? req.body.rows : [];
+  if (!rows.length) return res.status(400).json({ error: 'Нет строк' });
+  const client = await db.pool.connect();
+  let saved = 0;
+  try {
+    await client.query('BEGIN');
+    for (const r of rows) {
+      const empId = intOrNull(r.employee_id);
+      if (!empId) continue;
+      await client.query(
+        `INSERT INTO hr_payroll (employee_id, period, plan_days, fact_days, plan_hours, fact_hours, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)
+         ON CONFLICT (employee_id, period) DO UPDATE SET
+           plan_days=EXCLUDED.plan_days, fact_days=EXCLUDED.fact_days,
+           plan_hours=EXCLUDED.plan_hours, fact_hours=EXCLUDED.fact_hours, updated_at=now()`,
+        [empId, period, numOrNull(r.plan_days), numOrNull(r.fact_days), numOrNull(r.plan_hours), numOrNull(r.fact_hours), req.user.id]);
+      saved++;
+    }
+    await client.query('COMMIT');
+  } catch (e) { await client.query('ROLLBACK'); return res.status(400).json({ error: e.message }); }
+  finally { client.release(); }
+  await db.log(req.user.id, 'hr_timesheet_save', `${period}: ${saved}`);
+  res.json({ ok: true, saved });
+});
+
 // Массовое удаление начислений (сотрудники остаются).
 router.post('/api/payroll/bulk-delete', J, async (req, res) => {
   const ids = (Array.isArray(req.body.ids) ? req.body.ids : []).map((x) => parseInt(x)).filter(Boolean);
