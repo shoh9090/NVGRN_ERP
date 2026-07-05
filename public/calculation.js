@@ -82,6 +82,48 @@
   const materialByKey = () => Object.fromEntries(MATERIALS.map((m) => [m.kind + ':' + m.id, m]));
   const productById = () => Object.fromEntries((DICTS.products || []).map((p) => [String(p.id), p]));
 
+  // Живой пересчёт на клиенте — зеркало серверного recipeSummary в src/calculation.js.
+  // Нужен, чтобы себестоимость/маржа менялись прямо при вводе, до сохранения.
+  function computeLine(it) {
+    const kind = it.item_kind === 'packaging' ? 'packaging' : 'raw';
+    const m = materialByKey()[kind + ':' + it.item_id] || {};
+    const qty = num(it.qty);
+    const wasteMult = 1 + num(it.waste_pct) / 100;
+    const hasManual = it.manual_price != null && String(it.manual_price).trim() !== '';
+    const manual = num(it.manual_price);
+    const calcPrice = hasManual ? manual : num(m.calc_price);
+    const marketPrice = hasManual ? manual : num(m.market_price || m.last_purchase_price || m.calc_price);
+    const baseQty = kind === 'packaging' ? qty : qty / 1000;
+    return { calc_price: calcPrice, market_price: marketPrice, calc_cost: baseQty * calcPrice * wasteMult, market_cost: baseQty * marketPrice * wasteMult };
+  }
+  function computeSummary(draft) {
+    const s = DICTS.settings || {};
+    const items = (draft.items || []).map(computeLine);
+    const itemCalc = items.reduce((a, x) => a + x.calc_cost, 0);
+    const itemMarket = items.reduce((a, x) => a + x.market_cost, 0);
+    const labor = num(s.labor_per_unit) * num(draft.labor_coeff);
+    const production = num(s.production_per_unit) * num(draft.production_coeff);
+    const overhead = num(s.overhead_per_unit) * num(draft.overhead_coeff);
+    const fixed = labor + production + overhead;
+    const wasteMult = 1 + num(draft.waste_pct) / 100;
+    const costCalc = (itemCalc + fixed) * wasteMult;
+    const costMarket = (itemMarket + fixed) * wasteMult;
+    // Цена продажи: ручная либо последняя загруженная из SD (по типу цены).
+    const sdPrice = CURRENT && CURRENT.recipe ? num(CURRENT.recipe.sd_sale_price) : 0;
+    const salePrice = String(draft.sale_price_override || '').trim() !== '' ? num(draft.sale_price_override) : sdPrice;
+    const retro = salePrice * num(draft.retro_pct) / 100;
+    const vat = salePrice * num(draft.vat_pct) / 100;
+    const profit = salePrice - costCalc - retro - vat;
+    const profitTax = Math.max(profit, 0) * num(draft.profit_tax_pct) / 100;
+    const netProfit = profit - profitTax;
+    return {
+      item_calc: itemCalc, item_market: itemMarket, labor, production, overhead, fixed,
+      cost_calc: costCalc, cost_market: costMarket, market_delta: costMarket - costCalc,
+      sale_price: salePrice, retro, vat, profit, profit_tax: profitTax, net_profit: netProfit,
+      margin_pct: salePrice ? netProfit / salePrice * 100 : null,
+    };
+  }
+
   function findProductByLabel(label) {
     const s = String(label || '').trim().toLowerCase();
     if (!s) return null;
@@ -210,16 +252,16 @@
 
     c.appendChild(el('div', { class: 'calc-head calc-head-tight' }, [
       el('div', {}, [
-        el('div', { class: 'calc-h2' }, 'Калькуляция как рабочий лист'),
-        el('div', { class: 'calc-sub' }, 'Выбираем товар, забиваем состав строками, видим себестоимость и рынок рядом.'),
+        el('div', { class: 'calc-h2' }, 'Калькуляция'),
+        el('div', { class: 'calc-sub' }, 'Рецептуры, цены сырья, рыночное сравнение и маржа на одном экране.'),
       ]),
       el('button', { class: 'btn-primary calc-add', onclick: startNewRecipe }, '+ Новая рецептура'),
     ]));
     c.appendChild(el('div', { class: 'calc-kpis calc-kpis-compact' }, [
-      kpi('Рецептур', RECIPES.length, ''),
-      kpi('Средняя себестоимость', money(avgCost), 'green'),
-      kpi('Рынок выше калькуляции', marketUp, marketUp ? 'warn' : ''),
-      kpi('Средняя чистая маржа', pct(avgMargin), ''),
+      kpi('Всего рецептур', RECIPES.length, ''),
+      kpi('Себестоимость средняя', money(avgCost), 'green'),
+      kpi('Рынок дороже', marketUp, marketUp ? 'warn' : ''),
+      kpi('Маржа средняя', pct(avgMargin), ''),
     ]));
 
     const grid = el('div', { class: 'calc-workspace' });
@@ -265,8 +307,8 @@
         el('div', {}, 'После выбора здесь будет один рабочий лист без модалки: параметры, состав и итоги.'),
       ]);
     }
-    const s = (CURRENT && CURRENT.summary) || {};
-    return el('section', { class: 'calc-sheet' }, [
+    const s = computeSummary(DRAFT);
+    return el('section', { class: 'calc-sheet', oninput: refreshTotals }, [
       sheetToolbar(),
       sheetMeta(),
       sheetSummary(s),
@@ -274,15 +316,33 @@
     ]);
   }
 
+  // Пересчёт итогов «на лету» без полной перерисовки (чтобы не терять фокус в поле).
+  function refreshTotals() {
+    if (!DRAFT || !$('.calc-sheet')) return;
+    syncDraftFromDom();
+    const strip = $('.calc-summary-strip');
+    if (strip) strip.replaceWith(sheetSummary(computeSummary(DRAFT)));
+    (DRAFT.items || []).forEach((it, i) => {
+      const row = document.querySelector('.calc-item-row[data-index="' + i + '"]');
+      if (!row) return;
+      const line = computeLine(it);
+      const set = (sel, val) => { const n = row.querySelector(sel); if (n) n.textContent = money(val); };
+      set('.calc-cell-pc', line.calc_price);
+      set('.calc-cell-pm', line.market_price);
+      set('.calc-cell-sc', line.calc_cost);
+      set('.calc-cell-sm', line.market_cost);
+    });
+  }
+
   function sheetToolbar() {
     return el('div', { class: 'calc-sheet-toolbar' }, [
       el('div', {}, [
         el('div', { class: 'calc-h3' }, DRAFT.id ? 'Рецептура #' + DRAFT.id : 'Новая рецептура'),
-        el('div', { class: 'calc-sub' }, DRAFT.id ? 'Редактируйте прямо в таблице и нажмите «Сохранить лист»' : 'Заполните товар и состав, затем сохраните лист'),
+        el('div', { class: 'calc-sub' }, DRAFT.id ? 'Редактируйте прямо в таблице и сохраните изменения.' : 'Заполните товар и состав, затем сохраните рецептуру.'),
       ]),
       el('div', { class: 'calc-sheet-actions' }, [
-        DRAFT.id ? el('button', { class: 'btn-ghost calc-danger', onclick: archiveRecipe }, 'В архив') : null,
-        el('button', { class: 'btn-primary calc-save-big', onclick: saveWholeRecipe }, 'Сохранить лист'),
+        DRAFT.id ? el('button', { class: 'btn-ghost calc-danger', onclick: archiveRecipe }, 'Архив') : null,
+        el('button', { class: 'btn-primary calc-save-big', onclick: saveWholeRecipe }, 'Сохранить'),
       ]),
     ]);
   }
@@ -294,8 +354,8 @@
   function sheetMeta() {
     const priceTypes = [{ v: '', t: '— тип цены —' }, ...(DICTS.priceTypes || []).map((p) => ({ v: p.id, t: p.name }))];
     return el('div', { class: 'calc-meta-grid' }, [
-      cell('Готовый товар', inp(DRAFT.product_label, { name: 'product_label', list: 'calc-products', placeholder: 'начните вводить товар' }), 'wide'),
-      cell('Если товара нет', inp(DRAFT.product_name, { name: 'product_name', placeholder: 'название вручную' }), 'wide'),
+      cell('Товар', inp(DRAFT.product_label, { name: 'product_label', list: 'calc-products', placeholder: 'начните вводить товар' }), 'wide'),
+      cell('Название вручную', inp(DRAFT.product_name, { name: 'product_name', placeholder: 'если товара нет в справочнике' }), 'wide'),
       cell('Тип цены', select(priceTypes, DRAFT.sale_price_type_id, { name: 'sale_price_type_id' })),
       cell('Цена вручную', inp(DRAFT.sale_price_override, { name: 'sale_price_override', type: 'number', step: '0.01', placeholder: 'если не из SD' })),
       cell('Вес, г', inp(DRAFT.pack_weight_g, { name: 'pack_weight_g', type: 'number', step: '0.1' })),
@@ -328,9 +388,9 @@
     ];
     return el('div', { class: 'calc-summary-strip' }, [
       kpi('Себестоимость', money(s.cost_calc), 'green'),
-      kpi('Рынок сейчас', money(s.cost_market), num(s.market_delta) > 0 ? 'warn' : ''),
-      kpi('Разница рынка', (num(s.market_delta) > 0 ? '+' : '') + money(s.market_delta), num(s.market_delta) > 0 ? 'warn' : 'green'),
-      kpi('Чистая прибыль', money(s.net_profit), num(s.net_profit) < 0 ? 'bad' : 'green'),
+      kpi('По рынку', money(s.cost_market), num(s.market_delta) > 0 ? 'warn' : ''),
+      kpi('Разница', (num(s.market_delta) > 0 ? '+' : '') + money(s.market_delta), num(s.market_delta) > 0 ? 'warn' : 'green'),
+      kpi('Прибыль', money(s.net_profit), num(s.net_profit) < 0 ? 'bad' : 'green'),
       el('div', { class: 'calc-summary-table' }, [
         el('div', { class: 'calc-summary-row head' }, [el('span', {}, 'Статья'), el('span', {}, 'Калькуляция'), el('span', {}, 'Рынок')]),
         ...rows.map((r) => el('div', { class: 'calc-summary-row ' + (r[3] || '') }, [
@@ -347,8 +407,8 @@
     return el('div', { class: 'calc-sheet-items' }, [
       el('div', { class: 'calc-items-head' }, [
         el('div', {}, [
-          el('div', { class: 'calc-sec-title' }, 'Состав рецептуры'),
-          el('div', { class: 'calc-sub' }, 'Сырьё вводится в граммах на единицу, упаковка — в штуках.'),
+          el('div', { class: 'calc-sec-title' }, 'Состав'),
+          el('div', { class: 'calc-sub' }, 'Сырьё в граммах на единицу, упаковка в штуках.'),
         ]),
         el('div', { class: 'calc-head-btns' }, [
           el('button', { class: 'btn-ghost calc-line-add', onclick: () => addItem('raw') }, '+ строка сырья'),
@@ -382,7 +442,7 @@
 
   function itemRow(it, i) {
     const kind = it.item_kind === 'packaging' ? 'packaging' : 'raw';
-    const m = materialByKey()[`${kind}:${it.item_id}`] || {};
+    const line = computeLine(it);
     const kindSel = select([{ v: 'raw', t: 'Сырьё' }, { v: 'packaging', t: 'Упаковка' }], kind, {
       name: 'item_kind',
       onchange: (e) => {
@@ -401,10 +461,10 @@
       inp(it.qty, { name: 'qty', type: 'number', step: '0.001', placeholder: kind === 'raw' ? 'г' : 'шт' }),
       inp(it.unit || (kind === 'raw' ? 'г' : 'шт'), { name: 'unit' }),
       inp(it.waste_pct, { name: 'waste_pct', type: 'number', step: '0.1' }),
-      el('span', { class: 'tnum muted' }, money(it.manual_price != null && it.manual_price !== '' ? it.manual_price : m.calc_price)),
-      el('span', { class: 'tnum muted' }, money(it.manual_price != null && it.manual_price !== '' ? it.manual_price : m.market_price)),
-      el('span', { class: 'tnum' }, money(it.calc_cost)),
-      el('span', { class: 'tnum muted' }, money(it.market_cost)),
+      el('span', { class: 'tnum muted calc-cell-pc' }, money(line.calc_price)),
+      el('span', { class: 'tnum muted calc-cell-pm' }, money(line.market_price)),
+      el('span', { class: 'tnum calc-cell-sc' }, money(line.calc_cost)),
+      el('span', { class: 'tnum muted calc-cell-sm' }, money(line.market_cost)),
       inp(it.manual_price, { name: 'manual_price', type: 'number', step: '0.01', placeholder: 'авто' }),
       el('button', { class: 'calc-icon-btn', title: 'Удалить строку', onclick: () => { syncDraftFromDom(); DRAFT.items.splice(i, 1); render(); } }, '×'),
     ]);
@@ -524,8 +584,8 @@
     const changed = MATERIALS.filter((m) => Math.abs(num(m.market_price) - num(m.calc_price)) > 0.01).length;
     c.appendChild(el('div', { class: 'calc-head' }, [
       el('div', {}, [
-        el('div', { class: 'calc-h2' }, 'Цены сырья и упаковки'),
-        el('div', { class: 'calc-sub' }, 'Последняя закупка подтягивается из закупа. Цена калькуляции фиксируется отдельно и меняется только кнопкой «Принять рынок» или вручную.'),
+        el('div', { class: 'calc-h2' }, 'Цены сырья'),
+        el('div', { class: 'calc-sub' }, 'Последняя закупка подтягивается из закупа. Цена калькуляции меняется только вручную или кнопкой «Принять рынок».'),
       ]),
     ]));
     c.appendChild(el('div', { class: 'calc-kpis calc-kpis-compact' }, [
@@ -627,7 +687,7 @@
     ];
     c.appendChild(el('div', { class: 'calc-head' }, [
       el('div', {}, [
-        el('div', { class: 'calc-h2' }, 'Настройки калькуляции'),
+        el('div', { class: 'calc-h2' }, 'Настройки'),
         el('div', { class: 'calc-sub' }, 'Минимальный набор коэффициентов. ФОТ и производство позже подтянем из своих плиток.'),
       ]),
       el('button', { class: 'btn-primary calc-save-settings', onclick: saveSettings }, 'Сохранить настройки'),
