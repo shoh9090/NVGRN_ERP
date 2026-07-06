@@ -363,6 +363,33 @@ router.post('/api/issue/:id(\\d+)/cancel', async (req, res) => {
   res.json({ ok: true });
 });
 
+// Подтверждение получения производством (ЗАГЛУШКА, пока нет модуля производства).
+// Списывает сырьё со склада движением reason='production' — так цепочка закуп→склад→
+// производство замыкается: остаток уменьшается по факту передачи.
+router.post('/api/issue/:id(\\d+)/confirm', express.json(), async (req, res) => {
+  const id = parseInt(req.params.id);
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    const pi = await client.query('SELECT status FROM production_issues WHERE id=$1 FOR UPDATE', [id]);
+    if (!pi.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Передача не найдена' }); }
+    if (pi.rows[0].status !== 'pending') { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Передача уже обработана' }); }
+    const items = (await client.query('SELECT id, item_kind, item_id, qty FROM production_issue_items WHERE issue_id=$1', [id])).rows;
+    for (const it of items) {
+      await client.query('UPDATE production_issue_items SET fact_qty=qty WHERE id=$1', [it.id]);
+      await client.query(
+        `INSERT INTO stock_movements (item_kind, item_id, qty, direction, reason, ref_type, ref_id, comment, moved_at, created_by)
+         VALUES ($1,$2,$3,'out','production','production_issue',$4,$5,CURRENT_DATE,$6)`,
+        [it.item_kind, it.item_id, -Math.abs(Number(it.qty)), id, 'Передано в производство', req.user.id]);
+    }
+    await client.query("UPDATE production_issues SET status='accepted' WHERE id=$1", [id]);
+    await client.query('COMMIT');
+  } catch (e) { await client.query('ROLLBACK').catch(() => {}); return res.status(400).json({ error: e.message }); }
+  finally { client.release(); }
+  await db.log(req.user.id, 'stock_issue_confirm', '#' + id);
+  res.json({ ok: true });
+});
+
 
 // ===== Вкладка: РЕЗЮМЕ / ОСТАТКИ (инвентаризация) =====
 router.get('/api/inventory', async (req, res) => {

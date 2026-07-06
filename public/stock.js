@@ -423,6 +423,13 @@
             el('td', {}, iPill(it.status)),
             el('td', { style: 'text-align:right;white-space:nowrap' }, [
               it.status === 'pending'
+                ? el('button', { class: 'btn-primary', style: 'margin-right:6px', title: 'Заглушка производства: подтвердить получение и списать сырьё со склада', onclick: async () => {
+                    if (!confirm('Подтвердить получение производством? Сырьё окончательно спишется со склада.')) return;
+                    try { await api('/issue/' + it.id + '/confirm', { method: 'POST' }); toast('Передача подтверждена — сырьё списано ✅'); viewIssue(); }
+                    catch (e) { toast(e.message, true); }
+                  } }, '✅ Подтвердить')
+                : null,
+              it.status === 'pending'
                 ? el('button', { onclick: async () => {
                     if (!confirm('Отменить передачу?')) return;
                     try { await api('/issue/' + it.id + '/cancel', { method: 'POST' }); toast('Передача отменена'); viewIssue(); }
@@ -652,10 +659,7 @@
             el('td', { class: 'tnum muted', style: 'text-align:right' }, Number(m.today_out) ? '−' + fmtQty(m.today_out) : '—'),
             el('td', {}, m.unit || ''),
             el('td', { style: 'text-align:right;white-space:nowrap' }, [
-              !hasOpening
-                ? el('button', { class: 'inv-mini', title: 'Задать первоначальный остаток', onclick: () => openOpening(m) }, '➕ старт')
-                : null,
-              el('button', { class: 'inv-mini', style: 'margin-left:4px', title: 'Корректировка (инвентаризация)', onclick: () => openAdjust(m) }, '✏️'),
+              el('button', { class: 'inv-mini', title: 'Корректировка (инвентаризация)', onclick: () => openAdjust(m) }, '✏️'),
               el('button', { class: 'inv-mini', style: 'margin-left:4px', title: 'История корректировок', onclick: () => openInvLog(m) }, '🕘'),
             ]),
           ]);
