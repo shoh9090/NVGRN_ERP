@@ -75,9 +75,8 @@
   let DRAFT = null;
   let recipeQ = '';
   let recipeGroup = '';
-  let materialQ = '';
-  let materialKind = '';
-  let materialCat = '';
+  // Взаимозависимые фильтры цен: родительская категория → категория (как в «Справочниках»).
+  const priceFilters = { parent: '', category: '', kind: '', q: '' };
 
   const productLabel = (p) => (p ? ((p.code ? p.code + ' · ' : '') + p.name) : '');
   const materialLabel = (m) => (m ? ((m.code ? m.code + ' · ' : '') + m.name) : '');
@@ -602,41 +601,49 @@
 
   function renderPrices() {
     const c = $('#calc-content');
-    const changed = MATERIALS.filter((m) => Math.abs(num(m.market_price) - num(m.calc_price)) > 0.01).length;
+    // «Отличие от закупки»: цена в кальк. разошлась с последней закупкой.
+    const changed = MATERIALS.filter((m) => m.last_purchase_price != null && Math.abs(num(m.last_purchase_price) - num(m.calc_price)) > 0.01).length;
     c.appendChild(el('div', { class: 'calc-head' }, [
       el('div', {}, [
-        el('div', { class: 'calc-h2' }, 'Цены сырья'),
-        el('div', { class: 'calc-sub' }, 'Последняя закупка подтягивается из закупа. Цена калькуляции меняется только вручную или кнопкой «Принять рынок».'),
+        el('div', { class: 'calc-h2' }, 'Цены сырья и упаковки'),
+        el('div', { class: 'calc-sub' }, 'Цена подтягивается из Закупки (последняя закупка). «Цену в кальк.» можно зафиксировать вручную. Наименования и категории — из «Справочников».'),
       ]),
     ]));
     c.appendChild(el('div', { class: 'calc-kpis calc-kpis-compact' }, [
       kpi('Позиций', MATERIALS.length, ''),
-      kpi('Есть отличие рынка', changed, changed ? 'warn' : ''),
+      kpi('Отличие от закупки', changed, changed ? 'warn' : ''),
       kpi('Сырьё', MATERIALS.filter((m) => m.kind === 'raw').length, ''),
       kpi('Упаковка', MATERIALS.filter((m) => m.kind === 'packaging').length, ''),
     ]));
-    const kind = select([
-      { v: '', t: 'Все типы' },
-      { v: 'raw', t: 'Сырьё' },
-      { v: 'packaging', t: 'Упаковка' },
-    ], materialKind, { onchange: (e) => { materialKind = e.target.value; render(); } });
-    const cats = [...new Set(MATERIALS.map((m) => m.category_name).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ru'));
-    const catSel = select([{ v: '', t: 'Все категории' }, ...cats.map((cn) => ({ v: cn, t: cn }))], materialCat, {
-      onchange: (e) => { materialCat = e.target.value; render(); },
-    });
-    const q = inp(materialQ, {
-      placeholder: 'Поиск по названию или артикулу',
-      oninput: (e) => { materialQ = e.target.value; clearTimeout(window.__calcMq); window.__calcMq = setTimeout(render, 180); },
-    });
-    c.appendChild(el('div', { class: 'calc-filters calc-filters-sticky' }, [kind, catSel, q]));
 
-    const needle = materialQ.trim().toLowerCase();
-    const rows = MATERIALS.filter((m) => (!materialKind || m.kind === materialKind)
-      && (!materialCat || m.category_name === materialCat)
+    // Каскад: родительская категория → категория (опции категорий зависят от родителя).
+    const parents = [...new Set(MATERIALS.map((m) => m.parent_name).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ru'));
+    const catsFor = (parent) => [...new Set(MATERIALS.filter((m) => !parent || m.parent_name === parent).map((m) => m.category_name).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ru'));
+    if (priceFilters.category && !catsFor(priceFilters.parent).includes(priceFilters.category)) priceFilters.category = '';
+    const parentSel = select([{ v: '', t: 'Все группы' }, ...parents.map((p) => ({ v: p, t: p }))], priceFilters.parent, {
+      onchange: (e) => { priceFilters.parent = e.target.value; priceFilters.category = ''; render(); },
+    });
+    const catSel = select([{ v: '', t: 'Все категории' }, ...catsFor(priceFilters.parent).map((cn) => ({ v: cn, t: cn }))], priceFilters.category, {
+      onchange: (e) => { priceFilters.category = e.target.value; render(); },
+    });
+    const kindSel = select([
+      { v: '', t: 'Все типы' }, { v: 'raw', t: 'Сырьё' }, { v: 'packaging', t: 'Упаковка' },
+    ], priceFilters.kind, { onchange: (e) => { priceFilters.kind = e.target.value; render(); } });
+    const q = inp(priceFilters.q, {
+      placeholder: 'Поиск по названию или артикулу',
+      oninput: (e) => { priceFilters.q = e.target.value; clearTimeout(window.__calcMq); window.__calcMq = setTimeout(render, 180); },
+    });
+    c.appendChild(el('div', { class: 'calc-filters calc-filters-sticky' }, [parentSel, catSel, kindSel, q]));
+
+    const needle = priceFilters.q.trim().toLowerCase();
+    const rows = MATERIALS.filter((m) => (!priceFilters.kind || m.kind === priceFilters.kind)
+      && (!priceFilters.parent || m.parent_name === priceFilters.parent)
+      && (!priceFilters.category || m.category_name === priceFilters.category)
       && (!needle || (m.name || '').toLowerCase().includes(needle) || (m.code || '').toLowerCase().includes(needle)));
     const table = el('div', { class: 'calc-price-table calc-excel-table' }, [
       el('div', { class: 'calc-price-row head' }, [
-        el('span', {}, 'Тип'), el('span', {}, 'Позиция'), el('span', {}, 'Цена кальк.'), el('span', {}, 'Рынок сейчас'), el('span', {}, 'Последняя закупка'), el('span', {}, 'Разница'), el('span', {}, 'Комментарий'), el('span', {}, ''),
+        el('span', {}, 'Тип'), el('span', {}, 'Категория'), el('span', {}, 'Наименование'), el('span', {}, 'Характеристика'),
+        el('span', {}, 'Цена в кальк.'), el('span', {}, 'Последняя закупка'), el('span', {}, 'Комментарий'), el('span', {}, ''),
       ]),
       ...rows.map(priceRow),
     ]);
@@ -645,25 +652,28 @@
 
   function priceRow(m) {
     const calc = inp(m.calc_price, { type: 'number', step: '0.01', name: 'calc_price' });
-    const market = inp(m.market_price, { type: 'number', step: '0.01', name: 'market_price' });
-    const comment = inp(m.price_comment || '', { name: 'comment', placeholder: 'почему цена отличается' });
-    const delta = num(m.market_price) - num(m.calc_price);
+    const comment = inp(m.price_comment || '', { name: 'comment', placeholder: 'заметка по цене' });
+    // Δ-подсказка: как изменилась закупочная цена относительно предыдущей закупки.
+    const dyn = num(m.last_purchase_price) - num(m.prev_purchase_price);
+    const hasDyn = m.last_purchase_price != null && m.prev_purchase_price != null && Math.abs(dyn) > 0.01;
+    const dynHint = hasDyn
+      ? el('small', { class: dyn > 0 ? 'bad' : 'good', title: 'Динамика к прошлой закупке. Полная история — в разделе Закупки.' },
+          (dyn > 0 ? '↑ +' : '↓ −') + money(Math.abs(dyn)))
+      : null;
     const row = el('div', { class: 'calc-price-row' }, [
       el('span', {}, m.kind === 'packaging' ? 'Упаковка' : 'Сырьё'),
-      el('span', {}, [
-        el('b', {}, m.name || ''),
-        el('small', {}, (m.code || '') + (m.category_name ? ' · ' + m.category_name : '')),
-      ]),
+      el('span', { class: 'muted' }, m.category_name || '—'),
+      el('span', {}, [el('b', {}, m.name || ''), m.code ? el('small', {}, m.code) : null]),
+      el('span', { class: 'muted' }, m.characteristics || '—'),
       calc,
-      market,
       el('span', { class: 'tnum muted' }, [
         el('b', {}, money(m.last_purchase_price)),
-        el('small', {}, (m.last_source ? m.last_source + ' · ' : '') + ruDate(m.last_purchase_at)),
+        el('small', {}, (m.last_source ? m.last_source + ' · ' : '') + (ruDate(m.last_purchase_at) || '—')),
+        dynHint,
       ]),
-      el('span', { class: 'tnum ' + (delta > 0 ? 'bad' : delta < 0 ? 'good' : '') }, (delta > 0 ? '+' : '') + money(delta)),
       comment,
       el('div', { class: 'calc-row-actions' }, [
-        el('button', { class: 'calc-accept-btn', onclick: () => { calc.value = market.value; savePrice(m, row); } }, 'Принять рынок'),
+        m.last_purchase_price != null ? el('button', { class: 'calc-accept-btn', title: 'Поставить цену из последней закупки', onclick: () => { calc.value = m.last_purchase_price; savePrice(m, row); } }, 'Взять из закупки') : null,
         el('button', { class: 'btn-primary calc-mini-save', onclick: () => savePrice(m, row) }, 'Сохранить'),
       ]),
     ]);
@@ -676,7 +686,8 @@
         item_kind: m.kind,
         item_id: m.id,
         calc_price: row.querySelector('[name="calc_price"]').value,
-        market_price: row.querySelector('[name="market_price"]').value,
+        // market_price оставляем = последней закупке (источник цены — Закупка).
+        market_price: m.last_purchase_price != null ? m.last_purchase_price : row.querySelector('[name="calc_price"]').value,
         comment: row.querySelector('[name="comment"]').value,
       });
       toast('Цена сохранена');

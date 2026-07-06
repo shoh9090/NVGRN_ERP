@@ -150,16 +150,23 @@ async function priceMap() {
       UNION ALL
       SELECT * FROM hist
     ),
-    last_price AS (
-      SELECT DISTINCT ON (item_kind, item_id) item_kind, item_id, price, price_date, source
+    ranked AS (
+      SELECT item_kind, item_id, price, price_date, source,
+             ROW_NUMBER() OVER (PARTITION BY item_kind, item_id ORDER BY price_date DESC NULLS LAST) AS rn
       FROM points
-      ORDER BY item_kind, item_id, price_date DESC NULLS LAST
+    ),
+    last_price AS (
+      SELECT l.item_kind, l.item_id, l.price, l.price_date, l.source, p.price AS prev_price
+      FROM ranked l
+      LEFT JOIN ranked p ON p.item_kind = l.item_kind AND p.item_id = l.item_id AND p.rn = 2
+      WHERE l.rn = 1
     )
     SELECT COALESCE(m.item_kind, lp.item_kind) AS item_kind,
            COALESCE(m.item_id, lp.item_id) AS item_id,
            (m.item_kind IS NOT NULL) AS has_manual,
            m.calc_price, m.market_price, m.market_price_at, m.comment,
-           lp.price AS last_purchase_price, lp.price_date AS last_purchase_at, lp.source AS last_source
+           lp.price AS last_purchase_price, lp.price_date AS last_purchase_at, lp.source AS last_source,
+           lp.prev_price AS prev_purchase_price
     FROM calc_material_prices m
     FULL OUTER JOIN last_price lp ON lp.item_kind = m.item_kind AND lp.item_id = m.item_id
   `);
@@ -174,6 +181,7 @@ async function priceMap() {
       last_purchase_price: numOrNull(r.last_purchase_price),
       last_purchase_at: r.last_purchase_at,
       last_source: r.last_source || '',
+      prev_purchase_price: numOrNull(r.prev_purchase_price),
     };
   }
   return map;
@@ -183,7 +191,7 @@ async function getMaterials() {
   const prices = await priceMap();
   const rows = await db.pool.query(`
     SELECT 'raw' AS kind, rm.id, rm.code, rm.name, COALESCE(u.short_name, 'кг') AS unit,
-           c.name AS category_name, pc.name AS parent_name
+           c.name AS category_name, pc.name AS parent_name, rm.characteristics AS characteristics
     FROM ref_raw_materials rm
     LEFT JOIN ref_units u ON u.id = rm.unit_id
     LEFT JOIN ref_categories c ON c.id = rm.category_id
@@ -191,7 +199,7 @@ async function getMaterials() {
     WHERE rm.status = 'active'
     UNION ALL
     SELECT 'packaging' AS kind, pk.id, pk.code, pk.name, COALESCE(u.short_name, 'шт') AS unit,
-           c.name AS category_name, pc.name AS parent_name
+           c.name AS category_name, pc.name AS parent_name, pk.size AS characteristics
     FROM ref_packaging pk
     LEFT JOIN ref_units u ON u.id = pk.unit_id
     LEFT JOIN ref_categories c ON c.id = pk.category_id
@@ -215,6 +223,7 @@ async function getMaterials() {
       last_purchase_price: p.last_purchase_price,
       last_purchase_at: p.last_purchase_at,
       last_source: p.last_source,
+      prev_purchase_price: p.prev_purchase_price,
       market_price_at: p.market_price_at,
       price_comment: p.comment || '',
     };

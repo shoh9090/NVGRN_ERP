@@ -81,7 +81,7 @@
 .calc-filters-sticky { position:sticky; top:0; z-index:3; background:var(--paper); padding:4px 0; }
 
 .calc-price-table { display:flex; flex-direction:column; }
-.calc-price-row { display:grid; grid-template-columns:86px minmax(240px, 1.4fr) 120px 120px 125px 105px minmax(150px, .8fr) 190px; gap:8px; align-items:center; padding:8px 10px; border-bottom:1px solid #edf0ea; font-size:12px; min-width:1110px; }
+.calc-price-row { display:grid; grid-template-columns:80px 120px minmax(190px, 1.4fr) minmax(110px, .9fr) 120px 150px minmax(140px, .8fr) 180px; gap:8px; align-items:center; padding:8px 10px; border-bottom:1px solid #edf0ea; font-size:12px; min-width:1140px; }
 .calc-price-row:last-child { border-bottom:0; }
 .calc-price-row.head { position:sticky; top:0; z-index:2; background:#eef4eb; color:var(--muted); font-size:10px; font-weight:900; text-transform:uppercase; letter-spacing:.02em; }
 .calc-price-row b { display:block; color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
