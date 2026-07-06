@@ -97,8 +97,14 @@
 .calc-setting-tile:last-child { border-bottom:0; }
 .calc-setting-tile span { font-weight:800; color:#4d5b50; }
 
+/* Ghost-кнопки: глобальный .btn-ghost белый (для тёмной шапки) и на светлом
+   фоне модуля невидим. Переопределяем читаемо ОДИН раз на весь модуль. */
+#calc-main .btn-ghost { background:#fff; border:1px solid var(--line); color:var(--forest); }
+#calc-main .btn-ghost:hover { background:#eef4e9; border-color:var(--forest); }
+
 /* Настройка столбцов (как в SD) + кнопки действий над таблицей цен */
 .calc-price-actions { display:flex; gap:8px; margin-left:auto; }
+.calc-cols-btn { padding:8px 11px; font-size:15px; line-height:1; }
 .calc-cols-wrap { position:relative; }
 .calc-cols-panel { position:absolute; top:calc(100% + 4px); right:0; z-index:20; background:#fff; border:1px solid var(--line); border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,.12); padding:8px; min-width:190px; display:flex; flex-direction:column; gap:2px; }
 .calc-cols-item { display:flex; align-items:center; gap:8px; padding:6px 8px; border-radius:6px; font-size:13px; cursor:pointer; }

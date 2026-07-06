@@ -158,6 +158,10 @@
   }
 
   async function boot() {
+    // Панель столбцов закрывается по клику вне неё (кнопка внутри .calc-cols-wrap — не закрывает).
+    document.addEventListener('click', (e) => {
+      if (priceColsOpen && !(e.target.closest && e.target.closest('.calc-cols-wrap'))) { priceColsOpen = false; render(); }
+    });
     try {
       await reloadBase();
       render();
@@ -644,7 +648,7 @@
       oninput: (e) => { priceFilters.q = e.target.value; clearTimeout(window.__calcMq); window.__calcMq = setTimeout(render, 180); },
     });
     // Кнопка настройки столбцов (как в SD) + панель с галочками.
-    const colsBtn = el('button', { class: 'btn-ghost calc-cols-btn', onclick: () => { priceColsOpen = !priceColsOpen; render(); } }, '⚙ Столбцы');
+    const colsBtn = el('button', { class: 'btn-ghost calc-cols-btn', title: 'Настроить столбцы', onclick: () => { priceColsOpen = !priceColsOpen; render(); } }, '⚙');
     const colsWrap = el('div', { class: 'calc-cols-wrap' }, [colsBtn]);
     if (priceColsOpen) {
       colsWrap.appendChild(el('div', { class: 'calc-cols-panel' }, PRICE_COLS.filter((cc) => !cc.always).map((cc) =>
@@ -671,10 +675,10 @@
       && (!priceFilters.category || m.category_name === priceFilters.category)
       && (!needle || (m.name || '').toLowerCase().includes(needle) || (m.code || '').toLowerCase().includes(needle)));
     const cols = visiblePriceCols();
-    const gridStyle = 'grid-template-columns:' + cols.map((cc) => cc.width).join(' ');
+    const gridStyle = 'grid-template-columns:44px ' + cols.map((cc) => cc.width).join(' ');
     const table = el('div', { class: 'calc-price-table calc-excel-table' }, [
-      el('div', { class: 'calc-price-row head', style: gridStyle }, cols.map((cc) => el('span', {}, cc.label))),
-      ...rows.map((m) => priceRow(m, cols, gridStyle)),
+      el('div', { class: 'calc-price-row head', style: gridStyle }, [el('span', {}, '#'), ...cols.map((cc) => el('span', {}, cc.label))]),
+      ...rows.map((m, i) => priceRow(m, cols, gridStyle, i + 1)),
     ]);
     c.appendChild(rows.length ? table : el('div', { class: 'calc-empty' }, 'Ничего не найдено.'));
   }
@@ -702,13 +706,13 @@
     return el('span', {});
   }
 
-  function priceRow(m, cols, gridStyle) {
+  function priceRow(m, cols, gridStyle, idx) {
     return el('div', {
       class: 'calc-price-row', style: gridStyle,
       'data-kind': m.kind, 'data-id': m.id,
       'data-last': m.last_purchase_price == null ? '' : String(m.last_purchase_price),
       'data-comment': m.price_comment || '',
-    }, cols.map((cc) => priceCell(m, cc.key)));
+    }, [el('span', { class: 'calc-row-num' }, String(idx)), ...cols.map((cc) => priceCell(m, cc.key))]);
   }
 
   // Подставить последнюю закупочную цену во все видимые строки (без сохранения — потом «Сохранить»).
