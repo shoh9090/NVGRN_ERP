@@ -132,7 +132,10 @@ router.get('/', async (req, res) => {
 
 // ---------- Справочники ----------
 router.get('/api/dicts', async (req, res) => {
-  const departments = (await db.pool.query("SELECT id, name, sort_order FROM hr_departments WHERE status='active' ORDER BY sort_order, name")).rows;
+  const departments = (await db.pool.query(
+    `SELECT d.id, d.name, d.sort_order,
+            (SELECT COUNT(*) FROM hr_employees e WHERE e.department_id = d.id AND e.status <> 'archived')::int AS emp_count
+     FROM hr_departments d WHERE d.status='active' ORDER BY d.sort_order, d.name`)).rows;
   const counts = (await db.pool.query("SELECT status, count(*)::int n FROM hr_employees GROUP BY status")).rows;
   const byStatus = {}; counts.forEach((c) => { byStatus[c.status] = c.n; });
   res.json({ departments, schedules: SCHEDULES, statuses: STATUSES, counts: byStatus });
@@ -141,7 +144,8 @@ router.get('/api/dicts', async (req, res) => {
 // ---------- Сотрудники ----------
 router.get('/api/employees', async (req, res) => {
   const p = [], w = [];
-  if (req.query.department) { p.push(parseInt(req.query.department)); w.push(`e.department_id = $${p.length}`); }
+  if (req.query.department === '__none__') w.push('e.department_id IS NULL');
+  else if (req.query.department) { p.push(parseInt(req.query.department)); w.push(`e.department_id = $${p.length}`); }
   if (req.query.schedule && SCHEDULE_CODES.includes(req.query.schedule)) { p.push(req.query.schedule); w.push(`e.schedule_type = $${p.length}`); }
   if (req.query.status && STATUSES.includes(req.query.status)) { p.push(req.query.status); w.push(`e.status = $${p.length}`); }
   else if (!req.query.status) w.push(`e.status <> 'archived'`); // по умолчанию скрываем архив
@@ -199,7 +203,8 @@ function withTotals(row) {
 router.get('/api/payroll', async (req, res) => {
   const period = /^\d{4}-\d{2}$/.test(req.query.period) ? req.query.period : new Date().toISOString().slice(0, 7);
   const p = [period], w = ["e.status <> 'archived'"];
-  if (req.query.department) { p.push(parseInt(req.query.department)); w.push(`e.department_id = $${p.length}`); }
+  if (req.query.department === '__none__') w.push('e.department_id IS NULL');
+  else if (req.query.department) { p.push(parseInt(req.query.department)); w.push(`e.department_id = $${p.length}`); }
   if (req.query.schedule && SCHEDULE_CODES.includes(req.query.schedule)) { p.push(req.query.schedule); w.push(`e.schedule_type = $${p.length}`); }
   if (req.query.q) { p.push('%' + String(req.query.q).trim() + '%'); w.push(`e.full_name ILIKE $${p.length}`); }
   const rows = (await db.pool.query(
@@ -344,9 +349,20 @@ router.post('/api/department', J, async (req, res) => {
     res.json({ ok: true });
   } catch (e) { res.status(400).json({ error: 'Такой отдел уже есть или ошибка: ' + e.message }); }
 });
-router.post('/api/department/:id(\\d+)/archive', async (req, res) => {
-  await db.pool.query("UPDATE hr_departments SET status='archived' WHERE id=$1", [req.params.id]);
-  res.json({ ok: true });
+// Архивация отдела с переносом сотрудников (не оставляем людей в удалённом отделе).
+router.post('/api/department/:id(\\d+)/archive', J, async (req, res) => {
+  const id = parseInt(req.params.id);
+  const cnt = (await db.pool.query("SELECT COUNT(*)::int AS n FROM hr_employees WHERE department_id=$1 AND status<>'archived'", [id])).rows[0].n;
+  const hasMove = req.body && ('move_to' in req.body);
+  if (cnt > 0 && !hasMove) return res.status(409).json({ error: 'has_employees', count: cnt });
+  if (cnt > 0) {
+    const moveTo = intOrNull(req.body.move_to); // null = «без отдела»
+    if (moveTo === id) return res.status(400).json({ error: 'Нельзя перенести в тот же отдел' });
+    await db.pool.query('UPDATE hr_employees SET department_id=$1, updated_at=now() WHERE department_id=$2', [moveTo, id]);
+  }
+  await db.pool.query("UPDATE hr_departments SET status='archived' WHERE id=$1", [id]);
+  await db.log(req.user.id, 'hr_department_archive', `#${id}${cnt ? ` (перенос ${cnt})` : ''}`);
+  res.json({ ok: true, moved: cnt });
 });
 
 // ---------- Массовые операции ----------

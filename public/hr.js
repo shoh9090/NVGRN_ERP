@@ -159,7 +159,7 @@
       ]),
     ]));
     // Фильтры
-    const dSel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { empFilter.department = e.target.value; load(); } }, [el('option', { value: '' }, 'Все отделы'), ...DICTS.departments.map((d) => el('option', { value: d.id, selected: String(d.id) === empFilter.department || null }, d.name))]);
+    const dSel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { empFilter.department = e.target.value; load(); } }, [el('option', { value: '' }, 'Все отделы'), el('option', { value: '__none__', selected: empFilter.department === '__none__' || null }, 'Без отдела'), ...DICTS.departments.map((d) => el('option', { value: d.id, selected: String(d.id) === empFilter.department || null }, d.name))]);
     const sSel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { empFilter.schedule = e.target.value; load(); } }, [el('option', { value: '' }, 'Все графики'), ...(DICTS.schedules || []).map((s) => el('option', { value: s.code, selected: s.code === empFilter.schedule || null }, s.name))]);
     const stSel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { empFilter.status = e.target.value; load(); } }, [{ v: '', t: 'Активные' }, { v: 'fired', t: 'Уволенные' }, { v: 'archived', t: 'Архив' }].map((o) => el('option', { value: o.v, selected: o.v === empFilter.status || null }, o.t)));
     const q = el('input', { class: 'hrf-inp hr-filt hr-filt-q', placeholder: 'Поиск по ФИО / должности / телефону', value: empFilter.q, oninput: (e) => { empFilter.q = e.target.value; clearTimeout(window.__hrT); window.__hrT = setTimeout(load, 300); } });
@@ -541,10 +541,11 @@
       el('button', { class: 'btn-primary hr-add', onclick: () => openDept(null) }, '+ Отдел'),
     ]));
     if (!DICTS.departments.length) { c.appendChild(el('div', { class: 'hr-empty' }, 'Отделов нет.')); return; }
-    const head = el('div', { class: 'hr-row head hr-dept' }, ['#', 'Отдел', 'Порядок', ''].map((h) => el('span', {}, h)));
+    const head = el('div', { class: 'hr-row head hr-dept' }, ['#', 'Отдел', 'Сотрудников', 'Порядок', ''].map((h) => el('span', {}, h)));
     c.appendChild(el('div', { class: 'hr-list' }, [head, ...DICTS.departments.map((d, i) => el('div', { class: 'hr-row hr-dept', style: 'cursor:pointer', onclick: () => openDept(d) }, [
       el('span', { class: 'hr-idx' }, String(i + 1)),
       el('span', { style: 'font-weight:700' }, d.name),
+      el('span', { class: 'tnum muted' }, String(d.emp_count || 0)),
       el('span', { class: 'muted' }, String(d.sort_order)),
       el('span', {}, '✏️'),
     ]))]));
@@ -553,11 +554,32 @@
     d = d || {};
     const name = finp(d.name, { placeholder: 'Название отдела' });
     const sort = finp(d.sort_order != null ? d.sort_order : 100, { type: 'number' });
-    const body = el('div', { class: 'hrf' }, [frow('Название', name), frow('Порядок', sort)]);
+    const body = el('div', { class: 'hrf' }, [frow('Название', name), frow('Порядок', sort),
+      d.id ? el('div', { class: 'hr-sub' }, 'Сотрудников в отделе: ' + (d.emp_count || 0)) : null]);
     const save = el('button', { class: 'btn-primary', onclick: async () => { try { await post('/department', { id: d.id, name: name.value, sort_order: sort.value }); toast('Сохранено'); closeModal(); await reloadDicts(); render(); } catch (e) { toast(e.message, true); } } }, 'Сохранить');
     const acts = [save];
-    if (d.id) acts.unshift(el('button', { class: 'btn-ghost hrf-warn', onclick: async () => { if (!confirm('Архивировать отдел «' + d.name + '»?')) return; try { await post('/department/' + d.id + '/archive', {}); toast('В архиве'); closeModal(); await reloadDicts(); render(); } catch (e) { toast(e.message, true); } } }, 'В архив'));
+    if (d.id) acts.unshift(el('button', { class: 'btn-ghost hrf-warn', onclick: () => archiveDept(d) }, 'В архив'));
     modal(d.id ? 'Отдел' : 'Новый отдел', body, acts);
+  }
+  // Архивация отдела: если есть сотрудники — сначала перенести их в другой отдел (или «без отдела»).
+  async function archiveDept(d) {
+    const cnt = d.emp_count || 0;
+    if (!cnt) {
+      if (!confirm('Архивировать отдел «' + d.name + '»?')) return;
+      try { await post('/department/' + d.id + '/archive', {}); toast('В архиве'); $('#hr-modal-root').innerHTML = ''; await reloadDicts(); render(); } catch (e) { toast(e.message, true); }
+      return;
+    }
+    const others = DICTS.departments.filter((x) => x.id !== d.id);
+    const sel = fsel([{ v: '', t: '— Без отдела —' }, ...others.map((x) => ({ v: x.id, t: x.name }))], '');
+    const body = el('div', { class: 'hrf' }, [
+      el('div', { class: 'hr-sub', style: 'margin-bottom:6px' }, 'В отделе «' + d.name + '» ' + cnt + ' сотр. Их нельзя оставить без отдела «в никуда» — выбери, куда перенести.'),
+      frow('Перенести в', sel),
+    ]);
+    const ok = el('button', { class: 'btn-primary hrf-warn', onclick: async () => {
+      try { const r = await post('/department/' + d.id + '/archive', { move_to: sel.value }); toast('Перенесено ' + r.moved + ' · отдел в архиве'); $('#hr-modal-root').innerHTML = ''; await reloadDicts(); render(); }
+      catch (e) { toast(e.message, true); }
+    } }, 'Перенести и архивировать');
+    modal('Архивация отдела — ' + d.name, body, [el('button', { class: 'btn-ghost', onclick: closeModal }, 'Отмена'), ok]);
   }
 
   boot();
