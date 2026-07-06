@@ -154,6 +154,7 @@
     c.appendChild(el('div', { class: 'hr-head' }, [
       el('div', {}, [el('div', { class: 'hr-h2' }, 'Сотрудники'), el('div', { class: 'hr-sub' }, 'Единый справочник. Клик — карточка. Галочками — массовые действия.')]),
       el('div', { class: 'hr-head-btns' }, [
+        el('button', { class: 'btn-ghost hr-add', onclick: () => openCardImport() }, '💳 Карты (Excel)'),
         el('button', { class: 'btn-ghost hr-add', onclick: () => openEmpImport() }, '📥 Импорт'),
         el('button', { class: 'btn-primary hr-add', onclick: () => openEmp(null) }, '+ Сотрудник'),
       ]),
@@ -234,6 +235,31 @@
       } catch (e) { toast(e.message, true); load.disabled = false; load.textContent = 'Загрузить'; }
     } }, 'Загрузить');
     modal('Импорт сотрудников', body, [load]);
+  }
+
+  // Массовая загрузка номеров карт: шаблон уже со списком сотрудников, заполнить только карту.
+  function openCardImport() {
+    const file = el('input', { type: 'file', accept: '.xls,.xlsx', class: 'hrf-inp' });
+    const tpl = el('a', { href: '/hr/api/cards/template.xlsx', class: 'hr-link' }, '⬇ Скачать шаблон (уже со списком сотрудников)');
+    const body = el('div', { class: 'hrf' }, [
+      el('div', { class: 'hr-sub' }, 'Скачайте шаблон — в нём уже все сотрудники. Впишите номер карты в колонку «Номер карты» и загрузите. Сопоставляем по ФИО, пустые строки пропускаем.'),
+      el('div', {}, tpl),
+      frow('Файл', file),
+    ]);
+    const load = el('button', { class: 'btn-primary', onclick: async () => {
+      if (!file.files[0]) return toast('Выберите файл', true);
+      load.disabled = true; load.textContent = 'Загружаю…';
+      const fd = new FormData(); fd.append('file', file.files[0]);
+      try {
+        const res = await fetch('/hr/api/cards/import', { method: 'POST', body: fd });
+        const d = await res.json(); if (!res.ok) throw new Error(d.error || 'Ошибка');
+        let msg = 'Обновлено карт: ' + d.updated;
+        if (d.notFoundCount) msg += '. Не нашли по ФИО: ' + d.notFoundCount + (d.notFound.length ? ' (' + d.notFound.join(', ') + ')' : '');
+        alert(msg);
+        closeModal(); await reloadDicts(); render();
+      } catch (e) { toast(e.message, true); load.disabled = false; load.textContent = 'Загрузить'; }
+    } }, 'Загрузить');
+    modal('Загрузка номеров карт', body, [load]);
   }
 
   function openEmp(e) {

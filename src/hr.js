@@ -437,6 +437,48 @@ router.post('/api/employees/import', upload.single('file'), async (req, res) => 
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
+// Шаблон Excel для номеров карт — уже со списком сотрудников (заполнить только карту).
+router.get('/api/cards/template.xlsx', async (req, res) => {
+  const emps = (await db.pool.query("SELECT full_name, card_number FROM hr_employees WHERE status<>'archived' ORDER BY full_name")).rows;
+  const wb = XLSX.utils.book_new();
+  const sh = XLSX.utils.aoa_to_sheet([['ФИО', 'Номер карты'], ...emps.map((e) => [e.full_name, e.card_number || ''])]);
+  sh['!cols'] = [{ wch: 32 }, { wch: 24 }];
+  XLSX.utils.book_append_sheet(wb, sh, 'Карты');
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', 'attachment; filename="hr_cards_template.xlsx"');
+  res.send(buf);
+});
+// Импорт номеров карт: сопоставляем по ФИО, ставим card_number существующим сотрудникам.
+router.post('/api/cards/import', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'Файл не выбран' });
+    const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: false, defval: '' });
+    if (!rows.length) return res.status(400).json({ error: 'Пустой файл' });
+    let hi = rows.findIndex((r) => r.some((c) => /фио|имя/i.test(String(c))));
+    if (hi < 0) hi = 0;
+    const head = rows[hi].map((c) => String(c).toLowerCase());
+    const iName = head.findIndex((h) => /фио|имя/.test(h));
+    const iCard = head.findIndex((h) => /карт/.test(h));
+    if (iName < 0 || iCard < 0) return res.status(400).json({ error: 'Нужны колонки «ФИО» и «Номер карты»' });
+    const byName = {};
+    (await db.pool.query("SELECT id, full_name FROM hr_employees WHERE status<>'archived'")).rows.forEach((e) => { byName[e.full_name.trim().toLowerCase()] = e.id; });
+    let updated = 0; const notFound = [];
+    for (let i = hi + 1; i < rows.length; i++) {
+      const name = String(rows[i][iName] || '').trim();
+      const card = String(rows[i][iCard] || '').trim();
+      if (!name || /^пример/i.test(name) || !card) continue;
+      const id = byName[name.toLowerCase()];
+      if (!id) { notFound.push(name); continue; }
+      await db.pool.query('UPDATE hr_employees SET card_number=$1, updated_at=now() WHERE id=$2', [card, id]);
+      updated++;
+    }
+    await db.log(req.user.id, 'hr_cards_import', `обновлено ${updated}`);
+    res.json({ ok: true, updated, notFound: notFound.slice(0, 30), notFoundCount: notFound.length });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 // Оптовое удаление или архивирование выбранных.
 // Доступ к модулю «Персонал» уже проверен requireHrAccess (галочка плитки),
 // поэтому внутри — полные права: кому выдан доступ, тот может и удалять.
