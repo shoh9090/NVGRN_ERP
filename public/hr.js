@@ -262,6 +262,31 @@
     modal('Загрузка номеров карт', body, [load]);
   }
 
+  // Загрузка табеля из Excel за период (табель начальника производства).
+  function openTimesheetImport(period) {
+    const file = el('input', { type: 'file', accept: '.xls,.xlsx', class: 'hrf-inp' });
+    const tpl = el('a', { href: '/hr/api/timesheet/template.xlsx?period=' + period, class: 'hr-link' }, '⬇ Скачать шаблон за ' + monthLabel(period));
+    const body = el('div', { class: 'hrf' }, [
+      el('div', { class: 'hr-sub' }, 'Шаблон уже со списком сотрудников и текущими значениями. Заполните План/Факт дней и часов, загрузите. Сопоставляем по ФИО; пишем только дни/часы, деньги не трогаем.'),
+      el('div', {}, tpl),
+      frow('Файл', file),
+    ]);
+    const load = el('button', { class: 'btn-primary', onclick: async () => {
+      if (!file.files[0]) return toast('Выберите файл', true);
+      load.disabled = true; load.textContent = 'Загружаю…';
+      const fd = new FormData(); fd.append('file', file.files[0]); fd.append('period', period);
+      try {
+        const res = await fetch('/hr/api/timesheet/import', { method: 'POST', body: fd });
+        const d = await res.json(); if (!res.ok) throw new Error(d.error || 'Ошибка');
+        let msg = 'Обновлено строк табеля: ' + d.updated;
+        if (d.notFoundCount) msg += '. Не нашли по ФИО: ' + d.notFoundCount + (d.notFound.length ? ' (' + d.notFound.join(', ') + ')' : '');
+        alert(msg);
+        closeModal(); renderTimesheet();
+      } catch (e) { toast(e.message, true); load.disabled = false; load.textContent = 'Загрузить'; }
+    } }, 'Загрузить');
+    modal('Загрузка табеля — ' + monthLabel(period), body, [load]);
+  }
+
   function openEmp(e) {
     e = e || {};
     const name = finp(e.full_name, { placeholder: 'Фамилия Имя Отчество' });
@@ -327,7 +352,10 @@
     const c = $('#hr-content');
     if (!tsState.period) tsState.period = curMonth();
     c.appendChild(el('div', { class: 'hr-head' }, [
-      el('div', {}, [el('div', { class: 'hr-h2' }, 'Табель — ' + monthLabel(tsState.period)), el('div', { class: 'hr-sub' }, 'Отработанные дни и часы за месяц. Эти цифры видны в расчёте зарплаты. Деньги начислений не затрагиваются.')]),
+      el('div', {}, [el('div', { class: 'hr-h2' }, 'Табель — ' + monthLabel(tsState.period)), el('div', { class: 'hr-sub' }, 'Часы/дни за месяц. Переработка = факт − план часов (оплата ×2 — механизм расчёта настроим позже). Деньги начислений не затрагиваются.')]),
+      el('div', { class: 'hr-head-btns' }, [
+        el('button', { class: 'btn-ghost hr-add', onclick: () => openTimesheetImport(tsState.period) }, '📥 Загрузить из Excel'),
+      ]),
     ]));
     const mInp = el('input', { type: 'month', class: 'hrf-inp hr-filt', value: tsState.period, onchange: (e) => { tsState.period = e.target.value || curMonth(); load(); } });
     const dSel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { tsState.department = e.target.value; load(); } }, [el('option', { value: '' }, 'Все отделы'), ...DICTS.departments.map((d) => el('option', { value: d.id, selected: String(d.id) === tsState.department || null }, d.name))]);
@@ -350,16 +378,30 @@
       const saveBtn = el('button', { class: 'btn-primary', onclick: save }, '💾 Сохранить табель');
       box.appendChild(el('div', { class: 'hr-filters', style: 'justify-content:flex-end' }, [el('span', { class: 'hr-flab' }, 'План дней всем:'), planAll, fillBtn, saveBtn]));
       const numIn = (m, key, val) => { const i = el('input', { class: 'hrf-inp hr-ts-inp', type: 'number', min: '0', step: key.indexOf('hours') >= 0 ? '0.5' : '1', value: val == null ? '' : String(val) }); m.inputs[key] = i; return i; };
-      const head = el('div', { class: 'hr-row head hr-ts' }, ['#', 'ФИО', 'Отдел', 'План дн.', 'Факт дн.', 'План ч.', 'Факт ч.'].map((h) => el('span', {}, h)));
+      const nH = (v) => String(Math.round((Number(v) || 0) * 10) / 10);
+      const head = el('div', { class: 'hr-row head hr-ts' }, ['#', 'ФИО', 'Отдел', 'План дн.', 'Факт дн.', 'План ч.', 'Факт ч.', 'Стандарт ч.', 'Переработка ч.'].map((h) => el('span', {}, h)));
       box.appendChild(el('div', { class: 'hr-list' }, [head, ...d.items.map((r, i) => {
         const m = rowsModel[i];
-        return el('div', { class: 'hr-row hr-ts' }, [
+        const ph = numIn(m, 'plan_hours', r.plan_hours), fh = numIn(m, 'fact_hours', r.fact_hours);
+        const std = el('span', { class: 'tnum muted' }, '—'), ot = el('span', { class: 'tnum' }, '—');
+        const recompute = () => {
+          const p = Number(ph.value) || 0, f = Number(fh.value) || 0;
+          if (!f) { std.textContent = '—'; ot.textContent = '—'; ot.style.color = ''; return; }
+          const over = p > 0 ? Math.max(0, f - p) : 0;
+          std.textContent = nH(f - over);
+          ot.textContent = over ? '+' + nH(over) : '—';
+          ot.style.color = over ? '#b25b00' : '';
+        };
+        ph.addEventListener('input', recompute); fh.addEventListener('input', recompute);
+        const row = el('div', { class: 'hr-row hr-ts' }, [
           el('span', { class: 'hr-idx' }, String(i + 1)),
           el('span', { style: 'font-weight:700' }, r.full_name),
           el('span', { class: 'muted' }, r.department_name || '—'),
           numIn(m, 'plan_days', r.plan_days), numIn(m, 'fact_days', r.fact_days),
-          numIn(m, 'plan_hours', r.plan_hours), numIn(m, 'fact_hours', r.fact_hours),
+          ph, fh, std, ot,
         ]);
+        recompute();
+        return row;
       })]));
 
       async function save() {

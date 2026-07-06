@@ -479,6 +479,66 @@ router.post('/api/cards/import', upload.single('file'), async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
+// Шаблон Excel табеля за период — со списком сотрудников и текущими план/факт.
+router.get('/api/timesheet/template.xlsx', async (req, res) => {
+  const period = /^\d{4}-\d{2}$/.test(req.query.period) ? req.query.period : new Date().toISOString().slice(0, 7);
+  const rows = (await db.pool.query(
+    `SELECT e.full_name, pr.plan_days, pr.fact_days, pr.plan_hours, pr.fact_hours
+     FROM hr_employees e LEFT JOIN hr_payroll pr ON pr.employee_id=e.id AND pr.period=$1
+     WHERE e.status <> 'archived' ORDER BY e.full_name`, [period])).rows;
+  const wb = XLSX.utils.book_new();
+  const sh = XLSX.utils.aoa_to_sheet([['ФИО', 'План дней', 'Факт дней', 'План часов', 'Факт часов'],
+    ...rows.map((r) => [r.full_name, r.plan_days || '', r.fact_days || '', r.plan_hours || '', r.fact_hours || ''])]);
+  sh['!cols'] = [{ wch: 32 }, { wch: 11 }, { wch: 11 }, { wch: 11 }, { wch: 11 }];
+  XLSX.utils.book_append_sheet(wb, sh, 'Табель ' + period);
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="hr_timesheet_${period}.xlsx"`);
+  res.send(buf);
+});
+// Импорт табеля из Excel: сопоставляем по ФИО, пишем ТОЛЬКО дни/часы (деньги не трогаем).
+router.post('/api/timesheet/import', upload.single('file'), async (req, res) => {
+  try {
+    const period = /^\d{4}-\d{2}$/.test(req.body.period) ? req.body.period : null;
+    if (!period) return res.status(400).json({ error: 'Нет периода' });
+    if (!req.file) return res.status(400).json({ error: 'Файл не выбран' });
+    const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: false, defval: '' });
+    if (!rows.length) return res.status(400).json({ error: 'Пустой файл' });
+    let hi = rows.findIndex((r) => r.some((c) => /фио|имя/i.test(String(c))));
+    if (hi < 0) hi = 0;
+    const head = rows[hi].map((c) => String(c).toLowerCase());
+    const col = (re) => head.findIndex((h) => re.test(h));
+    const iName = col(/фио|имя/), iPd = col(/план.*д/), iFd = col(/факт.*д/), iPh = col(/план.*ч/), iFh = col(/факт.*ч/);
+    if (iName < 0) return res.status(400).json({ error: 'Не нашёл колонку «ФИО»' });
+    const num = (v) => { const n = Number(String(v == null ? '' : v).replace(/\s/g, '').replace(',', '.')); return isFinite(n) ? n : null; };
+    const byName = {};
+    (await db.pool.query("SELECT id, full_name FROM hr_employees WHERE status<>'archived'")).rows.forEach((e) => { byName[e.full_name.trim().toLowerCase()] = e.id; });
+    let updated = 0; const notFound = [];
+    const client = await db.pool.connect();
+    try {
+      await client.query('BEGIN');
+      for (let i = hi + 1; i < rows.length; i++) {
+        const name = String(rows[i][iName] || '').trim();
+        if (!name || /^пример/i.test(name)) continue;
+        const id = byName[name.toLowerCase()];
+        if (!id) { notFound.push(name); continue; }
+        await client.query(
+          `INSERT INTO hr_payroll (employee_id, period, plan_days, fact_days, plan_hours, fact_hours, created_by)
+           VALUES ($1,$2,$3,$4,$5,$6,$7)
+           ON CONFLICT (employee_id, period) DO UPDATE SET plan_days=EXCLUDED.plan_days, fact_days=EXCLUDED.fact_days,
+             plan_hours=EXCLUDED.plan_hours, fact_hours=EXCLUDED.fact_hours, updated_at=now()`,
+          [id, period, iPd >= 0 ? num(rows[i][iPd]) : null, iFd >= 0 ? num(rows[i][iFd]) : null, iPh >= 0 ? num(rows[i][iPh]) : null, iFh >= 0 ? num(rows[i][iFh]) : null, req.user.id]);
+        updated++;
+      }
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); return res.status(400).json({ error: e.message }); }
+    finally { client.release(); }
+    await db.log(req.user.id, 'hr_timesheet_import', `${period}: ${updated}`);
+    res.json({ ok: true, updated, notFound: notFound.slice(0, 30), notFoundCount: notFound.length });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 // Оптовое удаление или архивирование выбранных.
 // Доступ к модулю «Персонал» уже проверен requireHrAccess (галочка плитки),
 // поэтому внутри — полные права: кому выдан доступ, тот может и удалять.
