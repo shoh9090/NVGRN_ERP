@@ -187,6 +187,7 @@
     }, label);
     main.appendChild(el('div', { class: 'calc-tabs' }, [
       tab('recipes', 'Рецептуры'),
+      tab('matrix', 'Матрица'),
       tab('prices', 'Цены сырья'),
       tab('costs', 'Затраты'),
       tab('settings', 'Настройки'),
@@ -205,6 +206,7 @@
   function render() {
     shell();
     $('#calc-main').appendChild(datalists());
+    if (TAB === 'matrix') return renderMatrix();
     if (TAB === 'prices') return renderPrices();
     if (TAB === 'costs') return renderCosts();
     if (TAB === 'settings') return renderSettings();
@@ -237,6 +239,8 @@
       pack_unit: r.pack_unit || 'шт',
       sale_price_type_id: r.sale_price_type_id || '',
       sale_price_override: r.sale_price_override == null ? '' : r.sale_price_override,
+      sale_price_override_b: r.sale_price_override_b == null ? '' : r.sale_price_override_b,
+      retro_pct_b: r.retro_pct_b ?? 11,
       retro_pct: r.retro_pct ?? DICTS.settings.retro_pct ?? 0,
       vat_pct: r.vat_pct ?? DICTS.settings.vat_pct ?? 12,
       profit_tax_pct: r.profit_tax_pct ?? DICTS.settings.profit_tax_pct ?? 15,
@@ -397,6 +401,8 @@
       cell('Ед.', inp(DRAFT.pack_unit, { name: 'pack_unit' })),
       cell('Потери %', inp(DRAFT.waste_pct, { name: 'waste_pct', type: 'number', step: '0.1' })),
       cell('Ретро %', inp(DRAFT.retro_pct, { name: 'retro_pct', type: 'number', step: '0.1' })),
+      cell('Цена (сценарий B)', inp(DRAFT.sale_price_override_b, { name: 'sale_price_override_b', type: 'number', step: '0.01', placeholder: 'как A' })),
+      cell('Ретро B %', inp(DRAFT.retro_pct_b, { name: 'retro_pct_b', type: 'number', step: '0.1' })),
       cell('НДС %', inp(DRAFT.vat_pct, { name: 'vat_pct', type: 'number', step: '0.1' })),
       cell('Налог %', inp(DRAFT.profit_tax_pct, { name: 'profit_tax_pct', type: 'number', step: '0.1' })),
       cell('ФОТ x', inp(DRAFT.labor_coeff, { name: 'labor_coeff', type: 'number', step: '0.1' })),
@@ -522,6 +528,8 @@
       pack_unit: root.querySelector('[name="pack_unit"]').value,
       sale_price_type_id: root.querySelector('[name="sale_price_type_id"]').value,
       sale_price_override: root.querySelector('[name="sale_price_override"]').value,
+      sale_price_override_b: root.querySelector('[name="sale_price_override_b"]').value,
+      retro_pct_b: root.querySelector('[name="retro_pct_b"]').value,
       retro_pct: root.querySelector('[name="retro_pct"]').value,
       vat_pct: root.querySelector('[name="vat_pct"]').value,
       profit_tax_pct: root.querySelector('[name="profit_tax_pct"]').value,
@@ -584,6 +592,8 @@
         pack_unit: DRAFT.pack_unit,
         sale_price_type_id: DRAFT.sale_price_type_id,
         sale_price_override: DRAFT.sale_price_override,
+        sale_price_override_b: DRAFT.sale_price_override_b,
+        retro_pct_b: DRAFT.retro_pct_b,
         retro_pct: DRAFT.retro_pct,
         vat_pct: DRAFT.vat_pct,
         profit_tax_pct: DRAFT.profit_tax_pct,
@@ -756,6 +766,138 @@
       await reloadBase();
       render();
     } catch (e) { toast(e.message, true); }
+  }
+
+  // ================= МАТРИЦА КАНАЛА =================
+  let matrixGroup = null; // '' = все группы, иначе id группы
+  const f0 = (v) => fmt(v, 0);
+  const pctStr = (v) => (v == null || Number.isNaN(Number(v)) ? '—' : fmt(v, 0) + '%');
+  function priceBlockJS(costCalc, price, retroPct, vatPct, taxPct) {
+    const retro = price * retroPct / 100, vat = price * vatPct / 100;
+    const profit = price - costCalc - retro - vat;
+    const tax = Math.max(profit, 0) * taxPct / 100, net = profit - tax;
+    return { retro, vat, profit, profit_tax: tax, net_profit: net, markup_pct: costCalc ? (price - costCalc) / costCalc * 100 : null, margin_pct: price ? net / price * 100 : null };
+  }
+  function renderMatrix() {
+    const c = $('#calc-content');
+    const groups = DICTS.groups || [];
+    if (matrixGroup === null) matrixGroup = groups.length ? String(groups[0].id) : '';
+    c.appendChild(el('div', { class: 'calc-head' }, [
+      el('div', {}, [
+        el('div', { class: 'calc-h2' }, 'Матрица канала'),
+        el('div', { class: 'calc-sub' }, 'Продукты канала — колонками, с/с и цены — строками, два сценария ретро. Цену, ретро B и граммаж правьте прямо в ячейке; клик по названию — карточка рецептуры.'),
+      ]),
+      select([{ v: '', t: 'Все группы' }, ...groups.map((g) => ({ v: g.id, t: g.name }))], matrixGroup, { onchange: (e) => { matrixGroup = e.target.value; render(); } }),
+    ]));
+    const box = el('div', { id: 'calc-matrix-box' }); c.appendChild(box);
+    box.appendChild(el('div', { class: 'calc-empty' }, 'Считаю…'));
+    loadMatrix(box);
+  }
+  async function loadMatrix(box) {
+    let d; try { d = await api('/matrix?group=' + encodeURIComponent(matrixGroup || '')); } catch (e) { box.innerHTML = ''; box.appendChild(el('div', { class: 'calc-empty' }, 'Ошибка: ' + e.message)); return; }
+    box.innerHTML = '';
+    if (!d.columns.length) { box.appendChild(el('div', { class: 'calc-empty' }, 'В этой группе пока нет рецептур. Создайте их во вкладке «Рецептуры».')); return; }
+    box.appendChild(buildMatrix(d.columns));
+  }
+  function buildMatrix(cols) {
+    // Модель на колонку с живыми значениями.
+    const models = cols.map((col) => ({
+      id: col.id, name: col.name, single_raw: col.single_raw,
+      rawName: col.primary_raw ? col.primary_raw.name : '—',
+      rawPrice: col.primary_raw ? col.primary_raw.price : 0,
+      rawCostFixed: col.raw_cost, pack_cost: col.pack_cost,
+      fixed: col.labor + col.production + col.overhead,
+      labor: col.labor, production: col.production, overhead: col.overhead,
+      wasteMult: col.cost_raw > 0 ? col.cost_calc / col.cost_raw : 1,
+      vat: col.vat_pct, tax: col.profit_tax_pct,
+      grammage: col.grammage, priceA: col.A.sale_price, priceB: col.B.price_set ? col.B.sale_price : '',
+      retroA: col.A.retro_pct, retroB: col.B.retro_pct,
+    }));
+    const live = (m) => {
+      const rawCost = m.single_raw ? (num(m.grammage) / 1000) * m.rawPrice : m.rawCostFixed;
+      const costRaw = rawCost + m.pack_cost + m.fixed;
+      const costCalc = costRaw * m.wasteMult;
+      const pA = num(m.priceA);
+      const pB = (m.priceB === '' || m.priceB == null) ? pA : num(m.priceB);
+      return { raw_cost: rawCost, cost_raw: costRaw, cost_calc: costCalc,
+        A: priceBlockJS(costCalc, pA, num(m.retroA), m.vat, m.tax),
+        B: priceBlockJS(costCalc, pB, num(m.retroB), m.vat, m.tax) };
+    };
+    const getVal = (lv, path) => path.split('.').reduce((o, k) => (o == null ? o : o[k]), lv);
+    // Описание строк матрицы.
+    const ROWS = [
+      { sec: 'Себестоимость' },
+      { label: 'Граммаж, г', edit: 'grammage' },
+      { label: 'Сырьё', text: (m) => m.rawName },
+      { label: 'Стоимость зелени, сум/кг', text: (m) => f0(m.rawPrice) },
+      { label: 'Зелень в упаковке', comp: 'raw_cost' },
+      { label: 'Упаковка', text: (m) => f0(m.pack_cost) },
+      { label: 'ФОТ', text: (m) => f0(m.labor) },
+      { label: 'Производство', text: (m) => f0(m.production) },
+      { label: 'Накладные', text: (m) => f0(m.overhead) },
+      { label: 'с/с (без брака)', comp: 'cost_raw' },
+      { label: 'с/с с браком', comp: 'cost_calc', total: true },
+      { sec: 'Сценарий A — ретро' },
+      { label: 'Наценка %', comp: 'A.markup_pct', pct: true },
+      { label: 'Цена', edit: 'priceA' },
+      { label: 'Ретро', comp: 'A.retro' },
+      { label: 'НДС', comp: 'A.vat' },
+      { label: 'Прибыль', comp: 'A.profit' },
+      { label: 'Налог', comp: 'A.profit_tax' },
+      { label: 'Чистая прибыль', comp: 'A.net_profit', total: true },
+      { label: 'ЧП %', comp: 'A.margin_pct', pct: true },
+      { sec: 'Сценарий B — ретро' },
+      { label: 'Ретро B, %', edit: 'retroB' },
+      { label: 'Цена', edit: 'priceB' },
+      { label: 'Ретро', comp: 'B.retro' },
+      { label: 'НДС', comp: 'B.vat' },
+      { label: 'Прибыль', comp: 'B.profit' },
+      { label: 'Налог', comp: 'B.profit_tax' },
+      { label: 'Чистая прибыль', comp: 'B.net_profit', total: true },
+      { label: 'ЧП %', comp: 'B.margin_pct', pct: true },
+    ];
+    const colCells = models.map(() => ({})); // rowIndex -> td (для comp-строк)
+    function refreshCol(ci) {
+      const lv = live(models[ci]);
+      ROWS.forEach((row, ri) => {
+        if (!row.comp) return;
+        const td = colCells[ci][ri]; if (!td) return;
+        const v = getVal(lv, row.comp);
+        td.textContent = row.pct ? pctStr(v) : f0(v);
+        td.classList.toggle('bad', !row.pct && typeof v === 'number' && v < 0);
+      });
+    }
+    const savePricing = async (ci, body) => { try { await post('/recipe/' + models[ci].id + '/pricing', body); toast('Сохранено'); } catch (e) { toast(e.message, true); } };
+    const saveGrammage = async (ci) => { try { await post('/recipe/' + models[ci].id + '/grammage', { qty: models[ci].grammage }); toast('Сохранено'); } catch (e) { toast(e.message, true); loadMatrix($('#calc-matrix-box')); } };
+
+    const thead = el('tr', {}, [el('th', { class: 'calc-mx-corner' }, 'Показатель'),
+      ...models.map((m) => el('th', {}, el('button', { class: 'calc-mx-sku', title: 'Открыть карточку', onclick: () => { TAB = 'recipes'; render(); loadRecipe(m.id); } }, m.name)))]);
+    const body = [];
+    ROWS.forEach((row, ri) => {
+      if (row.sec) { body.push(el('tr', { class: 'calc-mx-sec' }, [el('td', { colspan: models.length + 1 }, row.sec)])); return; }
+      const cells = models.map((m, ci) => {
+        if (row.edit) {
+          const i = el('input', { class: 'calcf-inp calc-mx-inp', type: 'number', step: '0.01', value: m[row.edit] === '' ? '' : m[row.edit],
+            placeholder: row.edit === 'priceB' ? 'как A' : '',
+            oninput: (e) => { m[row.edit] = e.target.value; refreshCol(ci); },
+            onchange: (e) => {
+              const v = e.target.value;
+              if (row.edit === 'grammage') return saveGrammage(ci);
+              if (row.edit === 'priceA') return savePricing(ci, { sale_price_override: v });
+              if (row.edit === 'priceB') return savePricing(ci, { sale_price_override_b: v });
+              if (row.edit === 'retroB') return savePricing(ci, { retro_pct_b: v });
+            } });
+          return el('td', {}, i);
+        }
+        if (row.text) return el('td', {}, row.text(m));
+        const td = el('td', { class: 'tnum' }, '');
+        colCells[ci][ri] = td;
+        return td;
+      });
+      body.push(el('tr', { class: row.total ? 'calc-mx-total' : '' }, [el('th', { class: 'calc-mx-rowlabel' }, row.label), ...cells]));
+    });
+    models.forEach((_, ci) => refreshCol(ci));
+    return el('div', { class: 'calc-mx-wrap' }, el('table', { class: 'calc-mx' }, [el('thead', {}, thead), el('tbody', {}, body)]));
   }
 
   // ================= ЗАТРАТЫ =================

@@ -111,6 +111,20 @@
 .calc-cols-item:hover { background:var(--soft); }
 .calc-cols-item input { width:15px; height:15px; cursor:pointer; }
 
+/* Вкладка «Матрица канала»: лист как в Excel «рознич.тара» */
+.calc-mx-wrap { overflow:auto; border:1px solid var(--line); border-radius:10px; background:#fff; box-shadow:0 1px 2px rgba(31,41,55,.04); }
+.calc-mx { border-collapse:separate; border-spacing:0; font-size:12px; min-width:100%; }
+.calc-mx th, .calc-mx td { padding:6px 10px; border-bottom:1px solid #eef1ec; border-right:1px solid #f2f4f0; text-align:right; white-space:nowrap; }
+.calc-mx thead th { position:sticky; top:0; z-index:3; background:#eef4eb; color:var(--forest); font-weight:800; text-align:center; }
+.calc-mx-corner { left:0; z-index:5 !important; text-align:left !important; }
+.calc-mx-rowlabel { position:sticky; left:0; z-index:2; background:#fbfaf5; text-align:left !important; font-weight:700; color:#4d5b50; }
+.calc-mx-sku { background:none; border:0; color:var(--forest); font-weight:800; font-size:12px; cursor:pointer; border-bottom:1px dashed var(--forest); padding:0; }
+.calc-mx-sec td { background:#f2f5f1; color:var(--muted); font-weight:900; text-transform:uppercase; letter-spacing:.03em; font-size:10px; text-align:left; position:sticky; left:0; }
+.calc-mx-total th, .calc-mx-total td { background:#fbfaf5; font-weight:800; color:var(--ink); }
+.calc-mx-total .calc-mx-rowlabel { background:#f5f3ea; }
+.calc-mx-inp { width:100px; padding:4px 6px; text-align:right; font-variant-numeric:tabular-nums; }
+.calc-mx td.bad { color:var(--danger); font-weight:700; }
+
 /* Вкладка «Затраты»: строки реестров производственных/накладных затрат */
 .calc-cost-list { display:flex; flex-direction:column; gap:6px; margin:6px 0; }
 .calc-cost-row { display:grid; grid-template-columns:minmax(0,1fr) 140px 28px; gap:8px; align-items:center; }

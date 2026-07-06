@@ -86,6 +86,9 @@ async function ensureSchema() {
   )`);
   await q(`CREATE INDEX IF NOT EXISTS idx_calc_recipe_items_recipe ON calc_recipe_items(recipe_id)`);
   await q(`ALTER TABLE calc_recipes ADD COLUMN IF NOT EXISTS group_id INT REFERENCES calc_groups(id)`);
+  // Второй ценовой сценарий (сравнение ретро, как два блока в Excel «рознич.тара»).
+  await q(`ALTER TABLE calc_recipes ADD COLUMN IF NOT EXISTS sale_price_override_b NUMERIC`);
+  await q(`ALTER TABLE calc_recipes ADD COLUMN IF NOT EXISTS retro_pct_b NUMERIC`);
   // Постоянные затраты на единицу — свои у каждой группы (розница/хорека/…).
   // NULL = брать общую настройку по умолчанию.
   for (const col of ['monthly_units', 'labor_per_unit', 'production_per_unit', 'overhead_per_unit']) {
@@ -270,7 +273,7 @@ async function getMaterials() {
 
 async function recipeRows(whereSql = "r.status = 'active'", params = []) {
   const rows = await db.pool.query(
-    `SELECT r.*, g.name AS fg_name, g.code AS fg_code, pt.name AS price_type_name, rp.price AS sd_sale_price,
+    `SELECT r.*, g.name AS fg_name, g.code AS fg_code, g.barcode AS fg_barcode, pt.name AS price_type_name, rp.price AS sd_sale_price,
             grp.name AS group_name,
             grp.labor_per_unit AS g_labor, grp.production_per_unit AS g_production,
             grp.overhead_per_unit AS g_overhead, grp.monthly_units AS g_monthly
@@ -296,6 +299,20 @@ function calcLineCost(item, materialsByKey, mode) {
   const price = mode === 'market' ? marketPrice : calcPrice;
   const baseQty = item.item_kind === 'packaging' ? qty : qty / 1000;
   return baseQty * price * wasteMult;
+}
+
+// Ценовой блок: наценка/ретро/НДС/прибыль/налог/ЧП по цене и % ретро (общая формула для сценариев A и B).
+function priceBlock(costCalc, salePrice, retroPct, vatPct, taxPct) {
+  const retro = salePrice * asNum(retroPct) / 100;
+  const vat = salePrice * asNum(vatPct) / 100;
+  const profit = salePrice - costCalc - retro - vat;
+  const profitTax = Math.max(profit, 0) * asNum(taxPct) / 100;
+  const netProfit = profit - profitTax;
+  return {
+    sale_price: salePrice, retro_pct: asNum(retroPct), retro, vat, profit, profit_tax: profitTax, net_profit: netProfit,
+    markup_pct: costCalc ? (salePrice - costCalc) / costCalc * 100 : null,
+    margin_pct: salePrice ? netProfit / salePrice * 100 : null,
+  };
 }
 
 function recipeSummary(recipe, items, materials, settings) {
@@ -332,11 +349,7 @@ function recipeSummary(recipe, items, materials, settings) {
   const costCalc = (itemCalc + fixed) * wasteMult;
   const costMarket = (itemMarket + fixed) * wasteMult;
   const salePrice = recipe.sale_price_override != null ? asNum(recipe.sale_price_override) : asNum(recipe.sd_sale_price);
-  const retro = salePrice * asNum(recipe.retro_pct) / 100;
-  const vat = salePrice * asNum(recipe.vat_pct) / 100;
-  const profit = salePrice - costCalc - retro - vat;
-  const profitTax = Math.max(profit, 0) * asNum(recipe.profit_tax_pct) / 100;
-  const netProfit = profit - profitTax;
+  const pb = priceBlock(costCalc, salePrice, recipe.retro_pct, recipe.vat_pct, recipe.profit_tax_pct);
   const marketDelta = costMarket - costCalc;
   return {
     items: itemRows,
@@ -351,12 +364,12 @@ function recipeSummary(recipe, items, materials, settings) {
       cost_market: costMarket,
       market_delta: marketDelta,
       sale_price: salePrice,
-      retro,
-      vat,
-      profit,
-      profit_tax: profitTax,
-      net_profit: netProfit,
-      margin_pct: salePrice ? netProfit / salePrice * 100 : null,
+      retro: pb.retro,
+      vat: pb.vat,
+      profit: pb.profit,
+      profit_tax: pb.profit_tax,
+      net_profit: pb.net_profit,
+      margin_pct: pb.margin_pct,
     },
   };
 }
@@ -554,6 +567,8 @@ router.post('/api/recipe', J, async (req, res) => {
     numOrNull(b.labor_coeff) ?? 1,
     numOrNull(b.production_coeff) ?? 1,
     numOrNull(b.overhead_coeff) ?? 1,
+    numOrNull(b.sale_price_override_b),
+    numOrNull(b.retro_pct_b) ?? 11,
     b.comment || null,
     req.user.id,
   ];
@@ -561,16 +576,17 @@ router.post('/api/recipe', J, async (req, res) => {
     await db.pool.query(
       `UPDATE calc_recipes SET product_id=$1, group_id=$2, product_name=$3, pack_weight_g=$4, pack_unit=$5,
        sale_price_type_id=$6, sale_price_override=$7, retro_pct=$8, vat_pct=$9, profit_tax_pct=$10,
-       waste_pct=$11, labor_coeff=$12, production_coeff=$13, overhead_coeff=$14, comment=$15,
-       updated_by=$16, updated_at=now() WHERE id=$17`,
+       waste_pct=$11, labor_coeff=$12, production_coeff=$13, overhead_coeff=$14,
+       sale_price_override_b=$15, retro_pct_b=$16, comment=$17,
+       updated_by=$18, updated_at=now() WHERE id=$19`,
       [...args, id]
     );
   } else {
     const r = await db.pool.query(
       `INSERT INTO calc_recipes (product_id, group_id, product_name, pack_weight_g, pack_unit, sale_price_type_id,
        sale_price_override, retro_pct, vat_pct, profit_tax_pct, waste_pct, labor_coeff, production_coeff,
-       overhead_coeff, comment, created_by, updated_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$16) RETURNING id`,
+       overhead_coeff, sale_price_override_b, retro_pct_b, comment, created_by, updated_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$18) RETURNING id`,
       args
     );
     id = r.rows[0].id;
@@ -611,6 +627,71 @@ router.post('/api/recipe/:id(\\d+)/items', J, async (req, res) => {
   }
   await db.log(req.user.id, 'calc_recipe_items', `#${id}, items=${items.length}`);
   res.json({ ok: true });
+});
+
+// Быстрая правка граммажа из матрицы: только если у рецептуры одна строка сырья.
+router.post('/api/recipe/:id(\\d+)/grammage', J, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const qty = numOrNull(req.body.qty);
+  if (qty == null || !(qty > 0)) return res.status(400).json({ error: 'Неверный граммаж' });
+  const raws = (await db.pool.query("SELECT id FROM calc_recipe_items WHERE recipe_id=$1 AND item_kind='raw'", [id])).rows;
+  if (raws.length !== 1) return res.status(400).json({ error: 'Несколько ингредиентов — правьте граммаж в карточке' });
+  await db.pool.query('UPDATE calc_recipe_items SET qty=$1 WHERE id=$2', [qty, raws[0].id]);
+  await db.pool.query('UPDATE calc_recipes SET pack_weight_g=$1, updated_by=$2, updated_at=now() WHERE id=$3', [qty, req.user.id, id]);
+  await db.log(req.user.id, 'calc_recipe_grammage', `#${id}=${qty}`);
+  res.json({ ok: true });
+});
+
+// Точечная правка цен/ретро из матрицы (не трогает остальные поля рецептуры).
+router.post('/api/recipe/:id(\\d+)/pricing', J, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const fields = [], vals = [];
+  const set = (col, v) => { vals.push(v); fields.push(`${col}=$${vals.length}`); };
+  if ('sale_price_override' in req.body) set('sale_price_override', numOrNull(req.body.sale_price_override));
+  if ('sale_price_override_b' in req.body) set('sale_price_override_b', numOrNull(req.body.sale_price_override_b));
+  if ('retro_pct_b' in req.body) set('retro_pct_b', numOrNull(req.body.retro_pct_b));
+  if (!fields.length) return res.json({ ok: true });
+  vals.push(id);
+  await db.pool.query(`UPDATE calc_recipes SET ${fields.join(', ')}, updated_at=now() WHERE id=$${vals.length}`, vals);
+  await db.log(req.user.id, 'calc_recipe_pricing', '#' + id);
+  res.json({ ok: true });
+});
+
+// Матрица канала (лист «рознич.тара»): рецептуры группы колонками, полный разбор + 2 сценария ретро.
+router.get('/api/matrix', async (req, res) => {
+  const groupId = intOrNull(req.query.group);
+  const where = groupId ? "r.status='active' AND r.group_id = $1" : "r.status='active'";
+  const rows = await recipeRows(where, groupId ? [groupId] : []);
+  const materials = await getMaterials();
+  const settings = await settingsMap();
+  const columns = [];
+  for (const r of rows) {
+    const items = (await db.pool.query('SELECT * FROM calc_recipe_items WHERE recipe_id=$1 ORDER BY sort_order, id', [r.id])).rows;
+    const calc = recipeSummary(r, items, materials, settings);
+    const s = calc.summary;
+    const rawItems = calc.items.filter((it) => it.item_kind === 'raw');
+    const packItems = calc.items.filter((it) => it.item_kind === 'packaging');
+    const primary = rawItems[0] || null;
+    const A = priceBlock(s.cost_calc, s.sale_price, r.retro_pct, r.vat_pct, r.profit_tax_pct);
+    const priceB = r.sale_price_override_b != null ? asNum(r.sale_price_override_b) : s.sale_price;
+    const B = priceBlock(s.cost_calc, priceB, r.retro_pct_b, r.vat_pct, r.profit_tax_pct);
+    columns.push({
+      id: r.id,
+      name: r.fg_name || r.product_name || 'Без названия',
+      barcode: r.fg_barcode || '',
+      grammage: asNum(r.pack_weight_g),
+      single_raw: rawItems.length === 1,
+      primary_raw: primary ? { item_id: primary.item_id, name: primary.item_name, qty: asNum(primary.qty), price: asNum(primary.calc_price) } : null,
+      raw_cost: rawItems.reduce((a, x) => a + asNum(x.calc_cost), 0),
+      pack_cost: packItems.reduce((a, x) => a + asNum(x.calc_cost), 0),
+      labor: s.labor, production: s.production, overhead: s.overhead,
+      cost_raw: s.item_calc + s.fixed, cost_calc: s.cost_calc,
+      vat_pct: asNum(r.vat_pct), profit_tax_pct: asNum(r.profit_tax_pct),
+      A: { ...A, price_set: r.sale_price_override != null },
+      B: { ...B, price_set: r.sale_price_override_b != null },
+    });
+  }
+  res.json({ group_id: groupId, columns });
 });
 
 router.post('/api/recipe/:id(\\d+)/archive', async (req, res) => {
