@@ -68,13 +68,18 @@ async function ensureSchema() {
     UNIQUE (employee_id, period)
   )`);
   await q(`CREATE INDEX IF NOT EXISTS idx_hr_payroll_period ON hr_payroll (period)`);
+  // Доп. статьи начислений для массовых операций (больничные/отпускные/матпомощь/компенсация отпуска).
+  for (const col of ['accr_sick', 'accr_vacation', 'accr_mataid', 'accr_comp_vac']) {
+    await q(`ALTER TABLE hr_payroll ADD COLUMN IF NOT EXISTS ${col} NUMERIC`);
+  }
   await seedDepartments();
   _ready = true;
 }
 // Поля начислений/удержаний/выплат — для расчётов и сохранения.
 // ВАЖНО: accr_salary (Фикса) — базовая ставка, НЕ входит в сумму «начислено».
-const ACCR_ALL = ['accr_salary', 'accr_fact', 'accr_bonus', 'accr_premium', 'accr_gsm', 'accr_company_debt', 'accr_other'];
-const ACCR = ['accr_fact', 'accr_bonus', 'accr_premium', 'accr_gsm', 'accr_company_debt', 'accr_other']; // счётные
+const ACCR_EXTRA = ['accr_sick', 'accr_vacation', 'accr_mataid', 'accr_comp_vac']; // больничные/отпускные/матпомощь/компенсация
+const ACCR_ALL = ['accr_salary', 'accr_fact', 'accr_bonus', 'accr_premium', 'accr_gsm', 'accr_company_debt', 'accr_other', ...ACCR_EXTRA];
+const ACCR = ['accr_fact', 'accr_bonus', 'accr_premium', 'accr_gsm', 'accr_company_debt', 'accr_other', ...ACCR_EXTRA]; // счётные
 const DED = ['ded_fine', 'ded_advance_card', 'ded_advance_cash', 'ded_hold', 'ded_emp_debt', 'ded_other'];
 const PAID = ['paid_cash', 'paid_card'];
 const PAYROLL_NUM = [...ACCR_ALL, ...DED, ...PAID, 'plan_days', 'fact_days', 'plan_hours', 'fact_hours', 'amount_1c'];
@@ -276,6 +281,38 @@ router.post('/api/payroll/bulk-delete', J, async (req, res) => {
   const r = await db.pool.query('DELETE FROM hr_payroll WHERE id = ANY($1)', [ids]);
   await db.log(req.user.id, 'hr_payroll_bulk_delete', String(ids.length));
   res.json({ ok: true, affected: r.rowCount });
+});
+
+// ---------- Массовые операции ----------
+// Начислить выбранным сотрудникам за период по одной статье (бонусы/ГСМ/больничные/…).
+const MASS_FIELDS = new Set(['accr_bonus', 'accr_premium', 'accr_gsm', 'accr_company_debt', 'accr_other', ...ACCR_EXTRA]);
+router.post('/api/mass-op', J, async (req, res) => {
+  const period = /^\d{4}-\d{2}$/.test(req.body.period) ? req.body.period : null;
+  const field = req.body.field;
+  if (!period) return res.status(400).json({ error: 'Нет периода' });
+  if (!MASS_FIELDS.has(field)) return res.status(400).json({ error: 'Неверная операция' });
+  const mode = req.body.mode === 'set' ? 'set' : 'add';
+  const items = Array.isArray(req.body.items) ? req.body.items : [];
+  const client = await db.pool.connect();
+  let applied = 0;
+  try {
+    await client.query('BEGIN');
+    for (const it of items) {
+      const empId = intOrNull(it.employee_id);
+      const amt = numOrNull(it.amount);
+      if (!empId || amt == null) continue;
+      const upd = mode === 'set' ? `${field}=EXCLUDED.${field}` : `${field}=COALESCE(hr_payroll.${field},0)+EXCLUDED.${field}`;
+      await client.query(
+        `INSERT INTO hr_payroll (employee_id, period, ${field}, created_by) VALUES ($1,$2,$3,$4)
+         ON CONFLICT (employee_id, period) DO UPDATE SET ${upd}, updated_at=now()`,
+        [empId, period, amt, req.user.id]);
+      applied++;
+    }
+    await client.query('COMMIT');
+  } catch (e) { await client.query('ROLLBACK').catch(() => {}); return res.status(400).json({ error: e.message }); }
+  finally { client.release(); }
+  await db.log(req.user.id, 'hr_mass_op', `${field} ${mode} ${applied} шт ${period}`);
+  res.json({ ok: true, applied });
 });
 
 // ---------- Дашборд ----------

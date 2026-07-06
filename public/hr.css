@@ -69,6 +69,8 @@
 .hr-flab { font-size: 13px; color: var(--muted); font-weight: 700; align-self: center; }
 .hr-sal { grid-template-columns: 28px 34px 1.4fr 0.9fr 0.7fr 1fr 1fr 0.9fr 1fr 1fr 0.9fr; font-size: 12.5px; }
 .hr-ts { grid-template-columns: 34px 1.6fr 1.1fr 0.9fr 0.9fr 0.9fr 0.9fr; }
+.hr-mass { grid-template-columns: 34px 1.6fr 1fr 1fr 1.1fr 1fr; }
+.hr-mass-inp { width: 100%; padding: 5px 7px; text-align: right; font-variant-numeric: tabular-nums; }
 .hr-ts-inp { width: 100%; padding: 5px 7px; text-align: center; font-variant-numeric: tabular-nums; }
 .hr-pr-none { background: #f1f4ee; color: var(--muted); font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px; }
 .hr-pr-draft { background: #fff8e1; color: #b25b00; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px; }

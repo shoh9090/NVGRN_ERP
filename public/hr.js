@@ -78,6 +78,7 @@
       tab('dashboard', '📊 Дашборд'),
       tab('employees', '👥 Сотрудники'),
       tab('salary', '💵 Зарплата'),
+      tab('massops', '⚡ Массовые операции'),
       tab('timesheet', '🕒 Табель'),
       tab('payouts', '💳 Выплаты'),
       tab('departments', '🏢 Отделы'),
@@ -89,6 +90,7 @@
     if (TAB === 'dashboard') return renderDashboard();
     if (TAB === 'employees') return renderEmployees();
     if (TAB === 'salary') return renderSalary();
+    if (TAB === 'massops') return renderMassOps();
     if (TAB === 'timesheet') return renderTimesheet();
     if (TAB === 'departments') return renderDepartments();
     return renderSoon();
@@ -350,7 +352,9 @@
   // ================= ЗАРПЛАТА =================
   const PR_STATUS = { draft: 'Черновик', approved: 'Утверждено', paid: 'Выплачено', cancelled: 'Отменено' };
   // Фикса — справочно, НЕ входит в сумму «начислено». Счётные — ниже.
-  const ACCR_FIELDS = [['accr_fact', 'Факт по табелю'], ['accr_bonus', 'Бонусы KPI'], ['accr_premium', 'Премия'], ['accr_gsm', 'ГСМ / компенсации'], ['accr_company_debt', 'Долг компании'], ['accr_other', 'Другое начисление']];
+  const ACCR_FIELDS = [['accr_fact', 'Факт по табелю'], ['accr_bonus', 'Бонусы KPI'], ['accr_premium', 'Премия'], ['accr_gsm', 'ГСМ / компенсации'], ['accr_sick', 'Больничные'], ['accr_vacation', 'Отпускные'], ['accr_mataid', 'Матпомощь'], ['accr_comp_vac', 'Компенсация отпуска'], ['accr_company_debt', 'Долг компании'], ['accr_other', 'Другое начисление']];
+  // Операции для вкладки «Массовые операции» (поле payroll → подпись).
+  const MASS_OPS = [['accr_bonus', 'Бонусы KPI'], ['accr_premium', 'Премия'], ['accr_gsm', 'ГСМ / компенсации'], ['accr_sick', 'Больничные'], ['accr_vacation', 'Отпускные'], ['accr_mataid', 'Матпомощь'], ['accr_comp_vac', 'Компенсация за неисп. отпуск'], ['accr_company_debt', 'Долг компании'], ['accr_other', 'Другое начисление']];
   const DED_FIELDS = [['ded_fine', 'Штраф за опоздание'], ['ded_advance_card', 'Аванс на карту'], ['ded_advance_cash', 'Аванс наличными'], ['ded_hold', 'Удержание'], ['ded_emp_debt', 'Долг сотрудника'], ['ded_other', 'Другое удержание']];
   const PAID_FIELDS = [['paid_cash', 'Выплачено наличными'], ['paid_card', 'Выплачено на карту']];
   const salState = { period: '', department: '', schedule: '', status: '', q: '' };
@@ -465,6 +469,68 @@
       try { await post('/payroll', payload); toast('Сохранено'); closeModal(); renderSalary(); } catch (e) { toast(e.message, true); }
     } }, 'Сохранить');
     modal('💵 Начисление — ' + r.full_name, body, [save]);
+  }
+
+  // ================= МАССОВЫЕ ОПЕРАЦИИ =================
+  const massState = { period: '', field: 'accr_bonus', mode: 'add', department: '', schedule: '', q: '' };
+  async function renderMassOps() {
+    const c = $('#hr-content');
+    if (!massState.period) massState.period = curMonth();
+    const opLabel = (MASS_OPS.find((o) => o[0] === massState.field) || ['', ''])[1];
+    c.appendChild(el('div', { class: 'hr-head' }, [
+      el('div', {}, [el('div', { class: 'hr-h2' }, 'Массовые операции — ' + monthLabel(massState.period)),
+        el('div', { class: 'hr-sub' }, 'Выбери операцию и период, отметь сотрудников, впиши суммы — начислит всем разом. Попадает в расчёт зарплаты за месяц.')]),
+    ]));
+    const mInp = el('input', { type: 'month', class: 'hrf-inp hr-filt', value: massState.period, onchange: (e) => { massState.period = e.target.value || curMonth(); load(); } });
+    const opSel = fsel(MASS_OPS.map((o) => ({ v: o[0], t: o[1] })), massState.field);
+    opSel.classList.add('hr-filt'); opSel.onchange = (e) => { massState.field = e.target.value; load(); };
+    const modeSel = fsel([{ v: 'add', t: 'Добавить к текущему' }, { v: 'set', t: 'Заменить' }], massState.mode);
+    modeSel.classList.add('hr-filt'); modeSel.onchange = (e) => { massState.mode = e.target.value; };
+    const dSel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { massState.department = e.target.value; load(); } }, [el('option', { value: '' }, 'Все отделы'), ...DICTS.departments.map((d) => el('option', { value: d.id, selected: String(d.id) === massState.department || null }, d.name))]);
+    const schSel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { massState.schedule = e.target.value; load(); } }, [el('option', { value: '' }, 'Все графики'), ...(DICTS.schedules || []).map((s) => el('option', { value: s.code, selected: s.code === massState.schedule || null }, s.name))]);
+    const q = el('input', { class: 'hrf-inp hr-filt hr-filt-q', placeholder: 'Поиск по ФИО', value: massState.q, oninput: (e) => { massState.q = e.target.value; clearTimeout(window.__hrM); window.__hrM = setTimeout(load, 300); } });
+    c.appendChild(el('div', { class: 'hr-filters' }, [el('span', { class: 'hr-flab' }, 'Операция:'), opSel, modeSel, el('span', { class: 'hr-flab' }, 'Месяц:'), mInp, dSel, schSel, q]));
+    const box = el('div', { id: 'hr-mass-box' }); c.appendChild(box);
+    load();
+
+    async function load() {
+      box.innerHTML = '<div class="hr-loading">Загружаю…</div>';
+      const p = new URLSearchParams({ period: massState.period });
+      ['department', 'schedule', 'q'].forEach((k) => { if (massState[k]) p.set(k, massState[k]); });
+      let d; try { d = await api('/payroll?' + p.toString()); } catch (e) { box.innerHTML = ''; box.appendChild(el('div', { class: 'hr-empty' }, 'Ошибка: ' + e.message)); return; }
+      box.innerHTML = '';
+      if (!d.items.length) { box.appendChild(el('div', { class: 'hr-empty' }, 'Нет сотрудников по фильтру.')); return; }
+      const field = massState.field;
+      const rowsModel = d.items.map((r) => ({ employee_id: r.emp_id }));
+      const fillAll = el('input', { class: 'hrf-inp hr-filt', type: 'number', style: 'width:120px', placeholder: 'сумма' });
+      const fillBtn = el('button', { class: 'btn-ghost', onclick: () => { if (fillAll.value === '') return; rowsModel.forEach((m) => { if (m.amountInp) m.amountInp.value = fillAll.value; }); toast('Проставлено всем — не забудьте «Начислить»'); } }, 'Заполнить всем');
+      const applyBtn = el('button', { class: 'btn-primary', onclick: apply }, '⚡ Начислить (' + (MASS_OPS.find((o) => o[0] === field) || ['', ''])[1] + ')');
+      box.appendChild(el('div', { class: 'hr-filters', style: 'justify-content:flex-end' }, [el('span', { class: 'hr-flab' }, 'Сумма всем:'), fillAll, fillBtn, applyBtn]));
+      const head = el('div', { class: 'hr-row head hr-mass' }, ['#', 'ФИО', 'Отдел', 'Оклад', 'Текущее «' + opLabel + '»', 'Сумма к начислению'].map((h) => el('span', {}, h)));
+      box.appendChild(el('div', { class: 'hr-list' }, [head, ...d.items.map((r, i) => {
+        const m = rowsModel[i];
+        const inpAmt = el('input', { class: 'hrf-inp hr-mass-inp', type: 'number', step: '1', placeholder: '0' });
+        m.amountInp = inpAmt;
+        return el('div', { class: 'hr-row hr-mass' }, [
+          el('span', { class: 'hr-idx' }, String(i + 1)),
+          el('span', { style: 'font-weight:700' }, r.full_name),
+          el('span', { class: 'muted' }, r.department_name || '—'),
+          el('span', { class: 'tnum muted' }, money(r.base_salary)),
+          el('span', { class: 'tnum muted' }, r[field] ? money(r[field]) : '—'),
+          el('span', {}, inpAmt),
+        ]);
+      })]));
+
+      async function apply() {
+        const items = rowsModel.map((m) => ({ employee_id: m.employee_id, amount: m.amountInp.value })).filter((x) => String(x.amount).trim() !== '' && Number(x.amount));
+        if (!items.length) return toast('Впишите суммы хотя бы одному сотруднику', true);
+        const label = (MASS_OPS.find((o) => o[0] === field) || ['', ''])[1];
+        if (!confirm((massState.mode === 'set' ? 'Заменить' : 'Начислить') + ' «' + label + '» ' + items.length + ' сотрудникам за ' + monthLabel(massState.period) + '?')) return;
+        applyBtn.disabled = true; applyBtn.textContent = 'Начисляю…';
+        try { const rr = await post('/mass-op', { period: massState.period, field, mode: massState.mode, items }); toast('Начислено: ' + rr.applied); load(); }
+        catch (e) { toast(e.message, true); applyBtn.disabled = false; }
+      }
+    }
   }
 
   // ================= ОТДЕЛЫ =================
