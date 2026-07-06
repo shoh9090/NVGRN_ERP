@@ -647,7 +647,7 @@ router.post('/api/recipe/:id(\\d+)/pricing', J, async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const fields = [], vals = [];
   const set = (col, v) => { vals.push(v); fields.push(`${col}=$${vals.length}`); };
-  for (const col of ['sale_price_override', 'sale_price_override_b', 'retro_pct', 'retro_pct_b', 'waste_pct']) {
+  for (const col of ['sale_price_override', 'sale_price_override_b', 'retro_pct', 'retro_pct_b', 'waste_pct', 'product_id', 'sale_price_type_id']) {
     if (col in req.body) set(col, numOrNull(req.body[col]));
   }
   if (!fields.length) return res.json({ ok: true });
@@ -707,6 +707,7 @@ router.get('/api/matrix', async (req, res) => {
       labor: s.labor, production: s.production, overhead: s.overhead,
       cost_raw: s.item_calc + s.fixed, cost_calc: s.cost_calc,
       waste_pct: asNum(r.waste_pct), vat_pct: asNum(r.vat_pct), profit_tax_pct: asNum(r.profit_tax_pct),
+      product_id: r.product_id || '', product_label: r.fg_name || '', sale_price_type_id: r.sale_price_type_id || '',
       sd_price: sd, from_sd: sd != null,
       A: { ...A, sale_price: priceAeff, price_set: r.sale_price_override != null },
       B: { ...B, price_set: r.sale_price_override_b != null },

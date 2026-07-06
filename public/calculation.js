@@ -882,6 +882,7 @@
       grammage: col.grammage, priceA: col.A.sale_price,
       priceB: col.B.price_set ? col.B.sale_price : '',
       retroA: col.A.retro_pct, retroB: col.B.retro_pct,
+      productLabel: col.product_label || '', priceTypeId: col.sale_price_type_id || '', fromSd: col.from_sd,
     }));
     matrixModels = models;
     const live = (m) => {
@@ -921,6 +922,14 @@
     const thead = el('tr', {}, [el('th', { class: 'calc-mx-corner' }, 'Показатель'),
       ...models.map((m) => el('th', {}, el('button', { class: 'calc-mx-sku', title: 'Открыть карточку', onclick: () => { TAB = 'recipes'; render(); loadRecipe(m.id); } }, m.name)))]);
     const body = [];
+    // Привязка к SD (товар + тип цены) → Цена A подтянется из справочника отпускных цен.
+    body.push(el('tr', { class: 'calc-mx-sec' }, [el('td', { colspan: models.length + 1 }, 'Привязка к SD (для Цены A)')]));
+    body.push(el('tr', {}, [el('th', { class: 'calc-mx-rowlabel' }, 'Товар (SD)'),
+      ...models.map((m, ci) => el('td', {}, inp(m.productLabel, { list: 'calc-products', placeholder: 'выбрать товар',
+        onchange: (e) => { const p = findProductByLabel(e.target.value); post('/recipe/' + m.id + '/pricing', { product_id: p ? p.id : '' }).then(() => { toast(p ? 'Товар привязан' : 'Товар снят'); loadMatrix($('#calc-matrix-box')); }, (er) => err(ci, er)); } })))]));
+    body.push(el('tr', {}, [el('th', { class: 'calc-mx-rowlabel' }, 'Тип цены'),
+      ...models.map((m, ci) => el('td', {}, select([{ v: '', t: '—' }, ...(DICTS.priceTypes || []).map((p) => ({ v: p.id, t: p.name }))], m.priceTypeId, {
+        onchange: (e) => { post('/recipe/' + m.id + '/pricing', { sale_price_type_id: e.target.value }).then(() => { toast('Тип цены сохранён'); loadMatrix($('#calc-matrix-box')); }, (er) => err(ci, er)); } })))]));
     MX_SECTIONS.forEach((sec) => {
       if (mxSecHidden(sec.key)) return;
       body.push(el('tr', { class: 'calc-mx-sec' }, [el('td', { colspan: models.length + 1 }, sec.label)]));
