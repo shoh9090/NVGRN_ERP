@@ -499,6 +499,27 @@
   let invData = null;
   let invCount = false; // режим быстрого пересчёта (инвентаризация одним экраном)
   let invCountComment = '';
+  // Настройка столбцов таблицы остатков (как в SD): показать/скрыть.
+  const stkColsHidden = new Set(JSON.parse(localStorage.getItem('stk_inv_cols_hidden') || '["opening","today_in","today_out"]'));
+  const saveStkCols = () => localStorage.setItem('stk_inv_cols_hidden', JSON.stringify([...stkColsHidden]));
+  let stkColsPanel = null, stkColsWrap = null;
+  const STK_COLS = [
+    { key: 'num', label: '#', always: true, get: (m, i) => String(i + 1), cls: 'tnum muted' },
+    { key: 'code', label: 'Артикул', get: (m) => m.code || '', cls: 'tnum muted' },
+    { key: 'name', label: 'Наименование', always: true, node: (m) => el('td', { style: 'font-weight:600' }, m.name + (m.kind === 'packaging' ? ' 📦' : '')) },
+    { key: 'char', label: 'Характеристика', node: (m) => el('td', { class: 'muted', style: 'max-width:320px' }, m.characteristics || '—') },
+    { key: 'opening', label: 'Перв. остаток', align: 'right', node: (m) => el('td', { class: 'tnum muted', style: 'text-align:right' }, Number(m.opening_balance) !== 0 ? fmtQty(m.opening_balance) : '—') },
+    { key: 'balance', label: 'Остаток', always: true, align: 'right', node: (m) => { const bal = Number(m.balance); return el('td', { class: 'tnum', style: 'text-align:right;font-weight:800;color:' + (bal > 0 ? '#3f6a16' : bal < 0 ? 'var(--red)' : 'var(--ink-faint)') }, fmtQty(bal)); } },
+    { key: 'reserved', label: 'В передаче', align: 'right', node: (m) => el('td', { class: 'tnum', style: 'text-align:right;color:var(--amber-d,#b9770a)' }, Number(m.reserved) ? fmtQty(m.reserved) : '—') },
+    { key: 'today_in', label: 'Приход сег.', align: 'right', node: (m) => el('td', { class: 'tnum muted', style: 'text-align:right' }, Number(m.today_in) ? '+' + fmtQty(m.today_in) : '—') },
+    { key: 'today_out', label: 'Передано сег.', align: 'right', node: (m) => el('td', { class: 'tnum muted', style: 'text-align:right' }, Number(m.today_out) ? '−' + fmtQty(m.today_out) : '—') },
+    { key: 'unit', label: 'Ед.', get: (m) => m.unit || '' },
+    { key: 'actions', label: '', always: true, align: 'right', node: (m) => el('td', { style: 'text-align:right;white-space:nowrap' }, [
+      el('button', { class: 'inv-mini', title: 'Корректировка (инвентаризация)', onclick: () => openAdjust(m) }, '✏️'),
+      el('button', { class: 'inv-mini', style: 'margin-left:4px', title: 'История корректировок', onclick: () => openInvLog(m) }, '🕘'),
+    ]) },
+  ];
+  const visibleStkCols = () => STK_COLS.filter((c) => c.always || !stkColsHidden.has(c.key));
   async function viewInventory() {
     const main = $('#stk-main');
     main.innerHTML = '';
@@ -535,11 +556,30 @@
     ]);
     stockSel.value = invFilter;
 
+    // Кнопка настройки столбцов (⚙) с выпадающей панелью галочек.
+    stkColsPanel = null;
+    stkColsWrap = el('div', { class: 'stk-cols-wrap' }, [
+      el('button', { class: 'inv-mini stk-cols-btn', title: 'Показать/скрыть столбцы', onclick: () => toggleStkCols() }, '⚙ Столбцы'),
+    ]);
+    function toggleStkCols() {
+      if (stkColsPanel) { stkColsPanel.remove(); stkColsPanel = null; return; }
+      stkColsPanel = el('div', { class: 'stk-cols-panel' }, STK_COLS.filter((c) => !c.always && c.label).map((c) =>
+        el('label', { class: 'stk-cols-item' }, [
+          el('input', { type: 'checkbox', checked: !stkColsHidden.has(c.key) || null, onchange: (e) => {
+            if (e.target.checked) stkColsHidden.delete(c.key); else stkColsHidden.add(c.key);
+            saveStkCols(); render();
+          } }),
+          el('span', {}, c.label),
+        ])));
+      stkColsWrap.appendChild(stkColsPanel);
+    }
+
     main.appendChild(el('div', { class: 'pur-filters' }, [
       el('label', {}, ['Родит. категория', pcSel]),
       el('label', {}, ['Категория сырья', catSel]),
       el('label', {}, ['Наличие', stockSel]),
       el('label', { style: 'flex:1' }, ['Поиск', el('input', { id: 'inv-q', placeholder: '🔍 артикул, наименование...', oninput: () => render() })]),
+      el('div', { style: 'align-self:flex-end;padding-bottom:2px' }, [stkColsWrap]),
     ]));
 
     // Панель быстрого пересчёта: вкл/выкл режим, комментарий, «Провести».
@@ -642,28 +682,11 @@
         return;
       }
 
+      const cols = visibleStkCols();
       box.appendChild(el('table', { class: 'dict-table' }, [
-        el('thead', {}, el('tr', {}, ['#', 'Артикул', 'Наименование', 'Перв. остаток', 'Остаток', 'В передаче', 'Приход сег.', 'Передано сег.', 'Ед.', ''].map((h, i) =>
-          el('th', { style: i >= 3 && i <= 7 ? 'text-align:right' : '' }, h)))),
-        el('tbody', {}, items.map((m, idx) => {
-          const bal = Number(m.balance);
-          const hasOpening = Number(m.opening_balance) !== 0;
-          return el('tr', { title: m.characteristics || '' }, [
-            el('td', { class: 'tnum muted' }, String(idx + 1)),
-            el('td', { class: 'tnum muted' }, m.code || ''),
-            el('td', { style: 'font-weight:600' }, m.name + (m.kind === 'packaging' ? ' 📦' : '')),
-            el('td', { class: 'tnum muted', style: 'text-align:right' }, hasOpening ? fmtQty(m.opening_balance) : '—'),
-            el('td', { class: 'tnum', style: 'text-align:right;font-weight:800;color:' + (bal > 0 ? '#3f6a16' : bal < 0 ? 'var(--red)' : 'var(--ink-faint)') }, fmtQty(bal)),
-            el('td', { class: 'tnum', style: 'text-align:right;color:var(--amber-d,#b9770a)' }, Number(m.reserved) ? fmtQty(m.reserved) : '—'),
-            el('td', { class: 'tnum muted', style: 'text-align:right' }, Number(m.today_in) ? '+' + fmtQty(m.today_in) : '—'),
-            el('td', { class: 'tnum muted', style: 'text-align:right' }, Number(m.today_out) ? '−' + fmtQty(m.today_out) : '—'),
-            el('td', {}, m.unit || ''),
-            el('td', { style: 'text-align:right;white-space:nowrap' }, [
-              el('button', { class: 'inv-mini', title: 'Корректировка (инвентаризация)', onclick: () => openAdjust(m) }, '✏️'),
-              el('button', { class: 'inv-mini', style: 'margin-left:4px', title: 'История корректировок', onclick: () => openInvLog(m) }, '🕘'),
-            ]),
-          ]);
-        })),
+        el('thead', {}, el('tr', {}, cols.map((c) => el('th', { style: c.align === 'right' ? 'text-align:right' : '' }, c.label)))),
+        el('tbody', {}, items.map((m, idx) => el('tr', { title: m.characteristics || '' },
+          cols.map((c) => c.node ? c.node(m, idx) : el('td', { class: c.cls || '', style: c.align === 'right' ? 'text-align:right' : '' }, c.get(m, idx)))))),
       ]));
     }
     render();
@@ -748,5 +771,9 @@
     else viewReceiving();
   }
   window.addEventListener('hashchange', () => switchTab(location.hash.slice(1) || 'receiving'));
+  // Панель столбцов закрывается по клику вне неё.
+  document.addEventListener('mousedown', (e) => {
+    if (stkColsPanel && stkColsWrap && !stkColsWrap.contains(e.target)) { stkColsPanel.remove(); stkColsPanel = null; }
+  });
   switchTab(location.hash.slice(1) || 'receiving');
 })();

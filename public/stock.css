@@ -2,6 +2,13 @@
 .stk-check{display:flex;align-items:center;gap:6px;font-size:13px;font-weight:700;color:var(--ink-soft);cursor:pointer;align-self:flex-end;padding-bottom:8px}
 .stk-check input{width:16px;height:16px;accent-color:var(--lime-d);cursor:pointer}
 
+/* настройка столбцов (⚙) в остатках */
+.stk-cols-wrap{position:relative}
+.stk-cols-panel{position:absolute;top:calc(100% + 4px);right:0;z-index:30;background:var(--surface,#fff);border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.14);padding:8px;min-width:200px;display:flex;flex-direction:column;gap:2px}
+.stk-cols-item{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;font-size:13px;font-weight:600;color:var(--ink-soft);cursor:pointer}
+.stk-cols-item:hover{background:var(--lime-soft,#eef4e9)}
+.stk-cols-item input{width:15px;height:15px;cursor:pointer;accent-color:var(--lime-d)}
+
 /* панель быстрого пересчёта (инвентаризация одним экраном) */
 .stk-count-bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:10px 0;padding:10px 12px;background:var(--lime-soft,#eef4e9);border:1px solid var(--line);border-radius:10px}
 .stk-count-bar label{display:flex;flex-direction:column;gap:3px;font-size:12px;font-weight:700;color:var(--ink-soft)}
