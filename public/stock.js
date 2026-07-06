@@ -499,6 +499,7 @@
   let invData = null;
   let invCount = false; // режим быстрого пересчёта (инвентаризация одним экраном)
   let invCountComment = '';
+  let invPositive = false; // галочка: только позиции с положительным остатком
   // Настройка столбцов таблицы остатков (как в SD): показать/скрыть.
   const stkColsHidden = new Set(JSON.parse(localStorage.getItem('stk_inv_cols_hidden') || '["opening","today_in","today_out"]'));
   const saveStkCols = () => localStorage.setItem('stk_inv_cols_hidden', JSON.stringify([...stkColsHidden]));
@@ -574,10 +575,13 @@
       stkColsWrap.appendChild(stkColsPanel);
     }
 
+    const posChk = el('input', { type: 'checkbox' }); posChk.checked = invPositive;
+    posChk.onchange = () => { invPositive = posChk.checked; render(); };
     main.appendChild(el('div', { class: 'pur-filters' }, [
       el('label', {}, ['Родит. категория', pcSel]),
       el('label', {}, ['Категория сырья', catSel]),
       el('label', {}, ['Наличие', stockSel]),
+      el('label', { class: 'stk-check' }, [posChk, ' Только с остатком']),
       el('label', { style: 'flex:1' }, ['Поиск', el('input', { id: 'inv-q', placeholder: '🔍 артикул, наименование...', oninput: () => render() })]),
       el('div', { style: 'align-self:flex-end;padding-bottom:2px' }, [stkColsWrap]),
     ]));
@@ -645,6 +649,7 @@
       if (invCat) items = items.filter((m) => String(m.category_id) === String(invCat));
       if (invFilter === 'instock') items = items.filter((m) => Number(m.balance) !== 0);
       else if (invFilter === 'nomove') items = items.filter((m) => Number(m.balance) === 0);
+      if (invPositive) items = items.filter((m) => Number(m.balance) > 0);
       if (q) items = items.filter((m) => m.name.toLowerCase().includes(q) || String(m.code || '').toLowerCase().includes(q));
       if ($('#inv-count')) $('#inv-count').textContent = 'Позиций: ' + items.length;
       box.innerHTML = '';
