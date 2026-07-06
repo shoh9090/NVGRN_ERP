@@ -545,7 +545,7 @@
     c.appendChild(el('div', { class: 'hr-list' }, [head, ...DICTS.departments.map((d, i) => el('div', { class: 'hr-row hr-dept', style: 'cursor:pointer', onclick: () => openDept(d) }, [
       el('span', { class: 'hr-idx' }, String(i + 1)),
       el('span', { style: 'font-weight:700' }, d.name),
-      el('span', { class: 'tnum muted' }, String(d.emp_count || 0)),
+      el('span', { class: 'tnum hr-dept-cnt', title: 'Показать сотрудников этого отдела', onclick: (ev) => { ev.stopPropagation(); empFilter.department = String(d.id); empFilter.status = ''; empFilter.q = ''; TAB = 'employees'; render(); } }, String(d.emp_count || 0) + ' →'),
       el('span', { class: 'muted' }, String(d.sort_order)),
       el('span', {}, '✏️'),
     ]))]));

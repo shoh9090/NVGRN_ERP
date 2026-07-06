@@ -48,6 +48,8 @@
 .hr-row.dim { opacity: .55; }
 .hr-emp { grid-template-columns: 28px 34px 1.6fr 1fr 1.2fr 1fr 0.9fr 0.8fr; }
 .hr-dept { grid-template-columns: 34px 1fr 110px 90px 40px; }
+.hr-dept-cnt { color: var(--forest); font-weight: 800; cursor: pointer; }
+.hr-dept-cnt:hover { text-decoration: underline; }
 .hr-idx { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; }
 .hr-chk { width: 16px; height: 16px; cursor: pointer; margin: 0; }
 .hr-head-btns { display: flex; gap: 8px; flex-wrap: wrap; }
