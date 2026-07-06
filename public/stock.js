@@ -653,9 +653,10 @@
 
       if (invCount) {
         // Режим быстрого пересчёта: факт по каждой позиции + живая дельта.
+        const showChar = !stkColsHidden.has('char');
+        const heads = ['#', 'Артикул', 'Наименование', showChar ? 'Характеристика' : null, 'Остаток (было)', 'Факт (пересчёт)', 'Δ', 'Ед.'].filter(Boolean);
         box.appendChild(el('table', { class: 'dict-table' }, [
-          el('thead', {}, el('tr', {}, ['#', 'Артикул', 'Наименование', 'Остаток (было)', 'Факт (пересчёт)', 'Δ', 'Ед.'].map((h, i) =>
-            el('th', { style: i >= 3 && i <= 5 ? 'text-align:right' : '' }, h)))),
+          el('thead', {}, el('tr', {}, heads.map((h) => el('th', { style: /Остаток|Факт|Δ/.test(h) ? 'text-align:right' : '' }, h)))),
           el('tbody', {}, items.map((m, idx) => {
             const bal = Number(m.balance);
             const key = m.kind + ':' + m.id;
@@ -672,11 +673,12 @@
               el('td', { class: 'tnum muted' }, String(idx + 1)),
               el('td', { class: 'tnum muted' }, m.code || ''),
               el('td', { style: 'font-weight:600' }, m.name + (m.kind === 'packaging' ? ' 📦' : '')),
+              showChar ? el('td', { class: 'muted', style: 'max-width:320px' }, m.characteristics || '—') : null,
               el('td', { class: 'tnum muted', style: 'text-align:right' }, fmtQty(bal)),
               el('td', { style: 'text-align:right' }, input),
               deltaCell,
               el('td', {}, m.unit || ''),
-            ]);
+            ].filter(Boolean));
           })),
         ]));
         return;
