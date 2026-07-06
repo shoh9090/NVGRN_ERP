@@ -110,6 +110,10 @@
 .calc-cols-item { display:flex; align-items:center; gap:8px; padding:6px 8px; border-radius:6px; font-size:13px; cursor:pointer; }
 .calc-cols-item:hover { background:var(--soft); }
 .calc-cols-item input { width:15px; height:15px; cursor:pointer; }
+.calc-mx-cfg { max-height:62vh; overflow:auto; min-width:230px; }
+.calc-cols-head { margin-top:4px; color:var(--forest); }
+.calc-cols-head:first-child { margin-top:0; }
+.calc-cols-sub { padding-left:22px; }
 
 /* Вкладка «Матрица канала»: лист как в Excel «рознич.тара» */
 .calc-mx-wrap { overflow:auto; border:1px solid var(--line); border-radius:10px; background:#fff; box-shadow:0 1px 2px rgba(31,41,55,.04); }

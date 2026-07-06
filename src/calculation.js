@@ -642,18 +642,33 @@ router.post('/api/recipe/:id(\\d+)/grammage', J, async (req, res) => {
   res.json({ ok: true });
 });
 
-// Точечная правка цен/ретро из матрицы (не трогает остальные поля рецептуры).
+// Точечная правка полей рецептуры из матрицы (не трогает остальные поля).
 router.post('/api/recipe/:id(\\d+)/pricing', J, async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const fields = [], vals = [];
   const set = (col, v) => { vals.push(v); fields.push(`${col}=$${vals.length}`); };
-  if ('sale_price_override' in req.body) set('sale_price_override', numOrNull(req.body.sale_price_override));
-  if ('sale_price_override_b' in req.body) set('sale_price_override_b', numOrNull(req.body.sale_price_override_b));
-  if ('retro_pct_b' in req.body) set('retro_pct_b', numOrNull(req.body.retro_pct_b));
+  for (const col of ['sale_price_override', 'sale_price_override_b', 'retro_pct', 'retro_pct_b', 'waste_pct']) {
+    if (col in req.body) set(col, numOrNull(req.body[col]));
+  }
   if (!fields.length) return res.json({ ok: true });
   vals.push(id);
   await db.pool.query(`UPDATE calc_recipes SET ${fields.join(', ')}, updated_at=now() WHERE id=$${vals.length}`, vals);
   await db.log(req.user.id, 'calc_recipe_pricing', '#' + id);
+  res.json({ ok: true });
+});
+
+// Правка цены ингредиента из матрицы: manual_price первой строки сырья/упаковки рецептуры.
+router.post('/api/recipe/:id(\\d+)/item-price', J, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const kind = req.body.item_kind === 'packaging' ? 'packaging' : 'raw';
+  const mp = numOrNull(req.body.manual_price);
+  const it = (await db.pool.query(
+    'SELECT id FROM calc_recipe_items WHERE recipe_id=$1 AND item_kind=$2 ORDER BY sort_order, id LIMIT 1', [id, kind]
+  )).rows[0];
+  if (!it) return res.status(400).json({ error: 'Нет строки ' + (kind === 'raw' ? 'сырья' : 'упаковки') + ' — правьте в карточке' });
+  await db.pool.query('UPDATE calc_recipe_items SET manual_price=$1 WHERE id=$2', [mp, it.id]);
+  await db.pool.query('UPDATE calc_recipes SET updated_at=now() WHERE id=$1', [id]);
+  await db.log(req.user.id, 'calc_item_price', `#${id} ${kind}=${mp}`);
   res.json({ ok: true });
 });
 
@@ -672,8 +687,12 @@ router.get('/api/matrix', async (req, res) => {
     const rawItems = calc.items.filter((it) => it.item_kind === 'raw');
     const packItems = calc.items.filter((it) => it.item_kind === 'packaging');
     const primary = rawItems[0] || null;
-    const A = priceBlock(s.cost_calc, s.sale_price, r.retro_pct, r.vat_pct, r.profit_tax_pct);
-    const priceB = r.sale_price_override_b != null ? asNum(r.sale_price_override_b) : s.sale_price;
+    const primaryPack = packItems[0] || null;
+    // Цена сценария A — из SD (справочник отпускных цен), иначе зафиксированная в рецептуре.
+    const sd = numOrNull(r.sd_sale_price);
+    const priceAeff = sd != null ? sd : (r.sale_price_override != null ? asNum(r.sale_price_override) : 0);
+    const A = priceBlock(s.cost_calc, priceAeff, r.retro_pct, r.vat_pct, r.profit_tax_pct);
+    const priceB = r.sale_price_override_b != null ? asNum(r.sale_price_override_b) : priceAeff;
     const B = priceBlock(s.cost_calc, priceB, r.retro_pct_b, r.vat_pct, r.profit_tax_pct);
     columns.push({
       id: r.id,
@@ -682,12 +701,14 @@ router.get('/api/matrix', async (req, res) => {
       grammage: asNum(r.pack_weight_g),
       single_raw: rawItems.length === 1,
       primary_raw: primary ? { item_id: primary.item_id, name: primary.item_name, qty: asNum(primary.qty), price: asNum(primary.calc_price) } : null,
+      primary_pack: primaryPack ? { item_id: primaryPack.item_id, price: asNum(primaryPack.calc_price) } : null,
       raw_cost: rawItems.reduce((a, x) => a + asNum(x.calc_cost), 0),
       pack_cost: packItems.reduce((a, x) => a + asNum(x.calc_cost), 0),
       labor: s.labor, production: s.production, overhead: s.overhead,
       cost_raw: s.item_calc + s.fixed, cost_calc: s.cost_calc,
-      vat_pct: asNum(r.vat_pct), profit_tax_pct: asNum(r.profit_tax_pct),
-      A: { ...A, price_set: r.sale_price_override != null },
+      waste_pct: asNum(r.waste_pct), vat_pct: asNum(r.vat_pct), profit_tax_pct: asNum(r.profit_tax_pct),
+      sd_price: sd, from_sd: sd != null,
+      A: { ...A, sale_price: priceAeff, price_set: r.sale_price_override != null },
       B: { ...B, price_set: r.sale_price_override_b != null },
     });
   }
