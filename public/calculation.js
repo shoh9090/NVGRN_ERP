@@ -793,7 +793,7 @@
     { s: 'cost', key: 'raw_name', label: 'Сырьё', text: (m) => m.rawName },
     { s: 'cost', key: 'raw_price', label: 'Стоимость зелени, сум/кг', edit: 'rawPrice' },
     { s: 'cost', key: 'raw_cost', label: 'Зелень в упаковке', comp: 'raw_cost' },
-    { s: 'cost', key: 'pack_cost', label: 'Упаковка', edit: 'pack_cost' },
+    { s: 'cost', key: 'pack_cost', label: 'Упаковка', text: (m) => f0(m.pack_cost) },
     { s: 'cost', key: 'labor', label: 'ФОТ', text: (m) => f0(m.labor) },
     { s: 'cost', key: 'production', label: 'Производство', text: (m) => f0(m.production) },
     { s: 'cost', key: 'overhead', label: 'Накладные', text: (m) => f0(m.overhead) },
@@ -801,7 +801,8 @@
     { s: 'cost', key: 'waste', label: '% брака', edit: 'wastePct' },
     { s: 'cost', key: 'cost_calc', label: 'с/с с браком', comp: 'cost_calc', total: true },
     { s: 'a', key: 'a_markup', label: 'Наценка %', comp: 'A.markup_pct', pct: true },
-    { s: 'a', key: 'a_price', label: 'Цена (SD)', text: (m) => (num(m.priceA) ? f0(m.priceA) : '—'), title: 'Текущая отпускная цена из справочника (SD)' },
+    { s: 'a', key: 'a_ship', label: 'Отгрузочная цена', edit: 'priceA', hl: true, title: 'Цена отгрузки — по ней считается прибыль' },
+    { s: 'a', key: 'a_sd', label: 'Цена в SD', text: (m) => (num(m.sdPrice) ? f0(m.sdPrice) : '—'), title: 'Текущая отпускная цена из справочника (SD) — справочно' },
     { s: 'a', key: 'a_retro_pct', label: 'Ретро A, %', edit: 'retroA' },
     { s: 'a', key: 'a_retro', label: 'Ретро', comp: 'A.retro' },
     { s: 'a', key: 'a_vat', label: 'НДС', comp: 'A.vat' },
@@ -851,14 +852,17 @@
     c.appendChild(el('div', { class: 'calc-head' }, [
       el('div', {}, [
         el('div', { class: 'calc-h2' }, 'Матрица канала'),
-        el('div', { class: 'calc-sub' }, 'Правьте любую ячейку прямо в матрице — изменения сразу уходят в рецептуру. Цена A подтягивается из справочника отпускных цен (SD). Клик по названию — карточка.'),
+        el('div', { class: 'calc-sub' }, 'Каждая группа товаров — своя вкладка. Правьте ячейки прямо в матрице — изменения сразу уходят в рецептуру. «Отгрузочная цена» (зелёная) — по ней считается прибыль; «Цена в SD» — справочно.'),
       ]),
       el('div', { style: 'display:flex;gap:8px;align-items:center' }, [
-        select([{ v: '', t: 'Все группы' }, ...groups.map((g) => ({ v: g.id, t: g.name }))], matrixGroup, { onchange: (e) => { matrixGroup = e.target.value; render(); } }),
         cfgWrap,
         el('button', { class: 'btn-primary', onclick: saveMatrixAll }, '💾 Сохранить всё'),
       ]),
     ]));
+    // Вкладки-каналы: одна вкладка на группу товаров.
+    c.appendChild(el('div', { class: 'calc-mx-tabs' }, groups.length
+      ? groups.map((g) => el('button', { class: 'calc-mx-tab' + (String(g.id) === String(matrixGroup) ? ' on' : ''), onclick: () => { matrixGroup = String(g.id); render(); } }, g.name))
+      : [el('span', { class: 'calc-sub' }, 'Групп товаров нет — создайте их в «Настройках».')]));
     const box = el('div', { id: 'calc-matrix-box' }); c.appendChild(box);
     box.appendChild(el('div', { class: 'calc-empty' }, 'Считаю…'));
     loadMatrix(box);
@@ -879,17 +883,18 @@
       fixed: col.labor + col.production + col.overhead,
       labor: col.labor, production: col.production, overhead: col.overhead,
       wastePct: col.waste_pct, vat: col.vat_pct, tax: col.profit_tax_pct,
-      grammage: col.grammage, priceA: col.A.sale_price,
+      grammage: col.grammage,
+      priceA: col.A.price_set ? col.A.sale_price : '', // отгрузочная (ручная), пусто = берём SD
+      sdPrice: col.sd_price, // справочно из справочника отпускных цен
       priceB: col.B.price_set ? col.B.sale_price : '',
       retroA: col.A.retro_pct, retroB: col.B.retro_pct,
-      productLabel: col.product_label || '', priceTypeId: col.sale_price_type_id || '', fromSd: col.from_sd,
     }));
     matrixModels = models;
     const live = (m) => {
       const rawCost = m.single_raw ? (num(m.grammage) / 1000) * num(m.rawPrice) : m.rawCostFixed;
       const costRaw = rawCost + num(m.pack_cost) + m.fixed;
       const costCalc = costRaw * (1 + num(m.wastePct) / 100);
-      const pA = num(m.priceA);
+      const pA = (m.priceA === '' || m.priceA == null) ? num(m.sdPrice) : num(m.priceA);
       const pB = (m.priceB === '' || m.priceB == null) ? pA : num(m.priceB);
       return { raw_cost: rawCost, cost_raw: costRaw, cost_calc: costCalc,
         A: priceBlockJS(costCalc, pA, num(m.retroA), m.vat, m.tax),
@@ -912,8 +917,7 @@
       const m = models[ci], v = m[editKey];
       if (editKey === 'grammage') return post('/recipe/' + m.id + '/grammage', { qty: v }).then(ok, (e) => err(ci, e));
       if (editKey === 'rawPrice') return post('/recipe/' + m.id + '/item-price', { item_kind: 'raw', manual_price: v }).then(ok, (e) => err(ci, e));
-      if (editKey === 'pack_cost') return post('/recipe/' + m.id + '/item-price', { item_kind: 'packaging', manual_price: v }).then(ok, (e) => err(ci, e));
-      const map = { wastePct: 'waste_pct', retroA: 'retro_pct', retroB: 'retro_pct_b', priceB: 'sale_price_override_b' };
+      const map = { wastePct: 'waste_pct', retroA: 'retro_pct', retroB: 'retro_pct_b', priceB: 'sale_price_override_b', priceA: 'sale_price_override' };
       return post('/recipe/' + m.id + '/pricing', { [map[editKey]]: v }).then(ok, (e) => err(ci, e));
     };
     const ok = () => toast('Сохранено');
@@ -922,14 +926,6 @@
     const thead = el('tr', {}, [el('th', { class: 'calc-mx-corner' }, 'Показатель'),
       ...models.map((m) => el('th', {}, el('button', { class: 'calc-mx-sku', title: 'Открыть карточку', onclick: () => { TAB = 'recipes'; render(); loadRecipe(m.id); } }, m.name)))]);
     const body = [];
-    // Привязка к SD (товар + тип цены) → Цена A подтянется из справочника отпускных цен.
-    body.push(el('tr', { class: 'calc-mx-sec' }, [el('td', { colspan: models.length + 1 }, 'Привязка к SD (для Цены A)')]));
-    body.push(el('tr', {}, [el('th', { class: 'calc-mx-rowlabel' }, 'Товар (SD)'),
-      ...models.map((m, ci) => el('td', {}, inp(m.productLabel, { list: 'calc-products', placeholder: 'выбрать товар',
-        onchange: (e) => { const p = findProductByLabel(e.target.value); post('/recipe/' + m.id + '/pricing', { product_id: p ? p.id : '' }).then(() => { toast(p ? 'Товар привязан' : 'Товар снят'); loadMatrix($('#calc-matrix-box')); }, (er) => err(ci, er)); } })))]));
-    body.push(el('tr', {}, [el('th', { class: 'calc-mx-rowlabel' }, 'Тип цены'),
-      ...models.map((m, ci) => el('td', {}, select([{ v: '', t: '—' }, ...(DICTS.priceTypes || []).map((p) => ({ v: p.id, t: p.name }))], m.priceTypeId, {
-        onchange: (e) => { post('/recipe/' + m.id + '/pricing', { sale_price_type_id: e.target.value }).then(() => { toast('Тип цены сохранён'); loadMatrix($('#calc-matrix-box')); }, (er) => err(ci, er)); } })))]));
     MX_SECTIONS.forEach((sec) => {
       if (mxSecHidden(sec.key)) return;
       body.push(el('tr', { class: 'calc-mx-sec' }, [el('td', { colspan: models.length + 1 }, sec.label)]));
@@ -937,7 +933,7 @@
         const cells = models.map((m, ci) => {
           if (row.edit) {
             const i = el('input', { class: 'calcf-inp calc-mx-inp', type: 'number', step: '0.01', value: m[row.edit] === '' ? '' : m[row.edit],
-              placeholder: row.edit === 'priceB' ? 'как A' : '',
+              placeholder: row.edit === 'priceB' ? 'как A' : (row.edit === 'priceA' ? 'из SD' : ''),
               oninput: (e) => { m[row.edit] = e.target.value; refreshCol(ci); },
               onchange: () => dispatchSave(ci, row.edit) });
             return el('td', {}, i);
@@ -945,7 +941,7 @@
           if (row.text) return el('td', { title: row.title || '' }, row.text(m));
           const td = el('td', { class: 'tnum' }, ''); colCells[ci][row.key] = td; return td;
         });
-        body.push(el('tr', { class: row.total ? 'calc-mx-total' : '' }, [el('th', { class: 'calc-mx-rowlabel', title: row.title || '' }, row.label), ...cells]));
+        body.push(el('tr', { class: (row.total ? 'calc-mx-total' : '') + (row.hl ? ' calc-mx-ship' : '') }, [el('th', { class: 'calc-mx-rowlabel', title: row.title || '' }, row.label), ...cells]));
       });
     });
     models.forEach((_, ci) => refreshCol(ci));
@@ -956,9 +952,8 @@
     if (!matrixModels.length) { toast('Нет данных'); return; }
     try {
       for (const m of matrixModels) {
-        await post('/recipe/' + m.id + '/pricing', { waste_pct: m.wastePct, retro_pct: m.retroA, retro_pct_b: m.retroB, sale_price_override_b: m.priceB });
+        await post('/recipe/' + m.id + '/pricing', { waste_pct: m.wastePct, retro_pct: m.retroA, retro_pct_b: m.retroB, sale_price_override: m.priceA, sale_price_override_b: m.priceB });
         if (m.rawPrice !== '' && m.rawPrice != null) await post('/recipe/' + m.id + '/item-price', { item_kind: 'raw', manual_price: m.rawPrice });
-        if (m.pack_cost !== '' && m.pack_cost != null) await post('/recipe/' + m.id + '/item-price', { item_kind: 'packaging', manual_price: m.pack_cost });
         if (m.grammage !== '' && m.grammage != null) await post('/recipe/' + m.id + '/grammage', { qty: m.grammage }).catch(() => {});
       }
       toast('Все изменения сохранены');

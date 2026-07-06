@@ -128,6 +128,15 @@
 .calc-mx-total .calc-mx-rowlabel { background:#f5f3ea; }
 .calc-mx-inp { width:100px; padding:4px 6px; text-align:right; font-variant-numeric:tabular-nums; }
 .calc-mx td.bad { color:var(--danger); font-weight:700; }
+/* вкладки-каналы (группы товаров) */
+.calc-mx-tabs { display:flex; gap:6px; flex-wrap:wrap; margin:8px 0 12px; }
+.calc-mx-tab { background:#fff; border:1px solid var(--line); color:var(--forest); font-weight:800; font-size:13px; padding:7px 16px; border-radius:999px; cursor:pointer; }
+.calc-mx-tab:hover { background:#eef4e9; }
+.calc-mx-tab.on { background:var(--forest); color:#fff; border-color:var(--forest); }
+/* отгрузочная цена — зелёная строка */
+.calc-mx-ship th.calc-mx-rowlabel { background:#e4f2d6; color:var(--forest); }
+.calc-mx-ship td { background:#eef7e6; }
+.calc-mx-ship .calc-mx-inp { border-color:var(--forest); font-weight:800; color:var(--forest); background:#fff; }
 
 /* Вкладка «Затраты»: строки реестров производственных/накладных затрат */
 .calc-cost-list { display:flex; flex-direction:column; gap:6px; margin:6px 0; }

@@ -690,7 +690,8 @@ router.get('/api/matrix', async (req, res) => {
     const primaryPack = packItems[0] || null;
     // Цена сценария A — из SD (справочник отпускных цен), иначе зафиксированная в рецептуре.
     const sd = numOrNull(r.sd_sale_price);
-    const priceAeff = sd != null ? sd : (r.sale_price_override != null ? asNum(r.sale_price_override) : 0);
+    // Прибыль считаем по отгрузочной (ручной) цене; если её нет — по цене из SD.
+    const priceAeff = r.sale_price_override != null ? asNum(r.sale_price_override) : (sd != null ? sd : 0);
     const A = priceBlock(s.cost_calc, priceAeff, r.retro_pct, r.vat_pct, r.profit_tax_pct);
     const priceB = r.sale_price_override_b != null ? asNum(r.sale_price_override_b) : priceAeff;
     const B = priceBlock(s.cost_calc, priceB, r.retro_pct_b, r.vat_pct, r.profit_tax_pct);
