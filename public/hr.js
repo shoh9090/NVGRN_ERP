@@ -251,6 +251,7 @@
     off.addEventListener('input', recalcBase);
     unoff.addEventListener('input', recalcBase);
     const phone = finp(e.phone, { placeholder: '998…' });
+    const card = finp(e.card_number, { placeholder: 'Номер пластиковой карты' });
     const tg = finp(e.telegram_id, { placeholder: 'Telegram ID (если есть)' });
     const comment = finp(e.comment, { placeholder: 'Комментарий' });
     const body = el('div', { class: 'hrf' }, [
@@ -258,11 +259,11 @@
       el('div', { class: 'hrf-sec' }, 'Зарплата'),
       frow('Оклад / ставка', base), frow('Официальная часть', off), frow('Неофициальная часть', unoff),
       el('div', { class: 'hrf-sec' }, 'Контакты'),
-      frow('Телефон', phone), frow('Telegram ID', tg), frow('Комментарий', comment),
+      frow('Телефон', phone), frow('Номер карты', card), frow('Telegram ID', tg), frow('Комментарий', comment),
     ]);
     const save = el('button', { class: 'btn-primary', onclick: async () => {
       try {
-        await post('/employee', { id: e.id, full_name: name.value, department_id: dept.value, position: pos.value, schedule_type: sched.value, hire_date: hire.value, base_salary: mval(base), salary_official: mval(off), salary_unofficial: mval(unoff), phone: phone.value, telegram_id: tg.value, comment: comment.value });
+        await post('/employee', { id: e.id, full_name: name.value, department_id: dept.value, position: pos.value, schedule_type: sched.value, hire_date: hire.value, base_salary: mval(base), salary_official: mval(off), salary_unofficial: mval(unoff), phone: phone.value, card_number: card.value, telegram_id: tg.value, comment: comment.value });
         toast('Сохранено'); closeModal(); await reloadDicts(); render();
       } catch (err) { toast(err.message, true); }
     } }, 'Сохранить');
@@ -275,9 +276,24 @@
     modal(e.id ? '✏️ ' + e.full_name : '+ Новый сотрудник', body, acts);
   }
   async function changeStatus(e, st) {
-    const labels = { fired: 'Уволить', archived: 'В архив', active: 'Вернуть в актив' };
+    if (st === 'fired') return openFireForm(e);
+    const labels = { archived: 'В архив', active: 'Вернуть в актив' };
     if (!confirm(labels[st] + ' сотрудника «' + e.full_name + '»?')) return;
     try { await post('/employee/' + e.id + '/status', { status: st }); toast('Готово'); closeModal(); await reloadDicts(); render(); } catch (err) { toast(err.message, true); }
+  }
+  // Увольнение — всегда с датой (обязательно).
+  function openFireForm(e) {
+    const date = finp(e.fire_date ? String(e.fire_date).slice(0, 10) : new Date().toISOString().slice(0, 10), { type: 'date' });
+    const body = el('div', { class: 'hrf' }, [
+      el('div', { class: 'hr-sub', style: 'margin-bottom:6px' }, 'Увольнение «' + e.full_name + '». Укажите дату увольнения.'),
+      frow('Дата увольнения *', date),
+    ]);
+    const ok = el('button', { class: 'btn-primary hrf-warn', onclick: async () => {
+      if (!date.value) return toast('Укажите дату увольнения', true);
+      try { await post('/employee/' + e.id + '/status', { status: 'fired', fire_date: date.value }); toast('Уволен ' + date.value); $('#hr-modal-root').innerHTML = ''; await reloadDicts(); render(); }
+      catch (err) { toast(err.message, true); }
+    } }, 'Уволить');
+    modal('Увольнение — ' + e.full_name, body, [el('button', { class: 'btn-ghost', onclick: closeModal }, 'Отмена'), ok]);
   }
 
   // ================= ТАБЕЛЬ =================
