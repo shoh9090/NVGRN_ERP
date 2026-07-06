@@ -93,10 +93,11 @@ async function ensureSchema() {
   }
 
   const defaults = {
-    monthly_units: '70000',
+    monthly_units: '55000',
     labor_per_unit: '0',
     production_per_unit: '0',
     overhead_per_unit: '0',
+    fot_tax_coeff: '1.39',
     retro_pct: '0',
     vat_pct: '12',
     profit_tax_pct: '15',
@@ -104,6 +105,35 @@ async function ensureSchema() {
   };
   for (const [key, value] of Object.entries(defaults)) {
     await q('INSERT INTO calc_settings (key, value) VALUES ($1,$2) ON CONFLICT (key) DO NOTHING', [key, value]);
+  }
+
+  // Реестры постоянных затрат (лист Excel «Произодство»): производственные + накладные, помесячно.
+  await q(`CREATE TABLE IF NOT EXISTS calc_cost_items (
+    id SERIAL PRIMARY KEY,
+    kind TEXT NOT NULL,                               -- production | overhead
+    name TEXT NOT NULL,
+    amount NUMERIC NOT NULL DEFAULT 0,               -- сумма в месяц
+    sort INT NOT NULL DEFAULT 100,
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  const costCount = (await q("SELECT COUNT(*)::int AS n FROM calc_cost_items")).rows[0].n;
+  if (costCount === 0) {
+    const seed = [
+      ['production', 'Аренда', 11480800, 10],
+      ['production', 'Электроэнергия и пр.', 4500000, 20],
+      ['overhead', 'Сертификация и лаборатория', 1000000, 10],
+      ['overhead', 'Логистика', 3500000, 20],
+      ['overhead', 'Закупки для производства', 3000000, 30],
+      ['overhead', 'Банковские услуги', 1300000, 40],
+      ['overhead', 'Административные расходы', 7000000, 50],
+      ['overhead', 'Маркетинг', 1200000, 60],
+      ['overhead', 'Кредиты', 5227156, 70],
+      ['overhead', 'Прочие (вода, канализация)', 312000, 80],
+    ];
+    for (const [kind, name, amount, sort] of seed) {
+      await q('INSERT INTO calc_cost_items (kind, name, amount, sort) VALUES ($1,$2,$3,$4)', [kind, name, amount, sort]);
+    }
   }
 
   _ready = true;
@@ -602,6 +632,74 @@ router.post('/api/settings', J, async (req, res) => {
   }
   await db.log(req.user.id, 'calc_settings_save');
   res.json({ ok: true, settings: await settingsMap() });
+});
+
+// ---------- Затраты (лист «Произодство» + ФОТ из «Персонала») ----------
+// ФОТ = сумма окладов активных сотрудников × коэффициент налогов.
+async function fotBase() {
+  try {
+    const r = await db.pool.query("SELECT COALESCE(SUM(base_salary),0) AS base, COUNT(*)::int AS n FROM hr_employees WHERE status='active'");
+    return { base: asNum(r.rows[0].base), employees: r.rows[0].n };
+  } catch (e) {
+    return { base: 0, employees: 0 }; // «Персонал» ещё не создан — не падаем
+  }
+}
+async function costsSummary() {
+  const s = await settingsMap();
+  const items = (await db.pool.query("SELECT id, kind, name, amount, sort FROM calc_cost_items WHERE status='active' ORDER BY kind, sort, id")).rows;
+  const production = items.filter((i) => i.kind === 'production');
+  const overhead = items.filter((i) => i.kind === 'overhead');
+  const sumOf = (arr) => arr.reduce((a, i) => a + asNum(i.amount), 0);
+  const monthly = asNum(s.monthly_units) || 0;
+  const coeff = asNum(s.fot_tax_coeff) || 0;
+  const fot = await fotBase();
+  const fotTotal = fot.base * coeff;
+  const per = (v) => (monthly > 0 ? v / monthly : 0);
+  const sums = { production: sumOf(production), overhead: sumOf(overhead) };
+  return {
+    production, overhead, sums,
+    monthly_units: monthly, fot_tax_coeff: coeff,
+    fot_base: fot.base, fot_employees: fot.employees, fot_total: fotTotal,
+    per_unit: { labor: per(fotTotal), production: per(sums.production), overhead: per(sums.overhead) },
+  };
+}
+router.get('/api/costs', async (req, res) => {
+  res.json(await costsSummary());
+});
+router.post('/api/cost-item', J, async (req, res) => {
+  const kind = req.body.kind === 'overhead' ? 'overhead' : req.body.kind === 'production' ? 'production' : null;
+  if (!kind) return res.status(400).json({ error: 'Неверный тип затрат' });
+  const name = String(req.body.name || '').trim();
+  if (!name) return res.status(400).json({ error: 'Пустое наименование' });
+  const amount = numOrNull(req.body.amount) ?? 0;
+  const id = intOrNull(req.body.id);
+  if (id) {
+    await db.pool.query('UPDATE calc_cost_items SET kind=$1, name=$2, amount=$3 WHERE id=$4', [kind, name, amount, id]);
+  } else {
+    await db.pool.query('INSERT INTO calc_cost_items (kind, name, amount, sort) VALUES ($1,$2,$3,100)', [kind, name, amount]);
+  }
+  await db.log(req.user.id, 'calc_cost_item', `${kind}: ${name}`);
+  res.json({ ok: true });
+});
+router.post('/api/cost-item/:id(\\d+)/archive', async (req, res) => {
+  await db.pool.query("UPDATE calc_cost_items SET status='archived' WHERE id=$1", [req.params.id]);
+  await db.log(req.user.id, 'calc_cost_item_archive', '#' + req.params.id);
+  res.json({ ok: true });
+});
+// Применить: сохранить объём/коэф и записать пересчитанные *_per_unit в общие настройки.
+router.post('/api/costs/apply', J, async (req, res) => {
+  const setKV = async (key, value) => db.pool.query(
+    `INSERT INTO calc_settings (key, value, updated_by, updated_at) VALUES ($1,$2,$3,now())
+     ON CONFLICT (key) DO UPDATE SET value=$2, updated_by=$3, updated_at=now()`,
+    [key, String(value), req.user.id]);
+  if (req.body.monthly_units != null) await setKV('monthly_units', asNum(req.body.monthly_units));
+  if (req.body.fot_tax_coeff != null) await setKV('fot_tax_coeff', asNum(req.body.fot_tax_coeff));
+  const c = await costsSummary();
+  await setKV('labor_per_unit', c.per_unit.labor);
+  await setKV('production_per_unit', c.per_unit.production);
+  await setKV('overhead_per_unit', c.per_unit.overhead);
+  await db.log(req.user.id, 'calc_costs_apply', `labor=${Math.round(c.per_unit.labor)} prod=${Math.round(c.per_unit.production)} oh=${Math.round(c.per_unit.overhead)}`);
+  res.json({ ok: true, summary: await costsSummary() });
 });
 
 module.exports = router;

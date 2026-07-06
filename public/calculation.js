@@ -188,6 +188,7 @@
     main.appendChild(el('div', { class: 'calc-tabs' }, [
       tab('recipes', 'Рецептуры'),
       tab('prices', 'Цены сырья'),
+      tab('costs', 'Затраты'),
       tab('settings', 'Настройки'),
     ]));
     main.appendChild(el('div', { id: 'calc-content' }));
@@ -205,6 +206,7 @@
     shell();
     $('#calc-main').appendChild(datalists());
     if (TAB === 'prices') return renderPrices();
+    if (TAB === 'costs') return renderCosts();
     if (TAB === 'settings') return renderSettings();
     return renderRecipes();
   }
@@ -756,20 +758,104 @@
     } catch (e) { toast(e.message, true); }
   }
 
+  // ================= ЗАТРАТЫ =================
+  let costRemoved = [];
+  function renderCosts() {
+    const c = $('#calc-content');
+    c.appendChild(el('div', { class: 'calc-head' }, [
+      el('div', {}, [
+        el('div', { class: 'calc-h2' }, 'Затраты'),
+        el('div', { class: 'calc-sub' }, 'Производственные и накладные затраты в месяц ÷ объём = на штуку. ФОТ — из плитки «Персонал». «Применить» обновит постоянные затраты во всех рецептурах без своей группы.'),
+      ]),
+    ]));
+    const box = el('div', { id: 'calc-costs-box' }); c.appendChild(box);
+    box.appendChild(el('div', { class: 'calc-empty' }, 'Загружаю…'));
+    loadCosts(box);
+  }
+  async function loadCosts(box) {
+    let d; try { d = await api('/costs'); } catch (e) { box.innerHTML = ''; box.appendChild(el('div', { class: 'calc-empty' }, 'Ошибка: ' + e.message)); return; }
+    costRemoved = [];
+    buildCosts(box, d);
+  }
+  function buildCosts(box, d) {
+    box.innerHTML = '';
+    const rows = { production: [], overhead: [] };
+    const vol = inp(d.monthly_units, { type: 'number', step: '1', name: 'monthly_units' });
+    const coeff = inp(d.fot_tax_coeff, { type: 'number', step: '0.01', name: 'fot_tax_coeff' });
+    const fotTotalTxt = el('b', {}), laborUnit = el('b', {}), prodUnit = el('b', {}), ohUnit = el('b', {}), prodSum = el('b', {}), ohSum = el('b', {});
+
+    function recompute() {
+      const v = num(vol.value) || 0, cf = num(coeff.value) || 0;
+      const sum = (kind) => rows[kind].reduce((a, r) => a + num(r.amountInp.value), 0);
+      const ps = sum('production'), os = sum('overhead'), fotTotal = num(d.fot_base) * cf;
+      const per = (x) => (v > 0 ? x / v : 0);
+      prodSum.textContent = money(ps); ohSum.textContent = money(os); fotTotalTxt.textContent = money(fotTotal);
+      laborUnit.textContent = money(per(fotTotal)); prodUnit.textContent = money(per(ps)); ohUnit.textContent = money(per(os));
+    }
+    function costRow(kind, item) {
+      const nameInp = inp(item ? item.name : '', { placeholder: 'наименование затраты' });
+      const amountInp = inp(item && item.amount != null ? item.amount : '', { type: 'number', step: '1', placeholder: 'сумма в месяц', oninput: recompute });
+      const rec = { id: item ? item.id : null, nameInp, amountInp };
+      const wrap = el('div', { class: 'calc-cost-row' }, [nameInp, amountInp,
+        el('button', { class: 'calc-icon-btn', title: 'Удалить', onclick: () => { if (rec.id) costRemoved.push(rec.id); const a = rows[kind]; const i = a.indexOf(rec); if (i >= 0) a.splice(i, 1); wrap.remove(); recompute(); } }, '×')]);
+      rows[kind].push(rec);
+      return wrap;
+    }
+    const prodList = el('div', { class: 'calc-cost-list' }, d.production.map((i) => costRow('production', i)));
+    const ohList = el('div', { class: 'calc-cost-list' }, d.overhead.map((i) => costRow('overhead', i)));
+    const addBtn = (kind, list) => el('button', { class: 'btn-ghost calc-line-add', onclick: () => { list.appendChild(costRow(kind, null)); recompute(); } }, '+ строка');
+    vol.addEventListener('input', recompute); coeff.addEventListener('input', recompute);
+
+    box.appendChild(el('div', { class: 'calc-settings-grid' }, [
+      el('section', { class: 'calc-settings-card' }, [
+        el('div', { class: 'calc-settings-title' }, 'Объём и ФОТ'),
+        el('div', { class: 'calc-sub' }, 'ФОТ = сумма окладов активных сотрудников из «Персонала» × коэффициент налогов.'),
+        el('label', { class: 'calc-setting-tile' }, [el('span', {}, 'Объём выпуска, шт/мес'), vol]),
+        el('label', { class: 'calc-setting-tile' }, [el('span', {}, 'Коэффициент налогов на ФОТ'), coeff]),
+        el('label', { class: 'calc-setting-tile' }, [el('span', {}, 'Оклады (' + d.fot_employees + ' чел.)'), el('span', { class: 'tnum' }, money(d.fot_base))]),
+        el('label', { class: 'calc-setting-tile' }, [el('span', {}, 'ФОТ с налогами / мес'), el('span', { class: 'tnum' }, fotTotalTxt)]),
+        el('label', { class: 'calc-setting-tile' }, [el('span', {}, 'ФОТ на штуку'), el('span', { class: 'tnum good' }, laborUnit)]),
+      ]),
+      el('section', { class: 'calc-settings-card' }, [
+        el('div', { class: 'calc-settings-title' }, 'Производственные затраты'),
+        el('div', { class: 'calc-sub' }, 'Аренда, электроэнергия и пр. — в месяц.'),
+        prodList, addBtn('production', prodList),
+        el('div', { class: 'calc-cost-foot' }, [el('span', {}, 'Сумма / мес: '), prodSum, el('span', {}, ' · на штуку: '), prodUnit]),
+      ]),
+      el('section', { class: 'calc-settings-card' }, [
+        el('div', { class: 'calc-settings-title' }, 'Накладные затраты'),
+        el('div', { class: 'calc-sub' }, 'Логистика, сертификация, банк, маркетинг, кредиты и пр. — в месяц.'),
+        ohList, addBtn('overhead', ohList),
+        el('div', { class: 'calc-cost-foot' }, [el('span', {}, 'Сумма / мес: '), ohSum, el('span', {}, ' · на штуку: '), ohUnit]),
+      ]),
+    ]));
+    box.appendChild(el('div', { style: 'margin-top:12px;display:flex;gap:8px;justify-content:flex-end' }, [
+      el('button', { class: 'btn-primary', onclick: saveCosts }, '💾 Сохранить и применить'),
+    ]));
+    recompute();
+
+    async function saveCosts() {
+      try {
+        for (const id of costRemoved) await post('/cost-item/' + id + '/archive');
+        for (const kind of ['production', 'overhead']) {
+          for (const r of rows[kind]) {
+            const name = r.nameInp.value.trim();
+            if (!name) continue;
+            await post('/cost-item', { id: r.id, kind, name, amount: r.amountInp.value });
+          }
+        }
+        await post('/costs/apply', { monthly_units: vol.value, fot_tax_coeff: coeff.value });
+        toast('Сохранено и применено к калькуляции');
+        await reloadBase();
+        const nd = await api('/costs'); costRemoved = []; buildCosts(box, nd);
+      } catch (e) { toast(e.message, true); }
+    }
+  }
+
   function renderSettings() {
     const c = $('#calc-content');
     const s = DICTS.settings || {};
     const groups = [
-      {
-        title: 'План и расходы на единицу',
-        hint: 'Эти суммы попадают в каждую рецептуру через коэффициенты.',
-        fields: [
-          ['monthly_units', 'План выпуска, шт/мес'],
-          ['labor_per_unit', 'ФОТ на единицу, сум'],
-          ['production_per_unit', 'Производство на единицу, сум'],
-          ['overhead_per_unit', 'Накладные на единицу, сум'],
-        ],
-      },
       {
         title: 'Проценты по умолчанию',
         hint: 'Подставляются в новые рецептуры, но в каждой рецептуре можно поменять.',
@@ -784,7 +870,7 @@
     c.appendChild(el('div', { class: 'calc-head' }, [
       el('div', {}, [
         el('div', { class: 'calc-h2' }, 'Настройки'),
-        el('div', { class: 'calc-sub' }, 'Минимальный набор коэффициентов. ФОТ и производство позже подтянем из своих плиток.'),
+        el('div', { class: 'calc-sub' }, 'Проценты по умолчанию и группы товаров. Постоянные затраты (ФОТ/производство/накладные) — во вкладке «Затраты».'),
       ]),
       el('button', { class: 'btn-primary calc-save-settings', onclick: saveSettings }, 'Сохранить настройки'),
     ]));
@@ -867,9 +953,9 @@
 
   async function saveSettings() {
     const form = $('.calc-settings-grid');
-    const keys = ['monthly_units', 'labor_per_unit', 'production_per_unit', 'overhead_per_unit', 'retro_pct', 'vat_pct', 'profit_tax_pct', 'waste_pct'];
+    const keys = ['retro_pct', 'vat_pct', 'profit_tax_pct', 'waste_pct'];
     const body = {};
-    keys.forEach((key) => { body[key] = form.querySelector('[name="' + key + '"]').value; });
+    keys.forEach((key) => { const elx = form.querySelector('[name="' + key + '"]'); if (elx) body[key] = elx.value; });
     try {
       const res = await post('/settings', body);
       DICTS.settings = res.settings || body;

@@ -111,6 +111,12 @@
 .calc-cols-item:hover { background:var(--soft); }
 .calc-cols-item input { width:15px; height:15px; cursor:pointer; }
 
+/* Вкладка «Затраты»: строки реестров производственных/накладных затрат */
+.calc-cost-list { display:flex; flex-direction:column; gap:6px; margin:6px 0; }
+.calc-cost-row { display:grid; grid-template-columns:minmax(0,1fr) 140px 28px; gap:8px; align-items:center; }
+.calc-cost-foot { margin-top:8px; padding-top:8px; border-top:1px solid var(--line); font-size:13px; color:#4d5b50; }
+.calc-cost-foot b { font-variant-numeric:tabular-nums; }
+
 .calc-group-edit { padding:10px 0; border-bottom:1px solid #edf0ea; }
 .calc-group-edit:last-of-type { border-bottom:0; }
 .calc-group-edit-top { display:flex; gap:8px; align-items:center; }
