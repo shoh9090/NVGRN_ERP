@@ -148,12 +148,14 @@
   let cpFilterCat = '';
   let cpFilterQ = '';
   let cpFilterSrc = '';
+  const triageState = { from: '', to: '', wallet: '' };
 
   function shell() {
     const main = $('#cash-main'); main.innerHTML = '';
     const tab = (id, label) => el('button', { class: 'cash-tab' + (TAB === id ? ' on' : ''), onclick: () => { TAB = id; render(); } }, label);
     main.appendChild(el('div', { class: 'cash-tabs' }, [
       tab('tx', '💸 Транзакции'),
+      tab('triage', '🧩 Разбор'),
       tab('cashflow', '📊 Кэш-флоу (ДДС)'),
       tab('pnl', '📈 P&L'),
       tab('wallets', '👛 Кошельки'),
@@ -164,6 +166,7 @@
   function render() {
     shell();
     if (TAB === 'tx') return renderTransactions();
+    if (TAB === 'triage') return renderTriage();
     if (TAB === 'cashflow') return renderReport('cashflow');
     if (TAB === 'pnl') return renderReport('pnl');
     if (TAB === 'wallets') return renderWallets();
@@ -172,6 +175,53 @@
   }
   function renderSoon() {
     $('#cash-content').appendChild(el('div', { class: 'cash-soon' }, 'Этот раздел появится на следующем этапе. Пока готов фундамент и справочники.'));
+  }
+
+  // ---------- Умный разбор «Не разобрано» ----------
+  async function renderTriage() {
+    const c = $('#cash-content'); c.innerHTML = '';
+    c.appendChild(el('div', { class: 'cash-head' }, [
+      el('div', {}, [el('div', { class: 'cash-h2' }, 'Разбор «Не разобрано»'),
+        el('div', { class: 'cash-sub' }, 'Неразобранные операции сгруппированы по контрагенту. Поставь статью и «Разобери» пачкой; «Запомнить» — правило для будущих импортов.')]),
+    ]));
+    const dinp = (k) => el('input', { type: 'date', class: 'cashf-inp cash-filt', value: triageState[k], onchange: (e) => { triageState[k] = e.target.value; renderTriage(); } });
+    const walletSel = el('select', { class: 'cashf-inp cash-filt', onchange: (e) => { triageState.wallet = e.target.value; renderTriage(); } }, [el('option', { value: '' }, 'Все кошельки'), ...(DICTS.wallets || []).map((w) => el('option', { value: w.id, selected: String(w.id) === triageState.wallet || null }, w.name))]);
+    c.appendChild(el('div', { class: 'cash-filters' }, [el('span', { class: 'cash-flab' }, 'С'), dinp('from'), el('span', { class: 'cash-flab' }, 'по'), dinp('to'), walletSel]));
+    const box = el('div', { id: 'cash-triage-box' }); c.appendChild(box);
+    box.appendChild(el('div', { class: 'cash-empty' }, 'Считаю…'));
+    let d; try { const p = new URLSearchParams(); ['from', 'to', 'wallet'].forEach((k) => { if (triageState[k]) p.set(k, triageState[k]); }); d = await api('/triage/groups?' + p.toString()); }
+    catch (e) { box.innerHTML = ''; box.appendChild(el('div', { class: 'cash-empty' }, 'Ошибка: ' + e.message)); return; }
+    box.innerHTML = '';
+    box.appendChild(el('div', { class: 'cash-tot-bar' }, [
+      el('span', {}, 'Групп: ' + d.groups.length),
+      el('span', { class: 'cash-tot-unc' }, 'Не разобрано операций: ' + d.totalCnt),
+      el('span', { class: 'cash-tot-net' }, 'На сумму: ' + money(d.totalSum)),
+    ]));
+    if (!d.groups.length) { box.appendChild(el('div', { class: 'cash-empty' }, 'Всё разобрано 👍')); return; }
+    d.groups.forEach((g) => box.appendChild(triageCard(g)));
+  }
+  function triageCard(g) {
+    const cat = fsel(catOptions(), g.default_category_id || '');
+    const remember = el('input', { type: 'checkbox', checked: g.cp_id ? true : null, disabled: g.cp_id ? null : true });
+    const card = el('div', { class: 'cash-triage-card' }, [
+      el('div', { class: 'cash-triage-info' }, [
+        el('div', { class: 'cash-triage-name' }, g.name + (g.key_type === 'payer' ? ' · (из выписки)' : '')),
+        el('div', { class: 'cash-triage-meta' }, g.cnt + ' операц.' + (g.sum_in ? ' · приход ' + money(g.sum_in) : '') + (g.sum_out ? ' · расход ' + money(g.sum_out) : '')),
+        g.sample ? el('div', { class: 'cash-triage-sample' }, '«' + g.sample + '»') : null,
+      ]),
+      el('div', { class: 'cash-triage-act' }, [
+        cat,
+        el('label', { class: 'cash-triage-rem', title: g.cp_id ? 'Запомнить статью для этого контрагента (авто на будущее)' : 'Правило доступно только для контрагентов' }, [remember, ' запомнить']),
+        el('button', { class: 'btn-primary', onclick: async () => {
+          if (!cat.value) return toast('Выберите статью', true);
+          try {
+            const r = await post('/triage/classify', { cp_id: g.cp_id, payer_name: g.payer_name, category_id: cat.value, remember: !!(g.cp_id && remember.checked), from: triageState.from, to: triageState.to, wallet: triageState.wallet });
+            toast('Разобрано: ' + r.applied); card.remove();
+          } catch (e) { toast(e.message, true); }
+        } }, 'Разобрать'),
+      ]),
+    ]);
+    return card;
   }
 
   // Панель периода для отчётов (месяц по умолчанию — текущий).
@@ -401,7 +451,12 @@
       try { const d = await post('/tx/bulk-delete', { ids: [...txSel] }); toast('Удалено: ' + d.deleted); loadTx(); } catch (e) { toast(e.message, true); }
     } }, 'Удалить выбранные');
     const clr = el('button', { class: 'btn-ghost', onclick: () => { txSel.clear(); loadTx(); } }, 'Снять');
-    wrap.appendChild(el('div', { id: 'cash-bulk', class: 'cash-bulkbar', style: 'display:none' }, [el('span', { class: 'cash-bulk-n' }, ''), delBtn, clr]));
+    const catBulk = fsel(catOptions(), '');
+    const classifyBtn = el('button', { class: 'btn-primary', onclick: async () => {
+      if (!txSel.size) return; if (!catBulk.value) return toast('Выберите статью', true);
+      try { const d = await post('/tx/bulk-classify', { ids: [...txSel], category_id: catBulk.value }); toast('Присвоено: ' + d.applied); loadTx(); } catch (e) { toast(e.message, true); }
+    } }, 'Присвоить статью');
+    wrap.appendChild(el('div', { id: 'cash-bulk', class: 'cash-bulkbar', style: 'display:none' }, [el('span', { class: 'cash-bulk-n' }, ''), catBulk, classifyBtn, delBtn, clr]));
     const selAll = el('input', { type: 'checkbox', class: 'cash-chk' });
     selAll.addEventListener('click', (e) => {
       const on = e.target.checked; txSel.clear(); if (on) txItems.forEach((x) => txSel.add(x.id));

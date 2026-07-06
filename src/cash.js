@@ -678,6 +678,69 @@ router.post('/api/tx/bulk-delete', J, async (req, res) => {
   await db.log(req.user.id, 'cash_tx_bulk_delete', ids.length + ' шт');
   res.json({ ok: true, deleted: ids.length });
 });
+// Массовое присвоение статьи выбранным строкам (из вкладки «Транзакции»).
+router.post('/api/tx/bulk-classify', J, async (req, res) => {
+  const ids = (req.body && Array.isArray(req.body.ids) ? req.body.ids : []).map((x) => parseInt(x, 10)).filter(Boolean);
+  const catId = intOrNull(req.body.category_id);
+  if (!ids.length) return res.status(400).json({ error: 'Ничего не выбрано' });
+  if (!catId) return res.status(400).json({ error: 'Выберите статью' });
+  const r = await db.pool.query("UPDATE cash_transactions SET category_id=$1, is_classified=true WHERE id = ANY($2) AND tx_type <> 'transfer'", [catId, ids]);
+  await db.log(req.user.id, 'cash_tx_bulk_classify', `${r.rowCount} шт → статья ${catId}`);
+  res.json({ ok: true, applied: r.rowCount });
+});
+
+// ---------- Умный разбор «Не разобрано» ----------
+// Группировка неразобранных не-переводов по контрагенту (иначе по тексту плательщика).
+router.get('/api/triage/groups', async (req, res) => {
+  const { from, to, wallet } = req.query;
+  const p = [], w = ["t.tx_type <> 'transfer'", 't.is_classified = false'];
+  if (from) { p.push(from); w.push(`t.tx_date >= $${p.length}`); }
+  if (to) { p.push(to); w.push(`t.tx_date <= $${p.length}`); }
+  if (wallet) { p.push(parseInt(wallet)); w.push(`t.wallet_id = $${p.length}`); }
+  const rows = (await db.pool.query(
+    `SELECT t.counterparty_id AS cp_id, cp.name AS cp_name, cp.default_category_id,
+            CASE WHEN t.counterparty_id IS NULL THEN COALESCE(t.payer_name,'') END AS payer_raw,
+            COUNT(*)::int AS cnt,
+            COALESCE(SUM(t.amount) FILTER (WHERE t.tx_type='in'),0) AS sum_in,
+            COALESCE(SUM(t.amount) FILTER (WHERE t.tx_type='out'),0) AS sum_out,
+            (ARRAY_AGG(t.purpose ORDER BY t.amount DESC) FILTER (WHERE COALESCE(t.purpose,'')<>''))[1] AS sample
+     FROM cash_transactions t
+     LEFT JOIN cash_counterparties cp ON cp.id = t.counterparty_id
+     WHERE ${w.join(' AND ')}
+     GROUP BY t.counterparty_id, cp.name, cp.default_category_id, (CASE WHEN t.counterparty_id IS NULL THEN COALESCE(t.payer_name,'') END)
+     ORDER BY (COALESCE(SUM(t.amount) FILTER (WHERE t.tx_type='in'),0) + COALESCE(SUM(t.amount) FILTER (WHERE t.tx_type='out'),0)) DESC
+     LIMIT 300`, p)).rows;
+  const groups = rows.map((r) => ({
+    key_type: r.cp_id ? 'cp' : 'payer',
+    cp_id: r.cp_id || null,
+    payer_name: r.cp_id ? null : (r.payer_raw || ''),
+    name: r.cp_id ? (r.cp_name || 'Контрагент #' + r.cp_id) : (r.payer_raw || '(без плательщика)'),
+    default_category_id: r.default_category_id || null,
+    cnt: r.cnt, sum_in: Number(r.sum_in), sum_out: Number(r.sum_out), sample: r.sample || '',
+  }));
+  res.json({
+    groups,
+    totalCnt: groups.reduce((a, g) => a + g.cnt, 0),
+    totalSum: groups.reduce((a, g) => a + g.sum_in + g.sum_out, 0),
+  });
+});
+// Разобрать группу: статья всем неразобранным позициям группы + опц. правило для контрагента.
+router.post('/api/triage/classify', J, async (req, res) => {
+  const b = req.body || {};
+  const catId = intOrNull(b.category_id);
+  if (!catId) return res.status(400).json({ error: 'Выберите статью' });
+  const cpId = intOrNull(b.cp_id);
+  const p = [catId], w = ["tx_type <> 'transfer'", 'is_classified = false'];
+  if (cpId) { p.push(cpId); w.push(`counterparty_id = $${p.length}`); }
+  else { p.push(String(b.payer_name || '')); w.push(`counterparty_id IS NULL AND COALESCE(payer_name,'') = $${p.length}`); }
+  if (b.from) { p.push(b.from); w.push(`tx_date >= $${p.length}`); }
+  if (b.to) { p.push(b.to); w.push(`tx_date <= $${p.length}`); }
+  if (b.wallet) { p.push(parseInt(b.wallet)); w.push(`wallet_id = $${p.length}`); }
+  const r = await db.pool.query(`UPDATE cash_transactions SET category_id=$1, is_classified=true WHERE ${w.join(' AND ')}`, p);
+  if (b.remember && cpId) await db.pool.query('UPDATE cash_counterparties SET default_category_id=$1 WHERE id=$2', [catId, cpId]);
+  await db.log(req.user.id, 'cash_triage_classify', `${r.rowCount} шт → статья ${catId}${b.remember && cpId ? ' (+правило)' : ''}`);
+  res.json({ ok: true, applied: r.rowCount });
+});
 
 // ---------- Импорт банковской выписки ----------
 // Декодер cp1251 (выписка Asia Alliance в windows-1251).

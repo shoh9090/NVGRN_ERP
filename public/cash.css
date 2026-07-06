@@ -7,6 +7,17 @@
 .cash-tab.on { color: var(--forest); border-bottom-color: var(--lime); }
 .cash-loading, .cash-empty { padding: 34px; text-align: center; color: var(--muted); }
 
+/* Разбор «Не разобрано» */
+.cash-triage-card { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 12px 16px; margin-bottom: 8px; }
+.cash-triage-info { min-width: 260px; flex: 1; }
+.cash-triage-name { font-weight: 800; color: var(--ink); font-size: 15px; }
+.cash-triage-meta { color: var(--muted); font-size: 13px; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.cash-triage-sample { color: #5a665c; font-size: 12px; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 520px; }
+.cash-triage-act { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.cash-triage-act .cashf-inp { min-width: 220px; }
+.cash-triage-rem { display: flex; align-items: center; gap: 5px; font-size: 13px; font-weight: 700; color: #5a665c; white-space: nowrap; cursor: pointer; }
+.cash-triage-rem input { width: 15px; height: 15px; cursor: pointer; }
+
 .cash-h2 { font-family: 'Lora', Georgia, serif; font-weight: 600; font-size: 24px; margin: 2px 0 4px; color: var(--ink); }
 .cash-sub { color: var(--muted); font-size: 13px; margin-bottom: 16px; }
 
