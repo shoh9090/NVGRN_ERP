@@ -76,7 +76,20 @@
   let recipeQ = '';
   let recipeGroup = '';
   // Взаимозависимые фильтры цен: родительская категория → категория (как в «Справочниках»).
-  const priceFilters = { parent: '', category: '', kind: '', q: '' };
+  const priceFilters = { parent: '', category: '', q: '' };
+  // Настройка столбцов таблицы цен (как в SD: галочки показать/скрыть). Переиспользуемый паттерн.
+  const PRICE_COLS = [
+    { key: 'type', label: 'Тип', width: '80px' },
+    { key: 'category', label: 'Категория', width: '120px' },
+    { key: 'name', label: 'Наименование', width: 'minmax(190px,1.4fr)', always: true },
+    { key: 'char', label: 'Характеристика', width: 'minmax(110px,.9fr)' },
+    { key: 'calc', label: 'Цена в кальк.', width: '130px', always: true },
+    { key: 'last', label: 'Последняя закупка', width: '160px' },
+    { key: 'comment', label: 'Комментарий', width: 'minmax(140px,.8fr)' },
+  ];
+  const priceColsHidden = new Set(JSON.parse(localStorage.getItem('calc_price_cols_hidden') || '[]'));
+  let priceColsOpen = false;
+  const visiblePriceCols = () => PRICE_COLS.filter((cc) => cc.always || !priceColsHidden.has(cc.key));
 
   const productLabel = (p) => (p ? ((p.code ? p.code + ' · ' : '') + p.name) : '');
   const materialLabel = (m) => (m ? ((m.code ? m.code + ' · ' : '') + m.name) : '');
@@ -626,76 +639,117 @@
     const catSel = select([{ v: '', t: 'Все категории' }, ...catsFor(priceFilters.parent).map((cn) => ({ v: cn, t: cn }))], priceFilters.category, {
       onchange: (e) => { priceFilters.category = e.target.value; render(); },
     });
-    const kindSel = select([
-      { v: '', t: 'Все типы' }, { v: 'raw', t: 'Сырьё' }, { v: 'packaging', t: 'Упаковка' },
-    ], priceFilters.kind, { onchange: (e) => { priceFilters.kind = e.target.value; render(); } });
     const q = inp(priceFilters.q, {
       placeholder: 'Поиск по названию или артикулу',
       oninput: (e) => { priceFilters.q = e.target.value; clearTimeout(window.__calcMq); window.__calcMq = setTimeout(render, 180); },
     });
-    c.appendChild(el('div', { class: 'calc-filters calc-filters-sticky' }, [parentSel, catSel, kindSel, q]));
+    // Кнопка настройки столбцов (как в SD) + панель с галочками.
+    const colsBtn = el('button', { class: 'btn-ghost calc-cols-btn', onclick: () => { priceColsOpen = !priceColsOpen; render(); } }, '⚙ Столбцы');
+    const colsWrap = el('div', { class: 'calc-cols-wrap' }, [colsBtn]);
+    if (priceColsOpen) {
+      colsWrap.appendChild(el('div', { class: 'calc-cols-panel' }, PRICE_COLS.filter((cc) => !cc.always).map((cc) =>
+        el('label', { class: 'calc-cols-item' }, [
+          el('input', { type: 'checkbox', checked: !priceColsHidden.has(cc.key) || null, onchange: (e) => {
+            if (e.target.checked) priceColsHidden.delete(cc.key); else priceColsHidden.add(cc.key);
+            localStorage.setItem('calc_price_cols_hidden', JSON.stringify([...priceColsHidden]));
+            render();
+          } }),
+          el('span', {}, cc.label),
+        ])
+      )));
+    }
+    c.appendChild(el('div', { class: 'calc-filters calc-filters-sticky' }, [
+      parentSel, catSel, q, colsWrap,
+      el('div', { class: 'calc-price-actions' }, [
+        el('button', { class: 'btn-ghost', title: 'Подставить последнюю закупочную цену во все строки (потом сохранить)', onclick: pullAllFromPurchase }, '↺ Взять всё из закупки'),
+        el('button', { class: 'btn-primary', onclick: savePricesAll }, '💾 Сохранить'),
+      ]),
+    ]));
 
     const needle = priceFilters.q.trim().toLowerCase();
-    const rows = MATERIALS.filter((m) => (!priceFilters.kind || m.kind === priceFilters.kind)
-      && (!priceFilters.parent || m.parent_name === priceFilters.parent)
+    const rows = MATERIALS.filter((m) => (!priceFilters.parent || m.parent_name === priceFilters.parent)
       && (!priceFilters.category || m.category_name === priceFilters.category)
       && (!needle || (m.name || '').toLowerCase().includes(needle) || (m.code || '').toLowerCase().includes(needle)));
+    const cols = visiblePriceCols();
+    const gridStyle = 'grid-template-columns:' + cols.map((cc) => cc.width).join(' ');
     const table = el('div', { class: 'calc-price-table calc-excel-table' }, [
-      el('div', { class: 'calc-price-row head' }, [
-        el('span', {}, 'Тип'), el('span', {}, 'Категория'), el('span', {}, 'Наименование'), el('span', {}, 'Характеристика'),
-        el('span', {}, 'Цена в кальк.'), el('span', {}, 'Последняя закупка'), el('span', {}, 'Комментарий'), el('span', {}, ''),
-      ]),
-      ...rows.map(priceRow),
+      el('div', { class: 'calc-price-row head', style: gridStyle }, cols.map((cc) => el('span', {}, cc.label))),
+      ...rows.map((m) => priceRow(m, cols, gridStyle)),
     ]);
     c.appendChild(rows.length ? table : el('div', { class: 'calc-empty' }, 'Ничего не найдено.'));
   }
 
-  function priceRow(m) {
-    const calc = inp(m.calc_price, { type: 'number', step: '0.01', name: 'calc_price' });
-    const comment = inp(m.price_comment || '', { name: 'comment', placeholder: 'заметка по цене' });
-    // Δ-подсказка: как изменилась закупочная цена относительно предыдущей закупки.
-    const dyn = num(m.last_purchase_price) - num(m.prev_purchase_price);
-    const hasDyn = m.last_purchase_price != null && m.prev_purchase_price != null && Math.abs(dyn) > 0.01;
-    const dynHint = hasDyn
-      ? el('small', { class: dyn > 0 ? 'bad' : 'good', title: 'Динамика к прошлой закупке. Полная история — в разделе Закупки.' },
-          (dyn > 0 ? '↑ +' : '↓ −') + money(Math.abs(dyn)))
-      : null;
-    const row = el('div', { class: 'calc-price-row' }, [
-      el('span', {}, m.kind === 'packaging' ? 'Упаковка' : 'Сырьё'),
-      el('span', { class: 'muted' }, m.category_name || '—'),
-      el('span', {}, [el('b', {}, m.name || ''), m.code ? el('small', {}, m.code) : null]),
-      el('span', { class: 'muted' }, m.characteristics || '—'),
-      calc,
-      el('span', { class: 'tnum muted' }, [
+  function priceCell(m, key) {
+    if (key === 'type') return el('span', {}, m.kind === 'packaging' ? 'Упаковка' : 'Сырьё');
+    if (key === 'category') return el('span', { class: 'muted' }, m.category_name || '—');
+    if (key === 'name') return el('span', {}, [el('b', {}, m.name || ''), m.code ? el('small', {}, m.code) : null]);
+    if (key === 'char') return el('span', { class: 'muted' }, m.characteristics || '—');
+    if (key === 'calc') return inp(m.calc_price, { type: 'number', step: '0.01', name: 'calc_price', 'data-orig': m.calc_price == null ? '' : String(m.calc_price) });
+    if (key === 'comment') return inp(m.price_comment || '', { name: 'comment', placeholder: 'заметка по цене', 'data-orig': m.price_comment || '' });
+    if (key === 'last') {
+      const dyn = num(m.last_purchase_price) - num(m.prev_purchase_price);
+      const hasDyn = m.last_purchase_price != null && m.prev_purchase_price != null && Math.abs(dyn) > 0.01;
+      const dynHint = hasDyn
+        ? el('small', { class: dyn > 0 ? 'bad' : 'good', title: 'Динамика к прошлой закупке. Полная история — в разделе Закупки.' },
+            (dyn > 0 ? '↑ +' : '↓ −') + money(Math.abs(dyn)))
+        : null;
+      return el('span', { class: 'tnum muted' }, [
         el('b', {}, money(m.last_purchase_price)),
         el('small', {}, (m.last_source ? m.last_source + ' · ' : '') + (ruDate(m.last_purchase_at) || '—')),
         dynHint,
-      ]),
-      comment,
-      el('div', { class: 'calc-row-actions' }, [
-        m.last_purchase_price != null ? el('button', { class: 'calc-accept-btn', title: 'Поставить цену из последней закупки', onclick: () => { calc.value = m.last_purchase_price; savePrice(m, row); } }, 'Взять из закупки') : null,
-        el('button', { class: 'btn-primary calc-mini-save', onclick: () => savePrice(m, row) }, 'Сохранить'),
-      ]),
-    ]);
-    return row;
+      ]);
+    }
+    return el('span', {});
   }
 
-  async function savePrice(m, row) {
-    try {
-      await post('/material-price', {
-        item_kind: m.kind,
-        item_id: m.id,
-        calc_price: row.querySelector('[name="calc_price"]').value,
-        // market_price оставляем = последней закупке (источник цены — Закупка).
-        market_price: m.last_purchase_price != null ? m.last_purchase_price : row.querySelector('[name="calc_price"]').value,
-        comment: row.querySelector('[name="comment"]').value,
+  function priceRow(m, cols, gridStyle) {
+    return el('div', {
+      class: 'calc-price-row', style: gridStyle,
+      'data-kind': m.kind, 'data-id': m.id,
+      'data-last': m.last_purchase_price == null ? '' : String(m.last_purchase_price),
+      'data-comment': m.price_comment || '',
+    }, cols.map((cc) => priceCell(m, cc.key)));
+  }
+
+  // Подставить последнюю закупочную цену во все видимые строки (без сохранения — потом «Сохранить»).
+  function pullAllFromPurchase() {
+    let n = 0;
+    document.querySelectorAll('.calc-price-row[data-id]').forEach((r) => {
+      const last = r.getAttribute('data-last');
+      const calcEl = r.querySelector('[name="calc_price"]');
+      if (last !== '' && calcEl && calcEl.value !== last) { calcEl.value = last; n++; }
+    });
+    toast(n ? 'Подставлено из закупки: ' + n + '. Проверьте и нажмите «Сохранить».' : 'Нечего подставлять');
+  }
+
+  // Одно сохранение на всю страницу: собирает изменённые строки и пишет их.
+  async function savePricesAll() {
+    const changed = [];
+    document.querySelectorAll('.calc-price-row[data-id]').forEach((r) => {
+      const calcEl = r.querySelector('[name="calc_price"]');
+      const comEl = r.querySelector('[name="comment"]');
+      const calcDirty = calcEl && calcEl.value !== calcEl.getAttribute('data-orig');
+      const comDirty = comEl && comEl.value !== comEl.getAttribute('data-orig');
+      if (!calcDirty && !comDirty) return;
+      const last = r.getAttribute('data-last');
+      const calcVal = calcEl ? calcEl.value : '';
+      changed.push({
+        item_kind: r.getAttribute('data-kind'),
+        item_id: r.getAttribute('data-id'),
+        calc_price: calcVal,
+        // market_price = последняя закупка (источник — Закупка); если закупки нет — сама цена.
+        market_price: last !== '' ? last : calcVal,
+        // если колонка «Комментарий» скрыта — сохраняем прежнее значение, не затираем.
+        comment: comEl ? comEl.value : r.getAttribute('data-comment'),
       });
-      toast('Цена сохранена');
+    });
+    if (!changed.length) { toast('Нет изменений'); return; }
+    try {
+      for (const body of changed) await post('/material-price', body);
+      toast('Сохранено позиций: ' + changed.length);
       await reloadBase();
       render();
-    } catch (e) {
-      toast(e.message, true);
-    }
+    } catch (e) { toast(e.message, true); }
   }
 
   function renderSettings() {
