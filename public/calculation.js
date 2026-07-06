@@ -793,7 +793,7 @@
     { s: 'cost', key: 'raw_name', label: 'Сырьё', text: (m) => m.rawName },
     { s: 'cost', key: 'raw_price', label: 'Стоимость зелени, сум/кг', edit: 'rawPrice' },
     { s: 'cost', key: 'raw_cost', label: 'Зелень в упаковке', comp: 'raw_cost' },
-    { s: 'cost', key: 'pack_cost', label: 'Упаковка', edit: 'packCost' },
+    { s: 'cost', key: 'pack_cost', label: 'Упаковка', edit: 'pack_cost' },
     { s: 'cost', key: 'labor', label: 'ФОТ', text: (m) => f0(m.labor) },
     { s: 'cost', key: 'production', label: 'Производство', text: (m) => f0(m.production) },
     { s: 'cost', key: 'overhead', label: 'Накладные', text: (m) => f0(m.overhead) },
@@ -911,7 +911,7 @@
       const m = models[ci], v = m[editKey];
       if (editKey === 'grammage') return post('/recipe/' + m.id + '/grammage', { qty: v }).then(ok, (e) => err(ci, e));
       if (editKey === 'rawPrice') return post('/recipe/' + m.id + '/item-price', { item_kind: 'raw', manual_price: v }).then(ok, (e) => err(ci, e));
-      if (editKey === 'packCost') return post('/recipe/' + m.id + '/item-price', { item_kind: 'packaging', manual_price: v }).then(ok, (e) => err(ci, e));
+      if (editKey === 'pack_cost') return post('/recipe/' + m.id + '/item-price', { item_kind: 'packaging', manual_price: v }).then(ok, (e) => err(ci, e));
       const map = { wastePct: 'waste_pct', retroA: 'retro_pct', retroB: 'retro_pct_b', priceB: 'sale_price_override_b' };
       return post('/recipe/' + m.id + '/pricing', { [map[editKey]]: v }).then(ok, (e) => err(ci, e));
     };
