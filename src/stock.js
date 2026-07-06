@@ -454,6 +454,38 @@ router.post('/api/inventory/adjust', express.json(), async (req, res) => {
   res.json({ ok: true, delta });
 });
 
+// Пакетный пересчёт (инвентаризация одним экраном): фактические остатки списком,
+// система пишет дельту по каждой изменившейся позиции одним комментарием.
+router.post('/api/inventory/adjust-bulk', express.json(), async (req, res) => {
+  const comment = String(req.body.comment || '').trim();
+  if (!comment) return res.status(400).json({ error: 'Укажите причину/комментарий пересчёта' });
+  const items = Array.isArray(req.body.items) ? req.body.items : [];
+  if (!items.length) return res.status(400).json({ error: 'Нет позиций для пересчёта' });
+  const client = await db.pool.connect();
+  let applied = 0;
+  try {
+    await client.query('BEGIN');
+    for (const it of items) {
+      const kind = it.item_kind === 'packaging' ? 'packaging' : 'raw';
+      const id = parseInt(it.item_id);
+      const factual = Number(it.factual);
+      if (!id || isNaN(factual)) continue;
+      const cur = await client.query('SELECT COALESCE(SUM(qty),0) AS b FROM stock_movements WHERE item_kind=$1 AND item_id=$2', [kind, id]);
+      const delta = factual - Number(cur.rows[0].b);
+      if (delta === 0) continue;
+      await client.query(
+        `INSERT INTO stock_movements (item_kind, item_id, qty, direction, reason, ref_type, comment, moved_at, created_by)
+         VALUES ($1,$2,$3,$4,'adjust','manual',$5,CURRENT_DATE,$6)`,
+        [kind, id, delta, delta >= 0 ? 'in' : 'out', comment, req.user.id]);
+      applied++;
+    }
+    await client.query('COMMIT');
+  } catch (e) { await client.query('ROLLBACK').catch(() => {}); return res.status(400).json({ error: e.message }); }
+  finally { client.release(); }
+  await db.log(req.user.id, 'stock_adjust_bulk', `${applied} поз., «${comment}»`);
+  res.json({ ok: true, applied });
+});
+
 // Лог движений-корректировок по позиции (кто/что/когда)
 router.get('/api/inventory/log/:kind/:id(\\d+)', async (req, res) => {
   const kind = req.params.kind === 'packaging' ? 'packaging' : 'raw';

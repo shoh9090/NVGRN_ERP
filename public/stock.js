@@ -490,6 +490,8 @@
   let invFilter = 'all'; // all | instock | nomove
   let invPc = '', invCat = '';
   let invData = null;
+  let invCount = false; // режим быстрого пересчёта (инвентаризация одним экраном)
+  let invCountComment = '';
   async function viewInventory() {
     const main = $('#stk-main');
     main.innerHTML = '';
@@ -532,8 +534,62 @@
       el('label', {}, ['Наличие', stockSel]),
       el('label', { style: 'flex:1' }, ['Поиск', el('input', { id: 'inv-q', placeholder: '🔍 артикул, наименование...', oninput: () => render() })]),
     ]));
+
+    // Панель быстрого пересчёта: вкл/выкл режим, комментарий, «Провести».
+    const countRefs = {}; // key → { input, deltaCell, balance, m }
+    const toolbar = el('div', { class: 'stk-count-bar' });
+    function buildToolbar() {
+      toolbar.innerHTML = '';
+      if (!invCount) {
+        toolbar.appendChild(el('button', { class: 'btn-primary', onclick: () => { invCount = true; render(); buildToolbar(); } }, '📋 Начать пересчёт'));
+        toolbar.appendChild(el('span', { class: 'muted', style: 'font-size:13px;align-self:center' }, 'Введёте фактические остатки списком, система запишет расхождения одним действием.'));
+      } else {
+        const cInp = el('input', { placeholder: 'Причина пересчёта (напр. Инвентаризация ' + ruDate(todayISO()) + ')', value: invCountComment, style: 'min-width:280px;flex:1', oninput: (e) => { invCountComment = e.target.value; } });
+        toolbar.appendChild(el('label', { style: 'flex:1' }, ['Комментарий', cInp]));
+        toolbar.appendChild(el('button', { class: 'btn-primary', onclick: doCount }, '✅ Провести пересчёт'));
+        toolbar.appendChild(el('button', { onclick: () => { invCount = false; render(); buildToolbar(); } }, 'Отмена'));
+      }
+    }
+    buildToolbar();
+    main.appendChild(toolbar);
     const box = el('div', { class: 'pur-content' });
     main.appendChild(box);
+
+    function doCount() {
+      if (!invCountComment.trim()) return toast('Укажите причину пересчёта', true);
+      const changed = Object.values(countRefs)
+        .filter((r) => r.input.value !== '' && !Number.isNaN(Number(r.input.value)))
+        .map((r) => ({ item_kind: r.m.kind, item_id: r.m.id, factual: Number(r.input.value), balance: r.balance, name: r.m.name, unit: r.m.unit }))
+        .filter((r) => Math.abs(r.factual - r.balance) > 1e-9);
+      if (!changed.length) return toast('Расхождений нет — всё совпадает', true);
+      const body = el('div', {}, [
+        el('p', { style: 'font-size:15px' }, 'Будут записаны расхождения по ' + changed.length + ' позиц.:'),
+        el('table', { class: 'dict-table' }, [
+          el('thead', {}, el('tr', {}, ['Наименование', 'Было', 'Стало', 'Δ'].map((h) => el('th', {}, h)))),
+          el('tbody', {}, changed.map((r) => {
+            const d = r.factual - r.balance;
+            return el('tr', {}, [
+              el('td', { style: 'font-weight:600' }, r.name),
+              el('td', { class: 'tnum muted' }, fmtQty(r.balance)),
+              el('td', { class: 'tnum', style: 'font-weight:700' }, fmtQty(r.factual)),
+              el('td', { class: 'tnum', style: 'color:' + (d >= 0 ? '#3f6a16' : 'var(--red)') }, (d > 0 ? '+' : '') + fmtQty(d)),
+            ]);
+          })),
+        ]),
+      ]);
+      const cm = modal('Подтвердите пересчёт', body, [
+        el('button', { onclick: () => cm.close() }, 'Отмена'),
+        el('button', { class: 'btn-primary', onclick: async (ev) => {
+          ev.target.disabled = true;
+          try {
+            const r = await api('/inventory/adjust-bulk', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ comment: invCountComment, items: changed.map((x) => ({ item_kind: x.item_kind, item_id: x.item_id, factual: x.factual })) }) });
+            toast('Пересчёт проведён: ' + r.applied + ' позиц.');
+            cm.close(); invCount = false; invCountComment = ''; viewInventory();
+          } catch (e) { toast(e.message, true); ev.target.disabled = false; }
+        } }, 'Провести'),
+      ]);
+    }
 
     function render() {
       const q = ($('#inv-q') ? $('#inv-q').value.trim().toLowerCase() : '');
@@ -546,13 +602,47 @@
       if ($('#inv-count')) $('#inv-count').textContent = 'Позиций: ' + items.length;
       box.innerHTML = '';
       if (!items.length) { box.appendChild(el('p', { class: 'dict-empty' }, 'Нет позиций по фильтру.')); return; }
+      for (const k in countRefs) delete countRefs[k];
+
+      if (invCount) {
+        // Режим быстрого пересчёта: факт по каждой позиции + живая дельта.
+        box.appendChild(el('table', { class: 'dict-table' }, [
+          el('thead', {}, el('tr', {}, ['#', 'Артикул', 'Наименование', 'Остаток (было)', 'Факт (пересчёт)', 'Δ', 'Ед.'].map((h, i) =>
+            el('th', { style: i >= 3 && i <= 5 ? 'text-align:right' : '' }, h)))),
+          el('tbody', {}, items.map((m, idx) => {
+            const bal = Number(m.balance);
+            const key = m.kind + ':' + m.id;
+            const deltaCell = el('td', { class: 'tnum', style: 'text-align:right;font-weight:700' }, '—');
+            const input = el('input', { type: 'number', step: 'any', class: 'stk-fact', value: bal,
+              oninput: () => {
+                const d = Number(input.value) - bal;
+                if (input.value === '' || Number.isNaN(Number(input.value))) { deltaCell.textContent = '—'; deltaCell.style.color = ''; return; }
+                deltaCell.textContent = (d > 0 ? '+' : '') + fmtQty(d);
+                deltaCell.style.color = d === 0 ? 'var(--ink-faint)' : d > 0 ? '#3f6a16' : 'var(--red)';
+              } });
+            countRefs[key] = { input, deltaCell, balance: bal, m };
+            return el('tr', { title: m.characteristics || '' }, [
+              el('td', { class: 'tnum muted' }, String(idx + 1)),
+              el('td', { class: 'tnum muted' }, m.code || ''),
+              el('td', { style: 'font-weight:600' }, m.name + (m.kind === 'packaging' ? ' 📦' : '')),
+              el('td', { class: 'tnum muted', style: 'text-align:right' }, fmtQty(bal)),
+              el('td', { style: 'text-align:right' }, input),
+              deltaCell,
+              el('td', {}, m.unit || ''),
+            ]);
+          })),
+        ]));
+        return;
+      }
+
       box.appendChild(el('table', { class: 'dict-table' }, [
-        el('thead', {}, el('tr', {}, ['Артикул', 'Наименование', 'Перв. остаток', 'Остаток', 'В передаче', 'Приход сег.', 'Передано сег.', 'Ед.', ''].map((h, i) =>
-          el('th', { style: i >= 2 && i <= 6 ? 'text-align:right' : '' }, h)))),
-        el('tbody', {}, items.map((m) => {
+        el('thead', {}, el('tr', {}, ['#', 'Артикул', 'Наименование', 'Перв. остаток', 'Остаток', 'В передаче', 'Приход сег.', 'Передано сег.', 'Ед.', ''].map((h, i) =>
+          el('th', { style: i >= 3 && i <= 7 ? 'text-align:right' : '' }, h)))),
+        el('tbody', {}, items.map((m, idx) => {
           const bal = Number(m.balance);
           const hasOpening = Number(m.opening_balance) !== 0;
           return el('tr', { title: m.characteristics || '' }, [
+            el('td', { class: 'tnum muted' }, String(idx + 1)),
             el('td', { class: 'tnum muted' }, m.code || ''),
             el('td', { style: 'font-weight:600' }, m.name + (m.kind === 'packaging' ? ' 📦' : '')),
             el('td', { class: 'tnum muted', style: 'text-align:right' }, hasOpening ? fmtQty(m.opening_balance) : '—'),
