@@ -57,7 +57,7 @@
 
   let DICTS = { departments: [], schedules: [], statuses: [] };
   let TAB = 'dashboard';
-  const empFilter = { department: '', schedule: '', status: '', q: '' };
+  const empFilter = { department: '', schedule: '', status: 'active', q: '' };
   let empSel = new Set();
   const isAdmin = !!(window.HUB_USER && window.HUB_USER.isAdmin);
 
@@ -161,7 +161,7 @@
     ]));
     // Фильтры
     const dSel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { empFilter.department = e.target.value; load(); } }, [el('option', { value: '' }, 'Все отделы'), el('option', { value: '__none__', selected: empFilter.department === '__none__' || null }, 'Без отдела'), ...DICTS.departments.map((d) => el('option', { value: d.id, selected: String(d.id) === empFilter.department || null }, d.name))]);
-    const stSel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { empFilter.status = e.target.value; load(); } }, [{ v: '', t: 'Активные' }, { v: 'fired', t: 'Уволенные' }, { v: 'archived', t: 'Архив' }].map((o) => el('option', { value: o.v, selected: o.v === empFilter.status || null }, o.t)));
+    const stSel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { empFilter.status = e.target.value; load(); } }, [{ v: 'active', t: 'Активные' }, { v: 'fired', t: 'Уволенные' }, { v: 'archived', t: 'Архив' }, { v: '', t: 'Все (кроме архива)' }].map((o) => el('option', { value: o.v, selected: o.v === empFilter.status || null }, o.t)));
     const q = el('input', { class: 'hrf-inp hr-filt hr-filt-q', placeholder: 'Поиск по ФИО / должности / телефону', value: empFilter.q, oninput: (e) => { empFilter.q = e.target.value; clearTimeout(window.__hrT); window.__hrT = setTimeout(load, 300); } });
     c.appendChild(el('div', { class: 'hr-filters' }, [dSel, stSel, q]));
     const box = el('div', { id: 'hr-emp-box' }); c.appendChild(box);
@@ -607,7 +607,7 @@
     c.appendChild(el('div', { class: 'hr-list' }, [head, ...DICTS.departments.map((d, i) => el('div', { class: 'hr-row hr-dept', style: 'cursor:pointer', onclick: () => openDept(d) }, [
       el('span', { class: 'hr-idx' }, String(i + 1)),
       el('span', { style: 'font-weight:700' }, d.name),
-      el('span', { class: 'tnum hr-dept-cnt', title: 'Показать сотрудников этого отдела', onclick: (ev) => { ev.stopPropagation(); empFilter.department = String(d.id); empFilter.status = ''; empFilter.q = ''; TAB = 'employees'; render(); } }, String(d.emp_count || 0) + ' →'),
+      el('span', { class: 'tnum hr-dept-cnt', title: 'Показать сотрудников этого отдела', onclick: (ev) => { ev.stopPropagation(); empFilter.department = String(d.id); empFilter.status = 'active'; empFilter.q = ''; TAB = 'employees'; render(); } }, String(d.emp_count || 0) + ' →'),
       el('span', { class: 'muted' }, String(d.sort_order)),
       el('span', {}, '✏️'),
     ]))]));

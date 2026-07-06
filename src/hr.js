@@ -134,7 +134,7 @@ router.get('/', async (req, res) => {
 router.get('/api/dicts', async (req, res) => {
   const departments = (await db.pool.query(
     `SELECT d.id, d.name, d.sort_order,
-            (SELECT COUNT(*) FROM hr_employees e WHERE e.department_id = d.id AND e.status <> 'archived')::int AS emp_count
+            (SELECT COUNT(*) FROM hr_employees e WHERE e.department_id = d.id AND e.status = 'active')::int AS emp_count
      FROM hr_departments d WHERE d.status='active' ORDER BY d.sort_order, d.name`)).rows;
   const counts = (await db.pool.query("SELECT status, count(*)::int n FROM hr_employees GROUP BY status")).rows;
   const byStatus = {}; counts.forEach((c) => { byStatus[c.status] = c.n; });
