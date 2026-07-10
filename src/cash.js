@@ -254,6 +254,7 @@ async function seedCategories() {
     ['81', 'Питание «базар»', G8, 'operating', false],
     ['82', 'Проект уксус', G8, 'operating', false],
     ['100', 'A2A (перевод между счетами)', G8, 'operating', false],
+    ['101', 'Корректировка остатка', G8, 'operating', false],
   ];
   let i = 0;
   for (const [code, name, grp, flow, onlyT] of CATS) {
@@ -523,6 +524,145 @@ async function walletBalances() {
 }
 router.get('/api/wallets', async (req, res) => { res.json({ wallets: await walletBalances() }); });
 
+// ---------- Сводка: сальдо на начало/конец, приход, расход за период ----------
+// Начальные остатки (source='opening') входят в сальдо, но НЕ в «приход периода».
+// Для одного кошелька перевод внутрь/наружу — это приход/расход этого кошелька;
+// для «всех кошельков» переводы взаимно гасятся (внутренние перемещения).
+function summaryExprs(wid) {
+  if (wid) {
+    return {
+      params: [wid],
+      delta: `CASE WHEN t.tx_type='in' AND t.wallet_id=$1 THEN t.amount
+                   WHEN t.tx_type='out' AND t.wallet_id=$1 THEN -t.amount
+                   WHEN t.tx_type='transfer' AND t.wallet_to_id=$1 THEN t.amount
+                   WHEN t.tx_type='transfer' AND t.wallet_id=$1 THEN -t.amount
+                   ELSE 0 END`,
+      inExpr: `CASE WHEN t.tx_type='in' AND t.wallet_id=$1 THEN t.amount
+                    WHEN t.tx_type='transfer' AND t.wallet_to_id=$1 THEN t.amount
+                    ELSE 0 END`,
+      outExpr: `CASE WHEN t.tx_type='out' AND t.wallet_id=$1 THEN t.amount
+                     WHEN t.tx_type='transfer' AND t.wallet_id=$1 THEN t.amount
+                     ELSE 0 END`,
+    };
+  }
+  return {
+    params: [],
+    delta: `CASE WHEN t.tx_type='in' THEN t.amount WHEN t.tx_type='out' THEN -t.amount ELSE 0 END`,
+    inExpr: `CASE WHEN t.tx_type='in' THEN t.amount ELSE 0 END`,
+    outExpr: `CASE WHEN t.tx_type='out' THEN t.amount ELSE 0 END`,
+  };
+}
+
+router.get('/api/summary', async (req, res) => {
+  try {
+    const from = req.query.from || null;
+    const to = req.query.to || null;
+    const wid = intOrNull(req.query.wallet);
+    const e = summaryExprs(wid);
+    // Сальдо на начало = все движения (включая начальные остатки) с датой ДО начала периода.
+    let opening = 0;
+    if (from) {
+      const p = e.params.slice(); p.push(from);
+      const r = await db.pool.query(
+        `SELECT COALESCE(SUM(${e.delta}),0) v FROM cash_transactions t WHERE t.tx_date < $${p.length}`, p);
+      opening = Number(r.rows[0].v);
+    }
+    // Приход/расход за период — без начальных остатков.
+    const p2 = e.params.slice();
+    p2.push(from || '1900-01-01', to || '2999-12-31');
+    const r2 = await db.pool.query(
+      `SELECT COALESCE(SUM(${e.inExpr}),0) inflow, COALESCE(SUM(${e.outExpr}),0) outflow
+       FROM cash_transactions t
+       WHERE t.source <> 'opening' AND t.tx_date BETWEEN $${p2.length - 1} AND $${p2.length}`, p2);
+    const inflow = Number(r2.rows[0].inflow), outflow = Number(r2.rows[0].outflow);
+    res.json({ opening, inflow, outflow, closing: opening + inflow - outflow });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Баланс одного кошелька на дату (для окна сверки).
+async function walletBalanceUpTo(wid, date) {
+  const r = await db.pool.query(
+    `SELECT COALESCE(SUM(CASE
+       WHEN t.tx_type='in' AND t.wallet_id=$1 THEN t.amount
+       WHEN t.tx_type='out' AND t.wallet_id=$1 THEN -t.amount
+       WHEN t.tx_type='transfer' AND t.wallet_to_id=$1 THEN t.amount
+       WHEN t.tx_type='transfer' AND t.wallet_id=$1 THEN -t.amount
+       ELSE 0 END),0) bal
+     FROM cash_transactions t WHERE t.tx_date <= $2`, [wid, date]);
+  return Number(r.rows[0].bal);
+}
+router.get('/api/wallet-balance', async (req, res) => {
+  const wid = intOrNull(req.query.wallet_id);
+  if (!wid) return res.status(400).json({ error: 'Не указан кошелёк' });
+  const date = req.query.date || new Date().toISOString().slice(0, 10);
+  res.json({ balance: await walletBalanceUpTo(wid, date) });
+});
+
+// ---------- Начальные остатки ----------
+// Одна запись source='opening' на кошелёк. Меняются целиком: старые удаляем, новые пишем.
+// Баланс — производная от движений, поэтому «пересчёт истории» происходит сам собой.
+router.get('/api/opening', async (req, res) => {
+  const wallets = (await db.pool.query("SELECT id, name, color, sort_order FROM cash_wallets WHERE status='active' ORDER BY sort_order, id")).rows;
+  const rows = (await db.pool.query("SELECT wallet_id, amount, tx_type, tx_date FROM cash_transactions WHERE source='opening'")).rows;
+  const byWallet = {}; let date = null;
+  rows.forEach((r) => { byWallet[r.wallet_id] = (r.tx_type === 'out' ? -Number(r.amount) : Number(r.amount)); if (r.tx_date) date = r.tx_date; });
+  res.json({
+    date: date ? String(date).slice(0, 10) : null,
+    items: wallets.map((w) => ({ wallet_id: w.id, name: w.name, color: w.color, amount: byWallet[w.id] != null ? byWallet[w.id] : null })),
+  });
+});
+router.post('/api/opening', J, async (req, res) => {
+  const b = req.body || {};
+  const date = b.date || new Date().toISOString().slice(0, 10);
+  const balances = b.balances || {};
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query("DELETE FROM cash_transactions WHERE source='opening'");
+    let n = 0;
+    for (const [wid, amtRaw] of Object.entries(balances)) {
+      const wallet = intOrNull(wid); if (!wallet) continue;
+      const amt = Number(amtRaw);
+      if (!amt || !isFinite(amt)) continue; // пусто/ноль — записи нет
+      const type = amt >= 0 ? 'in' : 'out';
+      await client.query(
+        `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, purpose, source, is_classified, created_by)
+         VALUES ($1,$2,$3,$4,'Начальный остаток','opening',true,$5)`,
+        [date, Math.abs(amt), type, wallet, req.user.id]);
+      n++;
+    }
+    await client.query('COMMIT');
+    await db.log(req.user.id, 'cash_opening_set', `дата ${date}, кошельков ${n}`);
+    res.json({ ok: true, count: n });
+  } catch (e) { await client.query('ROLLBACK').catch(() => {}); res.status(400).json({ error: e.message }); }
+  finally { client.release(); }
+});
+
+// ---------- Сверка остатка ----------
+// Сравнивает фактический остаток кошелька с ERP; при расхождении создаёт корректировку.
+router.post('/api/reconcile', J, async (req, res) => {
+  try {
+    const b = req.body || {};
+    const wid = intOrNull(b.wallet_id);
+    if (!wid) return res.status(400).json({ error: 'Выберите кошелёк для сверки' });
+    const date = b.date || new Date().toISOString().slice(0, 10);
+    const fact = Number(b.fact_amount);
+    if (!isFinite(fact)) return res.status(400).json({ error: 'Укажите фактический остаток' });
+    const erp = await walletBalanceUpTo(wid, date);
+    const diff = Math.round((fact - erp) * 100) / 100;
+    if (!diff) { await db.log(req.user.id, 'cash_reconcile', `кошелёк ${wid}: совпадает (${erp})`); return res.json({ ok: true, erp, diff: 0, created: false }); }
+    const type = diff > 0 ? 'in' : 'out';
+    const catRow = (await db.pool.query("SELECT id FROM cash_categories WHERE code='101' LIMIT 1")).rows[0];
+    const catId = catRow ? catRow.id : null;
+    await db.pool.query(
+      `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, category_id, purpose, source, is_classified, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,'adjust',$7,$8)`,
+      [date, Math.abs(diff), type, wid, catId, 'Корректировка остатка' + (b.comment ? ' — ' + b.comment : ''), !!catId, req.user.id]);
+    await db.log(req.user.id, 'cash_reconcile', `кошелёк ${wid}: факт ${fact}, ERP ${erp}, разница ${diff}${b.comment ? ' — ' + b.comment : ''}`);
+    res.json({ ok: true, erp, diff, created: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 // ---------- Отчёт: агрегация по статьям ДДС за период (для Кэш-флоу и P&L) ----------
 router.get('/api/report', async (req, res) => {
   const from = req.query.from || '1900-01-01';
@@ -538,7 +678,7 @@ router.get('/api/report', async (req, res) => {
             COUNT(*) AS cnt
      FROM cash_transactions t
      LEFT JOIN cash_categories cat ON cat.id = t.category_id
-     WHERE t.tx_date BETWEEN $1 AND $2 AND t.tx_type IN ('in','out')
+     WHERE t.tx_date BETWEEN $1 AND $2 AND t.tx_type IN ('in','out') AND t.source <> 'opening'
        AND (cat.code IS NULL OR cat.code <> '100')${wClause}
      GROUP BY cat.id, cat.code, cat.name, cat.group_name, cat.flow_type
      ORDER BY cat.code NULLS LAST`, p)).rows
@@ -557,7 +697,8 @@ router.get('/api/report', async (req, res) => {
 // ---------- Журнал транзакций ----------
 router.get('/api/transactions', async (req, res) => {
   const { from, to, wallet, counterparty, category, type, q, classified } = req.query;
-  const p = [], w = [];
+  // Начальные остатки (source='opening') — системные записи, в журнал не показываем: только сальдо.
+  const p = [], w = ["t.source <> 'opening'"];
   if (from) { p.push(from); w.push(`t.tx_date >= $${p.length}`); }
   if (to) { p.push(to); w.push(`t.tx_date <= $${p.length}`); }
   if (type && ['in', 'out', 'transfer'].includes(type)) { p.push(type); w.push(`t.tx_type = $${p.length}`); }

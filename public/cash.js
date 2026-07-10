@@ -409,6 +409,7 @@
         addBtn('+ Приход', () => openTxForm('in', null)),
         el('button', { class: 'btn-primary cash-add cash-out', onclick: () => openTxForm('out', null) }, '+ Расход'),
         el('button', { class: 'btn-ghost cash-add', onclick: () => openTransferForm(null) }, '↔ Перевод'),
+        el('button', { class: 'btn-ghost cash-add', onclick: openOpeningForm }, '💼 Начальные остатки'),
         el('button', { class: 'btn-ghost cash-add', onclick: openImport }, '📥 Импорт выписки'),
         ...((window.HUB_USER && window.HUB_USER.isAdmin) ? [el('button', { class: 'btn-ghost cash-add cashf-del', onclick: doWipe }, '🧹 Очистить')] : []),
       ]),
@@ -438,13 +439,30 @@
     p.set('page', txState.page); p.set('pageSize', txState.pageSize);
     let data; try { data = await api('/transactions?' + p.toString()); } catch (e) { toast(e.message, true); return; }
     txItems = data.items || []; txSel.clear();
+    // Сводка за период/кошелёк: сальдо на начало, приход, расход, сальдо на конец (авторасчёт).
+    let sum = null;
+    try {
+      const sp = new URLSearchParams();
+      ['from', 'to', 'wallet'].forEach((k) => { if (txState[k]) sp.set(k, txState[k]); });
+      sum = await api('/summary?' + sp.toString());
+    } catch (e) { /* сводка не критична для журнала */ }
     wrap.innerHTML = '';
-    const t = data.totals || { in: 0, out: 0 };
-    wrap.appendChild(el('div', { class: 'cash-tot-bar' }, [
-      el('span', { class: 'cash-tot-in' }, 'Приход: ' + money(t.in)),
-      el('span', { class: 'cash-tot-out' }, 'Расход: ' + money(t.out)),
-      el('span', { class: 'cash-tot-net' }, 'Сальдо: ' + money(t.in - t.out)),
-      data.unclassified ? el('span', { class: 'cash-tot-unc' }, 'Не разобрано: ' + data.unclassified) : null,
+    if (sum) {
+      const scard = (label, val, cls, extra) => el('div', { class: 'cash-sum-card' + (cls ? ' ' + cls : '') }, [
+        el('div', { class: 'cash-sum-l' }, label),
+        el('div', { class: 'cash-sum-v' }, money(val) + ' сум'),
+        extra || null,
+      ]);
+      const reconcileBtn = el('button', { class: 'btn-ghost cash-sum-btn', onclick: () => openReconcileForm() }, '⚖ Сверить остаток');
+      wrap.appendChild(el('div', { class: 'cash-summary' }, [
+        scard('Сальдо на начало', sum.opening, 'neutral'),
+        scard('Приход', sum.inflow, 'in'),
+        scard('Расход', sum.outflow, 'out'),
+        scard('Сальдо на конец', sum.closing, 'end', reconcileBtn),
+      ]));
+    }
+    if (data.unclassified) wrap.appendChild(el('div', { class: 'cash-tot-bar' }, [
+      el('span', { class: 'cash-tot-unc' }, 'Не разобрано: ' + data.unclassified),
     ]));
     const delBtn = el('button', { class: 'btn-ghost cashf-del', onclick: async () => {
       if (!txSel.size) return; if (!confirm('Удалить выбранные операции (' + txSel.size + ')?')) return;
@@ -599,6 +617,72 @@
       toast('Удалено транзакций: ' + d.deleted);
       render();
     } catch (e) { toast(e.message, true); }
+  }
+
+  // ---------- Начальные остатки ----------
+  async function openOpeningForm() {
+    let d; try { d = await api('/opening'); } catch (e) { return toast(e.message, true); }
+    const date = finp(d.date || todayStr(), { type: 'date' });
+    const inputs = {};
+    const list = el('div', { class: 'cashf' }, (d.items || []).map((w) => {
+      const inp = finp(w.amount != null ? w.amount : '', { type: 'number', placeholder: '0' });
+      inputs[w.wallet_id] = inp;
+      return frow(w.name, inp);
+    }));
+    const body = el('div', { class: 'cashf' }, [
+      el('div', { class: 'cash-note-info' }, 'Остаток каждого кошелька на выбранную дату. Можно менять в любой момент — вся история пересчитается сама. Пустое поле = нулевой остаток.'),
+      frow('Дата остатков', date),
+      list,
+    ]);
+    const save = el('button', { class: 'btn-primary', onclick: async () => {
+      const balances = {};
+      Object.entries(inputs).forEach(([wid, inp]) => { const v = String(inp.value).trim(); if (v !== '') balances[wid] = Number(v); });
+      try { await post('/opening', { date: date.value, balances }); toast('Начальные остатки сохранены'); closeModal(); if (TAB === 'tx') loadTx(); else render(); }
+      catch (e) { toast(e.message, true); }
+    } }, 'Сохранить');
+    modal('Начальные остатки', body, [save]);
+  }
+
+  // ---------- Сверка остатка ----------
+  async function openReconcileForm() {
+    const wsel = fsel([{ v: '', t: '— кошелёк —' }].concat((DICTS.wallets || []).map((w) => ({ v: w.id, t: w.name }))), txState.wallet || '');
+    const date = finp(txState.to || todayStr(), { type: 'date' });
+    const erpBox = el('div', { class: 'cash-note-info' }, '—');
+    const fact = finp('', { type: 'number', placeholder: 'Фактический остаток' });
+    const diffBox = el('div', { class: 'cash-recon-diff' }, '');
+    const comment = finp('', { placeholder: 'Комментарий (необязательно)' });
+    let erp = null;
+    function recalc() {
+      if (erp == null || String(fact.value).trim() === '') { diffBox.textContent = ''; diffBox.className = 'cash-recon-diff'; saveBtn.disabled = true; saveBtn.textContent = 'Сверить'; return; }
+      const diff = Math.round((Number(fact.value) - erp) * 100) / 100;
+      if (!diff) { diffBox.textContent = '✅ Остаток совпадает'; diffBox.className = 'cash-recon-diff ok'; saveBtn.disabled = true; saveBtn.textContent = 'Совпадает'; }
+      else { diffBox.textContent = 'Разница: ' + (diff > 0 ? '+' : '') + money(diff) + ' сум → будет создана корректировка'; diffBox.className = 'cash-recon-diff warn'; saveBtn.disabled = false; saveBtn.textContent = 'Создать корректировку'; }
+    }
+    async function refreshErp() {
+      if (!wsel.value) { erpBox.textContent = 'Выберите кошелёк'; erp = null; return recalc(); }
+      erpBox.textContent = 'Считаю…';
+      try { const r = await api('/wallet-balance?wallet_id=' + wsel.value + '&date=' + date.value); erp = Number(r.balance); erpBox.textContent = money(erp) + ' сум'; }
+      catch (e) { erpBox.textContent = e.message; erp = null; }
+      recalc();
+    }
+    wsel.onchange = refreshErp; date.onchange = refreshErp; fact.oninput = recalc;
+    const saveBtn = el('button', { class: 'btn-primary', onclick: async () => {
+      if (!wsel.value) return toast('Выберите кошелёк', true);
+      try {
+        const r = await post('/reconcile', { wallet_id: wsel.value, date: date.value, fact_amount: fact.value, comment: comment.value });
+        if (r.created) toast('Корректировка создана: ' + money(r.diff)); else toast('Остаток совпадает — корректировка не нужна');
+        closeModal(); loadTx();
+      } catch (e) { toast(e.message, true); }
+    } }, 'Сверить');
+    saveBtn.disabled = true;
+    const body = el('div', { class: 'cashf' }, [
+      el('div', { class: 'cash-note-info' }, 'Сверка по одному кошельку на выбранную дату. Если факт отличается от ERP — одной кнопкой создаётся корректировка (пишется в журнал аудита).'),
+      frow('Кошелёк', wsel), frow('Дата', date),
+      frow('Остаток по ERP', erpBox), frow('Фактический остаток', fact),
+      frow('', diffBox), frow('Комментарий', comment),
+    ]);
+    modal('Сверить остаток', body, [saveBtn]);
+    refreshErp();
   }
 
   function openCpImport() {

@@ -180,6 +180,22 @@
 .cash-tot-out { color: #c0392b; }
 .cash-tot-net { color: var(--ink); }
 .cash-tot-unc { color: #b25b00; margin-left: auto; }
+
+/* Блок «Сводка»: сальдо на начало / приход / расход / сальдо на конец */
+.cash-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 12px; }
+@media (max-width: 720px) { .cash-summary { grid-template-columns: repeat(2, 1fr); } }
+.cash-sum-card { background: #fbfaf5; border: 1px solid var(--line); border-radius: 14px; padding: 13px 15px; display: flex; flex-direction: column; gap: 4px; }
+.cash-sum-card.end { border-color: var(--forest); background: #f2f6ef; }
+.cash-sum-l { font-size: 12px; font-weight: 700; color: var(--muted); letter-spacing: .01em; }
+.cash-sum-v { font-family: 'Lora', Georgia, serif; font-size: 22px; font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+.cash-sum-card.in .cash-sum-v { color: #2e7d32; }
+.cash-sum-card.out .cash-sum-v { color: #c0392b; }
+.cash-sum-card.end .cash-sum-v { color: var(--forest); }
+.cash-sum-btn { margin-top: 6px; align-self: flex-start; padding: 5px 10px; border-radius: 8px; font-size: 12px; font-weight: 700; cursor: pointer; background: #fff; border: 1px solid var(--forest); color: var(--forest); }
+.cash-sum-btn:hover { background: var(--forest); color: #fff; }
+.cash-recon-diff { font-size: 13px; font-weight: 700; min-height: 18px; }
+.cash-recon-diff.ok { color: #2e7d32; }
+.cash-recon-diff.warn { color: #b25b00; }
 .cash-tx { grid-template-columns: 28px 76px 1.15fr 1.1fr 1.05fr 1.4fr 0.95fr 0.95fr; }
 .cash-chk { width: 16px; height: 16px; cursor: pointer; margin: 0; }
 .cash-bulkbar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: #fdeceb; border: 1px solid #e6c6c6; border-radius: 10px; margin-bottom: 10px; }
