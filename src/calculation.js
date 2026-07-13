@@ -167,6 +167,18 @@ router.delete('/api/periods/:id(\\d+)', async (req, res) => {
   res.json({ ok: true });
 });
 
+// ФОТ из «Персонала»: сумма окладов активных сотрудников (всего и по отделам).
+router.get('/api/hr-fot', async (req, res) => {
+  try {
+    const tot = (await db.pool.query("SELECT COALESCE(SUM(base_salary),0) AS s, COUNT(*)::int AS n FROM hr_employees WHERE status='active'")).rows[0];
+    const byDept = (await db.pool.query(
+      `SELECT COALESCE(d.name,'Без отдела') AS department, COALESCE(SUM(e.base_salary),0) AS amount, COUNT(*)::int AS n
+       FROM hr_employees e LEFT JOIN hr_departments d ON d.id=e.department_id
+       WHERE e.status='active' GROUP BY d.name ORDER BY amount DESC`)).rows;
+    res.json({ ok: true, total: asNum(tot.s), count: asNum(tot.n), byDept });
+  } catch (e) { res.status(500).json({ error: 'Не удалось прочитать «Персонал»: ' + e.message }); }
+});
+
 // ===== Статьи затрат =====
 router.post('/api/expenses', J, async (req, res) => {
   const b = req.body || {};

@@ -137,7 +137,7 @@
         editSel(e.cost_block, COST_BLOCKS, (v) => save(e.id, 'cost_block', v)),
         editText(e.expense_name, (v) => save(e.id, 'expense_name', v)),
         editSel(e.expense_type, TYPE_OPTS, (v) => save(e.id, 'expense_type', v)),
-        editNum(e.amount_month, (v) => save(e.id, 'amount_month', v)),
+        amountCell(e, save),
         el('span', { class: 'tnum calc-ro' }, perUnit(e.amount_month, e.include_in_calc)),
         editSel(String(e.include_in_calc), YESNO, (v) => save(e.id, 'include_in_calc', v)),
         editSel(e.source, SOURCES, (v) => save(e.id, 'source', v)),
@@ -195,6 +195,36 @@
       iconBtn('🗑', 'Удалить', () => { if (confirm('Удалить канал?')) apiDel('/channels/' + x.id).then(reboot); }),
     ])) : [el('div', { class: 'calc-empty' }, 'Каналов нет.')];
     c.appendChild(el('div', { class: 'calc-list' }, [head, ...rows]));
+  }
+
+  // Ячейка «Сумма/мес». Для источника «Персонал» — кнопка ↺ подтяжки ФОТ.
+  function amountCell(e, save) {
+    const inp = editNum(e.amount_month, (v) => save(e.id, 'amount_month', v));
+    if (e.source !== 'Персонал') return inp;
+    const btn = iconBtn('↺', 'Подтянуть ФОТ из «Персонала»', () => pullFot(e, btn, save));
+    return el('span', { class: 'calc-amt' }, [inp, btn]);
+  }
+
+  async function pullFot(e, anchor, save) {
+    let d; try { d = await api('/hr-fot'); } catch (er) { return toast(er.message, true); }
+    const opts = [{ label: 'Всего ФОТ · ' + d.count + ' чел.', amount: d.total }]
+      .concat((d.byDept || []).map((x) => ({ label: x.department + ' · ' + x.n + ' чел.', amount: num(x.amount) })));
+    pickMenu(anchor, opts.map((o) => [o.label + '  —  ' + money(o.amount) + ' сум', o.amount]), (amount) => {
+      apiPost('/expenses/' + e.id, { amount_month: amount }).then(() => { toast('Подтянуто из Персонала: ' + money(amount)); reboot(); }).catch((er) => toast(er.message, true));
+    });
+  }
+
+  // Плавающее мини-меню выбора (без модалок).
+  function pickMenu(anchor, options, onPick) {
+    document.querySelectorAll('.calc-menu').forEach((m) => m.remove());
+    const menu = el('div', { class: 'calc-menu' }, options.map(([label, val]) => el('button', {
+      class: 'calc-menu-item', onclick: () => { menu.remove(); onPick(val); },
+    }, label)));
+    document.body.appendChild(menu);
+    const r = anchor.getBoundingClientRect();
+    menu.style.top = (window.scrollY + r.bottom + 4) + 'px';
+    menu.style.left = Math.min(window.scrollX + r.left, window.scrollX + document.documentElement.clientWidth - 280) + 'px';
+    setTimeout(() => document.addEventListener('click', function close(ev) { if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener('click', close); } }), 0);
   }
 
   boot();
