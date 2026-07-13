@@ -15,6 +15,20 @@ const J = express.json();
 const intOrNull = (v) => (v === undefined || v === null || v === '' ? null : parseInt(v, 10));
 const numOrNull = (v) => (v === undefined || v === null || v === '' ? null : Number(v));
 
+// Подбор статьи по ключевым словам для одной строки текста (Наличная касса, ввод в реальном времени) —
+// та же семантика фраз, что и в пакетном авто-разборе runRelink(), но синхронно для одного текста.
+async function guessCategoryByKeyword(text) {
+  if (!text) return null;
+  const lower = String(text).toLowerCase();
+  const cats = (await db.pool.query(
+    "SELECT id, keywords FROM cash_categories WHERE status='active' AND keywords IS NOT NULL AND keywords<>'' ORDER BY sort_order")).rows;
+  for (const c of cats) {
+    const phrases = String(c.keywords).split(/[,\n;|]+/).map((s) => s.trim().toLowerCase()).filter((s) => s.length >= 2);
+    for (const ph of phrases) if (lower.includes(ph)) return c.id;
+  }
+  return null;
+}
+
 // ---------- Схема и сидирование (идемпотентно) ----------
 let _ready = false;
 async function ensureCashSchema() {
@@ -104,6 +118,21 @@ async function ensureCashSchema() {
   // Плательщик/получатель из выписки (для столбца «От кого» и сопоставления по ИНН).
   await q(`ALTER TABLE cash_transactions ADD COLUMN IF NOT EXISTS payer_name TEXT`);
   await q(`ALTER TABLE cash_transactions ADD COLUMN IF NOT EXISTS payer_inn TEXT`);
+  // Валюта операции (вкладка «Наличная касса»): amount всегда хранит сум-эквивалент —
+  // на нём как и раньше работают все расчёты баланса/отчётов без изменений.
+  // currency/fx_rate/fx_amount — только для отображения истории и прозрачности конверсии.
+  await q(`ALTER TABLE cash_transactions ADD COLUMN IF NOT EXISTS currency TEXT NOT NULL DEFAULT 'UZS'`);
+  await q(`ALTER TABLE cash_transactions ADD COLUMN IF NOT EXISTS fx_rate NUMERIC`);
+  await q(`ALTER TABLE cash_transactions ADD COLUMN IF NOT EXISTS fx_amount NUMERIC`);
+  // Перевод банк→касса, где ещё не подтверждена реальная сумма прихода (обналичивание с комиссией,
+  // которая станет известна только когда бухгалтер физически пересчитает наличные).
+  await q(`ALTER TABLE cash_transactions ADD COLUMN IF NOT EXISTS needs_cash_confirm BOOLEAN NOT NULL DEFAULT false`);
+
+  await q(`CREATE TABLE IF NOT EXISTS cash_fx_rates (
+    rate_date DATE PRIMARY KEY,
+    usd_rate NUMERIC NOT NULL,
+    fetched_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
 
   await q(`CREATE TABLE IF NOT EXISTS cash_groups (
     id SERIAL PRIMARY KEY,
@@ -706,8 +735,17 @@ router.get('/api/transactions', async (req, res) => {
   const p = [], w = ["t.source <> 'opening'"];
   if (from) { p.push(from); w.push(`t.tx_date >= $${p.length}`); }
   if (to) { p.push(to); w.push(`t.tx_date <= $${p.length}`); }
-  if (type && ['in', 'out', 'transfer'].includes(type)) { p.push(type); w.push(`t.tx_type = $${p.length}`); }
-  if (wallet) { p.push(parseInt(wallet)); w.push(`(t.wallet_id = $${p.length} OR t.wallet_to_id = $${p.length})`); }
+  const wid = intOrNull(wallet);
+  if (type && ['in', 'out', 'transfer'].includes(type)) {
+    // includeTransferIn: для «Приход» по конкретному кошельку также показываем переводы,
+    // которые зачисляются в этот кошелёк (напр. обналичивание банк→касса) — иначе такие
+    // поступления не видны в списке «Приход», хотя реально пришли.
+    if (type === 'in' && req.query.includeTransferIn && wid) {
+      p.push(type); const typeIdx = p.length; p.push(wid); const widIdx = p.length;
+      w.push(`(t.tx_type = $${typeIdx} OR (t.tx_type='transfer' AND t.wallet_to_id = $${widIdx}))`);
+    } else { p.push(type); w.push(`t.tx_type = $${p.length}`); }
+  }
+  if (wallet) { p.push(wid); w.push(`(t.wallet_id = $${p.length} OR t.wallet_to_id = $${p.length})`); }
   if (counterparty) { p.push(parseInt(counterparty)); w.push(`t.counterparty_id = $${p.length}`); }
   if (category) { p.push(parseInt(category)); w.push(`t.category_id = $${p.length}`); }
   if (req.query.catgroup === '__nogroup__') w.push(`EXISTS (SELECT 1 FROM cash_categories cg WHERE cg.id = t.category_id AND cg.group_name IS NULL)`);
@@ -780,37 +818,90 @@ router.post('/api/tx', J, async (req, res) => {
       `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, wallet_to_id, purpose, source, is_classified, created_by)
        VALUES ($1,$2,'transfer',$3,$4,$5,'manual',true,$6)`,
       [date, amount, wallet, to, b.purpose || null, req.user.id]);
-    // Комиссия/% банка за перевод — отдельным расходом со своей статьёй ДДС (если указана).
+    // Комиссия/% за перевод — отдельным расходом со своей статьёй ДДС (если указана).
+    // fee_wallet='from' (по умолчанию) — комиссию берёт банк-отправитель отдельной проводкой (сумма перевода доходит полностью).
+    // fee_wallet='to' — используется для обналичивания: банк списывает ровно указанную сумму (как в выписке),
+    // а по факту в кассу приходит меньше — недостача списывается расходом с кошелька-получателя (кассы).
     const fee = Number(b.fee_amount);
     if (fee > 0) {
       const feeCat = intOrNull(b.fee_category_id);
+      const feeWallet = b.fee_wallet === 'to' ? to : wallet;
       await db.pool.query(
         `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, category_id, purpose, source, is_classified, created_by)
          VALUES ($1,$2,'out',$3,$4,$5,'manual',$6,$7)`,
-        [date, fee, wallet, feeCat, 'Комиссия/% за перевод' + (b.purpose ? ' — ' + b.purpose : ''), !!feeCat, req.user.id]);
+        [date, fee, feeWallet, feeCat, 'Комиссия/% за перевод' + (b.purpose ? ' — ' + b.purpose : ''), !!feeCat, req.user.id]);
     }
   } else {
-    const cat = intOrNull(b.category_id);
-    await db.pool.query(
-      `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, wallet_to_id, counterparty_id, contract_id, category_id, purpose, source, is_classified, payer_name, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'manual',$10,$11,$12)`,
-      [date, amount, type, wallet, intOrNull(b.wallet_to_id), intOrNull(b.counterparty_id), intOrNull(b.contract_id), cat, b.purpose || null, !!cat, b.payer_name || null, req.user.id]);
+    let cat = intOrNull(b.category_id);
+    // Наличная касса: если статья не указана явно — пробуем подобрать по ключевым словам
+    // из пояснения, теми же словами, что уже используются в общем авто-разборе.
+    if (!cat && b.purpose) cat = await guessCategoryByKeyword(b.purpose);
+    const currency = b.currency === 'USD' ? 'USD' : 'UZS';
+    const ins = await db.pool.query(
+      `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, wallet_to_id, counterparty_id, contract_id, category_id, purpose, source, is_classified, payer_name, currency, fx_rate, fx_amount, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'manual',$10,$11,$12,$13,$14,$15) RETURNING id`,
+      [date, amount, type, wallet, intOrNull(b.wallet_to_id), intOrNull(b.counterparty_id), intOrNull(b.contract_id), cat, b.purpose || null, !!cat, b.payer_name || null, currency, numOrNull(b.fx_rate), numOrNull(b.fx_amount), req.user.id]);
+    await db.log(req.user.id, 'cash_tx_add', type + ' ' + amount);
+    return res.json({ ok: true, id: ins.rows[0].id });
   }
   await db.log(req.user.id, 'cash_tx_add', type + ' ' + amount);
   res.json({ ok: true });
 });
 
-// Редактирование / классификация транзакции (тип и кошельки не меняем — чтобы остатки оставались целыми).
+// Редактирование / классификация транзакции.
+// Тип обычно не меняем (чтобы остатки не задваивались) — ЕДИНСТВЕННОЕ исключение: если ставят
+// статью «100 A2A» и указывают «Куда (кошелёк)» на строке, которая была in/out (типичный сценарий —
+// разбор импортированной банковской выписки, где обналичивание сначала видно как обычный расход) —
+// тогда это на самом деле перевод, и мы честно конвертируем tx_type в 'transfer', иначе кошелёк-
+// получатель никогда не будет реально зачислен (wallet_to_id без tx_type='transfer' балансом игнорируется).
 router.post('/api/tx/:id(\\d+)', J, async (req, res) => {
   const b = req.body || {};
   const cat = intOrNull(b.category_id);
+  const walletTo = intOrNull(b.wallet_to_id);
+  const cur = (await db.pool.query('SELECT tx_type, wallet_id FROM cash_transactions WHERE id=$1', [req.params.id])).rows[0];
+  if (!cur) return res.status(404).json({ error: 'Операция не найдена' });
+  let newType = null; // null = не менять
+  let needsCashConfirm = null; // null = не менять
+  if (walletTo && walletTo !== cur.wallet_id && cur.tx_type !== 'transfer') {
+    const a2a = (await db.pool.query("SELECT id FROM cash_categories WHERE code='100' LIMIT 1")).rows[0];
+    if (a2a && cat === a2a.id) {
+      newType = 'transfer';
+      const toWallet = (await db.pool.query('SELECT kind FROM cash_wallets WHERE id=$1', [walletTo])).rows[0];
+      needsCashConfirm = !!(toWallet && toWallet.kind === 'cash');
+    }
+  }
   await db.pool.query(
     `UPDATE cash_transactions SET tx_date=COALESCE($1,tx_date), amount=COALESCE($2,amount),
        counterparty_id=$3, contract_id=$4, category_id=$5, purpose=$6, is_classified=$7,
-       payer_name=COALESCE($9,payer_name), wallet_to_id=$10 WHERE id=$8`,
-    [b.tx_date || null, b.amount ? Number(b.amount) : null, intOrNull(b.counterparty_id), intOrNull(b.contract_id), cat, b.purpose || null, !!cat, req.params.id, b.payer_name != null ? b.payer_name : null, intOrNull(b.wallet_to_id)]);
+       payer_name=COALESCE($9,payer_name), wallet_to_id=$10,
+       tx_type=COALESCE($11,tx_type), needs_cash_confirm=COALESCE($12,needs_cash_confirm)
+     WHERE id=$8`,
+    [b.tx_date || null, b.amount ? Number(b.amount) : null, intOrNull(b.counterparty_id), intOrNull(b.contract_id), cat, b.purpose || null, !!cat, req.params.id, b.payer_name != null ? b.payer_name : null, walletTo, newType, needsCashConfirm]);
   await db.log(req.user.id, 'cash_tx_edit', '#' + req.params.id);
   res.json({ ok: true });
+});
+
+// Подтверждение факт. суммы прихода по обналичиванию/переводу в кассу — считает и списывает
+// комиссию (статья 64) как разницу между тем, что снято с банка, и тем, что реально пришло.
+router.post('/api/tx/:id(\\d+)/confirm-cash', J, async (req, res) => {
+  const factAmount = numOrNull((req.body || {}).fact_amount);
+  if (!(factAmount > 0)) return res.status(400).json({ error: 'Укажите фактическую сумму прихода' });
+  const t = (await db.pool.query(
+    "SELECT tx_date, amount, wallet_to_id, purpose FROM cash_transactions WHERE id=$1 AND tx_type='transfer' AND needs_cash_confirm=true", [req.params.id])).rows[0];
+  if (!t) return res.status(404).json({ error: 'Операция не найдена или уже подтверждена' });
+  if (factAmount > Number(t.amount)) return res.status(400).json({ error: 'Факт. приход не может быть больше снятой суммы' });
+  const diff = Number(t.amount) - factAmount;
+  if (diff > 0) {
+    const feeCat = (await db.pool.query("SELECT id FROM cash_categories WHERE code='64' LIMIT 1")).rows[0];
+    const pct = (diff / Number(t.amount) * 100).toFixed(2);
+    await db.pool.query(
+      `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, category_id, purpose, source, is_classified, created_by)
+       VALUES ($1,$2,'out',$3,$4,$5,'manual',$6,$7)`,
+      [t.tx_date, diff, t.wallet_to_id, feeCat ? feeCat.id : null, `Комиссия при получении наличных (${pct}%)` + (t.purpose ? ' — ' + t.purpose : ''), !!feeCat, req.user.id]);
+  }
+  await db.pool.query('UPDATE cash_transactions SET needs_cash_confirm=false WHERE id=$1', [req.params.id]);
+  await db.log(req.user.id, 'cash_confirm_cash', '#' + req.params.id + ' факт=' + factAmount + ' комиссия=' + diff);
+  res.json({ ok: true, diff });
 });
 router.post('/api/tx/:id(\\d+)/delete', async (req, res) => {
   await db.pool.query('DELETE FROM cash_transactions WHERE id=$1', [req.params.id]);
@@ -1279,6 +1370,30 @@ router.post('/api/transactions/match-confirm', J, async (req, res) => {
     res.json({ ok: true, done });
   } catch (e) { await client.query('ROLLBACK').catch(() => {}); res.status(400).json({ error: e.message }); }
   finally { client.release(); }
+});
+
+// ---------- Курс ЦБ (для вкладки «Наличная касса») ----------
+// Кэшируем по дате в своей таблице — не дёргаем cbu.uz на каждый показ строки,
+// только на новую дату, которой ещё нет в кэше.
+async function getCbuUsdRate(dateStr) {
+  const cached = (await db.pool.query('SELECT usd_rate FROM cash_fx_rates WHERE rate_date=$1', [dateStr])).rows[0];
+  if (cached) return Number(cached.usd_rate);
+  const url = `https://cbu.uz/ru/arkhiv-kursov-valyut/json/USD/${dateStr}/`;
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error('ЦБ не ответил (' + resp.status + ')');
+  const data = await resp.json();
+  const rate = Array.isArray(data) && data[0] && Number(data[0].rate || data[0].Rate);
+  if (!rate || !isFinite(rate)) throw new Error('Курс не найден на эту дату');
+  await db.pool.query(
+    `INSERT INTO cash_fx_rates (rate_date, usd_rate) VALUES ($1,$2)
+     ON CONFLICT (rate_date) DO UPDATE SET usd_rate=EXCLUDED.usd_rate, fetched_at=now()`,
+    [dateStr, rate]);
+  return rate;
+}
+router.get('/api/fx-rate', async (req, res) => {
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(req.query.date || '') ? req.query.date : new Date().toISOString().slice(0, 10);
+  try { res.json({ date, rate: await getCbuUsdRate(date) }); }
+  catch (e) { res.status(400).json({ date, rate: null, error: e.message }); }
 });
 
 module.exports = router;
