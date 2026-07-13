@@ -56,8 +56,8 @@
         el('span', { class: 'cst-flab' }, 'Период:'), pSel,
         el('span', { class: 'cst-flab' }, 'Тип:'), typeSel,
         el('button', { class: 'btn-ghost cst-btn', onclick: () => { TAB = 'matrix'; render(); toast('Пересчитано'); } }, 'Пересчитать'),
-        el('button', { class: 'btn-ghost cst-btn', onclick: () => toast('Фиксация — Этап 5') }, 'Зафиксировать'),
-        el('button', { class: 'btn-ghost cst-btn', onclick: () => toast('Экспорт — Этап 5') }, 'Экспорт Excel'),
+        el('button', { class: 'btn-ghost cst-btn', onclick: fixSnapshot }, 'Зафиксировать'),
+        el('button', { class: 'btn-ghost cst-btn', onclick: () => { window.location = '/costing/api/export.xlsx' + (PERIOD ? '?period=' + PERIOD : ''); } }, 'Экспорт Excel'),
       ]),
     ]));
     const tab = (id, label) => el('button', { class: 'cst-tab' + (TAB === id ? ' on' : ''), onclick: () => { TAB = id; render(); } }, label);
@@ -66,6 +66,7 @@
       tab('recipes', 'Рецептуры'),
       tab('packaging', 'Упаковка'),
       tab('settings', 'Настройки расчёта'),
+      tab('history', 'История'),
     ]));
     main.appendChild(el('div', { id: 'cst-content' }));
   }
@@ -75,6 +76,7 @@
     if (TAB === 'recipes') return renderRecipes();
     if (TAB === 'settings') return renderSettings();
     if (TAB === 'packaging') return renderPackaging();
+    if (TAB === 'history') return renderHistory();
     return renderMatrix();
   }
 
@@ -348,6 +350,63 @@
       el('span', { class: 'tnum muted' }, m.last_price != null ? money(m.last_price) : '—'),
       editNum(m.manual_price, (v) => save(m.id, v), { placeholder: m.last_price != null ? money(m.last_price) : '' }),
     ]))]));
+  }
+
+  // ===== История: снапшоты (фиксация) + сравнение с текущим =====
+  function fixSnapshot() {
+    const name = prompt('Название снимка расчёта:', (PERIOD || '') + ' · ' + new Date().toISOString().slice(0, 10));
+    if (name == null) return;
+    apiPost('/snapshot', { period: PERIOD, name }).then(() => { toast('Зафиксировано'); TAB = 'history'; snapSel = null; render(); }).catch((e) => toast(e.message, true));
+  }
+  let snapSel = null;
+  async function renderHistory() {
+    const c = $('#cst-content');
+    c.appendChild(el('div', { class: 'cst-head' }, [el('div', { class: 'cst-h2' }, 'История'),
+      el('div', { class: 'cst-sub' }, 'Зафиксированные снимки расчёта. Откройте снимок — увидите его цифры и Δ к текущему расчёту (по названию и каналу).')]));
+    const box = el('div', {}); c.appendChild(box);
+    box.appendChild(el('div', { class: 'cst-loading' }, 'Загружаю…'));
+    let d; try { d = await api('/snapshots'); } catch (e) { box.innerHTML = ''; box.appendChild(el('div', { class: 'cst-empty' }, 'Ошибка: ' + e.message)); return; }
+    box.innerHTML = '';
+    if (!d.items.length) { box.appendChild(el('div', { class: 'cst-empty' }, 'Снимков нет. Нажмите «Зафиксировать» вверху, чтобы сохранить текущий расчёт.')); return; }
+    const head = el('div', { class: 'cst-row head cst-snap' }, ['Снимок', 'Период', 'SKU', 'Ср. маржа', 'Создан', ''].map((h) => el('span', {}, h)));
+    box.appendChild(el('div', { class: 'cst-list' }, [head, ...d.items.map((s) => el('div', {
+      class: 'cst-row cst-snap' + (String(s.id) === String(snapSel) ? ' sel' : ''), onclick: () => { snapSel = s.id; renderHistory(); },
+    }, [
+      el('span', { style: 'font-weight:700' }, s.snapshot_name),
+      el('span', { class: 'muted' }, s.period || '—'),
+      el('span', { class: 'tnum' }, String(s.n || 0)),
+      el('span', { class: 'tnum' }, s.avg_margin == null ? '—' : (Math.round(s.avg_margin * 10) / 10) + '%'),
+      el('span', { class: 'muted' }, (s.created_at || '').slice(0, 10)),
+      iconBtn('🗑', 'Удалить снимок', (e) => { e.stopPropagation(); if (confirm('Удалить снимок «' + s.snapshot_name + '»?')) apiDel('/snapshot/' + s.id).then(() => { if (String(snapSel) === String(s.id)) snapSel = null; renderHistory(); }); }),
+    ]))]));
+    if (snapSel == null) snapSel = d.items[0].id;
+    const detail = el('div', { id: 'cst-snap-detail', style: 'margin-top:18px' }); box.appendChild(detail);
+    loadSnapshot(detail, snapSel);
+  }
+  async function loadSnapshot(box, id) {
+    box.appendChild(el('div', { class: 'cst-loading' }, 'Снимок…'));
+    let d; try { d = await api('/snapshot/' + id); } catch (e) { box.innerHTML = ''; return; }
+    box.innerHTML = '';
+    box.appendChild(el('div', { class: 'cst-sub', style: 'font-weight:800;margin-bottom:6px' }, 'Снимок «' + (d.meta ? d.meta.snapshot_name : '') + '» · Δ — изменение к текущему расчёту'));
+    const cols = ['SKU', 'Канал', 'С/с (снимок)', 'ЧП (снимок)', 'Маржа (снимок)', 'С/с сейчас', 'Маржа сейчас', 'Δ маржи'];
+    const table = el('table', { class: 'cst-mx' });
+    const thead = el('thead', {}, el('tr', {}, cols.map((h, i) => el('th', { class: i < 2 ? 'lft' : '' }, h))));
+    const tb = el('tbody', {}, d.rows.map((r) => {
+      const dMargin = (r.live_margin != null && r.net_margin != null) ? num(r.live_margin) - num(r.net_margin) : null;
+      const dCls = dMargin == null ? 'muted' : dMargin < -0.05 ? 'mx-bad' : dMargin > 0.05 ? 'mx-good' : 'muted';
+      return el('tr', {}, [
+        el('td', { class: 'lft', style: 'font-weight:700' }, r.sku_name),
+        el('td', { class: 'lft muted' }, r.channel || '—'),
+        el('td', { class: 'tnum' }, money(r.cost_with_waste)),
+        el('td', { class: 'tnum' }, r.net_profit == null ? '—' : money(r.net_profit)),
+        el('td', { class: 'tnum' }, r.net_margin == null ? '—' : (Math.round(r.net_margin * 10) / 10) + '%'),
+        el('td', { class: 'tnum' }, r.live_cost == null ? '—' : money(r.live_cost)),
+        el('td', { class: 'tnum' }, r.live_margin == null ? '—' : (Math.round(r.live_margin * 10) / 10) + '%'),
+        el('td', { class: 'tnum ' + dCls }, dMargin == null ? '—' : (dMargin > 0 ? '+' : '') + (Math.round(dMargin * 10) / 10) + ' пп'),
+      ]);
+    }));
+    table.appendChild(thead); table.appendChild(tb);
+    box.appendChild(el('div', { class: 'cst-mx-wrap' }, table));
   }
 
   function kpi(label, value) { return el('div', { class: 'cst-kpi' }, [el('div', { class: 'cst-kpi-l' }, label), el('div', { class: 'cst-kpi-v' }, String(value))]); }

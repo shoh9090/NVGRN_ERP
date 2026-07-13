@@ -323,9 +323,10 @@ function computeRow(rec, comps, period, chTerms, pm, sdPrice) {
   };
 }
 
-router.get('/api/matrix', async (req, res) => {
+// Собрать матрицу целиком (переиспользуется в /matrix, экспорте и снапшоте).
+async function buildMatrix(periodQuery) {
   const periods = (await db.pool.query('SELECT * FROM costing_periods ORDER BY period DESC')).rows;
-  const cur = req.query.period && periods.find((p) => p.period === req.query.period) ? req.query.period : (periods[0] ? periods[0].period : null);
+  const cur = periodQuery && periods.find((p) => p.period === periodQuery) ? periodQuery : (periods[0] ? periods[0].period : null);
   const period = periods.find((p) => p.period === cur) || null;
   const chRows = (await db.pool.query('SELECT * FROM costing_channel_terms')).rows;
   const chTerms = {}; chRows.forEach((c) => { chTerms[c.channel] = c; });
@@ -349,7 +350,88 @@ router.get('/api/matrix', async (req, res) => {
   const allComps = (await db.pool.query('SELECT * FROM costing_recipe_components ORDER BY recipe_id, sort_order, id')).rows;
   const byRecipe = {}; allComps.forEach((c) => { (byRecipe[c.recipe_id] = byRecipe[c.recipe_id] || []).push(c); });
   const rows = recs.map((r) => computeRow(r, byRecipe[r.id] || [], period, chTerms, pm, sdById[r.id]));
-  res.json({ period: cur, rows });
+  return { period: cur, periodRow: period, rows };
+}
+
+router.get('/api/matrix', async (req, res) => {
+  const m = await buildMatrix(req.query.period);
+  res.json({ period: m.period, rows: m.rows });
+});
+
+// Экспорт матрицы в Excel.
+router.get('/api/export.xlsx', async (req, res) => {
+  const XLSX = require('xlsx');
+  const m = await buildMatrix(req.query.period);
+  const data = m.rows.map((r, i) => ({
+    '№': i + 1, 'SKU': r.name, 'Канал': r.channel, 'Граммаж': r.gram_weight,
+    'Сырьё': Math.round(r.raw), 'Упаковка': Math.round(r.pack), 'ФОТ': Math.round(r.labor),
+    'Производство': Math.round(r.production), 'Накладные': Math.round(r.overhead), 'Прочее': Math.round(r.other),
+    'С/с': Math.round(r.base), 'Отход %': r.waste_rate, 'С/с с отходом': Math.round(r.cost_with_waste),
+    'Цена SD': r.sd_price == null ? '' : Math.round(r.sd_price),
+    'Ретро': r.sd_price == null ? '' : Math.round(r.retro), 'НДС': r.sd_price == null ? '' : Math.round(r.vat),
+    'Прибыль': r.profit == null ? '' : Math.round(r.profit), 'Налог': r.tax == null ? '' : Math.round(r.tax),
+    'ЧП': r.net == null ? '' : Math.round(r.net), 'Маржа %': r.margin == null ? '' : Math.round(r.margin * 10) / 10,
+  }));
+  const ws = XLSX.utils.json_to_sheet(data);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'матрица');
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  res.setHeader('Content-Disposition', `attachment; filename="costing-${m.period || 'period'}.xlsx"`);
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.send(buf);
+});
+
+// ===== Этап 5: снапшоты (фиксация расчёта) + история =====
+router.post('/api/snapshot', J, async (req, res) => {
+  const m = await buildMatrix((req.body || {}).period);
+  if (!m.periodRow) return res.status(400).json({ error: 'Нет периода' });
+  const name = (req.body || {}).name || (m.period + ' · ' + new Date().toISOString().slice(0, 10));
+  const snap = await db.pool.query(
+    'INSERT INTO costing_snapshots (period_id, snapshot_name, created_by) VALUES ($1,$2,$3) RETURNING id',
+    [m.periodRow.id, name, req.user ? req.user.id : null]);
+  const sid = snap.rows[0].id;
+  for (const r of m.rows) {
+    await db.pool.query(
+      `INSERT INTO costing_snapshot_items (snapshot_id, recipe_id, sku_name, channel,
+        raw_cost, packaging_cost, payroll_cost, production_cost, overhead_cost, other_cost,
+        waste_rate, base_cost, cost_with_waste, sales_price, retro_rate, retro_amount,
+        vat_rate, vat_amount, gross_profit, profit_tax_amount, net_profit, net_margin)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
+      [sid, r.id, r.name, r.channel, r.raw, r.pack, r.labor, r.production, r.overhead, r.other,
+        r.waste_rate, r.base, r.cost_with_waste, r.sd_price, r.retro_rate, r.retro,
+        r.vat_rate, r.vat, r.profit, r.tax, r.net, r.margin]);
+  }
+  res.json({ ok: true, id: sid, name });
+});
+
+router.get('/api/snapshots', async (req, res) => {
+  const rows = (await db.pool.query(
+    `SELECT s.id, s.snapshot_name, s.snapshot_date, s.created_at, p.period,
+            (SELECT COUNT(*) FROM costing_snapshot_items i WHERE i.snapshot_id=s.id)::int AS n,
+            (SELECT AVG(net_margin) FROM costing_snapshot_items i WHERE i.snapshot_id=s.id AND sales_price>0) AS avg_margin
+     FROM costing_snapshots s LEFT JOIN costing_periods p ON p.id=s.period_id
+     ORDER BY s.created_at DESC`)).rows;
+  res.json({ items: rows });
+});
+
+router.get('/api/snapshot/:id(\\d+)', async (req, res) => {
+  const meta = (await db.pool.query(
+    `SELECT s.id, s.snapshot_name, s.snapshot_date, p.period FROM costing_snapshots s
+     LEFT JOIN costing_periods p ON p.id=s.period_id WHERE s.id=$1`, [req.params.id])).rows[0];
+  const items = (await db.pool.query('SELECT * FROM costing_snapshot_items WHERE snapshot_id=$1 ORDER BY sku_name', [req.params.id])).rows;
+  // Текущая живая матрица для сравнения (по названию+каналу).
+  const live = await buildMatrix(meta ? meta.period : null);
+  const liveKey = {}; live.rows.forEach((r) => { liveKey[r.name + '|' + r.channel] = r; });
+  const rows = items.map((it) => {
+    const l = liveKey[it.sku_name + '|' + (it.channel || '')];
+    return { ...it, live_net: l ? l.net : null, live_margin: l ? l.margin : null, live_cost: l ? l.cost_with_waste : null };
+  });
+  res.json({ meta, rows });
+});
+
+router.delete('/api/snapshot/:id(\\d+)', async (req, res) => {
+  await db.pool.query('DELETE FROM costing_snapshots WHERE id=$1', [req.params.id]);
+  res.json({ ok: true });
 });
 
 // ===== Этап 2: CRUD рецептур =====

@@ -45,6 +45,7 @@
 .cst-ch { grid-template-columns:1.4fr 0.8fr 0.8fr 0.8fr; }
 .cst-ch2 { grid-template-columns:1.4fr 0.8fr 0.8fr 0.8fr 1.4fr 44px; }
 .cst-pk { grid-template-columns:34px 1.8fr 1fr 0.6fr 1fr 1fr; }
+.cst-snap { grid-template-columns:1.8fr 0.8fr 0.6fr 0.9fr 1fr 44px; }
 .cst-params { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin:10px 0; }
 .cst-param { background:var(--soft); border:1px solid var(--line); border-radius:12px; padding:11px 14px; }
 .cst-param .cst-kpi-l { margin-bottom:5px; }
