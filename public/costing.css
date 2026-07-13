@@ -1,0 +1,60 @@
+/* costing.css — «Калькуляция себестоимости». Палитра Hub. */
+:root { --ink:#14241b; --paper:#f4f2ea; --forest:#163a28; --lime:#8cc63f; --muted:#7c8579; --line:#e3e0d4; --soft:#fbfaf5; --danger:#c0392b; --warn:#b25b00; }
+#cst-main { max-width: 1540px; margin: 0 auto; padding: 14px; }
+
+/* ghost-кнопки читаемы на светлом фоне (глобальный .btn-ghost белый для тёмной шапки) */
+#cst-main .btn-ghost { background:#fff; border:1px solid var(--line); color:var(--forest); }
+#cst-main .btn-ghost:hover { background:#eef4e9; border-color:var(--forest); }
+
+.cst-topbar { display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:10px; }
+.cst-title { font-family:'Lora',Georgia,serif; font-size:22px; font-weight:600; color:var(--ink); }
+.cst-top-ctrls { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.cst-flab { font-size:12px; font-weight:700; color:var(--muted); }
+.cst-top-sel { min-width:120px; }
+.cst-btn { padding:8px 13px; border-radius:8px; font-weight:700; font-size:13px; cursor:pointer; }
+.cstf-inp { padding:7px 9px; border:1px solid #d8dcd6; border-radius:8px; font-size:13px; background:#fff; box-sizing:border-box; }
+
+.cst-tabs { display:flex; gap:4px; flex-wrap:wrap; margin-bottom:14px; border-bottom:1px solid var(--line); }
+.cst-tab { background:none; border:0; padding:10px 15px; font-size:14px; font-weight:800; color:var(--muted); cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-1px; }
+.cst-tab.on { color:var(--forest); border-bottom-color:var(--lime); }
+
+.cst-head { margin-bottom:10px; }
+.cst-h2 { font-family:'Lora',Georgia,serif; font-size:22px; font-weight:600; color:var(--ink); margin:2px 0 4px; }
+.cst-sub { color:var(--muted); font-size:13px; line-height:1.4; }
+.cst-loading, .cst-empty { padding:26px; text-align:center; color:var(--muted); }
+
+.cst-kpis { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin:10px 0; }
+.cst-kpi { background:var(--soft); border:1px solid var(--line); border-radius:12px; padding:11px 14px; }
+.cst-kpi-l { font-size:12px; color:var(--muted); font-weight:700; }
+.cst-kpi-v { font-family:'Lora',Georgia,serif; font-size:19px; font-weight:600; margin-top:3px; color:var(--ink); overflow-wrap:anywhere; }
+
+.cst-list { display:flex; flex-direction:column; border:1px solid var(--line); border-radius:12px; overflow:hidden; background:#fff; }
+.cst-row { display:grid; gap:10px; align-items:center; padding:9px 12px; border-bottom:1px solid #f0f2ef; font-size:13px; }
+.cst-row:last-child { border-bottom:none; }
+.cst-row.head { background:#f2f5f1; font-weight:700; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.02em; }
+.cst-row:not(.head) { cursor:pointer; }
+.cst-row.sel { background:#eef4e9; }
+.cst-row.dim { opacity:.6; }
+.cst-idx { color:var(--muted); font-variant-numeric:tabular-nums; font-size:12px; }
+.tnum { text-align:right; font-variant-numeric:tabular-nums; }
+.muted { color:var(--muted); }
+
+.cst-rec { grid-template-columns:34px 1.6fr 1.2fr 0.9fr 0.8fr 0.7fr 1fr 1fr; }
+.cst-comp { grid-template-columns:34px 1fr 1.6fr 0.9fr 0.7fr 0.8fr 0.8fr 1fr; }
+.cst-exp { grid-template-columns:1fr 160px; }
+.cst-ch { grid-template-columns:1.4fr 0.8fr 0.8fr 0.8fr; }
+
+.cst-st { font-size:11px; font-weight:700; padding:3px 9px; border-radius:999px; }
+.cst-st-active { background:#e8f5e9; color:#2e7d32; }
+.cst-st-draft { background:#fff8e1; color:#b25b00; }
+.cst-st-archived { background:#f1f4ee; color:var(--muted); }
+
+.cst-soon { text-align:center; max-width:640px; margin:26px auto; background:var(--soft); border:1px dashed var(--line); border-radius:16px; padding:30px; }
+.cst-soon-h { font-family:'Lora',Georgia,serif; font-size:20px; font-weight:600; color:var(--forest); margin-bottom:8px; }
+.cst-soon-t { color:#5a665c; font-size:14px; line-height:1.5; }
+
+.cst-toast { position:fixed; bottom:22px; left:50%; transform:translateX(-50%) translateY(20px); background:var(--forest); color:#fff; padding:10px 18px; border-radius:10px; font-size:13px; opacity:0; transition:opacity .25s, transform .25s; z-index:80; }
+.cst-toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+.cst-toast.err { background:var(--danger); }
+
+@media (max-width:760px) { .cst-kpis { grid-template-columns:1fr 1fr; } }

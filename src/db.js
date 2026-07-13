@@ -593,6 +593,16 @@ async function seed() {
     );
   }
 
+  // Плитка «Калькуляция себестоимости» — ребилд по ТЗ (модуль /costing)
+  const costt = await pool.query("SELECT id FROM tiles WHERE url = '/costing' LIMIT 1");
+  if (costt.rows.length === 0) {
+    await pool.query(
+      `INSERT INTO tiles (title, description, icon, url, open_new_tab, sort_order)
+       VALUES ('Калькуляция себестоимости', 'Матрица себестоимости, рецептуры, упаковка, настройки расчёта', '🧮', '/costing', FALSE, 53)`
+    );
+  }
+  await pool.query("UPDATE tiles SET is_visible = TRUE WHERE url = '/costing' AND is_visible IS DISTINCT FROM TRUE").catch(() => {});
+
   // Плитка «Персонал» — сотрудники, зарплата, табель
   const hrt = await pool.query("SELECT id FROM tiles WHERE url = '/hr' LIMIT 1");
   if (hrt.rows.length === 0) {
@@ -628,6 +638,7 @@ async function seed() {
     ['/dictionaries', 'Справочники и настройки'],
     ['/cash', 'Финансы'],
     ['/calculation', 'Финансы'],
+    ['/costing', 'Финансы'],
     ['/hr', 'Финансы'],
   ];
   for (const [u, sec] of tileSections) {
