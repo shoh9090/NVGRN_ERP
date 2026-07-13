@@ -139,6 +139,12 @@ async function ensureSchema() {
       await q('INSERT INTO calc_cost_items (kind, name, amount, sort) VALUES ($1,$2,$3,$4)', [kind, name, amount, sort]);
     }
   }
+  // Разово: аренда/электроэнергия — это накладные (косвенные), переносим из «производственных».
+  const reclass = (await q("SELECT value FROM calc_settings WHERE key='costs_reclass_v1'")).rows[0];
+  if (!reclass) {
+    await q("UPDATE calc_cost_items SET kind='overhead' WHERE kind='production' AND (lower(name) LIKE '%аренд%' OR lower(name) LIKE '%электро%')");
+    await q("INSERT INTO calc_settings (key, value) VALUES ('costs_reclass_v1','1') ON CONFLICT (key) DO NOTHING");
+  }
 
   _ready = true;
 }

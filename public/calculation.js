@@ -907,7 +907,10 @@
         A: priceBlockJS(costCalc, pA, num(m.retroA), m.vat, m.tax) };
     };
     const getVal = (lv, path) => path.split('.').reduce((o, k) => (o == null ? o : o[k]), lv);
-    const rows = MX_ROWS.filter(mxRowVisible);
+    // «Производство» скрываем, если у всех оно 0 (прямых производственных нет).
+    const hideProd = models.every((m) => !num(m.production));
+    const rowShown = (r) => mxRowVisible(r) && !(r.key === 'production' && hideProd);
+    const rows = MX_ROWS.filter(rowShown);
     const colCells = models.map(() => ({}));
     function refreshCol(ci) {
       const lv = live(models[ci]);
@@ -935,7 +938,7 @@
     MX_SECTIONS.forEach((sec) => {
       if (mxSecHidden(sec.key)) return;
       body.push(el('tr', { class: 'calc-mx-sec' }, [el('td', { colspan: models.length + 1 }, sec.label)]));
-      MX_ROWS.filter((r) => r.s === sec.key && mxRowVisible(r)).forEach((row) => {
+      MX_ROWS.filter((r) => r.s === sec.key && rowShown(r)).forEach((row) => {
         const cells = models.map((m, ci) => {
           if (row.edit) {
             const i = el('input', { class: 'calcf-inp calc-mx-inp', type: 'number', step: '0.01', value: m[row.edit] === '' ? '' : m[row.edit],
@@ -1007,7 +1010,11 @@
       const nameInp = inp(item ? item.name : '', { placeholder: 'наименование затраты' });
       const amountInp = inp(item && item.amount != null ? item.amount : '', { type: 'number', step: '1', placeholder: 'сумма в месяц', oninput: recompute });
       const rec = { id: item ? item.id : null, nameInp, amountInp };
-      const wrap = el('div', { class: 'calc-cost-row' }, [nameInp, amountInp,
+      const other = kind === 'production' ? 'overhead' : 'production';
+      const moveBtn = rec.id ? el('button', { class: 'calc-icon-btn', title: 'Перенести в ' + (kind === 'production' ? 'накладные' : 'производственные'), onclick: async () => {
+        try { await post('/cost-item', { id: rec.id, kind: other, name: nameInp.value, amount: amountInp.value }); toast('Перенесено'); const nd = await api('/costs'); costRemoved = []; buildCosts(box, nd); } catch (e) { toast(e.message, true); }
+      } }, '⇄') : null;
+      const wrap = el('div', { class: 'calc-cost-row' }, [nameInp, amountInp, moveBtn || el('span', {}),
         el('button', { class: 'calc-icon-btn', title: 'Удалить', onclick: () => { if (rec.id) costRemoved.push(rec.id); const a = rows[kind]; const i = a.indexOf(rec); if (i >= 0) a.splice(i, 1); wrap.remove(); recompute(); } }, '×')]);
       rows[kind].push(rec);
       return wrap;
@@ -1028,14 +1035,14 @@
         el('label', { class: 'calc-setting-tile' }, [el('span', {}, 'ФОТ на штуку'), el('span', { class: 'tnum good' }, laborUnit)]),
       ]),
       el('section', { class: 'calc-settings-card' }, [
-        el('div', { class: 'calc-settings-title' }, 'Производственные затраты'),
-        el('div', { class: 'calc-sub' }, 'Аренда, электроэнергия и пр. — в месяц.'),
+        el('div', { class: 'calc-settings-title' }, 'Производственные (прямые)'),
+        el('div', { class: 'calc-sub' }, 'Прямые: физически участвуют в выпуске и растут с объёмом — электроэнергия станков, сдельная зарплата. Аренда сюда НЕ входит (это накладные). ⇄ — перенести статью.'),
         prodList, addBtn('production', prodList),
         el('div', { class: 'calc-cost-foot' }, [el('span', {}, 'Сумма / мес: '), prodSum, el('span', {}, ' · на штуку: '), prodUnit]),
       ]),
       el('section', { class: 'calc-settings-card' }, [
-        el('div', { class: 'calc-settings-title' }, 'Накладные затраты'),
-        el('div', { class: 'calc-sub' }, 'Логистика, сертификация, банк, маркетинг, кредиты и пр. — в месяц.'),
+        el('div', { class: 'calc-settings-title' }, 'Накладные (косвенные)'),
+        el('div', { class: 'calc-sub' }, 'Косвенные: обслуживание бизнеса — аренда, администрация, логистика, банк, маркетинг, кредиты. Распределяются на всю продукцию ÷ объём.'),
         ohList, addBtn('overhead', ohList),
         el('div', { class: 'calc-cost-foot' }, [el('span', {}, 'Сумма / мес: '), ohSum, el('span', {}, ' · на штуку: '), ohUnit]),
       ]),
