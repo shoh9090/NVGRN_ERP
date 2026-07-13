@@ -209,6 +209,11 @@
 .cash-amt-out { color: #c0392b; font-weight: 800; text-align: right; font-variant-numeric: tabular-nums; }
 .cash-amt-t { color: #6a4fb6; font-weight: 700; text-align: right; font-variant-numeric: tabular-nums; }
 .cash-note-info { font-size: 12px; color: var(--muted); background: #f1f4ee; border-radius: 8px; padding: 8px 10px; }
+.cash-match-list { display: flex; flex-direction: column; gap: 4px; max-height: 360px; overflow-y: auto; }
+.cash-match-row { display: flex; align-items: flex-start; gap: 10px; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); }
+.cash-match-info { flex: 1; }
+.cash-match-main { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 13px; }
+.cash-match-amt { margin-left: auto; font-family: 'Lora', Georgia, serif; }
 @media (max-width: 760px) {
   .cash-tx { grid-template-columns: 26px 64px 1.2fr 0.9fr 0.9fr; }
   .cash-tx > *:nth-child(4), .cash-tx > *:nth-child(5), .cash-tx > *:nth-child(6) { display: none; }

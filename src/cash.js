@@ -1209,4 +1209,76 @@ router.post('/api/transactions/relink', J, async (req, res) => {
   catch (e) { res.status(400).json({ error: e.message }); }
 });
 
+// ---------- Поиск и склейка переводов между своими счетами (A2A) ----------
+// Проблема: перевод между своими кошельками через банк приходит ДВУМЯ независимыми записями —
+// «Расход» на кошельке-отправителе и «Приход» на кошельке-получателе (два разных банка, две выписки).
+// Это одно и то же движение денег. Верно — одна запись tx_type='transfer' (она сама и списывает,
+// и зачисляет). Находим пары out/in на РАЗНЫХ кошельках с одинаковой суммой и близкой датой
+// (банк может провести на следующий день), которые ещё не переводы, и предлагаем на подтверждение.
+router.get('/api/transactions/match-candidates', async (req, res) => {
+  try {
+    const days = 3; // допуск по дате между списанием и зачислением
+    const rows = (await db.pool.query(
+      `SELECT o.id AS out_id, o.tx_date AS out_date, o.wallet_id AS out_wallet, wo.name AS out_wallet_name,
+              o.purpose AS out_purpose, o.payer_name AS out_payer,
+              i.id AS in_id, i.tx_date AS in_date, i.wallet_id AS in_wallet, wi.name AS in_wallet_name,
+              i.purpose AS in_purpose, i.payer_name AS in_payer,
+              o.amount AS amount, ABS(i.tx_date - o.tx_date) AS gap_days
+       FROM cash_transactions o
+       JOIN cash_transactions i
+         ON i.tx_type = 'in' AND o.tx_type = 'out'
+        AND i.wallet_id <> o.wallet_id
+        AND i.amount = o.amount
+        AND ABS(i.tx_date - o.tx_date) <= $1
+       JOIN cash_wallets wo ON wo.id = o.wallet_id
+       JOIN cash_wallets wi ON wi.id = i.wallet_id
+       WHERE o.source <> 'opening' AND i.source <> 'opening'
+       ORDER BY gap_days, o.tx_date DESC
+       LIMIT 200`, [days])).rows;
+    // Каждую запись — только в одну пару (жадно, от самой близкой даты).
+    const usedOut = new Set(), usedIn = new Set(), pairs = [];
+    for (const r of rows) {
+      if (usedOut.has(r.out_id) || usedIn.has(r.in_id)) continue;
+      usedOut.add(r.out_id); usedIn.add(r.in_id);
+      pairs.push({
+        out_id: r.out_id, in_id: r.in_id, amount: Number(r.amount),
+        out_date: r.out_date, in_date: r.in_date, gap_days: r.gap_days,
+        out_wallet: r.out_wallet, out_wallet_name: r.out_wallet_name,
+        in_wallet: r.in_wallet, in_wallet_name: r.in_wallet_name,
+        out_purpose: r.out_purpose, in_purpose: r.in_purpose,
+        out_payer: r.out_payer, in_payer: r.in_payer,
+      });
+    }
+    res.json({ pairs });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+router.post('/api/transactions/match-confirm', J, async (req, res) => {
+  const pairs = (req.body && req.body.pairs) || [];
+  if (!Array.isArray(pairs) || !pairs.length) return res.status(400).json({ error: 'Нет пар для склейки' });
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    const a2a = (await client.query("SELECT id FROM cash_categories WHERE code='100' LIMIT 1")).rows[0];
+    let done = 0;
+    for (const p of pairs) {
+      const outId = intOrNull(p.out_id), inId = intOrNull(p.in_id);
+      if (!outId || !inId) continue;
+      // «Расход» становится переводом: статья 100, кошелёк-получатель — тот, где была запись «Приход».
+      const r = await client.query(
+        `UPDATE cash_transactions SET tx_type='transfer', category_id=COALESCE($1, category_id),
+           wallet_to_id=(SELECT wallet_id FROM cash_transactions WHERE id=$2), is_classified=true
+         WHERE id=$3 AND tx_type='out'`,
+        [a2a ? a2a.id : null, inId, outId]);
+      if (!r.rowCount) continue; // уже не 'out' — пропускаем, ничего не трогаем
+      await client.query(`DELETE FROM cash_transactions WHERE id=$1 AND tx_type='in'`, [inId]);
+      done++;
+    }
+    await client.query('COMMIT');
+    await db.log(req.user.id, 'cash_match_transfers', `склеено пар: ${done}`);
+    res.json({ ok: true, done });
+  } catch (e) { await client.query('ROLLBACK').catch(() => {}); res.status(400).json({ error: e.message }); }
+  finally { client.release(); }
+});
+
 module.exports = router;

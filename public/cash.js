@@ -414,6 +414,7 @@
         addBtn('+ Приход', () => openTxForm('in', null)),
         el('button', { class: 'btn-primary cash-add cash-out', onclick: () => openTxForm('out', null) }, '+ Расход'),
         el('button', { class: 'btn-ghost cash-add', onclick: () => openTransferForm(null) }, '↔ Перевод'),
+        el('button', { class: 'btn-ghost cash-add', onclick: openMatchTransfers }, '🔗 Найти переводы'),
         el('button', { class: 'btn-ghost cash-add', onclick: openOpeningForm }, '💼 Начальные остатки'),
         el('button', { class: 'btn-ghost cash-add', onclick: openImport }, '📥 Импорт выписки'),
         ...((window.HUB_USER && window.HUB_USER.isAdmin) ? [el('button', { class: 'btn-ghost cash-add cashf-del', onclick: doWipe }, '🧹 Очистить')] : []),
@@ -688,6 +689,41 @@
     ]);
     modal('Сверить остаток', body, [saveBtn]);
     refreshErp();
+  }
+
+  // ---------- Поиск и склейка переводов между своими счетами (A2A) ----------
+  // Перевод между кошельками через банк приходит двумя записями (расход у отправителя,
+  // приход у получателя — разные выписки). Ищем такие пары и склеиваем в одну «Перевод»,
+  // иначе одна из сторон норовит попасть в выручку/расходы и задвоить движение денег.
+  async function openMatchTransfers() {
+    let d; try { d = await api('/transactions/match-candidates'); } catch (e) { return toast(e.message, true); }
+    const pairs = d.pairs || [];
+    if (!pairs.length) { modal('Переводы между счетами', el('div', { class: 'cash-empty' }, 'Не нашёл пар «расход на одном кошельке / приход на другом» с одинаковой суммой и близкой датой. Если перевод есть, но не нашёлся — сумма/дата на выписках расходятся, свяжите вручную.'), []); return; }
+    const boxes = pairs.map((p) => {
+      const cb = el('input', { type: 'checkbox', checked: true });
+      const row = el('div', { class: 'cash-match-row' }, [
+        cb,
+        el('div', { class: 'cash-match-info' }, [
+          el('div', { class: 'cash-match-main' }, [
+            el('span', {}, p.out_wallet_name + ' →'), el('span', {}, ' ' + p.in_wallet_name),
+            el('span', { class: 'cash-match-amt' }, money(p.amount) + ' сум'),
+          ]),
+          el('div', { class: 'cash-sub' }, String(p.out_date).slice(0, 10) + (p.gap_days > 0 ? ' → ' + String(p.in_date).slice(0, 10) : '') + (p.out_purpose ? ' · ' + p.out_purpose : '')),
+        ]),
+      ]);
+      return { row, cb, p };
+    });
+    const body = el('div', { class: 'cashf' }, [
+      el('div', { class: 'cash-note-info' }, 'Найдены пары «расход/приход» на разных кошельках с одинаковой суммой — похоже на переводы между своими счетами. Отметьте нужные — расход станет переводом, парный приход удалится (деньги уже учтены переводом).'),
+      el('div', { class: 'cash-match-list' }, boxes.map((b) => b.row)),
+    ]);
+    const save = el('button', { class: 'btn-primary', onclick: async () => {
+      const chosen = boxes.filter((b) => b.cb.checked).map((b) => ({ out_id: b.p.out_id, in_id: b.p.in_id }));
+      if (!chosen.length) return toast('Ничего не отмечено', true);
+      try { const r = await post('/transactions/match-confirm', { pairs: chosen }); toast('Склеено переводов: ' + r.done); closeModal(); loadTx(); }
+      catch (e) { toast(e.message, true); }
+    } }, 'Склеить отмеченные');
+    modal('Переводы между счетами (' + pairs.length + ')', body, [save]);
   }
 
   function openCpImport() {
