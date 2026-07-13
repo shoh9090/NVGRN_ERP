@@ -50,6 +50,11 @@
   async function refreshDicts() { try { DICTS = await api('/dicts'); } catch (e) {} }
   const frow = (label, control) => el('label', { class: 'cashf-row' }, [el('span', {}, label), control]);
   const finp = (val, attrs) => el('input', Object.assign({ class: 'cashf-inp', value: val == null ? '' : String(val) }, attrs || {}));
+  // Денежное поле: обычный <input type="number"> молча стирает значение при вводе через запятую
+  // (родная раскладка RU/UZ) — .value браузер отдаёт пустой строкой. Поэтому суммы вводим как
+  // текст с числовой клавиатурой на мобильном (inputmode: decimal), а запятую сами превращаем в точку.
+  const fmoney = (val, attrs) => finp(val, Object.assign({ inputmode: 'decimal', placeholder: '0' }, attrs || {}, { type: 'text' }));
+  const moneyVal = (inp) => String(inp.value || '').trim().replace(/\s/g, '').replace(',', '.');
   const fsel = (options, val) => el('select', { class: 'cashf-inp' }, options.map((o) => el('option', { value: o.v, selected: String(o.v) === String(val) || null }, o.t)));
   const catOptions = () => [{ v: '', t: '— статья —' }].concat((DICTS.categories || []).map((c) => ({ v: c.id, t: c.code + ' · ' + c.name })));
   const supOptions = () => [{ v: '', t: '— нет —' }].concat((DICTS.suppliers || []).map((s) => ({ v: s.id, t: s.name })));
@@ -129,12 +134,12 @@
     const number = finp(k.number, { placeholder: '№ договора' });
     const subject = finp(k.subject, { placeholder: 'Предмет' });
     const cat = fsel(catOptions(), k.category_id || '');
-    const amount = finp(k.amount, { type: 'number', placeholder: 'Сумма (необязательно)' });
+    const amount = fmoney(k.amount, { placeholder: 'Сумма (необязательно)' });
     const ds = finp(k.date_start ? String(k.date_start).slice(0, 10) : '', { type: 'date' });
     const de = finp(k.date_end ? String(k.date_end).slice(0, 10) : '', { type: 'date' });
     const status = fsel([{ v: 'active', t: 'Действует' }, { v: 'closed', t: 'Закрыт' }], k.status || 'active');
     const body = el('div', { class: 'cashf' }, [frow('Контрагент', cp), frow('Номер', number), frow('Предмет', subject), frow('Статья ДДС', cat), frow('Сумма', amount), frow('С', ds), frow('По', de), frow('Статус', status)]);
-    const save = el('button', { class: 'btn-primary', onclick: async () => { try { await post('/contract', { id: k.id, counterparty_id: cp.value, number: number.value, subject: subject.value, category_id: cat.value, amount: amount.value, date_start: ds.value, date_end: de.value, status: status.value }); toast('Сохранено'); closeModal(); reload(); } catch (e) { toast(e.message, true); } } }, 'Сохранить');
+    const save = el('button', { class: 'btn-primary', onclick: async () => { try { await post('/contract', { id: k.id, counterparty_id: cp.value, number: number.value, subject: subject.value, category_id: cat.value, amount: moneyVal(amount), date_start: ds.value, date_end: de.value, status: status.value }); toast('Сохранено'); closeModal(); reload(); } catch (e) { toast(e.message, true); } } }, 'Сохранить');
     modal(k.id ? 'Договор' : 'Новый договор', body, [save]);
   }
 
@@ -526,7 +531,7 @@
   function openTxForm(type, tx) {
     tx = tx || {};
     const date = finp(tx.tx_date ? String(tx.tx_date).slice(0, 10) : todayStr(), { type: 'date' });
-    const amount = finp(tx.amount, { type: 'number', placeholder: 'Сумма' });
+    const amount = fmoney(tx.amount, { placeholder: 'Сумма' });
     const wallet = fsel((DICTS.wallets || []).map((x) => ({ v: x.id, t: x.name })), tx.wallet_id || '');
     const cat = fsel(catOptions(), tx.category_id || '');
     const purpose = finp(tx.purpose, { placeholder: 'Назначение' });
@@ -549,8 +554,8 @@
     const save = el('button', { class: 'btn-primary', onclick: async () => {
       try {
         const isA2A = a2aId && String(cat.value) === a2aId;
-        if (tx.id) await post('/tx/' + tx.id, { tx_date: date.value, amount: amount.value, counterparty_id: tx.counterparty_id || '', category_id: cat.value, purpose: purpose.value, wallet_to_id: isA2A ? walletTo.value : '' });
-        else await post('/tx', { tx_type: type, tx_date: date.value, amount: amount.value, wallet_id: wallet.value, category_id: cat.value, purpose: purpose.value, wallet_to_id: isA2A ? walletTo.value : '' });
+        if (tx.id) await post('/tx/' + tx.id, { tx_date: date.value, amount: moneyVal(amount), counterparty_id: tx.counterparty_id || '', category_id: cat.value, purpose: purpose.value, wallet_to_id: isA2A ? walletTo.value : '' });
+        else await post('/tx', { tx_type: type, tx_date: date.value, amount: moneyVal(amount), wallet_id: wallet.value, category_id: cat.value, purpose: purpose.value, wallet_to_id: isA2A ? walletTo.value : '' });
         toast('Сохранено'); closeModal(); loadTx();
       } catch (e) { toast(e.message, true); }
     } }, 'Сохранить');
@@ -562,7 +567,7 @@
   function openTransferForm(tx) {
     tx = tx || {};
     const date = finp(tx.tx_date ? String(tx.tx_date).slice(0, 10) : todayStr(), { type: 'date' });
-    const amount = finp(tx.amount, { type: 'number', placeholder: 'Сумма' });
+    const amount = fmoney(tx.amount, { placeholder: 'Сумма' });
     const wopts = (DICTS.wallets || []).map((x) => ({ v: x.id, t: x.name }));
     const from = fsel(wopts, tx.wallet_id || '');
     const to = fsel(wopts, tx.wallet_to_id || '');
@@ -570,14 +575,14 @@
     const purpose = finp(tx.purpose, { placeholder: 'Комментарий (необязательно)' });
     const rows = [frow('Дата', date), frow('Сумма', amount), frow('Откуда', from), frow('Куда', to), frow('Комментарий', purpose)];
     // Комиссия/% банка за перевод — только при создании (отдельным расходом со статьёй ДДС).
-    const feeAmt = finp('', { type: 'number', placeholder: '0 — если комиссии нет' });
+    const feeAmt = fmoney('', { placeholder: '0 — если комиссии нет' });
     const feeCat = fsel(catOptions(), '');
     if (!tx.id) rows.push(frow('Комиссия / % банка', feeAmt), frow('Статья комиссии', feeCat));
     const body = el('div', { class: 'cashf' }, [...rows, el('div', { class: 'cash-note-info' }, 'Перевод между своими кошельками не считается доходом/расходом. Комиссия банка — реальный расход, укажите её сумму и статью (напр. 62 % банка или 64 % за наличку).')]);
     const save = el('button', { class: 'btn-primary', onclick: async () => {
       try {
-        if (tx.id) await post('/tx/' + tx.id, { tx_date: date.value, amount: amount.value, purpose: purpose.value });
-        else await post('/tx', { tx_type: 'transfer', tx_date: date.value, amount: amount.value, wallet_id: from.value, wallet_to_id: to.value, purpose: purpose.value, fee_amount: feeAmt.value, fee_category_id: feeCat.value });
+        if (tx.id) await post('/tx/' + tx.id, { tx_date: date.value, amount: moneyVal(amount), purpose: purpose.value });
+        else await post('/tx', { tx_type: 'transfer', tx_date: date.value, amount: moneyVal(amount), wallet_id: from.value, wallet_to_id: to.value, purpose: purpose.value, fee_amount: moneyVal(feeAmt), fee_category_id: feeCat.value });
         toast('Сохранено'); closeModal(); loadTx();
       } catch (e) { toast(e.message, true); }
     } }, 'Сохранить');
@@ -625,7 +630,7 @@
     const date = finp(d.date || todayStr(), { type: 'date' });
     const inputs = {};
     const list = el('div', { class: 'cashf' }, (d.items || []).map((w) => {
-      const inp = finp(w.amount != null ? w.amount : '', { type: 'number', placeholder: '0' });
+      const inp = fmoney(w.amount != null ? w.amount : '', {});
       inputs[w.wallet_id] = inp;
       return frow(w.name, inp);
     }));
@@ -636,7 +641,7 @@
     ]);
     const save = el('button', { class: 'btn-primary', onclick: async () => {
       const balances = {};
-      Object.entries(inputs).forEach(([wid, inp]) => { const v = String(inp.value).trim(); if (v !== '') balances[wid] = Number(v); });
+      Object.entries(inputs).forEach(([wid, inp]) => { const v = moneyVal(inp); if (v !== '') balances[wid] = Number(v); });
       try { await post('/opening', { date: date.value, balances }); toast('Начальные остатки сохранены'); closeModal(); if (TAB === 'tx') loadTx(); else render(); }
       catch (e) { toast(e.message, true); }
     } }, 'Сохранить');
@@ -648,13 +653,13 @@
     const wsel = fsel([{ v: '', t: '— кошелёк —' }].concat((DICTS.wallets || []).map((w) => ({ v: w.id, t: w.name }))), txState.wallet || '');
     const date = finp(txState.to || todayStr(), { type: 'date' });
     const erpBox = el('div', { class: 'cash-note-info' }, '—');
-    const fact = finp('', { type: 'number', placeholder: 'Фактический остаток' });
+    const fact = fmoney('', { placeholder: 'Фактический остаток' });
     const diffBox = el('div', { class: 'cash-recon-diff' }, '');
     const comment = finp('', { placeholder: 'Комментарий (необязательно)' });
     let erp = null;
     function recalc() {
-      if (erp == null || String(fact.value).trim() === '') { diffBox.textContent = ''; diffBox.className = 'cash-recon-diff'; saveBtn.disabled = true; saveBtn.textContent = 'Сверить'; return; }
-      const diff = Math.round((Number(fact.value) - erp) * 100) / 100;
+      if (erp == null || moneyVal(fact) === '') { diffBox.textContent = ''; diffBox.className = 'cash-recon-diff'; saveBtn.disabled = true; saveBtn.textContent = 'Сверить'; return; }
+      const diff = Math.round((Number(moneyVal(fact)) - erp) * 100) / 100;
       if (!diff) { diffBox.textContent = '✅ Остаток совпадает'; diffBox.className = 'cash-recon-diff ok'; saveBtn.disabled = true; saveBtn.textContent = 'Совпадает'; }
       else { diffBox.textContent = 'Разница: ' + (diff > 0 ? '+' : '') + money(diff) + ' сум → будет создана корректировка'; diffBox.className = 'cash-recon-diff warn'; saveBtn.disabled = false; saveBtn.textContent = 'Создать корректировку'; }
     }
@@ -669,7 +674,7 @@
     const saveBtn = el('button', { class: 'btn-primary', onclick: async () => {
       if (!wsel.value) return toast('Выберите кошелёк', true);
       try {
-        const r = await post('/reconcile', { wallet_id: wsel.value, date: date.value, fact_amount: fact.value, comment: comment.value });
+        const r = await post('/reconcile', { wallet_id: wsel.value, date: date.value, fact_amount: moneyVal(fact), comment: comment.value });
         if (r.created) toast('Корректировка создана: ' + money(r.diff)); else toast('Остаток совпадает — корректировка не нужна');
         closeModal(); loadTx();
       } catch (e) { toast(e.message, true); }

@@ -559,12 +559,17 @@ router.get('/api/summary', async (req, res) => {
     const to = req.query.to || null;
     const wid = intOrNull(req.query.wallet);
     const e = summaryExprs(wid);
-    // Сальдо на начало = все движения (включая начальные остатки) с датой ДО начала периода.
+    // Сальдо на начало = обычные движения СТРОГО до начала периода + начальные остатки
+    // (source='opening') на дату начала периода ВКЛЮЧИТЕЛЬНО. Раздельно, т.к. остатки обычно
+    // датируют первым днём периода ("баланс на входе в этот день") — при единой строгой границе
+    // такая запись выпадала бы и из сальдо (не "до"), и из прихода (явно исключён ниже по source).
     let opening = 0;
     if (from) {
       const p = e.params.slice(); p.push(from);
       const r = await db.pool.query(
-        `SELECT COALESCE(SUM(${e.delta}),0) v FROM cash_transactions t WHERE t.tx_date < $${p.length}`, p);
+        `SELECT COALESCE(SUM(${e.delta}),0) v FROM cash_transactions t
+         WHERE (t.source = 'opening' AND t.tx_date <= $${p.length})
+            OR (t.source <> 'opening' AND t.tx_date < $${p.length})`, p);
       opening = Number(r.rows[0].v);
     }
     // Приход/расход за период — без начальных остатков.
