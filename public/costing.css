@@ -59,6 +59,28 @@ select.cst-cell { cursor:pointer; }
 .cst-st-draft { background:#fff8e1; color:#b25b00; }
 .cst-st-archived { background:#f1f4ee; color:var(--muted); }
 
+/* Матрица — широкая таблица с горизонтальным скроллом */
+.cst-mx-wrap { overflow-x:auto; border:1px solid var(--line); border-radius:12px; background:#fff; }
+.cst-mx { border-collapse:collapse; width:100%; font-size:12.5px; white-space:nowrap; }
+.cst-mx th, .cst-mx td { padding:7px 9px; border-bottom:1px solid #f0f2ef; text-align:right; }
+.cst-mx th { position:sticky; top:0; background:#f2f5f1; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.02em; z-index:2; }
+.cst-mx th.lft, .cst-mx td.lft { text-align:left; }
+.cst-mx tbody tr:hover { background:#f8faf6; }
+.cst-mx tr.dim { opacity:.55; }
+.cst-mx td.strong { font-weight:800; color:var(--ink); }
+/* закрепляем первые 2 колонки (# и SKU) */
+.cst-mx th:nth-child(1), .cst-mx td:nth-child(1) { position:sticky; left:0; background:#fff; z-index:1; }
+.cst-mx th:nth-child(2), .cst-mx td:nth-child(2) { position:sticky; left:38px; background:#fff; z-index:1; min-width:150px; }
+.cst-mx th:nth-child(1), .cst-mx th:nth-child(2) { z-index:3; background:#f2f5f1; }
+.cst-mx tbody tr:hover td:nth-child(1), .cst-mx tbody tr:hover td:nth-child(2) { background:#f8faf6; }
+.mx-good { color:#2e7d32; font-weight:800; }
+.mx-warn { color:#b25b00; font-weight:800; }
+.mx-bad  { color:var(--danger); font-weight:800; }
+.cst-legend { display:flex; gap:16px; margin-top:10px; font-size:12px; color:var(--muted); flex-wrap:wrap; }
+.cst-lg { display:inline-flex; align-items:center; gap:6px; }
+.cst-lg-dot { width:11px; height:11px; border-radius:3px; display:inline-block; }
+.cst-lg-dot.mx-good { background:#2e7d32; } .cst-lg-dot.mx-warn { background:#b25b00; } .cst-lg-dot.mx-bad { background:var(--danger); }
+
 .cst-soon { text-align:center; max-width:640px; margin:26px auto; background:var(--soft); border:1px dashed var(--line); border-radius:16px; padding:30px; }
 .cst-soon-h { font-family:'Lora',Georgia,serif; font-size:20px; font-weight:600; color:var(--forest); margin-bottom:8px; }
 .cst-soon-t { color:#5a665c; font-size:14px; line-height:1.5; }

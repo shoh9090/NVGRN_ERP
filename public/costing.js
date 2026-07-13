@@ -53,7 +53,7 @@
       el('div', { class: 'cst-top-ctrls' }, [
         el('span', { class: 'cst-flab' }, 'Период:'), pSel,
         el('span', { class: 'cst-flab' }, 'Тип:'), typeSel,
-        el('button', { class: 'btn-ghost cst-btn', onclick: () => toast('Пересчёт будет на Этапе 3') }, 'Пересчитать'),
+        el('button', { class: 'btn-ghost cst-btn', onclick: () => { TAB = 'matrix'; render(); toast('Пересчитано'); } }, 'Пересчитать'),
         el('button', { class: 'btn-ghost cst-btn', onclick: () => toast('Фиксация — Этап 5') }, 'Зафиксировать'),
         el('button', { class: 'btn-ghost cst-btn', onclick: () => toast('Экспорт — Этап 5') }, 'Экспорт Excel'),
       ]),
@@ -82,18 +82,65 @@
     ]));
   }
 
-  function renderMatrix() {
+  async function renderMatrix() {
     const c = $('#cst-content');
     c.appendChild(el('div', { class: 'cst-head' }, [el('div', { class: 'cst-h2' }, 'Матрица себестоимости'),
-      el('div', { class: 'cst-sub' }, 'Одна строка = один SKU. Расчёт по формулам, цвет маржи, бейджи-источники — Этап 3. Каркас и данные готовы.')]));
-    c.appendChild(el('div', { class: 'cst-kpis' }, [
-      kpi('Рецептур перенесено', BOOT.recipeCount || 0),
-      kpi('Период', PERIOD || '—'),
-      kpi('Каналов', (BOOT.channels || []).length),
-      kpi('Средний выпуск, шт', BOOT.period ? money(BOOT.period.avg_monthly_output) : '—'),
+      el('div', { class: 'cst-sub' }, 'Одна строка = один SKU. Расчёт по выверенным формулам: сырьё · упаковка · ФОТ · производство · накладные · с/с · отход · цена SD · ретро · НДС · прибыль · налог · ЧП · маржа. Цвет — по чистой марже.')]));
+    const box = el('div', {}); c.appendChild(box);
+    box.appendChild(el('div', { class: 'cst-loading' }, 'Считаю…'));
+    let d; try { d = await api('/matrix' + (PERIOD ? '?period=' + PERIOD : '')); } catch (e) { box.innerHTML = ''; box.appendChild(el('div', { class: 'cst-empty' }, 'Ошибка: ' + e.message)); return; }
+    box.innerHTML = '';
+    const rows = d.rows || [];
+    if (!rows.length) { box.appendChild(el('div', { class: 'cst-empty' }, 'Нет рецептур для расчёта.')); return; }
+    // KPI-сводка.
+    const priced = rows.filter((r) => r.sd_price != null);
+    const avgMargin = priced.length ? priced.reduce((s, r) => s + (num(r.margin) || 0), 0) / priced.length : null;
+    const noPriceN = rows.filter((r) => r.no_price).length;
+    const noSdN = rows.filter((r) => r.sd_price == null).length;
+    box.appendChild(el('div', { class: 'cst-kpis' }, [
+      kpi('SKU в расчёте', rows.length),
+      kpi('Средняя маржа', avgMargin == null ? '—' : avgMargin.toFixed(1) + '%'),
+      kpi('Без цены компонента', noPriceN),
+      kpi('Без цены SD', noSdN),
     ]));
-    renderSoon('Матрица — на подходе', 'Здесь появится Excel-таблица: SKU × (сырьё · упаковка · ФОТ · производство · накладные · с/с · с отходом · цена SD · ретро · НДС · прибыль · налог · ЧП · маржа). Формулы уже выверены по Excel.');
+    // Таблица.
+    const cols = [
+      ['#', 'i'], ['SKU', 'name'], ['Канал', 'ch'], ['Грамм', 'g'],
+      ['Сырьё', 'raw'], ['Упак.', 'pack'], ['ФОТ', 'labor'], ['Произв.', 'production'], ['Накл.', 'overhead'], ['Прочее', 'other'],
+      ['С/с', 'base'], ['Отход', 'wr'], ['С/с+отход', 'cww'],
+      ['Цена SD', 'sd'], ['Ретро', 'retro'], ['НДС', 'vat'], ['Прибыль', 'profit'], ['Налог', 'tax'], ['ЧП', 'net'], ['Маржа', 'margin'],
+    ];
+    const table = el('table', { class: 'cst-mx' });
+    const thead = el('thead', {}, el('tr', {}, cols.map(([label, k]) => el('th', { class: (['name', 'ch'].includes(k) ? 'lft' : '') }, label))));
+    const tb = el('tbody', {}, rows.map((r, i) => {
+      const marginCls = r.sd_price == null ? '' : (num(r.margin) < 0 ? 'mx-bad' : num(r.margin) < 10 ? 'mx-warn' : 'mx-good');
+      const td = (v, cls) => el('td', { class: 'tnum ' + (cls || '') }, v);
+      return el('tr', { class: r.status !== 'active' ? 'dim' : '' }, [
+        el('td', { class: 'muted' }, String(i + 1)),
+        el('td', { class: 'lft', style: 'font-weight:700' }, r.name),
+        el('td', { class: 'lft muted' }, r.channel || '—'),
+        td(r.gram_weight ? money(r.gram_weight) : '—'),
+        td(money(r.raw), r.no_price ? 'mx-bad' : ''),
+        td(money(r.pack)), td(money(r.labor)), td(money(r.production)), td(money(r.overhead)), td(money(r.other)),
+        td(money(r.base), 'strong'),
+        el('td', { class: 'tnum muted' }, r.waste_rate ? r.waste_rate + '%' : '—'),
+        td(money(r.cost_with_waste), 'strong'),
+        r.sd_price == null ? el('td', { class: 'tnum mx-bad', title: 'Нет цены в SalesDoctor по названию' }, 'нет') : td(money(r.sd_price)),
+        td(r.sd_price == null ? '—' : money(r.retro)),
+        td(r.sd_price == null ? '—' : money(r.vat)),
+        td(r.profit == null ? '—' : money(r.profit)),
+        td(r.tax == null ? '—' : money(r.tax)),
+        td(r.net == null ? '—' : money(r.net), 'strong'),
+        el('td', { class: 'tnum ' + marginCls }, r.margin == null ? '—' : r.margin.toFixed(1) + '%'),
+      ]);
+    }));
+    table.appendChild(thead); table.appendChild(tb);
+    box.appendChild(el('div', { class: 'cst-mx-wrap' }, table));
+    box.appendChild(el('div', { class: 'cst-legend' }, [
+      lg('mx-good', 'маржа >10%'), lg('mx-warn', '0–10%'), lg('mx-bad', '<0 / нет цены'),
+    ]));
   }
+  function lg(cls, text) { return el('span', { class: 'cst-lg' }, [el('span', { class: 'cst-lg-dot ' + cls }), text]); }
 
   // ===== Рецептуры: список (inline) + компоненты выбранной =====
   const TYPE_OPTS = [['raw', 'Сырьё'], ['packaging', 'Упаковка'], ['other', 'Прочее']];

@@ -259,6 +259,99 @@ router.get('/api/refs', async (req, res) => {
   res.json({ items, channels });
 });
 
+// ===== Этап 3: расчёт матрицы себестоимости =====
+async function calcSettingsMap() {
+  const out = {};
+  try { (await db.pool.query('SELECT key, value FROM calc_settings')).rows.forEach((r) => { out[r.key] = r.value; }); } catch (e) {}
+  return out;
+}
+
+// Цена компонента: ручная → «Настр.» (calc_price) → последний «Закуп» → нет цены.
+function resolveCompPrice(comp, pm) {
+  if (comp.manual_price != null && comp.manual_price !== '') return { price: asNum(comp.manual_price), source: 'Ручн.' };
+  const p = pm[`${comp.component_type === 'packaging' ? 'packaging' : 'raw'}:${comp.component_id}`] || {};
+  if (p.calc != null) return { price: asNum(p.calc), source: 'Настр.' };
+  if (p.last != null) return { price: asNum(p.last), source: 'Закуп' };
+  return { price: 0, source: 'Нет цены' };
+}
+
+function computeRow(rec, comps, period, chTerms, pm, sdPrice) {
+  const output = asNum(period && period.avg_monthly_output) || 1;
+  const laborPer = (asNum(period && period.payroll_with_taxes) / output) * (asNum(rec.labor_coeff) || 1);
+  const prodPer = asNum(period && period.production_expenses) / output;
+  const ohPer = asNum(period && period.overhead_expenses) / output;
+  let raw = 0, pack = 0, other = 0, noPrice = false;
+  for (const c of comps) {
+    const waste = 1 + asNum(c.waste_rate) / 100;
+    const { price, source } = resolveCompPrice(c, pm);
+    const hasQty = asNum(c.qty) > 0 || asNum(c.share_percent) > 0;
+    if (source === 'Нет цены' && hasQty) noPrice = true;
+    if (c.component_type === 'raw') {
+      let kg;
+      if (asNum(c.share_percent) > 0) kg = (asNum(rec.gram_weight) * asNum(c.share_percent) / 100) / 1000;
+      else if (c.unit === 'кг' || c.unit === 'л') kg = asNum(c.qty);
+      else kg = asNum(c.qty) / 1000;
+      raw += price * kg * waste;
+    } else if (c.component_type === 'packaging') {
+      pack += price * asNum(c.qty) * waste;
+    } else {
+      other += price * asNum(c.qty) * waste;
+    }
+  }
+  const base = raw + pack + laborPer + prodPer + ohPer + other;
+  const wasteMult = rec.waste_method === 'sku' ? (1 + asNum(rec.sku_waste_rate) / 100) : 1;
+  const costWithWaste = base * wasteMult;
+  const ct = chTerms[rec.channel] || {};
+  const retroR = asNum(ct.retro_rate);
+  const vatR = ct.vat_rate != null ? asNum(ct.vat_rate) : asNum(period && period.vat_rate);
+  const taxR = ct.profit_tax_rate != null ? asNum(ct.profit_tax_rate) : asNum(period && period.profit_tax_rate);
+  const price = sdPrice != null ? asNum(sdPrice) : null;
+  const retro = (price || 0) * retroR / 100;
+  const vat = (price || 0) * vatR / 100;
+  const profit = price != null ? price - retro - vat - costWithWaste : null;
+  const tax = profit != null ? Math.max(profit, 0) * taxR / 100 : null;
+  const net = profit != null ? profit - tax : null;
+  const margin = price ? (net / price) * 100 : null;
+  return {
+    id: rec.id, name: rec.finished_good_name, channel: rec.channel || '', status: rec.status,
+    gram_weight: asNum(rec.gram_weight), comp_count: comps.length,
+    raw, pack, labor: laborPer, production: prodPer, overhead: ohPer, other,
+    base, waste_method: rec.waste_method, waste_rate: rec.waste_method === 'sku' ? asNum(rec.sku_waste_rate) : 0,
+    cost_with_waste: costWithWaste, no_price: noPrice,
+    sd_price: price, retro_rate: retroR, retro, vat_rate: vatR, vat,
+    profit, tax_rate: taxR, tax, net, margin,
+  };
+}
+
+router.get('/api/matrix', async (req, res) => {
+  const periods = (await db.pool.query('SELECT * FROM costing_periods ORDER BY period DESC')).rows;
+  const cur = req.query.period && periods.find((p) => p.period === req.query.period) ? req.query.period : (periods[0] ? periods[0].period : null);
+  const period = periods.find((p) => p.period === cur) || null;
+  const chRows = (await db.pool.query('SELECT * FROM costing_channel_terms')).rows;
+  const chTerms = {}; chRows.forEach((c) => { chTerms[c.channel] = c; });
+  const pm = await priceMap();
+  const cs = await calcSettingsMap();
+  const sdDefault = intOrNull(cs.sd_price_type_id);
+  // SD-цена по названию SKU + тип цены канала (иначе общий из настроек).
+  const sdRows = await db.pool.query(
+    `SELECT r.id, rp.price AS sd_price
+     FROM costing_recipes r
+     LEFT JOIN costing_channel_terms ct ON ct.channel = r.channel
+     LEFT JOIN LATERAL (
+       SELECT fg.id FROM ref_finished_goods fg
+       WHERE fg.status='active' AND lower(fg.name) = lower(r.finished_good_name) LIMIT 1
+     ) gm ON true
+     LEFT JOIN ref_prices rp ON rp.product_id = COALESCE(r.finished_good_id, gm.id)
+            AND rp.price_type_id = COALESCE(ct.sd_price_type_id, ${sdDefault || 'NULL'})
+     WHERE r.status <> 'archived'`).catch(() => ({ rows: [] }));
+  const sdById = {}; sdRows.rows.forEach((x) => { sdById[x.id] = x.sd_price; });
+  const recs = (await db.pool.query("SELECT * FROM costing_recipes WHERE status <> 'archived' ORDER BY finished_good_name")).rows;
+  const allComps = (await db.pool.query('SELECT * FROM costing_recipe_components ORDER BY recipe_id, sort_order, id')).rows;
+  const byRecipe = {}; allComps.forEach((c) => { (byRecipe[c.recipe_id] = byRecipe[c.recipe_id] || []).push(c); });
+  const rows = recs.map((r) => computeRow(r, byRecipe[r.id] || [], period, chTerms, pm, sdById[r.id]));
+  res.json({ period: cur, rows });
+});
+
 // ===== Этап 2: CRUD рецептур =====
 const REC_FIELDS = ['finished_good_name', 'channel', 'group_name', 'gram_weight', 'unit', 'version', 'status', 'waste_method', 'sku_waste_rate', 'labor_coeff', 'calculation_type', 'comment'];
 
