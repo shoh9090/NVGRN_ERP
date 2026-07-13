@@ -44,6 +44,16 @@
 .cst-exp { grid-template-columns:1fr 160px; }
 .cst-ch { grid-template-columns:1.4fr 0.8fr 0.8fr 0.8fr; }
 
+/* inline-ячейки в таблицах */
+.cst-cell { padding:5px 7px; font-size:13px; width:100%; box-sizing:border-box; background:#fff; border:1px solid transparent; border-radius:6px; }
+.cst-cell:hover { border-color:#e0e3dd; }
+.cst-cell:focus { border-color:var(--forest); outline:none; background:#fff; }
+select.cst-cell { cursor:pointer; }
+.cst-acts { display:flex; gap:4px; justify-content:flex-end; }
+.cst-price-cell { display:flex; gap:4px; align-items:center; }
+.cst-icon-btn { border:1px solid var(--line); background:#fff; border-radius:6px; padding:4px 7px; cursor:pointer; font-size:13px; line-height:1; color:var(--forest); }
+.cst-icon-btn:hover { background:#eef4e9; border-color:var(--forest); }
+
 .cst-st { font-size:11px; font-weight:700; padding:3px 9px; border-radius:999px; }
 .cst-st-active { background:#e8f5e9; color:#2e7d32; }
 .cst-st-draft { background:#fff8e1; color:#b25b00; }

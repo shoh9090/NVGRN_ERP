@@ -217,4 +217,130 @@ router.get('/api/recipe/:id(\\d+)/components', async (req, res) => {
   res.json({ items: rows });
 });
 
+// ===== Этап 2: справочник компонентов с текущей ценой (Закуп/ручная) =====
+async function priceMap() {
+  const rows = await db.pool.query(`
+    WITH live AS (
+      SELECT i.item_kind, i.item_id, COALESCE(i.fact_price, i.price) AS price,
+             COALESCE(po.received_at::date, po.delivery_date, po.created_at::date) AS price_date
+      FROM purchase_order_items i
+      JOIN purchase_orders po ON po.id = i.order_id AND po.status = 'received'
+      WHERE COALESCE(i.fact_price, i.price) > 0
+    ),
+    hist AS (SELECT item_kind, item_id, price, price_date FROM price_history_import WHERE price > 0),
+    points AS (SELECT * FROM live UNION ALL SELECT * FROM hist),
+    ranked AS (
+      SELECT item_kind, item_id, price,
+             ROW_NUMBER() OVER (PARTITION BY item_kind, item_id ORDER BY price_date DESC NULLS LAST) AS rn
+      FROM points)
+    SELECT r.item_kind, r.item_id, r.price AS last_price, m.calc_price
+    FROM ranked r
+    LEFT JOIN calc_material_prices m ON m.item_kind=r.item_kind AND m.item_id=r.item_id
+    WHERE r.rn = 1`).catch(() => ({ rows: [] }));
+  const map = {};
+  for (const r of rows.rows) map[`${r.item_kind}:${r.item_id}`] = { last: numOrNull(r.last_price), calc: numOrNull(r.calc_price) };
+  return map;
+}
+
+router.get('/api/refs', async (req, res) => {
+  const pm = await priceMap();
+  const rows = await db.pool.query(`
+    SELECT 'raw' AS kind, rm.id, rm.name, COALESCE(u.short_name,'кг') AS unit
+      FROM ref_raw_materials rm LEFT JOIN ref_units u ON u.id=rm.unit_id WHERE rm.status='active'
+    UNION ALL
+    SELECT 'packaging' AS kind, pk.id, pk.name, COALESCE(u.short_name,'шт') AS unit
+      FROM ref_packaging pk LEFT JOIN ref_units u ON u.id=pk.unit_id WHERE pk.status='active'
+    ORDER BY name`).catch(() => ({ rows: [] }));
+  const items = rows.rows.map((m) => {
+    const p = pm[`${m.kind}:${m.id}`] || {};
+    return { kind: m.kind, id: m.id, name: m.name, unit: m.unit, price: p.calc != null ? p.calc : (p.last != null ? p.last : null) };
+  });
+  const channels = (await db.pool.query('SELECT channel FROM costing_channel_terms ORDER BY channel')).rows.map((r) => r.channel);
+  res.json({ items, channels });
+});
+
+// ===== Этап 2: CRUD рецептур =====
+const REC_FIELDS = ['finished_good_name', 'channel', 'group_name', 'gram_weight', 'unit', 'version', 'status', 'waste_method', 'sku_waste_rate', 'labor_coeff', 'calculation_type', 'comment'];
+
+router.post('/api/recipe', J, async (req, res) => {
+  const b = req.body || {};
+  const r = await db.pool.query(
+    `INSERT INTO costing_recipes (finished_good_name, channel, group_name, gram_weight, unit, status, waste_method, sku_waste_rate, labor_coeff)
+     VALUES ($1,$2,$3,$4,COALESCE($5,'шт'),'draft','sku',$6,$7) RETURNING id`,
+    [b.finished_good_name || 'Новый SKU', b.channel || '', b.group_name || '', asNum(b.gram_weight), b.unit || 'шт', asNum(b.sku_waste_rate), asNum(b.labor_coeff) || 1]);
+  res.json({ ok: true, id: r.rows[0].id });
+});
+
+router.post('/api/recipe/:id(\\d+)', J, async (req, res) => {
+  const b = req.body || {};
+  const sets = [], vals = []; let i = 1;
+  for (const f of REC_FIELDS) {
+    if (!(f in b)) continue;
+    let v = b[f];
+    if (['gram_weight', 'sku_waste_rate', 'labor_coeff'].includes(f)) v = asNum(v);
+    sets.push(`${f}=$${i++}`); vals.push(v);
+  }
+  if (!sets.length) return res.json({ ok: true });
+  sets.push('updated_at=now()');
+  vals.push(req.params.id);
+  await db.pool.query(`UPDATE costing_recipes SET ${sets.join(',')} WHERE id=$${i}`, vals);
+  res.json({ ok: true });
+});
+
+router.post('/api/recipe/:id(\\d+)/duplicate', async (req, res) => {
+  const id = req.params.id;
+  const src = (await db.pool.query('SELECT * FROM costing_recipes WHERE id=$1', [id])).rows[0];
+  if (!src) return res.status(404).json({ error: 'Не найдено' });
+  const nr = await db.pool.query(
+    `INSERT INTO costing_recipes (finished_good_name, channel, group_name, gram_weight, unit, version, status, waste_method, sku_waste_rate, labor_coeff, calculation_type, comment)
+     VALUES ($1,$2,$3,$4,$5,$6,'draft',$7,$8,$9,$10,$11) RETURNING id`,
+    [src.finished_good_name + ' (копия)', src.channel, src.group_name, src.gram_weight, src.unit, src.version, src.waste_method, src.sku_waste_rate, src.labor_coeff, src.calculation_type, src.comment]);
+  const nid = nr.rows[0].id;
+  await db.pool.query(
+    `INSERT INTO costing_recipe_components (recipe_id, component_type, component_id, component_code, component_name, qty, unit, share_percent, waste_rate, price_source, manual_price, comment, sort_order)
+     SELECT $1, component_type, component_id, component_code, component_name, qty, unit, share_percent, waste_rate, price_source, manual_price, comment, sort_order
+     FROM costing_recipe_components WHERE recipe_id=$2`, [nid, id]);
+  res.json({ ok: true, id: nid });
+});
+
+router.delete('/api/recipe/:id(\\d+)', async (req, res) => {
+  if (req.user && req.user.isAdmin) await db.pool.query('DELETE FROM costing_recipes WHERE id=$1', [req.params.id]);
+  else await db.pool.query("UPDATE costing_recipes SET status='archived', updated_at=now() WHERE id=$1", [req.params.id]);
+  res.json({ ok: true });
+});
+
+// ===== Этап 2: CRUD компонентов =====
+router.post('/api/recipe/:id(\\d+)/component', J, async (req, res) => {
+  const b = req.body || {};
+  const mx = (await db.pool.query('SELECT COALESCE(MAX(sort_order),0)+10 AS s FROM costing_recipe_components WHERE recipe_id=$1', [req.params.id])).rows[0].s;
+  const r = await db.pool.query(
+    `INSERT INTO costing_recipe_components (recipe_id, component_type, component_id, component_name, qty, unit, share_percent, waste_rate, price_source, manual_price, sort_order)
+     VALUES ($1,$2,$3,$4,$5,COALESCE($6,'г'),$7,$8,COALESCE($9,'last_purchase'),$10,$11) RETURNING id`,
+    [req.params.id, b.component_type || 'raw', intOrNull(b.component_id), b.component_name || 'Компонент', asNum(b.qty), b.unit, asNum(b.share_percent), asNum(b.waste_rate), b.price_source, numOrNull(b.manual_price), mx]);
+  res.json({ ok: true, id: r.rows[0].id });
+});
+
+const COMP_FIELDS = ['component_type', 'component_id', 'component_name', 'qty', 'unit', 'share_percent', 'waste_rate', 'price_source', 'manual_price'];
+router.post('/api/component/:id(\\d+)', J, async (req, res) => {
+  const b = req.body || {};
+  const sets = [], vals = []; let i = 1;
+  for (const f of COMP_FIELDS) {
+    if (!(f in b)) continue;
+    let v = b[f];
+    if (['qty', 'share_percent', 'waste_rate'].includes(f)) v = asNum(v);
+    else if (f === 'manual_price') v = numOrNull(v);
+    else if (f === 'component_id') v = intOrNull(v);
+    sets.push(`${f}=$${i++}`); vals.push(v);
+  }
+  if (!sets.length) return res.json({ ok: true });
+  vals.push(req.params.id);
+  await db.pool.query(`UPDATE costing_recipe_components SET ${sets.join(',')} WHERE id=$${i}`, vals);
+  res.json({ ok: true });
+});
+
+router.delete('/api/component/:id(\\d+)', async (req, res) => {
+  await db.pool.query('DELETE FROM costing_recipe_components WHERE id=$1', [req.params.id]);
+  res.json({ ok: true });
+});
+
 module.exports = router;

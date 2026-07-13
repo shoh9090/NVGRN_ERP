@@ -18,13 +18,21 @@
   }
   const money = (v) => (v == null || v === '' ? '—' : Math.round(Number(v) || 0).toLocaleString('ru-RU'));
   const num = (v) => (v == null || v === '' || Number.isNaN(Number(v)) ? 0 : Number(v));
-  async function api(path) { const r = await fetch('/costing/api' + path); const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || 'Ошибка'); return d; }
+  async function api(path, opts) { const r = await fetch('/costing/api' + path, opts); const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || 'Ошибка'); return d; }
+  const apiPost = (path, body) => api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+  const apiDel = (path) => api(path, { method: 'DELETE' });
+  // Inline-ячейки: сохраняют одно поле при потере фокуса/изменении.
+  function editText(val, onSave, extra) { const inp = el('input', Object.assign({ class: 'cstf-inp cst-cell', value: val == null ? '' : val }, extra || {})); inp.addEventListener('change', () => onSave(inp.value)); inp.addEventListener('click', (e) => e.stopPropagation()); return inp; }
+  function editNum(val, onSave, extra) { return editText(val, (v) => onSave(v), Object.assign({ type: 'number', step: 'any', class: 'cstf-inp cst-cell tnum' }, extra || {})); }
+  function editSel(val, options, onSave) { const s = el('select', { class: 'cstf-inp cst-cell' }, options.map((o) => { const [v, l] = Array.isArray(o) ? o : [o, o]; return el('option', { value: v, selected: String(v) === String(val) || null }, l); })); s.addEventListener('change', () => onSave(s.value)); s.addEventListener('click', (e) => e.stopPropagation()); return s; }
   function toast(msg, err) { const t = el('div', { class: 'cst-toast' + (err ? ' err' : '') }, msg); document.body.appendChild(t); setTimeout(() => t.classList.add('show'), 10); setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 300); }, 3000); }
 
   let BOOT = null;
   let TAB = 'matrix';
   let PERIOD = '';
   let recSel = null;
+  let REFS = null;
+  async function refs() { if (!REFS) REFS = await api('/refs'); return REFS; }
 
   async function boot() {
     try { BOOT = await api('/bootstrap' + (PERIOD ? '?period=' + PERIOD : '')); }
@@ -87,50 +95,93 @@
     renderSoon('Матрица — на подходе', 'Здесь появится Excel-таблица: SKU × (сырьё · упаковка · ФОТ · производство · накладные · с/с · с отходом · цена SD · ретро · НДС · прибыль · налог · ЧП · маржа). Формулы уже выверены по Excel.');
   }
 
-  // ===== Рецептуры: список + компоненты выбранной =====
+  // ===== Рецептуры: список (inline) + компоненты выбранной =====
+  const TYPE_OPTS = [['raw', 'Сырьё'], ['packaging', 'Упаковка'], ['other', 'Прочее']];
+  const STATUS_OPTS = [['draft', 'Черновик'], ['active', 'Активна'], ['archived', 'Архив']];
   async function renderRecipes() {
     const c = $('#cst-content');
-    c.appendChild(el('div', { class: 'cst-head' }, [el('div', { class: 'cst-h2' }, 'Рецептуры'),
-      el('div', { class: 'cst-sub' }, 'Сверху — рецептуры (SKU), снизу — компоненты выбранной. Inline-редактирование и версии — Этап 2. Данные перенесены из текущего модуля.')]));
+    c.appendChild(el('div', { class: 'cst-head' }, [
+      el('div', { style: 'display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap' }, [
+        el('div', {}, [el('div', { class: 'cst-h2' }, 'Рецептуры'),
+          el('div', { class: 'cst-sub' }, 'Сверху — рецептуры (SKU), снизу — компоненты выбранной. Правьте прямо в ячейках; изменения сохраняются сразу.')]),
+        el('button', { class: 'btn-ghost cst-btn', onclick: addRecipe }, '+ Добавить SKU'),
+      ]),
+    ]));
+    await refs().catch(() => {});
     const box = el('div', { id: 'cst-rec-box' }); c.appendChild(box);
     box.appendChild(el('div', { class: 'cst-loading' }, 'Загружаю…'));
     let d; try { d = await api('/recipes'); } catch (e) { box.innerHTML = ''; box.appendChild(el('div', { class: 'cst-empty' }, 'Ошибка: ' + e.message)); return; }
     box.innerHTML = '';
-    if (!d.items.length) { box.appendChild(el('div', { class: 'cst-empty' }, 'Рецептур нет.')); return; }
-    if (recSel == null) recSel = d.items[0].id;
-    const head = el('div', { class: 'cst-row head cst-rec' }, ['#', 'SKU', 'Канал / группа', 'Граммаж', 'Отход %', 'Версия', 'Статус', 'Компонентов'].map((h) => el('span', {}, h)));
-    box.appendChild(el('div', { class: 'cst-list' }, [head, ...d.items.map((r, i) => el('div', { class: 'cst-row cst-rec' + (String(r.id) === String(recSel) ? ' sel' : '') + (r.status !== 'active' ? ' dim' : ''), onclick: () => { recSel = r.id; renderRecipes(); } }, [
+    if (!d.items.length) { box.appendChild(el('div', { class: 'cst-empty' }, 'Рецептур нет. Нажмите «+ Добавить SKU».')); return; }
+    if (recSel == null || !d.items.some((r) => String(r.id) === String(recSel))) recSel = d.items[0].id;
+    const chOpts = ['', ...((REFS && REFS.channels) || [])];
+    const save = (id, field, v) => apiPost('/recipe/' + id, { [field]: v }).then(() => toast('Сохранено')).catch((e) => toast(e.message, true));
+    const head = el('div', { class: 'cst-row head cst-rec' }, ['#', 'SKU', 'Канал', 'Граммаж', 'Отход %', 'Версия', 'Статус', 'Действия'].map((h) => el('span', {}, h)));
+    box.appendChild(el('div', { class: 'cst-list' }, [head, ...d.items.map((r, i) => el('div', {
+      class: 'cst-row cst-rec' + (String(r.id) === String(recSel) ? ' sel' : '') + (r.status === 'archived' ? ' dim' : ''),
+      onclick: () => { recSel = r.id; renderRecipes(); },
+    }, [
       el('span', { class: 'cst-idx' }, String(i + 1)),
-      el('span', { style: 'font-weight:700' }, r.finished_good_name),
-      el('span', { class: 'muted' }, (r.channel || r.group_name || '—')),
-      el('span', { class: 'tnum' }, num(r.gram_weight) ? money(r.gram_weight) : '—'),
-      el('span', { class: 'tnum' }, num(r.sku_waste_rate) ? r.sku_waste_rate + '%' : '—'),
-      el('span', { class: 'muted' }, r.version || 'v1'),
-      el('span', {}, el('span', { class: 'cst-st cst-st-' + r.status }, statusLabel(r.status))),
-      el('span', { class: 'tnum' }, String(r.comp_count || 0)),
+      editText(r.finished_good_name, (v) => save(r.id, 'finished_good_name', v)),
+      editSel(r.channel || '', chOpts.map((x) => [x, x || '—']), (v) => save(r.id, 'channel', v)),
+      editNum(r.gram_weight, (v) => save(r.id, 'gram_weight', v)),
+      editNum(r.sku_waste_rate, (v) => save(r.id, 'sku_waste_rate', v)),
+      editText(r.version, (v) => save(r.id, 'version', v), { class: 'cstf-inp cst-cell', style: 'width:64px' }),
+      editSel(r.status, STATUS_OPTS, (v) => save(r.id, 'status', v).then(() => renderRecipes())),
+      el('span', { class: 'cst-acts' }, [
+        iconBtn('⧉', 'Дублировать', (e) => { e.stopPropagation(); apiPost('/recipe/' + r.id + '/duplicate').then((x) => { recSel = x.id; toast('Скопировано'); renderRecipes(); }); }),
+        iconBtn('🗑', 'Архивировать/удалить', (e) => { e.stopPropagation(); if (!confirm('Убрать рецептуру «' + r.finished_good_name + '»?')) return; apiDel('/recipe/' + r.id).then(() => { toast('Убрано'); renderRecipes(); }); }),
+      ]),
     ]))]));
-    // Компоненты выбранной рецептуры.
-    const compBox = el('div', { id: 'cst-comp-box', style: 'margin-top:16px' }); box.appendChild(compBox);
+    const compBox = el('div', { id: 'cst-comp-box', style: 'margin-top:18px' }); box.appendChild(compBox);
     loadComponents(compBox, recSel);
   }
+
+  function addRecipe() {
+    const name = prompt('Название нового SKU:'); if (!name) return;
+    apiPost('/recipe', { finished_good_name: name }).then((x) => { recSel = x.id; toast('Создано'); renderRecipes(); }).catch((e) => toast(e.message, true));
+  }
+
   async function loadComponents(box, recipeId) {
     box.appendChild(el('div', { class: 'cst-loading' }, 'Компоненты…'));
     let d; try { d = await api('/recipe/' + recipeId + '/components'); } catch (e) { box.innerHTML = ''; return; }
     box.innerHTML = '';
-    box.appendChild(el('div', { class: 'cst-sub', style: 'margin-bottom:6px;font-weight:800' }, 'Компоненты выбранной рецептуры'));
-    if (!d.items.length) { box.appendChild(el('div', { class: 'cst-empty' }, 'Компонентов нет.')); return; }
-    const head = el('div', { class: 'cst-row head cst-comp' }, ['#', 'Тип', 'Компонент', 'Кол-во', 'Ед.', 'Доля %', 'Отход %', 'Цена (ручн.)'].map((h) => el('span', {}, h)));
-    box.appendChild(el('div', { class: 'cst-list' }, [head, ...d.items.map((c, i) => el('div', { class: 'cst-row cst-comp' }, [
-      el('span', { class: 'cst-idx' }, String(i + 1)),
-      el('span', {}, c.component_type === 'packaging' ? 'Упаковка' : c.component_type === 'other' ? 'Прочее' : 'Сырьё'),
-      el('span', { style: 'font-weight:600' }, c.component_name || ('#' + c.component_id)),
-      el('span', { class: 'tnum' }, money(c.qty)),
-      el('span', {}, c.unit || ''),
-      el('span', { class: 'tnum muted' }, num(c.share_percent) ? c.share_percent + '%' : '—'),
-      el('span', { class: 'tnum muted' }, num(c.waste_rate) ? c.waste_rate + '%' : '—'),
-      el('span', { class: 'tnum muted' }, c.manual_price != null ? money(c.manual_price) : '—'),
-    ]))]));
+    box.appendChild(el('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:10px;flex-wrap:wrap' }, [
+      el('div', { class: 'cst-sub', style: 'font-weight:800' }, 'Компоненты выбранной рецептуры'),
+      el('button', { class: 'btn-ghost cst-btn', onclick: () => addComponent(recipeId) }, '+ Компонент'),
+    ]));
+    const save = (id, field, v) => apiPost('/component/' + id, { [field]: v }).then(() => toast('Сохранено')).catch((e) => toast(e.message, true));
+    const head = el('div', { class: 'cst-row head cst-comp' }, ['#', 'Тип', 'Компонент', 'Кол-во', 'Ед.', 'Доля %', 'Отход %', 'Цена/ед'].map((h) => el('span', {}, h)));
+    const rowsUi = d.items.length ? d.items.map((c, i) => {
+      const list = ((REFS && REFS.items) || []).filter((x) => x.kind === (c.component_type === 'packaging' ? 'packaging' : 'raw'));
+      const opts = [['', '— выбрать —'], ...list.map((x) => [x.kind + ':' + x.id, x.name])];
+      const cur = c.component_id ? (c.component_type === 'packaging' ? 'packaging' : 'raw') + ':' + c.component_id : '';
+      const ref = list.find((x) => (x.kind + ':' + x.id) === cur);
+      const price = c.manual_price != null ? c.manual_price : (ref ? ref.price : null);
+      return el('div', { class: 'cst-row cst-comp' }, [
+        el('span', { class: 'cst-idx' }, String(i + 1)),
+        editSel(c.component_type || 'raw', TYPE_OPTS, (v) => save(c.id, 'component_type', v).then(() => loadComponents(box, recipeId))),
+        editSel(cur, opts, (v) => { const [k, id] = v.split(':'); const it = list.find((x) => String(x.id) === id); apiPost('/component/' + c.id, { component_id: id || null, component_name: it ? it.name : c.component_name, unit: it ? it.unit : c.unit }).then(() => { toast('Сохранено'); loadComponents(box, recipeId); }); }),
+        editNum(c.qty, (v) => save(c.id, 'qty', v)),
+        editText(c.unit, (v) => save(c.id, 'unit', v), { class: 'cstf-inp cst-cell', style: 'width:52px' }),
+        editNum(c.share_percent, (v) => save(c.id, 'share_percent', v)),
+        editNum(c.waste_rate, (v) => save(c.id, 'waste_rate', v)),
+        el('span', { class: 'cst-price-cell' }, [
+          editNum(c.manual_price, (v) => save(c.id, 'manual_price', v === '' ? null : v), { placeholder: ref && ref.price != null ? money(ref.price) : '', title: 'Пусто = цена из Закупа' }),
+          iconBtn('🗑', 'Удалить', () => { if (confirm('Удалить компонент?')) apiDel('/component/' + c.id).then(() => loadComponents(box, recipeId)); }),
+        ]),
+      ]);
+    }) : [el('div', { class: 'cst-empty' }, 'Компонентов нет.')];
+    box.appendChild(el('div', { class: 'cst-list' }, [head, ...rowsUi]));
   }
+
+  function addComponent(recipeId) {
+    apiPost('/recipe/' + recipeId + '/component', { component_type: 'raw', unit: 'г' })
+      .then(() => { toast('Добавлено'); const box = $('#cst-comp-box'); if (box) loadComponents(box, recipeId); })
+      .catch((e) => toast(e.message, true));
+  }
+
+  function iconBtn(glyph, title, onclick) { return el('button', { class: 'cst-icon-btn', title, onclick }, glyph); }
 
   // ===== Настройки расчёта: период + статьи затрат + каналы =====
   function renderSettings() {
