@@ -151,6 +151,7 @@
 .calc-cost-list { display:flex; flex-direction:column; gap:6px; margin:6px 0; }
 .calc-cost-row { display:grid; grid-template-columns:minmax(0,1fr) 140px 28px 28px; gap:8px; align-items:center; }
 .calc-cost-foot { margin-top:8px; padding-top:8px; border-top:1px solid var(--line); font-size:13px; color:#4d5b50; }
+.calc-packtpl-row { display:grid; grid-template-columns:minmax(0,1fr) 140px 64px 28px; gap:8px; align-items:center; }
 .calc-cost-foot b { font-variant-numeric:tabular-nums; }
 
 .calc-group-edit { padding:10px 0; border-bottom:1px solid #edf0ea; }

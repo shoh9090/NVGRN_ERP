@@ -139,6 +139,33 @@ async function ensureSchema() {
       await q('INSERT INTO calc_cost_items (kind, name, amount, sort) VALUES ($1,$2,$3,$4)', [kind, name, amount, sort]);
     }
   }
+  // Шаблоны упаковки: набор компонентов (ref_packaging) для сборки упаковки рецептуры.
+  await q(`CREATE TABLE IF NOT EXISTS calc_pack_templates (
+    id SERIAL PRIMARY KEY, name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  await q(`CREATE TABLE IF NOT EXISTS calc_pack_template_items (
+    id SERIAL PRIMARY KEY,
+    template_id INT NOT NULL REFERENCES calc_pack_templates(id) ON DELETE CASCADE,
+    item_id INT,                       -- ref_packaging.id; у by_name — дефолтный (прозрачный) пакет
+    by_name BOOLEAN NOT NULL DEFAULT false, -- пакет подбирается по названию сырья рецептуры
+    qty NUMERIC NOT NULL DEFAULT 1,
+    sort INT NOT NULL DEFAULT 100
+  )`);
+  // Разовый сид шаблона «Розница вакуум» (best-effort — компоненты ищем по имени).
+  if ((await q('SELECT COUNT(*)::int AS n FROM calc_pack_templates')).rows[0].n === 0) {
+    const find = async (re) => (await q(`SELECT id FROM ref_packaging WHERE status='active' AND lower(name) ~ $1 ORDER BY length(name) LIMIT 1`, [re])).rows[0];
+    const tpl = (await q("INSERT INTO calc_pack_templates (name) VALUES ('Розница вакуум') RETURNING id")).rows[0].id;
+    const bagDefault = await find('прозрач|вак.?пакет|пакет');
+    const samokl = await find('самоклей|стикер|наклей');
+    const other = await find('проч');
+    const seed = [[bagDefault ? bagDefault.id : null, true, 10], [samokl ? samokl.id : null, false, 20], [other ? other.id : null, false, 30]];
+    for (const [itemId, byName, sort] of seed) {
+      if (!byName && !itemId) continue; // фиксированный без компонента — пропускаем
+      await q('INSERT INTO calc_pack_template_items (template_id, item_id, by_name, qty, sort) VALUES ($1,$2,$3,1,$4)', [tpl, itemId, byName, sort]);
+    }
+  }
+
   // Разово: аренда/электроэнергия — это накладные (косвенные), переносим из «производственных».
   const reclass = (await q("SELECT value FROM calc_settings WHERE key='costs_reclass_v1'")).rows[0];
   if (!reclass) {
@@ -417,7 +444,8 @@ router.get('/api/dicts', async (req, res) => {
   const groups = (await db.pool.query(
     "SELECT id, name, sort_order, monthly_units, labor_per_unit, production_per_unit, overhead_per_unit FROM calc_groups WHERE status='active' ORDER BY sort_order, name"
   )).rows;
-  res.json({ priceTypes, products, groups, settings: await settingsMap() });
+  const packTemplates = (await db.pool.query("SELECT id, name FROM calc_pack_templates WHERE status='active' ORDER BY name")).rows;
+  res.json({ priceTypes, products, groups, packTemplates, settings: await settingsMap() });
 });
 
 // Группы товаров (розница/хорека/…) — CRUD из настроек.
@@ -449,6 +477,103 @@ router.post('/api/group/:id(\\d+)/archive', async (req, res) => {
   await db.pool.query("UPDATE calc_groups SET status='archived' WHERE id=$1", [req.params.id]);
   await db.log(req.user.id, 'calc_group_archive', '#' + req.params.id);
   res.json({ ok: true });
+});
+
+// ---------- Шаблоны упаковки ----------
+router.get('/api/pack-templates', async (req, res) => {
+  const tpls = (await db.pool.query("SELECT id, name FROM calc_pack_templates WHERE status='active' ORDER BY name")).rows;
+  const items = (await db.pool.query('SELECT id, template_id, item_id, by_name, qty, sort FROM calc_pack_template_items ORDER BY sort, id')).rows;
+  const byTpl = {};
+  for (const it of items) (byTpl[it.template_id] = byTpl[it.template_id] || []).push(it);
+  res.json({ items: tpls.map((t) => ({ ...t, components: byTpl[t.id] || [] })) });
+});
+router.post('/api/pack-template', J, async (req, res) => {
+  const name = String(req.body.name || '').trim();
+  if (!name) return res.status(400).json({ error: 'Пустое название' });
+  const id = intOrNull(req.body.id);
+  if (id) await db.pool.query('UPDATE calc_pack_templates SET name=$1 WHERE id=$2', [name, id]);
+  else await db.pool.query('INSERT INTO calc_pack_templates (name) VALUES ($1)', [name]);
+  await db.log(req.user.id, 'calc_pack_template', name);
+  res.json({ ok: true });
+});
+router.post('/api/pack-template/:id(\\d+)/items', J, async (req, res) => {
+  const tid = parseInt(req.params.id, 10);
+  const comps = Array.isArray(req.body.components) ? req.body.components : [];
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('DELETE FROM calc_pack_template_items WHERE template_id=$1', [tid]);
+    let sort = 0;
+    for (const c of comps) {
+      const byName = !!c.by_name;
+      const itemId = intOrNull(c.item_id);
+      if (!byName && !itemId) continue;
+      sort += 10;
+      await client.query('INSERT INTO calc_pack_template_items (template_id, item_id, by_name, qty, sort) VALUES ($1,$2,$3,$4,$5)',
+        [tid, itemId, byName, numOrNull(c.qty) ?? 1, sort]);
+    }
+    await client.query('COMMIT');
+  } catch (e) { await client.query('ROLLBACK').catch(() => {}); return res.status(400).json({ error: e.message }); }
+  finally { client.release(); }
+  await db.log(req.user.id, 'calc_pack_template_items', '#' + tid);
+  res.json({ ok: true });
+});
+router.post('/api/pack-template/:id(\\d+)/archive', async (req, res) => {
+  await db.pool.query("UPDATE calc_pack_templates SET status='archived' WHERE id=$1", [req.params.id]);
+  res.json({ ok: true });
+});
+
+// Подбор пакета по названию сырья (иначе — дефолтный компонент шаблона).
+async function resolveBagItem(rawName, defaultId) {
+  if (rawName && rawName.trim()) {
+    const r = await db.pool.query(
+      "SELECT id, name FROM ref_packaging WHERE status='active' AND lower(name) LIKE '%' || lower($1) || '%' ORDER BY length(name) LIMIT 1",
+      [rawName.trim()]);
+    if (r.rows.length) return { id: r.rows[0].id, name: r.rows[0].name, matched: true };
+  }
+  if (defaultId) {
+    const d = await db.pool.query('SELECT id, name FROM ref_packaging WHERE id=$1', [defaultId]);
+    if (d.rows.length) return { id: d.rows[0].id, name: d.rows[0].name + ' (по умолч.)', matched: false };
+  }
+  return { id: null, name: null, matched: false };
+}
+// Собрать упаковку рецептуры по шаблону: заменяет только packaging-строки; пакет — по названию сырья.
+router.post('/api/recipe/:id(\\d+)/apply-pack', J, async (req, res) => {
+  const recipeId = parseInt(req.params.id, 10);
+  const tplId = intOrNull(req.body.template_id);
+  if (!tplId) return res.status(400).json({ error: 'Выберите шаблон' });
+  const comps = (await db.pool.query('SELECT item_id, by_name, qty, sort FROM calc_pack_template_items WHERE template_id=$1 ORDER BY sort, id', [tplId])).rows;
+  if (!comps.length) return res.status(400).json({ error: 'Шаблон пустой — задайте компоненты в «Настройках»' });
+  const rec = (await db.pool.query('SELECT product_name FROM calc_recipes WHERE id=$1', [recipeId])).rows[0];
+  if (!rec) return res.status(404).json({ error: 'Рецептура не найдена' });
+  const raw = (await db.pool.query(
+    "SELECT rm.name FROM calc_recipe_items ci JOIN ref_raw_materials rm ON rm.id=ci.item_id WHERE ci.recipe_id=$1 AND ci.item_kind='raw' ORDER BY ci.sort_order, ci.id LIMIT 1",
+    [recipeId])).rows[0];
+  const rawName = (raw && raw.name) || rec.product_name || '';
+  const client = await db.pool.connect();
+  const applied = [], notFound = [];
+  try {
+    await client.query('BEGIN');
+    await client.query("DELETE FROM calc_recipe_items WHERE recipe_id=$1 AND item_kind='packaging'", [recipeId]);
+    const mx = (await client.query("SELECT COALESCE(MAX(sort_order),0)::int AS s FROM calc_recipe_items WHERE recipe_id=$1", [recipeId])).rows[0].s;
+    let sort = mx;
+    for (const c of comps) {
+      let itemId = c.item_id, name = null;
+      if (c.by_name) { const bag = await resolveBagItem(rawName, c.item_id); itemId = bag.id; name = bag.name; }
+      if (!itemId) { notFound.push(c.by_name ? 'пакет для «' + rawName + '»' : 'компонент'); continue; }
+      if (!name) { const nm = (await client.query('SELECT name FROM ref_packaging WHERE id=$1', [itemId])).rows[0]; name = nm ? nm.name : 'упаковка'; }
+      sort += 10;
+      await client.query(
+        `INSERT INTO calc_recipe_items (recipe_id, item_kind, item_id, qty, unit, waste_pct, manual_price, sort_order)
+         VALUES ($1,'packaging',$2,$3,'шт',0,NULL,$4)`, [recipeId, itemId, asNum(c.qty) || 1, sort]);
+      applied.push(name);
+    }
+    await client.query('UPDATE calc_recipes SET updated_by=$1, updated_at=now() WHERE id=$2', [req.user.id, recipeId]);
+    await client.query('COMMIT');
+  } catch (e) { await client.query('ROLLBACK').catch(() => {}); return res.status(400).json({ error: e.message }); }
+  finally { client.release(); }
+  await db.log(req.user.id, 'calc_apply_pack', `#${recipeId} tpl ${tplId}`);
+  res.json({ ok: true, applied, notFound });
 });
 
 // Разовая загрузка листовых рецептур (100г, розница) из таблицы Шоха.

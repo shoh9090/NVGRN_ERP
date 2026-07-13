@@ -461,6 +461,8 @@
           el('div', { class: 'calc-sub' }, 'Сырьё в граммах на единицу, упаковка в штуках.'),
         ]),
         el('div', { class: 'calc-head-btns' }, [
+          DRAFT.id ? select([{ v: '', t: '— шаблон упаковки —' }, ...(DICTS.packTemplates || []).map((t) => ({ v: t.id, t: t.name }))], '', { id: 'calc-packtpl-sel' }) : null,
+          DRAFT.id ? el('button', { class: 'btn-ghost calc-line-add', title: 'Собрать упаковку по шаблону (пакет — по названию сырья)', onclick: applyPack }, '📦 Собрать упаковку') : null,
           el('button', { class: 'btn-ghost calc-line-add', onclick: () => addItem('raw') }, '+ строка сырья'),
           el('button', { class: 'btn-ghost calc-line-add', onclick: () => addItem('packaging') }, '+ упаковка'),
         ]),
@@ -488,6 +490,21 @@
   function itemMaterialLabel(it) {
     const m = materialByKey()[`${it.item_kind}:${it.item_id}`];
     return it.material_label || materialLabel(m);
+  }
+
+  // Собрать упаковку рецептуры по шаблону (пакет подбирается по названию сырья).
+  async function applyPack() {
+    const sel = $('#calc-packtpl-sel');
+    if (!sel || !sel.value) return toast('Выберите шаблон упаковки', true);
+    if (!DRAFT || !DRAFT.id) return toast('Сначала сохраните рецептуру', true);
+    try {
+      const r = await post('/recipe/' + DRAFT.id + '/apply-pack', { template_id: sel.value });
+      let msg = r.applied.length ? 'Упаковка собрана: ' + r.applied.join(', ') : 'Компоненты не подставлены';
+      if (r.notFound && r.notFound.length) msg += '. Не нашли: ' + r.notFound.join(', ');
+      toast(msg);
+      await reloadBase();
+      await loadRecipe(DRAFT.id);
+    } catch (e) { toast(e.message, true); }
   }
 
   function itemRow(it, i) {
@@ -1103,6 +1120,63 @@
     c.appendChild(form);
     c.appendChild(sdPriceCard(s));
     c.appendChild(groupsCard());
+    const ptBox = el('div', { id: 'calc-packtpl' }); c.appendChild(ptBox);
+    loadPackTemplates(ptBox);
+  }
+  async function loadPackTemplates(box) {
+    let d; try { d = await api('/pack-templates'); } catch (e) { return; }
+    box.innerHTML = ''; box.appendChild(packTemplatesCard(d.items));
+  }
+  function reloadPackTemplates() { const box = $('#calc-packtpl'); if (box) loadPackTemplates(box); }
+  function packTemplatesCard(tpls) {
+    const packMats = MATERIALS.filter((m) => m.kind === 'packaging');
+    const matOpt = (val) => select([{ v: '', t: '— компонент —' }, ...packMats.map((m) => ({ v: m.id, t: (m.code ? m.code + ' · ' : '') + m.name }))], val);
+    const card = el('section', { class: 'calc-settings-card', style: 'max-width:760px;margin-top:12px' }, [
+      el('div', { class: 'calc-settings-title' }, 'Шаблоны упаковки'),
+      el('div', { class: 'calc-sub' }, 'Набор компонентов упаковки. «По названию» — пакет подберётся по имени сырья (айсберг → пакет айсберг), запасной берётся из выбранного компонента. Цены — из Закупки. Применяется в рецептуре кнопкой «Собрать упаковку».'),
+    ]);
+    tpls.forEach((t) => card.appendChild(packTemplateBlock(t, matOpt)));
+    const newName = inp('', { placeholder: 'например, Хорека вакуум', class: 'calcf-inp calc-group-name' });
+    card.appendChild(el('div', { class: 'calc-group-edit-top', style: 'margin-top:10px' }, [
+      newName,
+      el('button', { class: 'btn-primary calc-mini-save', onclick: async () => { if (!newName.value.trim()) return toast('Пустое название', true); try { await post('/pack-template', { name: newName.value }); toast('Создан'); reloadPackTemplates(); } catch (e) { toast(e.message, true); } } }, '+ Шаблон'),
+    ]));
+    return card;
+  }
+  function packTemplateBlock(t, matOpt) {
+    const rows = [];
+    const list = el('div', { class: 'calc-cost-list' });
+    function compRow(c) {
+      c = c || {};
+      const sel = matOpt(c.item_id || '');
+      const byName = el('input', { type: 'checkbox', checked: c.by_name ? true : null });
+      const qty = inp(c.qty != null ? c.qty : 1, { type: 'number', step: '1', style: 'width:64px' });
+      const rec = { sel, byName, qty };
+      const wrap = el('div', { class: 'calc-packtpl-row' }, [
+        sel,
+        el('label', { class: 'calc-triage-rem', title: 'Пакет подберётся по названию сырья; выбранный компонент — запасной' }, [byName, ' по названию']),
+        qty,
+        el('button', { class: 'calc-icon-btn', title: 'Убрать', onclick: () => { const i = rows.indexOf(rec); if (i >= 0) rows.splice(i, 1); wrap.remove(); } }, '×'),
+      ]);
+      rows.push(rec);
+      return wrap;
+    }
+    (t.components || []).forEach((c) => list.appendChild(compRow(c)));
+    const nameInp = inp(t.name, { class: 'calcf-inp calc-group-name' });
+    const saveBtn = el('button', { class: 'btn-primary calc-mini-save', onclick: async () => {
+      try {
+        if (nameInp.value.trim() && nameInp.value !== t.name) await post('/pack-template', { id: t.id, name: nameInp.value });
+        const components = rows.map((r) => ({ item_id: r.sel.value, by_name: r.byName.checked, qty: r.qty.value })).filter((x) => x.by_name || x.item_id);
+        await post('/pack-template/' + t.id + '/items', { components });
+        toast('Сохранено'); await reloadBase();
+      } catch (e) { toast(e.message, true); }
+    } }, 'Сохранить');
+    const archBtn = el('button', { class: 'btn-ghost calc-danger', onclick: async () => { if (!confirm('Архивировать шаблон «' + t.name + '»?')) return; try { await post('/pack-template/' + t.id + '/archive'); toast('В архиве'); await reloadBase(); reloadPackTemplates(); } catch (e) { toast(e.message, true); } } }, 'Архив');
+    return el('div', { class: 'calc-group-edit' }, [
+      el('div', { class: 'calc-group-edit-top' }, [nameInp, saveBtn, archBtn]),
+      list,
+      el('button', { class: 'btn-ghost calc-line-add', onclick: () => list.appendChild(compRow(null)) }, '+ компонент'),
+    ]);
   }
   // Настройки → тип цены для «Цена в SD» (товар матчится по названию рецептуры).
   function sdPriceCard(s) {
