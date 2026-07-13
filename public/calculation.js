@@ -392,25 +392,31 @@
   }
 
   function sheetMeta() {
-    const priceTypes = [{ v: '', t: '— тип цены —' }, ...(DICTS.priceTypes || []).map((p) => ({ v: p.id, t: p.name }))];
     const groups = [{ v: '', t: '— группа —' }, ...(DICTS.groups || []).map((g) => ({ v: g.id, t: g.name }))];
-    return el('div', { class: 'calc-meta-grid' }, [
+    // Основное — что определяет рецептуру. Цену, ретро и коэффициенты удобнее править в «Матрице».
+    const main = el('div', { class: 'calc-meta-grid' }, [
       cell('Товар', inp(DRAFT.product_label, { name: 'product_label', list: 'calc-products', placeholder: 'начните вводить товар' }), 'wide'),
       cell('Название вручную', inp(DRAFT.product_name, { name: 'product_name', placeholder: 'если товара нет в справочнике' }), 'wide'),
-      cell('Группа', select(groups, DRAFT.group_id, { name: 'group_id' })),
-      cell('Тип цены', select(priceTypes, DRAFT.sale_price_type_id, { name: 'sale_price_type_id' })),
-      cell('Цена вручную', inp(DRAFT.sale_price_override, { name: 'sale_price_override', type: 'number', step: '0.01', placeholder: 'если не из SD' })),
+      cell('Группа (канал)', select(groups, DRAFT.group_id, { name: 'group_id' })),
       cell('Вес, г', inp(DRAFT.pack_weight_g, { name: 'pack_weight_g', type: 'number', step: '0.1' })),
       cell('Ед.', inp(DRAFT.pack_unit, { name: 'pack_unit' })),
-      cell('Потери %', inp(DRAFT.waste_pct, { name: 'waste_pct', type: 'number', step: '0.1' })),
-      cell('Ретро %', inp(DRAFT.retro_pct, { name: 'retro_pct', type: 'number', step: '0.1' })),
-      cell('НДС %', inp(DRAFT.vat_pct, { name: 'vat_pct', type: 'number', step: '0.1' })),
-      cell('Налог %', inp(DRAFT.profit_tax_pct, { name: 'profit_tax_pct', type: 'number', step: '0.1' })),
-      cell('ФОТ x', inp(DRAFT.labor_coeff, { name: 'labor_coeff', type: 'number', step: '0.1' })),
-      cell('Производство x', inp(DRAFT.production_coeff, { name: 'production_coeff', type: 'number', step: '0.1' })),
-      cell('Накладные x', inp(DRAFT.overhead_coeff, { name: 'overhead_coeff', type: 'number', step: '0.1' })),
+      cell('Потери / брак, %', inp(DRAFT.waste_pct, { name: 'waste_pct', type: 'number', step: '0.1' })),
       cell('Комментарий', area(DRAFT.comment, { name: 'comment', placeholder: 'заметки по рецептуре' }), 'wide'),
     ]);
+    // Дополнительно — редко трогаемое (по умолчанию свёрнуто).
+    const adv = el('details', { class: 'calc-adv' }, [
+      el('summary', {}, 'Дополнительно: цена, ставки, коэффициенты'),
+      el('div', { class: 'calc-meta-grid', style: 'margin-top:8px' }, [
+        cell('Цена вручную', inp(DRAFT.sale_price_override, { name: 'sale_price_override', type: 'number', step: '0.01', placeholder: 'пусто = из SD' })),
+        cell('Ретро %', inp(DRAFT.retro_pct, { name: 'retro_pct', type: 'number', step: '0.1' })),
+        cell('НДС %', inp(DRAFT.vat_pct, { name: 'vat_pct', type: 'number', step: '0.1' })),
+        cell('Налог на прибыль %', inp(DRAFT.profit_tax_pct, { name: 'profit_tax_pct', type: 'number', step: '0.1' })),
+        cell('ФОТ ×', inp(DRAFT.labor_coeff, { name: 'labor_coeff', type: 'number', step: '0.1' })),
+        cell('Производство ×', inp(DRAFT.production_coeff, { name: 'production_coeff', type: 'number', step: '0.1' })),
+        cell('Накладные ×', inp(DRAFT.overhead_coeff, { name: 'overhead_coeff', type: 'number', step: '0.1' })),
+      ]),
+    ]);
+    return el('div', {}, [main, adv]);
   }
 
   function sheetSummary(s) {
@@ -517,26 +523,28 @@
   function readRecipeFromDom() {
     const root = $('.calc-sheet');
     if (!root || !DRAFT) return DRAFT;
+    // Толерантно: если поле убрано из UI — берём значение из DRAFT.
+    const val = (n) => { const e = root.querySelector('[name="' + n + '"]'); return e ? e.value : DRAFT[n]; };
     const productInput = root.querySelector('[name="product_label"]');
     const product = findProductByLabel(productInput && productInput.value);
     return {
       ...DRAFT,
       product_id: product ? product.id : '',
-      group_id: root.querySelector('[name="group_id"]') ? root.querySelector('[name="group_id"]').value : DRAFT.group_id,
-      product_label: productInput ? productInput.value : '',
-      product_name: root.querySelector('[name="product_name"]').value,
-      pack_weight_g: root.querySelector('[name="pack_weight_g"]').value,
-      pack_unit: root.querySelector('[name="pack_unit"]').value,
-      sale_price_type_id: root.querySelector('[name="sale_price_type_id"]').value,
-      sale_price_override: root.querySelector('[name="sale_price_override"]').value,
-      retro_pct: root.querySelector('[name="retro_pct"]').value,
-      vat_pct: root.querySelector('[name="vat_pct"]').value,
-      profit_tax_pct: root.querySelector('[name="profit_tax_pct"]').value,
-      waste_pct: root.querySelector('[name="waste_pct"]').value,
-      labor_coeff: root.querySelector('[name="labor_coeff"]').value,
-      production_coeff: root.querySelector('[name="production_coeff"]').value,
-      overhead_coeff: root.querySelector('[name="overhead_coeff"]').value,
-      comment: root.querySelector('[name="comment"]').value,
+      group_id: val('group_id'),
+      product_label: productInput ? productInput.value : DRAFT.product_label,
+      product_name: val('product_name'),
+      pack_weight_g: val('pack_weight_g'),
+      pack_unit: val('pack_unit'),
+      sale_price_type_id: val('sale_price_type_id'),
+      sale_price_override: val('sale_price_override'),
+      retro_pct: val('retro_pct'),
+      vat_pct: val('vat_pct'),
+      profit_tax_pct: val('profit_tax_pct'),
+      waste_pct: val('waste_pct'),
+      labor_coeff: val('labor_coeff'),
+      production_coeff: val('production_coeff'),
+      overhead_coeff: val('overhead_coeff'),
+      comment: val('comment'),
       items: readItemsFromDom(),
     };
   }
