@@ -541,21 +541,8 @@ async function requireCalculationAccess(req, res, next) {
 }
 app.use('/calculation', requireCalculationAccess, require('./src/calculation'));
 
-// Блок «Калькуляция себестоимости» — ребилд по ТЗ (новый модуль /costing)
-async function requireCostingAccess(req, res, next) {
-  if (!req.user) return res.redirect('/login');
-  if (req.user.isAdmin) return next();
-  const r = await db.pool.query(
-    `SELECT 1 FROM tiles t
-     JOIN role_tiles rt ON rt.tile_id = t.id
-     JOIN user_roles ur ON ur.role_id = rt.role_id
-     WHERE ur.user_id = $1 AND t.url = '/costing' LIMIT 1`,
-    [req.user.id]
-  );
-  if (r.rows.length === 0) return res.status(403).send('Нет доступа к блоку «Калькуляция себестоимости». Обратитесь к администратору.');
-  next();
-}
-app.use('/costing', requireCostingAccess, require('./src/costing'));
+// Старый модуль /costing удалён по ТЗ (перезапуск). Любой старый URL — редирект на /calculation.
+app.all(/^\/costing(\/.*)?$/, (req, res) => res.redirect('/calculation'));
 
 // Блок «Персонал» — сотрудники, зарплата, табель
 async function requireHrAccess(req, res, next) {

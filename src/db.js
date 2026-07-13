@@ -584,24 +584,24 @@ async function seed() {
     );
   }
 
-  // Плитка «Калькуляция» — плановая себестоимость и маржа по рецептурам
+  // Плитка «Калькуляция» — перезапуск по ТЗ: справочники → позже рецептуры/упаковка/матрица
   const calct = await pool.query("SELECT id FROM tiles WHERE url = '/calculation' LIMIT 1");
   if (calct.rows.length === 0) {
     await pool.query(
       `INSERT INTO tiles (title, description, icon, url, open_new_tab, sort_order)
-       VALUES ('Калькуляция', 'Плановая себестоимость, цены сырья и маржа по рецептурам', '🧮', '/calculation', FALSE, 52)`
+       VALUES ('Калькуляция', 'Периоды, статьи затрат, ставки и каналы — фундамент калькуляции', '🧮', '/calculation', FALSE, 52)`
     );
   }
+  await pool.query("UPDATE tiles SET description='Периоды, статьи затрат, ставки и каналы — фундамент калькуляции' WHERE url='/calculation'").catch(() => {});
 
-  // Плитка «Калькуляция себестоимости» — ребилд по ТЗ (модуль /costing)
-  const costt = await pool.query("SELECT id FROM tiles WHERE url = '/costing' LIMIT 1");
-  if (costt.rows.length === 0) {
-    await pool.query(
-      `INSERT INTO tiles (title, description, icon, url, open_new_tab, sort_order)
-       VALUES ('Калькуляция себестоимости', 'Матрица себестоимости, рецептуры, упаковка, настройки расчёта', '🧮', '/costing', FALSE, 53)`
-    );
+  // Снос старого модуля «Калькуляция себестоимости» (/costing) по ТЗ перезапуска:
+  // убрать плитку и дропнуть таблицы costing_* (в них были только dev-данные из calc_*).
+  await pool.query("DELETE FROM role_tiles WHERE tile_id IN (SELECT id FROM tiles WHERE url='/costing')").catch(() => {});
+  await pool.query("DELETE FROM tiles WHERE url='/costing'").catch(() => {});
+  for (const t of ['costing_snapshot_items', 'costing_snapshots', 'costing_recipe_components', 'costing_recipes', 'costing_expense_items', 'costing_channel_terms', 'costing_periods']) {
+    await pool.query(`DROP TABLE IF EXISTS ${t} CASCADE`).catch(() => {});
   }
-  await pool.query("UPDATE tiles SET is_visible = TRUE WHERE url = '/costing' AND is_visible IS DISTINCT FROM TRUE").catch(() => {});
+  await pool.query("DELETE FROM calc_settings WHERE key='costing_seed_v1'").catch(() => {});
 
   // Плитка «Персонал» — сотрудники, зарплата, табель
   const hrt = await pool.query("SELECT id FROM tiles WHERE url = '/hr' LIMIT 1");
@@ -638,7 +638,6 @@ async function seed() {
     ['/dictionaries', 'Справочники и настройки'],
     ['/cash', 'Финансы'],
     ['/calculation', 'Финансы'],
-    ['/costing', 'Финансы'],
     ['/hr', 'Финансы'],
   ];
   for (const [u, sec] of tileSections) {
