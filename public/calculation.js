@@ -244,8 +244,6 @@
       pack_unit: r.pack_unit || 'шт',
       sale_price_type_id: r.sale_price_type_id || '',
       sale_price_override: r.sale_price_override == null ? '' : r.sale_price_override,
-      sale_price_override_b: r.sale_price_override_b == null ? '' : r.sale_price_override_b,
-      retro_pct_b: r.retro_pct_b ?? 11,
       retro_pct: r.retro_pct ?? DICTS.settings.retro_pct ?? 0,
       vat_pct: r.vat_pct ?? DICTS.settings.vat_pct ?? 12,
       profit_tax_pct: r.profit_tax_pct ?? DICTS.settings.profit_tax_pct ?? 15,
@@ -406,8 +404,6 @@
       cell('Ед.', inp(DRAFT.pack_unit, { name: 'pack_unit' })),
       cell('Потери %', inp(DRAFT.waste_pct, { name: 'waste_pct', type: 'number', step: '0.1' })),
       cell('Ретро %', inp(DRAFT.retro_pct, { name: 'retro_pct', type: 'number', step: '0.1' })),
-      cell('Цена (сценарий B)', inp(DRAFT.sale_price_override_b, { name: 'sale_price_override_b', type: 'number', step: '0.01', placeholder: 'как A' })),
-      cell('Ретро B %', inp(DRAFT.retro_pct_b, { name: 'retro_pct_b', type: 'number', step: '0.1' })),
       cell('НДС %', inp(DRAFT.vat_pct, { name: 'vat_pct', type: 'number', step: '0.1' })),
       cell('Налог %', inp(DRAFT.profit_tax_pct, { name: 'profit_tax_pct', type: 'number', step: '0.1' })),
       cell('ФОТ x', inp(DRAFT.labor_coeff, { name: 'labor_coeff', type: 'number', step: '0.1' })),
@@ -533,8 +529,6 @@
       pack_unit: root.querySelector('[name="pack_unit"]').value,
       sale_price_type_id: root.querySelector('[name="sale_price_type_id"]').value,
       sale_price_override: root.querySelector('[name="sale_price_override"]').value,
-      sale_price_override_b: root.querySelector('[name="sale_price_override_b"]').value,
-      retro_pct_b: root.querySelector('[name="retro_pct_b"]').value,
       retro_pct: root.querySelector('[name="retro_pct"]').value,
       vat_pct: root.querySelector('[name="vat_pct"]').value,
       profit_tax_pct: root.querySelector('[name="profit_tax_pct"]').value,
@@ -597,8 +591,6 @@
         pack_unit: DRAFT.pack_unit,
         sale_price_type_id: DRAFT.sale_price_type_id,
         sale_price_override: DRAFT.sale_price_override,
-        sale_price_override_b: DRAFT.sale_price_override_b,
-        retro_pct_b: DRAFT.retro_pct_b,
         retro_pct: DRAFT.retro_pct,
         vat_pct: DRAFT.vat_pct,
         profit_tax_pct: DRAFT.profit_tax_pct,
@@ -787,37 +779,29 @@
     return { retro, vat, profit, profit_tax: tax, net_profit: net, markup_pct: costCalc ? (price - costCalc) / costCalc * 100 : null, margin_pct: price ? net / price * 100 : null };
   }
   // Секции и строки матрицы. edit → редактируемая; comp → считается; text → только показ.
-  const MX_SECTIONS = [{ key: 'cost', label: 'Себестоимость' }, { key: 'a', label: 'Сценарий A — ретро' }, { key: 'b', label: 'Сценарий B — ретро' }];
+  const MX_SECTIONS = [{ key: 'cost', label: 'Себестоимость' }, { key: 'price', label: 'Цена и прибыль' }];
   const MX_ROWS = [
-    { s: 'cost', key: 'grammage', label: 'Граммаж, г', edit: 'grammage' },
-    { s: 'cost', key: 'raw_name', label: 'Сырьё', text: (m) => m.rawName },
-    { s: 'cost', key: 'raw_price', label: 'Стоимость зелени, сум/кг', edit: 'rawPrice' },
-    { s: 'cost', key: 'raw_cost', label: 'Зелень в упаковке', comp: 'raw_cost' },
-    { s: 'cost', key: 'pack_cost', label: 'Упаковка', text: (m) => f0(m.pack_cost) },
-    { s: 'cost', key: 'labor', label: 'ФОТ', text: (m) => f0(m.labor) },
-    { s: 'cost', key: 'production', label: 'Производство', text: (m) => f0(m.production) },
-    { s: 'cost', key: 'overhead', label: 'Накладные', text: (m) => f0(m.overhead) },
-    { s: 'cost', key: 'cost_raw', label: 'с/с (без брака)', comp: 'cost_raw' },
-    { s: 'cost', key: 'waste', label: '% брака', edit: 'wastePct' },
-    { s: 'cost', key: 'cost_calc', label: 'с/с с браком', comp: 'cost_calc', total: true },
-    { s: 'a', key: 'a_markup', label: 'Наценка %', comp: 'A.markup_pct', pct: true },
-    { s: 'a', key: 'a_ship', label: 'Отгрузочная цена', edit: 'priceA', hl: true, title: 'Цена отгрузки — по ней считается прибыль' },
-    { s: 'a', key: 'a_sd', label: 'Цена в SD', text: (m) => (num(m.sdPrice) ? f0(m.sdPrice) : '—'), title: 'Текущая отпускная цена из справочника (SD) — справочно' },
-    { s: 'a', key: 'a_retro_pct', label: 'Ретро A, %', edit: 'retroA' },
-    { s: 'a', key: 'a_retro', label: 'Ретро', comp: 'A.retro' },
-    { s: 'a', key: 'a_vat', label: 'НДС', comp: 'A.vat' },
-    { s: 'a', key: 'a_profit', label: 'Прибыль', comp: 'A.profit' },
-    { s: 'a', key: 'a_tax', label: 'Налог', comp: 'A.profit_tax' },
-    { s: 'a', key: 'a_net', label: 'Чистая прибыль', comp: 'A.net_profit', total: true },
-    { s: 'a', key: 'a_margin', label: 'ЧП %', comp: 'A.margin_pct', pct: true },
-    { s: 'b', key: 'b_retro_pct', label: 'Ретро B, %', edit: 'retroB' },
-    { s: 'b', key: 'b_price', label: 'Цена B', edit: 'priceB' },
-    { s: 'b', key: 'b_retro', label: 'Ретро', comp: 'B.retro' },
-    { s: 'b', key: 'b_vat', label: 'НДС', comp: 'B.vat' },
-    { s: 'b', key: 'b_profit', label: 'Прибыль', comp: 'B.profit' },
-    { s: 'b', key: 'b_tax', label: 'Налог', comp: 'B.profit_tax' },
-    { s: 'b', key: 'b_net', label: 'Чистая прибыль', comp: 'B.net_profit', total: true },
-    { s: 'b', key: 'b_margin', label: 'ЧП %', comp: 'B.margin_pct', pct: true },
+    { s: 'cost', key: 'grammage', label: 'Граммаж, г', edit: 'grammage', title: 'Вес продукта в упаковке, граммов' },
+    { s: 'cost', key: 'raw_name', label: 'Сырьё', text: (m) => m.rawName, title: 'Основное сырьё (зелень) рецептуры' },
+    { s: 'cost', key: 'raw_price', label: 'Стоимость зелени, сум/кг', edit: 'rawPrice', title: 'Цена сырья за кг (зафиксирована; берётся из последней закупки)' },
+    { s: 'cost', key: 'raw_cost', label: 'Зелень в упаковке', comp: 'raw_cost', title: 'Граммаж/1000 × цена за кг × (1 + отход)' },
+    { s: 'cost', key: 'pack_cost', label: 'Упаковка', text: (m) => f0(m.pack_cost), title: 'Стоимость упаковки на единицу (из закупки)' },
+    { s: 'cost', key: 'labor', label: 'ФОТ', text: (m) => f0(m.labor), title: 'ФОТ на единицу: фонд оплаты труда (с налогами) из «Персонала» ÷ объём выпуска' },
+    { s: 'cost', key: 'production', label: 'Производство', text: (m) => f0(m.production), title: 'Производственные расходы на единицу: аренда, электроэнергия и пр. ÷ объём выпуска' },
+    { s: 'cost', key: 'overhead', label: 'Накладные', text: (m) => f0(m.overhead), title: 'Накладные на единицу: логистика, сертификация, банк, маркетинг, кредиты ÷ объём выпуска' },
+    { s: 'cost', key: 'cost_raw', label: 'с/с (без брака)', comp: 'cost_raw', title: 'Сырьё + упаковка + ФОТ + производство + накладные' },
+    { s: 'cost', key: 'waste', label: '% брака', edit: 'wastePct', title: 'Процент брака/отхода — надбавка на потери' },
+    { s: 'cost', key: 'cost_calc', label: 'с/с с браком', comp: 'cost_calc', total: true, title: 'с/с (без брака) × (1 + % брака)' },
+    { s: 'price', key: 'a_markup', label: 'Наценка %', comp: 'A.markup_pct', pct: true, title: '(Отгрузочная цена − с/с с браком) ÷ с/с с браком' },
+    { s: 'price', key: 'a_ship', label: 'Отгрузочная цена', edit: 'priceA', hl: true, title: 'Цена отгрузки — по ней считается прибыль (если пусто, берётся цена из SD)' },
+    { s: 'price', key: 'a_sd', label: 'Цена в SD', text: (m) => (num(m.sdPrice) ? f0(m.sdPrice) : '—'), title: 'Текущая отпускная цена из справочника (SD) — справочно' },
+    { s: 'price', key: 'a_retro_pct', label: 'Ретро, %', edit: 'retroA', title: 'Ретро-бонус сети, % от отгрузочной цены' },
+    { s: 'price', key: 'a_retro', label: 'Ретро', comp: 'A.retro', title: 'Отгрузочная цена × Ретро %' },
+    { s: 'price', key: 'a_vat', label: 'НДС', comp: 'A.vat', title: 'НДС 12% от отгрузочной цены' },
+    { s: 'price', key: 'a_profit', label: 'Прибыль', comp: 'A.profit', title: 'Отгрузочная цена − с/с с браком − ретро − НДС' },
+    { s: 'price', key: 'a_tax', label: 'Налог', comp: 'A.profit_tax', title: 'Налог на прибыль 15% от прибыли' },
+    { s: 'price', key: 'a_net', label: 'Чистая прибыль', comp: 'A.net_profit', total: true, title: 'Прибыль − налог на прибыль' },
+    { s: 'price', key: 'a_margin', label: 'ЧП %', comp: 'A.margin_pct', pct: true, title: 'Чистая прибыль ÷ отгрузочная цена' },
   ];
   const mxSecHidden = (s) => matrixHidden.has('sec:' + s);
   const mxRowVisible = (row) => !mxSecHidden(row.s) && !matrixHidden.has(row.key);
@@ -886,8 +870,7 @@
       grammage: col.grammage,
       priceA: col.A.price_set ? col.A.sale_price : '', // отгрузочная (ручная), пусто = берём SD
       sdPrice: col.sd_price, // справочно из справочника отпускных цен
-      priceB: col.B.price_set ? col.B.sale_price : '',
-      retroA: col.A.retro_pct, retroB: col.B.retro_pct,
+      retroA: col.A.retro_pct,
     }));
     matrixModels = models;
     const live = (m) => {
@@ -895,10 +878,8 @@
       const costRaw = rawCost + num(m.pack_cost) + m.fixed;
       const costCalc = costRaw * (1 + num(m.wastePct) / 100);
       const pA = (m.priceA === '' || m.priceA == null) ? num(m.sdPrice) : num(m.priceA);
-      const pB = (m.priceB === '' || m.priceB == null) ? pA : num(m.priceB);
       return { raw_cost: rawCost, cost_raw: costRaw, cost_calc: costCalc,
-        A: priceBlockJS(costCalc, pA, num(m.retroA), m.vat, m.tax),
-        B: priceBlockJS(costCalc, pB, num(m.retroB), m.vat, m.tax) };
+        A: priceBlockJS(costCalc, pA, num(m.retroA), m.vat, m.tax) };
     };
     const getVal = (lv, path) => path.split('.').reduce((o, k) => (o == null ? o : o[k]), lv);
     const rows = MX_ROWS.filter(mxRowVisible);
@@ -917,7 +898,7 @@
       const m = models[ci], v = m[editKey];
       if (editKey === 'grammage') return post('/recipe/' + m.id + '/grammage', { qty: v }).then(ok, (e) => err(ci, e));
       if (editKey === 'rawPrice') return post('/recipe/' + m.id + '/item-price', { item_kind: 'raw', manual_price: v }).then(ok, (e) => err(ci, e));
-      const map = { wastePct: 'waste_pct', retroA: 'retro_pct', retroB: 'retro_pct_b', priceB: 'sale_price_override_b', priceA: 'sale_price_override' };
+      const map = { wastePct: 'waste_pct', retroA: 'retro_pct', priceA: 'sale_price_override' };
       return post('/recipe/' + m.id + '/pricing', { [map[editKey]]: v }).then(ok, (e) => err(ci, e));
     };
     const ok = () => toast('Сохранено');
@@ -952,7 +933,7 @@
     if (!matrixModels.length) { toast('Нет данных'); return; }
     try {
       for (const m of matrixModels) {
-        await post('/recipe/' + m.id + '/pricing', { waste_pct: m.wastePct, retro_pct: m.retroA, retro_pct_b: m.retroB, sale_price_override: m.priceA, sale_price_override_b: m.priceB });
+        await post('/recipe/' + m.id + '/pricing', { waste_pct: m.wastePct, retro_pct: m.retroA, sale_price_override: m.priceA });
         if (m.rawPrice !== '' && m.rawPrice != null) await post('/recipe/' + m.id + '/item-price', { item_kind: 'raw', manual_price: m.rawPrice });
         if (m.grammage !== '' && m.grammage != null) await post('/recipe/' + m.id + '/grammage', { qty: m.grammage }).catch(() => {});
       }
