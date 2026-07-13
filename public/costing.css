@@ -83,6 +83,32 @@ select.cst-cell { cursor:pointer; }
 .mx-good { color:#2e7d32; font-weight:800; }
 .mx-warn { color:#b25b00; font-weight:800; }
 .mx-bad  { color:var(--danger); font-weight:800; }
+.mx-cell-bad { background:#fdecea; color:var(--danger); font-weight:700; }
+.mx-cell-warn { background:#fff8e1; color:#b25b00; font-weight:700; }
+
+/* Транспонированная матрица: строки = показатели, столбцы = SKU */
+.cst-tx { border-collapse:collapse; font-size:12.5px; white-space:nowrap; }
+.cst-tx th, .cst-tx td { padding:7px 11px; border-bottom:1px solid #f0f2ef; border-right:1px solid #f4f5f2; text-align:right; }
+.cst-tx thead th { position:sticky; top:0; background:#f2f5f1; z-index:2; vertical-align:bottom; }
+.cst-tx .tx-ind { position:sticky; left:0; background:#fff; text-align:left; font-weight:600; color:var(--ink); z-index:1; min-width:180px; box-shadow:1px 0 0 #eceee9; }
+.cst-tx thead .tx-ind { z-index:3; background:#f2f5f1; }
+.cst-tx .tx-sku { cursor:pointer; text-align:right; min-width:120px; }
+.cst-tx .tx-sku:hover { background:#eef4e9; }
+.cst-tx .tx-sku.sel { background:#e3efd7; }
+.tx-sku-name { font-weight:800; color:var(--ink); }
+.tx-sku-ch { font-size:11px; color:var(--muted); font-weight:600; }
+.cst-tx tr.tx-grp .tx-ind { background:#eef1ec; color:var(--forest); font-weight:800; text-transform:uppercase; font-size:11px; letter-spacing:.02em; }
+.cst-tx tr.tx-grp td { background:#eef1ec; }
+.cst-tx td.strong { font-weight:800; color:var(--ink); }
+.cst-tx td.tx-txt { text-align:right; color:#5a665c; }
+
+.cst-filters { display:flex; gap:8px; flex-wrap:wrap; margin:10px 0; }
+
+.cst-detail { background:var(--soft); border:1px solid var(--line); border-radius:14px; padding:14px 16px; }
+.cst-detail-tot { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:8px; margin-top:12px; }
+.cst-tot { background:#fff; border:1px solid var(--line); border-radius:10px; padding:8px 11px; }
+.cst-tot-v { font-family:'Lora',Georgia,serif; font-size:16px; font-weight:600; margin-top:2px; }
+@media (max-width:760px) { .cst-detail-tot { grid-template-columns:1fr 1fr; } }
 .cst-legend { display:flex; gap:16px; margin-top:10px; font-size:12px; color:var(--muted); flex-wrap:wrap; }
 .cst-lg { display:inline-flex; align-items:center; gap:6px; }
 .cst-lg-dot { width:11px; height:11px; border-radius:3px; display:inline-block; }

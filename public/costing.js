@@ -86,64 +86,159 @@
     ]));
   }
 
+  // ===== Матрица: развёрнутый вид (SKU в столбцах, показатели в строках) =====
+  let MX = null;            // сырые строки расчёта
+  let mxSel = null;         // выбранный SKU (детализация)
+  const mxFilter = { q: '', channel: '', status: 'active' };
+  const marginClass = (r) => (r.sd_price == null ? '' : (num(r.margin) < 0 ? 'mx-bad' : num(r.margin) < 10 ? 'mx-warn' : 'mx-good'));
+  const sdCell = (r) => {
+    if (r.sd_state === 'ok') return { text: money(r.sd_price), cls: '' };
+    if (r.sd_state === 'no_price') return { text: 'Нет цены в SD', cls: 'mx-cell-bad' };
+    return { text: 'Не привязан к SD', cls: 'mx-cell-warn' };
+  };
+
   async function renderMatrix() {
     const c = $('#cst-content');
     c.appendChild(el('div', { class: 'cst-head' }, [el('div', { class: 'cst-h2' }, 'Матрица себестоимости'),
-      el('div', { class: 'cst-sub' }, 'Одна строка = один SKU. Расчёт по выверенным формулам: сырьё · упаковка · ФОТ · производство · накладные · с/с · отход · цена SD · ретро · НДС · прибыль · налог · ЧП · маржа. Цвет — по чистой марже.')]));
+      el('div', { class: 'cst-sub' }, 'Столбцы — SKU, строки — показатели по группам. Клик по названию SKU раскрывает состав снизу. Цвет — по чистой марже.')]));
     const box = el('div', {}); c.appendChild(box);
     box.appendChild(el('div', { class: 'cst-loading' }, 'Считаю…'));
     let d; try { d = await api('/matrix' + (PERIOD ? '?period=' + PERIOD : '')); } catch (e) { box.innerHTML = ''; box.appendChild(el('div', { class: 'cst-empty' }, 'Ошибка: ' + e.message)); return; }
+    MX = d.rows || [];
     box.innerHTML = '';
-    const rows = d.rows || [];
-    if (!rows.length) { box.appendChild(el('div', { class: 'cst-empty' }, 'Нет рецептур для расчёта.')); return; }
-    // KPI-сводка.
-    const priced = rows.filter((r) => r.sd_price != null);
+    if (!MX.length) { box.appendChild(el('div', { class: 'cst-empty' }, 'Нет рецептур для расчёта.')); return; }
+    // KPI.
+    const priced = MX.filter((r) => r.sd_price != null);
     const avgMargin = priced.length ? priced.reduce((s, r) => s + (num(r.margin) || 0), 0) / priced.length : null;
-    const noPriceN = rows.filter((r) => r.no_price).length;
-    const noSdN = rows.filter((r) => r.sd_price == null).length;
     box.appendChild(el('div', { class: 'cst-kpis' }, [
-      kpi('SKU в расчёте', rows.length),
+      kpi('SKU в расчёте', MX.length),
       kpi('Средняя маржа', avgMargin == null ? '—' : avgMargin.toFixed(1) + '%'),
-      kpi('Без цены компонента', noPriceN),
-      kpi('Без цены SD', noSdN),
+      kpi('Без цены компонента', MX.filter((r) => r.no_price).length),
+      kpi('Без цены SD', MX.filter((r) => r.sd_price == null).length),
     ]));
-    // Таблица.
-    const cols = [
-      ['#', 'i'], ['SKU', 'name'], ['Канал', 'ch'], ['Грамм', 'g'],
-      ['Сырьё', 'raw'], ['Упак.', 'pack'], ['ФОТ', 'labor'], ['Произв.', 'production'], ['Накл.', 'overhead'], ['Прочее', 'other'],
-      ['С/с', 'base'], ['Отход', 'wr'], ['С/с+отход', 'cww'],
-      ['Цена SD', 'sd'], ['Ретро', 'retro'], ['НДС', 'vat'], ['Прибыль', 'profit'], ['Налог', 'tax'], ['ЧП', 'net'], ['Маржа', 'margin'],
+    // Фильтры.
+    const channels = Array.from(new Set(MX.map((r) => r.channel).filter(Boolean)));
+    box.appendChild(el('div', { class: 'cst-filters' }, [
+      editText(mxFilter.q, () => {}, { placeholder: 'Поиск SKU…', class: 'cstf-inp', style: 'min-width:170px', oninput: (e) => { mxFilter.q = e.target.value; drawMatrix(); } }),
+      editSel(mxFilter.channel, [['', 'Все каналы'], ...channels.map((x) => [x, x])], (v) => { mxFilter.channel = v; drawMatrix(); }),
+      editSel(mxFilter.status, [['active', 'Активные'], ['all', 'Все (кроме архива)'], ['draft', 'Черновики']], (v) => { mxFilter.status = v; drawMatrix(); }),
+    ]));
+    box.appendChild(el('div', { id: 'cst-mx-body' }));
+    box.appendChild(el('div', { class: 'cst-legend' }, [lg('mx-good', 'маржа >10%'), lg('mx-warn', '0–10%'), lg('mx-bad', '<0'), lg('mx-cell-warn', 'не привязан к SD'), lg('mx-cell-bad', 'нет цены')]));
+    box.appendChild(el('div', { id: 'cst-mx-detail', style: 'margin-top:16px' }));
+    drawMatrix();
+  }
+
+  function filteredSkus() {
+    return MX.filter((r) => {
+      if (mxFilter.status === 'active' && r.status !== 'active') return false;
+      if (mxFilter.status === 'draft' && r.status !== 'draft') return false;
+      if (mxFilter.channel && r.channel !== mxFilter.channel) return false;
+      if (mxFilter.q && !(r.name || '').toLowerCase().includes(mxFilter.q.toLowerCase())) return false;
+      return true;
+    });
+  }
+
+  function drawMatrix() {
+    const body = $('#cst-mx-body'); if (!body) return; body.innerHTML = '';
+    const skus = filteredSkus();
+    if (!skus.length) { body.appendChild(el('div', { class: 'cst-empty' }, 'Ничего не найдено по фильтру.')); return; }
+    const m = (fn, opt) => ({ fn, opt: opt || {} });
+    const groups = [
+      ['Основные данные', [
+        ['Канал', m((r) => r.channel || '—', { txt: 1 })],
+        ['Вес, г', m((r) => r.gram_weight ? money(r.gram_weight) : '—')],
+        ['Статус', m((r) => statusLabel(r.status), { txt: 1 })],
+      ]],
+      ['Цена продажи', [
+        ['Цена SD', m((r) => sdCell(r), { cell: 1 })],
+        ['НДС (' + (skus[0] ? skus[0].vat_rate : 12) + '%)', m((r) => r.sd_price == null ? '—' : money(r.vat))],
+        ['Ретро', m((r) => r.sd_price == null ? '—' : money(r.retro))],
+      ]],
+      ['Сырьё', [['Стоимость сырья', m((r) => money(r.raw), { bad: (r) => r.no_price })]]],
+      ['Упаковка', [['Стоимость упаковки', m((r) => money(r.pack))]]],
+      ['Производство', [['Производственные', m((r) => money(r.production))]]],
+      ['ФОТ', [['ФОТ', m((r) => money(r.labor))]]],
+      ['Логистика', [['Логистика', m((r) => money(r.logistics))]]],
+      ['Накладные', [['Общепроизводственные', m((r) => money(r.overhead))]]],
+      ['Итоговая себестоимость', [
+        ['Полная себестоимость', m((r) => money(r.base), { strong: 1 })],
+        ['Отход', m((r) => r.waste_rate ? r.waste_rate + '%' : '—', { txt: 1 })],
+        ['С/с с отходом', m((r) => money(r.cost_with_waste), { strong: 1 })],
+      ]],
+      ['Прибыль / маржа', [
+        ['Валовая прибыль', m((r) => r.profit == null ? '—' : money(r.profit))],
+        ['Налог на прибыль', m((r) => r.tax == null ? '—' : money(r.tax))],
+        ['Чистая прибыль', m((r) => r.net == null ? '—' : money(r.net), { strong: 1 })],
+        ['Маржа %', m((r) => r.margin == null ? '—' : r.margin.toFixed(1) + '%', { margin: 1 })],
+      ]],
     ];
-    const table = el('table', { class: 'cst-mx' });
-    const thead = el('thead', {}, el('tr', {}, cols.map(([label, k]) => el('th', { class: (['name', 'ch'].includes(k) ? 'lft' : '') }, label))));
-    const tb = el('tbody', {}, rows.map((r, i) => {
-      const marginCls = r.sd_price == null ? '' : (num(r.margin) < 0 ? 'mx-bad' : num(r.margin) < 10 ? 'mx-warn' : 'mx-good');
-      const td = (v, cls) => el('td', { class: 'tnum ' + (cls || '') }, v);
-      return el('tr', { class: r.status !== 'active' ? 'dim' : '' }, [
-        el('td', { class: 'muted' }, String(i + 1)),
-        el('td', { class: 'lft', style: 'font-weight:700' }, r.name),
-        el('td', { class: 'lft muted' }, r.channel || '—'),
-        td(r.gram_weight ? money(r.gram_weight) : '—'),
-        td(money(r.raw), r.no_price ? 'mx-bad' : ''),
-        td(money(r.pack)), td(money(r.labor)), td(money(r.production)), td(money(r.overhead)), td(money(r.other)),
-        td(money(r.base), 'strong'),
-        el('td', { class: 'tnum muted' }, r.waste_rate ? r.waste_rate + '%' : '—'),
-        td(money(r.cost_with_waste), 'strong'),
-        r.sd_price == null ? el('td', { class: 'tnum mx-bad', title: 'Нет цены в SalesDoctor по названию' }, 'нет') : td(money(r.sd_price)),
-        td(r.sd_price == null ? '—' : money(r.retro)),
-        td(r.sd_price == null ? '—' : money(r.vat)),
-        td(r.profit == null ? '—' : money(r.profit)),
-        td(r.tax == null ? '—' : money(r.tax)),
-        td(r.net == null ? '—' : money(r.net), 'strong'),
-        el('td', { class: 'tnum ' + marginCls }, r.margin == null ? '—' : r.margin.toFixed(1) + '%'),
-      ]);
-    }));
-    table.appendChild(thead); table.appendChild(tb);
-    box.appendChild(el('div', { class: 'cst-mx-wrap' }, table));
-    box.appendChild(el('div', { class: 'cst-legend' }, [
-      lg('mx-good', 'маржа >10%'), lg('mx-warn', '0–10%'), lg('mx-bad', '<0 / нет цены'),
+    const table = el('table', { class: 'cst-tx' });
+    const headTr = el('tr', {}, [el('th', { class: 'tx-ind' }, 'Показатель'),
+      ...skus.map((r) => el('th', {
+        class: 'tx-sku' + (String(r.id) === String(mxSel) ? ' sel' : ''), title: 'Открыть состав',
+        onclick: () => { mxSel = (String(mxSel) === String(r.id) ? null : r.id); drawMatrix(); drawDetail(); },
+      }, [el('div', { class: 'tx-sku-name' }, r.name), el('div', { class: 'tx-sku-ch' }, r.channel || '—')])),
+    ]);
+    const bodyRows = [];
+    for (const [gname, inds] of groups) {
+      bodyRows.push(el('tr', { class: 'tx-grp' }, [el('td', { class: 'tx-ind' }, gname), ...skus.map(() => el('td', {}, ''))]));
+      for (const [label, def] of inds) {
+        bodyRows.push(el('tr', {}, [el('td', { class: 'tx-ind' }, label), ...skus.map((r) => {
+          const v = def.fn(r); const o = def.opt;
+          let cls = 'tnum';
+          if (o.txt) cls = 'tx-txt';
+          if (o.strong) cls += ' strong';
+          if (o.margin) cls += ' ' + marginClass(r);
+          if (o.bad && o.bad(r)) cls += ' mx-bad';
+          if (o.cell) return el('td', { class: 'tnum ' + (v.cls || '') }, v.text);
+          return el('td', { class: cls }, v);
+        })]));
+      }
+    }
+    table.appendChild(el('thead', {}, headTr));
+    table.appendChild(el('tbody', {}, bodyRows));
+    body.appendChild(el('div', { class: 'cst-mx-wrap' }, table));
+    drawDetail();
+  }
+
+  function drawDetail() {
+    const box = $('#cst-mx-detail'); if (!box) return; box.innerHTML = '';
+    if (mxSel == null) return;
+    const r = MX.find((x) => String(x.id) === String(mxSel)); if (!r) return;
+    const rawItems = (r.items || []).filter((i) => i.type !== 'packaging');
+    const packItems = (r.items || []).filter((i) => i.type === 'packaging');
+    const itemsTable = (title, list, cols) => el('div', { style: 'margin-top:10px' }, [
+      el('div', { class: 'cst-sub', style: 'font-weight:800;margin-bottom:5px' }, title),
+      list.length ? el('div', { class: 'cst-mx-wrap' }, el('table', { class: 'cst-tx' }, [
+        el('thead', {}, el('tr', {}, cols.map((h, i) => el('th', { class: i === 0 ? 'tx-ind' : 'tnum' }, h)))),
+        el('tbody', {}, list.map((it) => el('tr', {}, [
+          el('td', { class: 'tx-ind' }, it.name || '—'),
+          el('td', { class: 'tnum' }, money(it.qty) + ' ' + (it.unit || '')),
+          el('td', { class: 'tnum' }, it.price != null ? money(it.price) : '—'),
+          el('td', { class: 'tnum' }, it.waste_rate ? it.waste_rate + '%' : '—'),
+          el('td', { class: 'tnum strong' + (it.source === 'Нет цены' ? ' mx-bad' : '') }, money(it.cost)),
+        ]))),
+      ])) : el('div', { class: 'cst-empty' }, 'Нет позиций.'),
+    ]);
+    box.appendChild(el('div', { class: 'cst-detail' }, [
+      el('div', { style: 'display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap' }, [
+        el('div', { class: 'cst-h2', style: 'font-size:18px' }, 'Состав: ' + r.name),
+        iconBtn('✕', 'Закрыть', () => { mxSel = null; drawMatrix(); }),
+      ]),
+      itemsTable('Сырьё', rawItems, ['Ингредиент', 'Кол-во', 'Цена/ед', 'Отход', 'Стоимость']),
+      itemsTable('Упаковка', packItems, ['Материал', 'Кол-во', 'Цена/ед', 'Отход', 'Стоимость']),
+      el('div', { class: 'cst-detail-tot' }, [
+        totCell('Сырьё', money(r.raw)), totCell('Упаковка', money(r.pack)), totCell('ФОТ', money(r.labor)),
+        totCell('Производство', money(r.production)), totCell('Логистика', money(r.logistics)), totCell('Накладные', money(r.overhead)),
+        totCell('Полная с/с', money(r.cost_with_waste), 'strong'),
+        totCell('Цена SD', r.sd_price == null ? '—' : money(r.sd_price)),
+        totCell('Чистая прибыль', r.net == null ? '—' : money(r.net), 'strong'),
+        totCell('Маржа', r.margin == null ? '—' : r.margin.toFixed(1) + '%', marginClass(r)),
+      ]),
     ]));
   }
+  function totCell(label, val, cls) { return el('div', { class: 'cst-tot' }, [el('div', { class: 'cst-kpi-l' }, label), el('div', { class: 'cst-tot-v ' + (cls || '') }, String(val))]); }
   function lg(cls, text) { return el('span', { class: 'cst-lg' }, [el('span', { class: 'cst-lg-dot ' + cls }), text]); }
 
   // ===== Рецептуры: список (inline) + компоненты выбранной =====
@@ -264,6 +359,7 @@
     // Статьи затрат.
     const exp = BOOT.expenses || [];
     c.appendChild(expTable('Производственные (прямые)', exp.filter((e) => e.expense_group === 'production'), 'production', p));
+    c.appendChild(expTable('Логистика', exp.filter((e) => e.expense_group === 'logistics'), 'logistics', p));
     c.appendChild(expTable('Накладные (косвенные) — вкл. аренду/электро', exp.filter((e) => e.expense_group === 'overhead'), 'overhead', p));
     // Каналы.
     c.appendChild(renderChannels());
@@ -322,7 +418,8 @@
   }
   function addExpense(group) {
     if (!BOOT.period) return;
-    const name = prompt(group === 'production' ? 'Название производственной статьи:' : 'Название накладной статьи:'); if (!name) return;
+    const label = { production: 'производственной', logistics: 'логистической', overhead: 'накладной' }[group] || 'накладной';
+    const name = prompt('Название ' + label + ' статьи:'); if (!name) return;
     apiPost('/expense', { period_id: BOOT.period.id, expense_group: group, expense_name: name, amount: 0 }).then(reboot).catch((e) => toast(e.message, true));
   }
   function addChannel() {

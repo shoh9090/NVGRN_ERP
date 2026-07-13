@@ -114,6 +114,7 @@ async function ensureSchema() {
     profit_tax_amount NUMERIC DEFAULT 0, net_profit NUMERIC DEFAULT 0, net_margin NUMERIC DEFAULT 0
   )`);
   await q(`CREATE INDEX IF NOT EXISTS idx_costing_comp_recipe ON costing_recipe_components(recipe_id)`);
+  await q(`ALTER TABLE costing_periods ADD COLUMN IF NOT EXISTS logistics_expenses NUMERIC DEFAULT 0`);
 
   await seedFromLegacy();
   _ready = true;
@@ -275,37 +276,48 @@ function resolveCompPrice(comp, pm) {
   return { price: 0, source: 'Нет цены' };
 }
 
-function computeRow(rec, comps, period, chTerms, pm, sdPrice) {
+function computeRow(rec, comps, period, chTerms, pm, sdInfo) {
   const output = asNum(period && period.avg_monthly_output) || 1;
   const laborPer = (asNum(period && period.payroll_with_taxes) / output) * (asNum(rec.labor_coeff) || 1);
   const prodPer = asNum(period && period.production_expenses) / output;
   const ohPer = asNum(period && period.overhead_expenses) / output;
+  const logiPer = asNum(period && period.logistics_expenses) / output;
   let raw = 0, pack = 0, other = 0, noPrice = false;
+  const items = [];
   for (const c of comps) {
     const waste = 1 + asNum(c.waste_rate) / 100;
     const { price, source } = resolveCompPrice(c, pm);
     const hasQty = asNum(c.qty) > 0 || asNum(c.share_percent) > 0;
     if (source === 'Нет цены' && hasQty) noPrice = true;
+    let cost = 0, effQty = asNum(c.qty);
     if (c.component_type === 'raw') {
       let kg;
-      if (asNum(c.share_percent) > 0) kg = (asNum(rec.gram_weight) * asNum(c.share_percent) / 100) / 1000;
+      if (asNum(c.share_percent) > 0) { effQty = asNum(rec.gram_weight) * asNum(c.share_percent) / 100; kg = effQty / 1000; }
       else if (c.unit === 'кг' || c.unit === 'л') kg = asNum(c.qty);
       else kg = asNum(c.qty) / 1000;
-      raw += price * kg * waste;
+      cost = price * kg * waste;
+      raw += cost;
     } else if (c.component_type === 'packaging') {
-      pack += price * asNum(c.qty) * waste;
+      cost = price * asNum(c.qty) * waste;
+      pack += cost;
     } else {
-      other += price * asNum(c.qty) * waste;
+      cost = price * asNum(c.qty) * waste;
+      other += cost;
     }
+    items.push({ id: c.id, type: c.component_type, name: c.component_name, qty: effQty, unit: c.unit, waste_rate: asNum(c.waste_rate), price, source, cost });
   }
-  const base = raw + pack + laborPer + prodPer + ohPer + other;
+  const base = raw + pack + laborPer + prodPer + ohPer + logiPer + other;
   const wasteMult = rec.waste_method === 'sku' ? (1 + asNum(rec.sku_waste_rate) / 100) : 1;
   const costWithWaste = base * wasteMult;
   const ct = chTerms[rec.channel] || {};
   const retroR = asNum(ct.retro_rate);
   const vatR = ct.vat_rate != null ? asNum(ct.vat_rate) : asNum(period && period.vat_rate);
   const taxR = ct.profit_tax_rate != null ? asNum(ct.profit_tax_rate) : asNum(period && period.profit_tax_rate);
-  const price = sdPrice != null ? asNum(sdPrice) : null;
+  // Состояние цены SD: значение / нет цены (привязан, но нет) / не привязан.
+  const info = sdInfo || {};
+  const price = info.price != null ? asNum(info.price) : null;
+  let sdState = 'ok';
+  if (price == null) sdState = info.matched ? 'no_price' : 'unlinked';
   const retro = (price || 0) * retroR / 100;
   const vat = (price || 0) * vatR / 100;
   const profit = price != null ? price - retro - vat - costWithWaste : null;
@@ -314,11 +326,11 @@ function computeRow(rec, comps, period, chTerms, pm, sdPrice) {
   const margin = price ? (net / price) * 100 : null;
   return {
     id: rec.id, name: rec.finished_good_name, channel: rec.channel || '', status: rec.status,
-    gram_weight: asNum(rec.gram_weight), comp_count: comps.length,
-    raw, pack, labor: laborPer, production: prodPer, overhead: ohPer, other,
+    gram_weight: asNum(rec.gram_weight), comp_count: comps.length, items,
+    raw, pack, labor: laborPer, production: prodPer, overhead: ohPer, logistics: logiPer, other,
     base, waste_method: rec.waste_method, waste_rate: rec.waste_method === 'sku' ? asNum(rec.sku_waste_rate) : 0,
     cost_with_waste: costWithWaste, no_price: noPrice,
-    sd_price: price, retro_rate: retroR, retro, vat_rate: vatR, vat,
+    sd_price: price, sd_state: sdState, retro_rate: retroR, retro, vat_rate: vatR, vat,
     profit, tax_rate: taxR, tax, net, margin,
   };
 }
@@ -335,7 +347,8 @@ async function buildMatrix(periodQuery) {
   const sdDefault = intOrNull(cs.sd_price_type_id);
   // SD-цена по названию SKU + тип цены канала (иначе общий из настроек).
   const sdRows = await db.pool.query(
-    `SELECT r.id, rp.price AS sd_price
+    `SELECT r.id, rp.price AS sd_price,
+            COALESCE(r.finished_good_id, gm.id) AS matched_id
      FROM costing_recipes r
      LEFT JOIN costing_channel_terms ct ON ct.channel = r.channel
      LEFT JOIN LATERAL (
@@ -345,7 +358,7 @@ async function buildMatrix(periodQuery) {
      LEFT JOIN ref_prices rp ON rp.product_id = COALESCE(r.finished_good_id, gm.id)
             AND rp.price_type_id = COALESCE(ct.sd_price_type_id, ${sdDefault || 'NULL'})
      WHERE r.status <> 'archived'`).catch(() => ({ rows: [] }));
-  const sdById = {}; sdRows.rows.forEach((x) => { sdById[x.id] = x.sd_price; });
+  const sdById = {}; sdRows.rows.forEach((x) => { sdById[x.id] = { price: x.sd_price, matched: x.matched_id != null }; });
   const recs = (await db.pool.query("SELECT * FROM costing_recipes WHERE status <> 'archived' ORDER BY finished_good_name")).rows;
   const allComps = (await db.pool.query('SELECT * FROM costing_recipe_components ORDER BY recipe_id, sort_order, id')).rows;
   const byRecipe = {}; allComps.forEach((c) => { (byRecipe[c.recipe_id] = byRecipe[c.recipe_id] || []).push(c); });
@@ -365,7 +378,7 @@ router.get('/api/export.xlsx', async (req, res) => {
   const data = m.rows.map((r, i) => ({
     '№': i + 1, 'SKU': r.name, 'Канал': r.channel, 'Граммаж': r.gram_weight,
     'Сырьё': Math.round(r.raw), 'Упаковка': Math.round(r.pack), 'ФОТ': Math.round(r.labor),
-    'Производство': Math.round(r.production), 'Накладные': Math.round(r.overhead), 'Прочее': Math.round(r.other),
+    'Производство': Math.round(r.production), 'Логистика': Math.round(r.logistics), 'Накладные': Math.round(r.overhead), 'Прочее': Math.round(r.other),
     'С/с': Math.round(r.base), 'Отход %': r.waste_rate, 'С/с с отходом': Math.round(r.cost_with_waste),
     'Цена SD': r.sd_price == null ? '' : Math.round(r.sd_price),
     'Ретро': r.sd_price == null ? '' : Math.round(r.retro), 'НДС': r.sd_price == null ? '' : Math.round(r.vat),
@@ -525,6 +538,7 @@ async function recalcPeriodTotals(periodId) {
     `UPDATE costing_periods p SET
        production_expenses = COALESCE((SELECT SUM(amount) FROM costing_expense_items WHERE period_id=p.id AND expense_group='production'),0),
        overhead_expenses  = COALESCE((SELECT SUM(amount) FROM costing_expense_items WHERE period_id=p.id AND expense_group='overhead'),0),
+       logistics_expenses = COALESCE((SELECT SUM(amount) FROM costing_expense_items WHERE period_id=p.id AND expense_group='logistics'),0),
        updated_at=now()
      WHERE p.id=$1`, [periodId]);
 }
@@ -556,9 +570,10 @@ router.post('/api/period/:id(\\d+)/payroll-from-hr', async (req, res) => {
 router.post('/api/expense', J, async (req, res) => {
   const b = req.body || {};
   const periodId = intOrNull(b.period_id);
+  const grp = ['production', 'overhead', 'logistics'].includes(b.expense_group) ? b.expense_group : 'overhead';
   const r = await db.pool.query(
     'INSERT INTO costing_expense_items (period_id, expense_group, expense_name, amount) VALUES ($1,$2,$3,$4) RETURNING id',
-    [periodId, b.expense_group === 'production' ? 'production' : 'overhead', b.expense_name || 'Статья', asNum(b.amount)]);
+    [periodId, grp, b.expense_name || 'Статья', asNum(b.amount)]);
   await recalcPeriodTotals(periodId);
   res.json({ ok: true, id: r.rows[0].id });
 });
@@ -567,7 +582,7 @@ router.post('/api/expense-item/:id(\\d+)', J, async (req, res) => {
   const b = req.body || {};
   const sets = [], vals = []; let i = 1;
   if ('expense_name' in b) { sets.push(`expense_name=$${i++}`); vals.push(b.expense_name); }
-  if ('expense_group' in b) { sets.push(`expense_group=$${i++}`); vals.push(b.expense_group === 'production' ? 'production' : 'overhead'); }
+  if ('expense_group' in b) { sets.push(`expense_group=$${i++}`); vals.push(['production', 'overhead', 'logistics'].includes(b.expense_group) ? b.expense_group : 'overhead'); }
   if ('amount' in b) { sets.push(`amount=$${i++}`); vals.push(asNum(b.amount)); }
   if (!sets.length) return res.json({ ok: true });
   vals.push(req.params.id);
