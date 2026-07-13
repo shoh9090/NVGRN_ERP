@@ -68,8 +68,15 @@ async function ensureSchema() {
     updated_at TIMESTAMPTZ DEFAULT now()
   )`);
   await q(`CREATE INDEX IF NOT EXISTS idx_calc_exp_period ON calculation_expense_items(period_id)`);
+  await q(`CREATE TABLE IF NOT EXISTS calculation_flags (key TEXT PRIMARY KEY, created_at TIMESTAMPTZ DEFAULT now())`);
 
   await seedDefaults();
+  // Разовая чистка: НДС и налог на прибыль живут в строке периода, в «Ставках» они дублировались.
+  const dedup = (await q("SELECT 1 FROM calculation_flags WHERE key='rates_dedup_v1'")).rows[0];
+  if (!dedup) {
+    await q("DELETE FROM calculation_rates WHERE lower(name) IN ('ндс','налог на прибыль')");
+    await q("INSERT INTO calculation_flags (key) VALUES ('rates_dedup_v1') ON CONFLICT DO NOTHING");
+  }
   _ready = true;
 }
 
@@ -81,9 +88,8 @@ async function seedDefaults() {
     `INSERT INTO calculation_periods (period, avg_monthly_output, vat_rate, profit_tax_rate, status, comment)
      VALUES ('2026-07', 70000, 12, 15, 'active', 'базовый период') RETURNING id`);
   const pid = p.rows[0].id;
+  // НДС и налог на прибыль задаются в самом периоде — здесь только ретро/доп. ставки.
   const rates = [
-    ['НДС', 12, 'Цена продажи', ''],
-    ['Налог на прибыль', 15, 'Положительная прибыль', ''],
     ['Ретро Retail', 20, 'Цена продажи', 'сети'],
   ];
   for (const [n, r, a, c] of rates) {

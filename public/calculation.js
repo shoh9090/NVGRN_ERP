@@ -163,7 +163,7 @@
   // ===== Ставки =====
   function renderRates(c) {
     const pid = BOOT.period.id;
-    c.appendChild(section('Ставки', 'НДС, налог на прибыль, ретро сетей.',
+    c.appendChild(section('Ставки', 'Ретро сетей и прочие бонусы. НДС и налог на прибыль задаются в строке периода выше.',
       el('button', { class: 'btn-ghost calc-btn', onclick: () => apiPost('/rates', { period_id: pid, name: 'Новая ставка', rate_percent: 0 }).then(reboot) }, '+ Ставка')));
     const save = (id, f, v) => apiPost('/rates/' + id, { [f]: v }).then(() => toast('Сохранено')).catch((e) => toast(e.message, true));
     const head = el('div', { class: 'calc-row head calc-rate' }, ['Название', 'Значение %', 'Применяется к', 'Активно', 'Комментарий', ''].map((h) => el('span', {}, h)));
