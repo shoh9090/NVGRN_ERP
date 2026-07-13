@@ -40,9 +40,15 @@
 .muted { color:var(--muted); }
 
 .cst-rec { grid-template-columns:34px 1.6fr 1.2fr 0.9fr 0.8fr 0.7fr 1fr 1fr; }
-.cst-comp { grid-template-columns:34px 1fr 1.6fr 0.9fr 0.7fr 0.8fr 0.8fr 1fr; }
-.cst-exp { grid-template-columns:1fr 160px; }
+.cst-comp { grid-template-columns:34px 1fr 1.6fr 0.9fr 0.7fr 0.8fr 0.8fr 1.2fr; }
+.cst-exp { grid-template-columns:1fr 200px; }
 .cst-ch { grid-template-columns:1.4fr 0.8fr 0.8fr 0.8fr; }
+.cst-ch2 { grid-template-columns:1.4fr 0.8fr 0.8fr 0.8fr 1.4fr 44px; }
+.cst-pk { grid-template-columns:34px 1.8fr 1fr 0.6fr 1fr 1fr; }
+.cst-params { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin:10px 0; }
+.cst-param { background:var(--soft); border:1px solid var(--line); border-radius:12px; padding:11px 14px; }
+.cst-param .cst-kpi-l { margin-bottom:5px; }
+@media (max-width:760px) { .cst-params { grid-template-columns:1fr; } }
 
 /* inline-ячейки в таблицах */
 .cst-cell { padding:5px 7px; font-size:13px; width:100%; box-sizing:border-box; background:#fff; border:1px solid transparent; border-radius:6px; }

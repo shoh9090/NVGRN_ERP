@@ -33,6 +33,8 @@
   let recSel = null;
   let REFS = null;
   async function refs() { if (!REFS) REFS = await api('/refs'); return REFS; }
+  let PTYPES = null;
+  async function ptypes() { if (!PTYPES) PTYPES = (await api('/price-types').catch(() => ({ items: [] }))).items; return PTYPES; }
 
   async function boot() {
     try { BOOT = await api('/bootstrap' + (PERIOD ? '?period=' + PERIOD : '')); }
@@ -72,7 +74,7 @@
     shell();
     if (TAB === 'recipes') return renderRecipes();
     if (TAB === 'settings') return renderSettings();
-    if (TAB === 'packaging') return renderSoon('Упаковка', 'Спецификации упаковки в виде таблицы — Этап 4.');
+    if (TAB === 'packaging') return renderPackaging();
     return renderMatrix();
   }
 
@@ -230,42 +232,122 @@
 
   function iconBtn(glyph, title, onclick) { return el('button', { class: 'cst-icon-btn', title, onclick }, glyph); }
 
-  // ===== Настройки расчёта: период + статьи затрат + каналы =====
-  function renderSettings() {
+  // ===== Настройки расчёта: период + статьи затрат + каналы (inline) =====
+  async function renderSettings() {
     const c = $('#cst-content');
     c.appendChild(el('div', { class: 'cst-head' }, [el('div', { class: 'cst-h2' }, 'Настройки расчёта'),
-      el('div', { class: 'cst-sub' }, 'Параметры периода, статьи производственных и накладных затрат, условия каналов. Inline-правка — Этап 4. Данные перенесены.')]));
+      el('div', { class: 'cst-sub' }, 'Параметры периода, статьи затрат (прямые/накладные) и условия каналов. Правьте прямо в ячейках — матрица пересчитается.')]));
     const p = BOOT.period;
     if (!p) { c.appendChild(el('div', { class: 'cst-empty' }, 'Нет периода.')); return; }
-    c.appendChild(el('div', { class: 'cst-kpis' }, [
-      kpi('Период', p.period),
-      kpi('Средний выпуск, шт', money(p.avg_monthly_output)),
-      kpi('ФОТ с налогами / мес', money(p.payroll_with_taxes)),
-      kpi('НДС / Налог', p.vat_rate + '% / ' + p.profit_tax_rate + '%'),
-    ]));
-    const exp = BOOT.expenses || [];
-    const grp = (g) => exp.filter((e) => e.expense_group === g);
-    const expTable = (title, list) => {
-      const sum = list.reduce((s, x) => s + num(x.amount), 0);
-      return el('div', { style: 'margin-top:12px' }, [
-        el('div', { class: 'cst-sub', style: 'font-weight:800' }, title + ' · всего ' + money(sum) + ' · на шт ' + money(sum / (num(p.avg_monthly_output) || 1))),
-        el('div', { class: 'cst-list' }, [
-          el('div', { class: 'cst-row head cst-exp' }, ['Статья', 'Сумма / мес'].map((h) => el('span', {}, h))),
-          ...list.map((e) => el('div', { class: 'cst-row cst-exp' }, [el('span', {}, e.expense_name), el('span', { class: 'tnum' }, money(e.amount))])),
+    await ptypes().catch(() => {});
+    const savP = (field, v) => apiPost('/period/' + p.id, { [field]: v }).then(() => { toast('Сохранено'); }).catch((e) => toast(e.message, true));
+    // Параметры периода.
+    const paramRow = (label, field, val, suffix) => el('div', { class: 'cst-param' }, [
+      el('div', { class: 'cst-kpi-l' }, label),
+      el('div', { style: 'display:flex;align-items:center;gap:5px' }, [editNum(val, (v) => savP(field, v), { style: 'max-width:140px' }), suffix ? el('span', { class: 'muted' }, suffix) : null]),
+    ]);
+    c.appendChild(el('div', { class: 'cst-params' }, [
+      el('div', { class: 'cst-param' }, [el('div', { class: 'cst-kpi-l' }, 'Период'), el('div', { class: 'cst-kpi-v' }, p.period)]),
+      paramRow('Средний выпуск, шт', 'avg_monthly_output', p.avg_monthly_output),
+      el('div', { class: 'cst-param' }, [
+        el('div', { class: 'cst-kpi-l' }, 'ФОТ с налогами / мес'),
+        el('div', { style: 'display:flex;align-items:center;gap:6px;flex-wrap:wrap' }, [
+          editNum(p.payroll_with_taxes, (v) => savP('payroll_with_taxes', v), { style: 'max-width:150px' }),
+          el('button', { class: 'cst-icon-btn', title: 'Пересчитать из окладов Персонала', onclick: payrollFromHr }, '↺ из Персонала'),
         ]),
-      ]);
-    };
-    c.appendChild(expTable('Производственные (прямые)', grp('production')));
-    c.appendChild(expTable('Накладные (косвенные) — вкл. аренду/электро', grp('overhead')));
-    // Каналы.
-    const ch = BOOT.channels || [];
-    c.appendChild(el('div', { style: 'margin-top:12px' }, [
-      el('div', { class: 'cst-sub', style: 'font-weight:800' }, 'Условия каналов'),
-      el('div', { class: 'cst-list' }, [
-        el('div', { class: 'cst-row head cst-ch' }, ['Канал', 'Ретро %', 'НДС %', 'Налог %'].map((h) => el('span', {}, h))),
-        ...ch.map((x) => el('div', { class: 'cst-row cst-ch' }, [el('span', { style: 'font-weight:700' }, x.channel), el('span', { class: 'tnum' }, x.retro_rate + '%'), el('span', { class: 'tnum' }, x.vat_rate + '%'), el('span', { class: 'tnum' }, x.profit_tax_rate + '%')])),
       ]),
+      paramRow('НДС %', 'vat_rate', p.vat_rate, '%'),
+      paramRow('Налог на прибыль %', 'profit_tax_rate', p.profit_tax_rate, '%'),
     ]));
+    // Статьи затрат.
+    const exp = BOOT.expenses || [];
+    c.appendChild(expTable('Производственные (прямые)', exp.filter((e) => e.expense_group === 'production'), 'production', p));
+    c.appendChild(expTable('Накладные (косвенные) — вкл. аренду/электро', exp.filter((e) => e.expense_group === 'overhead'), 'overhead', p));
+    // Каналы.
+    c.appendChild(renderChannels());
+  }
+
+  function expTable(title, list, group, p) {
+    const sum = list.reduce((s, x) => s + num(x.amount), 0);
+    const perUnit = sum / (num(p.avg_monthly_output) || 1);
+    const save = (id, field, v) => apiPost('/expense-item/' + id, { [field]: v }).then(() => { toast('Сохранено'); reboot(); }).catch((e) => toast(e.message, true));
+    return el('div', { style: 'margin-top:14px' }, [
+      el('div', { style: 'display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px' }, [
+        el('div', { class: 'cst-sub', style: 'font-weight:800' }, title + ' · всего ' + money(sum) + ' · на шт ' + money(perUnit)),
+        el('button', { class: 'btn-ghost cst-btn', onclick: () => addExpense(group) }, '+ Статья'),
+      ]),
+      el('div', { class: 'cst-list' }, [
+        el('div', { class: 'cst-row head cst-exp' }, [el('span', {}, 'Статья'), el('span', {}, 'Сумма / мес')]),
+        ...(list.length ? list.map((e) => el('div', { class: 'cst-row cst-exp' }, [
+          editText(e.expense_name, (v) => save(e.id, 'expense_name', v)),
+          el('span', { class: 'cst-price-cell' }, [
+            editNum(e.amount, (v) => save(e.id, 'amount', v)),
+            iconBtn('🗑', 'Удалить', () => { if (confirm('Удалить статью?')) apiDel('/expense-item/' + e.id).then(reboot); }),
+          ]),
+        ])) : [el('div', { class: 'cst-empty' }, 'Статей нет.')]),
+      ]),
+    ]);
+  }
+
+  function renderChannels() {
+    const ch = BOOT.channels || [];
+    const pt = PTYPES || [];
+    const ptOpts = [['', '— тип цены SD —'], ...pt.map((x) => [String(x.id), x.name])];
+    const save = (id, field, v) => apiPost('/channel/' + id, { [field]: v }).then(() => { toast('Сохранено'); }).catch((e) => toast(e.message, true));
+    return el('div', { style: 'margin-top:14px' }, [
+      el('div', { style: 'display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px' }, [
+        el('div', { class: 'cst-sub', style: 'font-weight:800' }, 'Условия каналов'),
+        el('button', { class: 'btn-ghost cst-btn', onclick: addChannel }, '+ Канал'),
+      ]),
+      el('div', { class: 'cst-list' }, [
+        el('div', { class: 'cst-row head cst-ch2' }, ['Канал', 'Ретро %', 'НДС %', 'Налог %', 'Тип цены SD', ''].map((h) => el('span', {}, h))),
+        ...ch.map((x) => el('div', { class: 'cst-row cst-ch2' }, [
+          editText(x.channel, (v) => { save(x.id, 'channel', v).then(reboot); }),
+          editNum(x.retro_rate, (v) => save(x.id, 'retro_rate', v)),
+          editNum(x.vat_rate, (v) => save(x.id, 'vat_rate', v)),
+          editNum(x.profit_tax_rate, (v) => save(x.id, 'profit_tax_rate', v)),
+          editSel(x.sd_price_type_id == null ? '' : String(x.sd_price_type_id), ptOpts, (v) => save(x.id, 'sd_price_type_id', v || null)),
+          iconBtn('🗑', 'Удалить', () => { if (confirm('Удалить канал?')) apiDel('/channel/' + x.id).then(reboot); }),
+        ])),
+      ]),
+    ]);
+  }
+
+  async function reboot() { await boot(); }
+  function payrollFromHr() {
+    if (!BOOT.period) return;
+    apiPost('/period/' + BOOT.period.id + '/payroll-from-hr').then((d) => { toast('ФОТ обновлён: ' + money(d.payroll_with_taxes)); reboot(); }).catch((e) => toast(e.message, true));
+  }
+  function addExpense(group) {
+    if (!BOOT.period) return;
+    const name = prompt(group === 'production' ? 'Название производственной статьи:' : 'Название накладной статьи:'); if (!name) return;
+    apiPost('/expense', { period_id: BOOT.period.id, expense_group: group, expense_name: name, amount: 0 }).then(reboot).catch((e) => toast(e.message, true));
+  }
+  function addChannel() {
+    const name = prompt('Название канала:'); if (!name) return;
+    apiPost('/channel', { channel: name }).then(reboot).catch((e) => toast(e.message, true));
+  }
+
+  // ===== Упаковка: каталог с ценой (последний Закуп + ручная) =====
+  async function renderPackaging() {
+    const c = $('#cst-content');
+    c.appendChild(el('div', { class: 'cst-head' }, [el('div', { class: 'cst-h2' }, 'Упаковка'),
+      el('div', { class: 'cst-sub' }, 'Каталог упаковки с ценой за единицу. «Ручная цена» переопределяет Закуп и сразу учитывается в матрице и рецептурах. Пусто = берётся последний Закуп.')]));
+    const box = el('div', {}); c.appendChild(box);
+    box.appendChild(el('div', { class: 'cst-loading' }, 'Загружаю…'));
+    let d; try { d = await api('/packaging'); } catch (e) { box.innerHTML = ''; box.appendChild(el('div', { class: 'cst-empty' }, 'Ошибка: ' + e.message)); return; }
+    box.innerHTML = '';
+    if (!d.items.length) { box.appendChild(el('div', { class: 'cst-empty' }, 'Упаковки в справочнике нет.')); return; }
+    const save = (id, v) => apiPost('/packaging/' + id + '/price', { calc_price: v === '' ? null : v }).then(() => toast('Сохранено')).catch((e) => toast(e.message, true));
+    const head = el('div', { class: 'cst-row head cst-pk' }, ['#', 'Упаковка', 'Размер', 'Ед.', 'Закуп (посл.)', 'Ручная цена'].map((h) => el('span', {}, h)));
+    box.appendChild(el('div', { class: 'cst-list' }, [head, ...d.items.map((m, i) => el('div', { class: 'cst-row cst-pk' }, [
+      el('span', { class: 'cst-idx' }, String(i + 1)),
+      el('span', { style: 'font-weight:600' }, m.name),
+      el('span', { class: 'muted' }, m.size || '—'),
+      el('span', {}, m.unit || 'шт'),
+      el('span', { class: 'tnum muted' }, m.last_price != null ? money(m.last_price) : '—'),
+      editNum(m.manual_price, (v) => save(m.id, v), { placeholder: m.last_price != null ? money(m.last_price) : '' }),
+    ]))]));
   }
 
   function kpi(label, value) { return el('div', { class: 'cst-kpi' }, [el('div', { class: 'cst-kpi-l' }, label), el('div', { class: 'cst-kpi-v' }, String(value))]); }

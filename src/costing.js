@@ -436,4 +436,131 @@ router.delete('/api/component/:id(\\d+)', async (req, res) => {
   res.json({ ok: true });
 });
 
+// ===== Этап 4: Настройки расчёта (период / статьи затрат / каналы) =====
+// Пересчёт итогов периода из статей затрат.
+async function recalcPeriodTotals(periodId) {
+  await db.pool.query(
+    `UPDATE costing_periods p SET
+       production_expenses = COALESCE((SELECT SUM(amount) FROM costing_expense_items WHERE period_id=p.id AND expense_group='production'),0),
+       overhead_expenses  = COALESCE((SELECT SUM(amount) FROM costing_expense_items WHERE period_id=p.id AND expense_group='overhead'),0),
+       updated_at=now()
+     WHERE p.id=$1`, [periodId]);
+}
+
+const PERIOD_FIELDS = ['avg_monthly_output', 'payroll_total', 'payroll_with_taxes', 'vat_rate', 'profit_tax_rate', 'status'];
+router.post('/api/period/:id(\\d+)', J, async (req, res) => {
+  const b = req.body || {};
+  const sets = [], vals = []; let i = 1;
+  for (const f of PERIOD_FIELDS) {
+    if (!(f in b)) continue;
+    sets.push(`${f}=$${i++}`); vals.push(f === 'status' ? b[f] : asNum(b[f]));
+  }
+  if (!sets.length) return res.json({ ok: true });
+  sets.push('updated_at=now()'); vals.push(req.params.id);
+  await db.pool.query(`UPDATE costing_periods SET ${sets.join(',')} WHERE id=$${i}`, vals);
+  res.json({ ok: true });
+});
+
+// ФОТ из «Персонала»: оклады активных × коэффициент налогов.
+router.post('/api/period/:id(\\d+)/payroll-from-hr', async (req, res) => {
+  let base = 0;
+  try { base = asNum((await db.pool.query("SELECT COALESCE(SUM(base_salary),0) AS s FROM hr_employees WHERE status='active'")).rows[0].s); } catch (e) {}
+  const cs = await calcSettingsMap();
+  const coeff = asNum(cs.fot_tax_coeff) || 1.39;
+  await db.pool.query('UPDATE costing_periods SET payroll_total=$1, payroll_with_taxes=$2, updated_at=now() WHERE id=$3', [base, base * coeff, req.params.id]);
+  res.json({ ok: true, payroll_total: base, payroll_with_taxes: base * coeff, coeff });
+});
+
+router.post('/api/expense', J, async (req, res) => {
+  const b = req.body || {};
+  const periodId = intOrNull(b.period_id);
+  const r = await db.pool.query(
+    'INSERT INTO costing_expense_items (period_id, expense_group, expense_name, amount) VALUES ($1,$2,$3,$4) RETURNING id',
+    [periodId, b.expense_group === 'production' ? 'production' : 'overhead', b.expense_name || 'Статья', asNum(b.amount)]);
+  await recalcPeriodTotals(periodId);
+  res.json({ ok: true, id: r.rows[0].id });
+});
+
+router.post('/api/expense-item/:id(\\d+)', J, async (req, res) => {
+  const b = req.body || {};
+  const sets = [], vals = []; let i = 1;
+  if ('expense_name' in b) { sets.push(`expense_name=$${i++}`); vals.push(b.expense_name); }
+  if ('expense_group' in b) { sets.push(`expense_group=$${i++}`); vals.push(b.expense_group === 'production' ? 'production' : 'overhead'); }
+  if ('amount' in b) { sets.push(`amount=$${i++}`); vals.push(asNum(b.amount)); }
+  if (!sets.length) return res.json({ ok: true });
+  vals.push(req.params.id);
+  await db.pool.query(`UPDATE costing_expense_items SET ${sets.join(',')} WHERE id=$${i}`, vals);
+  const pid = (await db.pool.query('SELECT period_id FROM costing_expense_items WHERE id=$1', [req.params.id])).rows[0];
+  if (pid) await recalcPeriodTotals(pid.period_id);
+  res.json({ ok: true });
+});
+
+router.delete('/api/expense-item/:id(\\d+)', async (req, res) => {
+  const pid = (await db.pool.query('SELECT period_id FROM costing_expense_items WHERE id=$1', [req.params.id])).rows[0];
+  await db.pool.query('DELETE FROM costing_expense_items WHERE id=$1', [req.params.id]);
+  if (pid) await recalcPeriodTotals(pid.period_id);
+  res.json({ ok: true });
+});
+
+router.post('/api/channel', J, async (req, res) => {
+  const b = req.body || {};
+  const r = await db.pool.query(
+    'INSERT INTO costing_channel_terms (channel, retro_rate, vat_rate, profit_tax_rate, sd_price_type_id) VALUES ($1,$2,$3,$4,$5) RETURNING id',
+    [b.channel || 'Канал', asNum(b.retro_rate), b.vat_rate != null ? asNum(b.vat_rate) : 12, b.profit_tax_rate != null ? asNum(b.profit_tax_rate) : 15, intOrNull(b.sd_price_type_id)]);
+  res.json({ ok: true, id: r.rows[0].id });
+});
+
+const CH_FIELDS = ['channel', 'retro_rate', 'vat_rate', 'profit_tax_rate', 'sd_price_type_id'];
+router.post('/api/channel/:id(\\d+)', J, async (req, res) => {
+  const b = req.body || {};
+  const sets = [], vals = []; let i = 1;
+  for (const f of CH_FIELDS) {
+    if (!(f in b)) continue;
+    let v = b[f];
+    if (f === 'sd_price_type_id') v = intOrNull(v);
+    else if (f !== 'channel') v = asNum(v);
+    sets.push(`${f}=$${i++}`); vals.push(v);
+  }
+  if (!sets.length) return res.json({ ok: true });
+  vals.push(req.params.id);
+  await db.pool.query(`UPDATE costing_channel_terms SET ${sets.join(',')} WHERE id=$${i}`, vals);
+  res.json({ ok: true });
+});
+
+router.delete('/api/channel/:id(\\d+)', async (req, res) => {
+  await db.pool.query('DELETE FROM costing_channel_terms WHERE id=$1', [req.params.id]);
+  res.json({ ok: true });
+});
+
+// Типы цен SalesDoctor для привязки канала.
+router.get('/api/price-types', async (req, res) => {
+  const rows = (await db.pool.query("SELECT id, name FROM ref_price_types WHERE status='active' ORDER BY name").catch(() => ({ rows: [] }))).rows;
+  res.json({ items: rows });
+});
+
+// ===== Этап 4: Упаковка — каталог с ценой (последний Закуп + ручная) =====
+router.get('/api/packaging', async (req, res) => {
+  const pm = await priceMap();
+  const rows = (await db.pool.query(
+    `SELECT pk.id, pk.code, pk.name, pk.size, COALESCE(u.short_name,'шт') AS unit
+     FROM ref_packaging pk LEFT JOIN ref_units u ON u.id=pk.unit_id
+     WHERE pk.status='active' ORDER BY pk.name`).catch(() => ({ rows: [] }))).rows;
+  const items = rows.map((m) => {
+    const p = pm[`packaging:${m.id}`] || {};
+    return { id: m.id, code: m.code, name: m.name, size: m.size, unit: m.unit,
+      last_price: p.last, manual_price: p.calc };
+  });
+  res.json({ items });
+});
+
+router.post('/api/packaging/:id(\\d+)/price', J, async (req, res) => {
+  const v = numOrNull((req.body || {}).calc_price);
+  await db.pool.query(
+    `INSERT INTO calc_material_prices (item_kind, item_id, calc_price, updated_at)
+     VALUES ('packaging',$1,$2,now())
+     ON CONFLICT (item_kind, item_id) DO UPDATE SET calc_price=$2, updated_at=now()`,
+    [req.params.id, v]);
+  res.json({ ok: true });
+});
+
 module.exports = router;
