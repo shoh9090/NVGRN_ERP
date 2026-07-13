@@ -101,6 +101,7 @@ async function ensureSchema() {
     production_per_unit: '0',
     overhead_per_unit: '0',
     fot_tax_coeff: '1.39',
+    sd_price_type_id: '',
     retro_pct: '0',
     vat_pct: '12',
     profit_tax_pct: '15',
@@ -272,6 +273,10 @@ async function getMaterials() {
 }
 
 async function recipeRows(whereSql = "r.status = 'active'", params = []) {
+  // Товар для SD: явный product_id, иначе матч по названию рецептуры (ref_finished_goods).
+  // Тип цены: у рецептуры, иначе общий из настроек sd_price_type_id.
+  const s = await settingsMap();
+  const sdPt = intOrNull(s.sd_price_type_id);
   const rows = await db.pool.query(
     `SELECT r.*, g.name AS fg_name, g.code AS fg_code, g.barcode AS fg_barcode, pt.name AS price_type_name, rp.price AS sd_sale_price,
             grp.name AS group_name,
@@ -279,8 +284,14 @@ async function recipeRows(whereSql = "r.status = 'active'", params = []) {
             grp.overhead_per_unit AS g_overhead, grp.monthly_units AS g_monthly
      FROM calc_recipes r
      LEFT JOIN ref_finished_goods g ON g.id = r.product_id
+     LEFT JOIN LATERAL (
+       SELECT fg.id FROM ref_finished_goods fg
+       WHERE fg.status='active' AND lower(fg.name) = lower(COALESCE(NULLIF(r.product_name,''), g.name))
+       LIMIT 1
+     ) gm ON true
      LEFT JOIN ref_price_types pt ON pt.id = r.sale_price_type_id
-     LEFT JOIN ref_prices rp ON rp.price_type_id = r.sale_price_type_id AND rp.product_id = r.product_id
+     LEFT JOIN ref_prices rp ON rp.product_id = COALESCE(r.product_id, gm.id)
+            AND rp.price_type_id = COALESCE(r.sale_price_type_id, ${sdPt || 'NULL'})
      LEFT JOIN calc_groups grp ON grp.id = r.group_id
      WHERE ${whereSql}
      ORDER BY r.updated_at DESC, r.id DESC`,
@@ -724,7 +735,7 @@ router.post('/api/recipe/:id(\\d+)/archive', async (req, res) => {
 });
 
 router.post('/api/settings', J, async (req, res) => {
-  const allowed = ['monthly_units', 'labor_per_unit', 'production_per_unit', 'overhead_per_unit', 'retro_pct', 'vat_pct', 'profit_tax_pct', 'waste_pct'];
+  const allowed = ['monthly_units', 'labor_per_unit', 'production_per_unit', 'overhead_per_unit', 'retro_pct', 'vat_pct', 'profit_tax_pct', 'waste_pct', 'sd_price_type_id'];
   for (const key of allowed) {
     if (!(key in req.body)) continue;
     await db.pool.query(

@@ -778,6 +778,7 @@
     const tax = Math.max(profit, 0) * taxPct / 100, net = profit - tax;
     return { retro, vat, profit, profit_tax: tax, net_profit: net, markup_pct: costCalc ? (price - costCalc) / costCalc * 100 : null, margin_pct: price ? net / price * 100 : null };
   }
+  const INFO_SVG = '<svg viewBox="0 0 20 20" width="15" height="15" fill="none" aria-hidden="true"><circle cx="10" cy="10" r="8.25" stroke="currentColor" stroke-width="1.5"/><circle cx="10" cy="6.4" r="1.15" fill="currentColor"/><rect x="9.05" y="8.7" width="1.9" height="5.6" rx="0.95" fill="currentColor"/></svg>';
   // Клик по ⓘ — поповер с расчётом строки (не подсказка на hover, а «ссылка на расчёт»).
   function showFormula(ev, label, text) {
     ev.stopPropagation();
@@ -939,7 +940,7 @@
           const td = el('td', { class: 'tnum' }, ''); colCells[ci][row.key] = td; return td;
         });
         const labelCell = el('th', { class: 'calc-mx-rowlabel' }, [el('span', {}, row.label),
-          row.title ? el('button', { class: 'calc-mx-info', title: 'Как считается', onclick: (e) => showFormula(e, row.label, row.title) }, 'ⓘ') : null]);
+          row.title ? el('button', { class: 'calc-mx-info', title: 'Как считается', html: INFO_SVG, onclick: (e) => showFormula(e, row.label, row.title) }) : null]);
         body.push(el('tr', { class: (row.total ? 'calc-mx-total' : '') + (row.hl ? ' calc-mx-ship' : '') }, [labelCell, ...cells]));
       });
     });
@@ -1085,7 +1086,19 @@
       ])),
     ])));
     c.appendChild(form);
+    c.appendChild(sdPriceCard(s));
     c.appendChild(groupsCard());
+  }
+  // Настройки → тип цены для «Цена в SD» (товар матчится по названию рецептуры).
+  function sdPriceCard(s) {
+    const sel = select([{ v: '', t: '— не выбрано —' }, ...(DICTS.priceTypes || []).map((p) => ({ v: p.id, t: p.name }))], s.sd_price_type_id || '', {
+      onchange: async (e) => { try { await post('/settings', { sd_price_type_id: e.target.value }); toast('Сохранено'); await reloadBase(); } catch (err) { toast(err.message, true); } },
+    });
+    return el('section', { class: 'calc-settings-card', style: 'max-width:520px;margin-top:12px' }, [
+      el('div', { class: 'calc-settings-title' }, 'Цена из SD'),
+      el('div', { class: 'calc-sub' }, 'Прайс-лист, из которого в матрице берётся строка «Цена в SD». Товар подбирается по названию рецептуры автоматически. Обновить сами цены — синхронизацией в «Справочники → Отпускные цены».'),
+      el('label', { class: 'calc-setting-tile' }, [el('span', {}, 'Тип цены (прайс-лист)'), sel]),
+    ]);
   }
 
   // Настройки → группы товаров (розница/хорека/…): название + свои постоянные затраты.

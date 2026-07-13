@@ -122,8 +122,9 @@
 .calc-mx thead th { position:sticky; top:0; z-index:3; background:#eef4eb; color:var(--forest); font-weight:800; text-align:center; }
 .calc-mx-corner { left:0; z-index:5 !important; text-align:left !important; }
 .calc-mx-rowlabel { position:sticky; left:0; z-index:2; background:#fbfaf5; text-align:left !important; font-weight:700; color:#4d5b50; }
-.calc-mx-info { border:0; background:none; color:var(--muted); cursor:pointer; font-size:12px; margin-left:6px; padding:0 2px; }
+.calc-mx-info { border:0; background:none; color:#9aa79b; cursor:pointer; margin-left:6px; padding:0; display:inline-flex; vertical-align:middle; }
 .calc-mx-info:hover { color:var(--forest); }
+.calc-mx-info svg { display:block; }
 .calc-formula-pop { position:absolute; z-index:90; max-width:340px; background:#fff; border:1px solid var(--forest); border-radius:10px; box-shadow:0 10px 30px rgba(0,0,0,.18); padding:10px 12px; }
 .calc-formula-pop-h { font-weight:800; color:var(--forest); font-size:13px; margin-bottom:4px; }
 .calc-formula-pop-b { font-size:13px; color:var(--ink); line-height:1.45; }
