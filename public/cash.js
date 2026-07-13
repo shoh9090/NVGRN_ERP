@@ -273,7 +273,7 @@
     txState.from = repState.from || monthStartStr();
     txState.to = repState.to || todayStr();
     txState.wallet = repState.wallet || '';
-    txState.type = ''; txState.q = ''; txState.payer = ''; txState.amountMin = ''; txState.amountMax = ''; txState.counterparty = ''; txState.page = 1;
+    txState.type = ''; txState.q = ''; txState.counterparty = ''; txState.page = 1;
     txState.category = ''; txState.catgroup = ''; txState.classified = '';
   }
   function drillToTx(r) {
@@ -401,7 +401,7 @@
   }
 
   // ================= ТРАНЗАКЦИИ =================
-  const txState = { from: '', to: '', wallet: '', type: '', q: '', payer: '', amountMin: '', amountMax: '', category: '', catgroup: '', counterparty: '', classified: '', page: 1, pageSize: 50 };
+  const txState = { from: '', to: '', wallet: '', type: '', q: '', category: '', catgroup: '', counterparty: '', classified: '', page: 1, pageSize: 50 };
   const repState = { from: '', to: '', wallet: '' };
   let txSel = new Set();
   async function renderTransactions() {
@@ -426,13 +426,9 @@
     const typeSel = el('select', { class: 'cashf-inp cash-filt', onchange: (e) => { txState.type = e.target.value; reload1(); } }, [{ v: '', t: 'Все типы' }, { v: 'in', t: 'Приходы' }, { v: 'out', t: 'Расходы' }, { v: 'transfer', t: 'Переводы' }].map((o) => el('option', { value: o.v, selected: o.v === txState.type || null }, o.t)));
     const catSel = el('select', { class: 'cashf-inp cash-filt', onchange: (e) => { txState.category = e.target.value; txState.catgroup = ''; reload1(); } }, [el('option', { value: '' }, 'Все статьи ДДС'), ...(DICTS.categories || []).map((x) => el('option', { value: x.id, selected: String(x.id) === txState.category || null }, x.code + ' · ' + x.name))]);
     const classSel = el('select', { class: 'cashf-inp cash-filt', onchange: (e) => { txState.classified = e.target.value; reload1(); } }, [{ v: '', t: 'Все' }, { v: 'no', t: 'Не разобрано' }, { v: 'yes', t: 'Разобрано' }].map((o) => el('option', { value: o.v, selected: o.v === txState.classified || null }, o.t)));
-    const search = el('input', { type: 'search', class: 'cashf-inp cash-filt cash-filt-q', placeholder: 'Назначение…', value: txState.q, oninput: (e) => { txState.q = e.target.value; clearTimeout(window.__cashT); window.__cashT = setTimeout(reload1, 350); } });
-    const payerInp = el('input', { type: 'search', class: 'cashf-inp cash-filt', placeholder: 'От кого…', value: txState.payer, oninput: (e) => { txState.payer = e.target.value; clearTimeout(window.__cashT2); window.__cashT2 = setTimeout(reload1, 350); } });
-    const amtMinInp = el('input', { type: 'text', inputmode: 'decimal', class: 'cashf-inp cash-filt cash-filt-amt', placeholder: 'Сумма от', value: txState.amountMin, onchange: (e) => { txState.amountMin = String(e.target.value).trim().replace(',', '.'); reload1(); } });
-    const amtMaxInp = el('input', { type: 'text', inputmode: 'decimal', class: 'cashf-inp cash-filt cash-filt-amt', placeholder: 'до', value: txState.amountMax, onchange: (e) => { txState.amountMax = String(e.target.value).trim().replace(',', '.'); reload1(); } });
+    const search = el('input', { type: 'search', class: 'cashf-inp cash-filt cash-filt-q', placeholder: 'Поиск по назначению / от кого…', value: txState.q, oninput: (e) => { txState.q = e.target.value; clearTimeout(window.__cashT); window.__cashT = setTimeout(reload1, 350); } });
     const sizeSel = el('select', { class: 'cashf-inp cash-filt', onchange: (e) => { txState.pageSize = parseInt(e.target.value); txState.page = 1; loadTx(); } }, [10, 20, 50, 100, 200].map((n) => el('option', { value: n, selected: n === txState.pageSize || null }, 'по ' + n)));
-    // Порядок фильтров повторяет порядок столбцов таблицы: Дата · Кошелёк · От кого · Статья · Назначение · Сумма.
-    c.appendChild(el('div', { class: 'cash-filters' }, [el('span', { class: 'cash-flab' }, 'С'), dateInp('from'), el('span', { class: 'cash-flab' }, 'по'), dateInp('to'), walletSel, typeSel, payerInp, catSel, classSel, search, amtMinInp, amtMaxInp, sizeSel]));
+    c.appendChild(el('div', { class: 'cash-filters' }, [el('span', { class: 'cash-flab' }, 'С'), dateInp('from'), el('span', { class: 'cash-flab' }, 'по'), dateInp('to'), walletSel, typeSel, catSel, classSel, search, sizeSel]));
     c.appendChild(el('div', { id: 'cash-tx-wrap' }));
     loadTx();
   }
@@ -445,7 +441,7 @@
   async function loadTx() {
     const wrap = $('#cash-tx-wrap'); if (!wrap) return;
     const p = new URLSearchParams();
-    ['from', 'to', 'wallet', 'type', 'q', 'payer', 'amountMin', 'amountMax', 'category', 'catgroup', 'counterparty', 'classified'].forEach((k) => { if (txState[k]) p.set(k, txState[k]); });
+    ['from', 'to', 'wallet', 'type', 'q', 'category', 'catgroup', 'counterparty', 'classified'].forEach((k) => { if (txState[k]) p.set(k, txState[k]); });
     p.set('page', txState.page); p.set('pageSize', txState.pageSize);
     let data; try { data = await api('/transactions?' + p.toString()); } catch (e) { toast(e.message, true); return; }
     txItems = data.items || []; txSel.clear();

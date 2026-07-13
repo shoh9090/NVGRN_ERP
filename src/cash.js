@@ -701,7 +701,7 @@ router.get('/api/report', async (req, res) => {
 
 // ---------- Журнал транзакций ----------
 router.get('/api/transactions', async (req, res) => {
-  const { from, to, wallet, counterparty, category, type, q, payer, classified } = req.query;
+  const { from, to, wallet, counterparty, category, type, q, classified } = req.query;
   // Начальные остатки (source='opening') — системные записи, в журнал не показываем: только сальдо.
   const p = [], w = ["t.source <> 'opening'"];
   if (from) { p.push(from); w.push(`t.tx_date >= $${p.length}`); }
@@ -714,12 +714,7 @@ router.get('/api/transactions', async (req, res) => {
   else if (req.query.catgroup) { p.push(req.query.catgroup); w.push(`EXISTS (SELECT 1 FROM cash_categories cg WHERE cg.id = t.category_id AND cg.group_name = $${p.length})`); }
   if (classified === 'no') w.push(`(t.tx_type <> 'transfer' AND t.is_classified = false)`);
   else if (classified === 'yes') w.push(`t.is_classified = true`);
-  // «Назначение» и «От кого» — отдельные фильтры под соответствующие столбцы таблицы.
-  if (q) { p.push('%' + String(q).trim() + '%'); w.push(`t.purpose ILIKE $${p.length}`); }
-  if (payer) { p.push('%' + String(payer).trim() + '%'); w.push(`(t.payer_name ILIKE $${p.length} OR cp.name ILIKE $${p.length})`); }
-  const amtMin = numOrNull(req.query.amountMin), amtMax = numOrNull(req.query.amountMax);
-  if (amtMin != null) { p.push(amtMin); w.push(`t.amount >= $${p.length}`); }
-  if (amtMax != null) { p.push(amtMax); w.push(`t.amount <= $${p.length}`); }
+  if (q) { p.push('%' + String(q).trim() + '%'); w.push(`(t.purpose ILIKE $${p.length} OR t.payer_name ILIKE $${p.length})`); }
   const where = w.length ? 'WHERE ' + w.join(' AND ') : '';
   // Итоги и общее число — по всей выборке (не по странице).
   const agg = (await db.pool.query(
@@ -727,7 +722,7 @@ router.get('/api/transactions', async (req, res) => {
             COALESCE(SUM(amount) FILTER (WHERE tx_type='out'),0) AS tout,
             COUNT(*) FILTER (WHERE tx_type <> 'transfer' AND is_classified = false) AS unclass,
             COUNT(*) AS total
-     FROM cash_transactions t LEFT JOIN cash_counterparties cp ON cp.id = t.counterparty_id ${where}`, p)).rows[0];
+     FROM cash_transactions t ${where}`, p)).rows[0];
   const pageSize = [10, 20, 50, 100, 200].includes(parseInt(req.query.pageSize)) ? parseInt(req.query.pageSize) : 50;
   const page = Math.max(1, parseInt(req.query.page) || 1);
   const offset = (page - 1) * pageSize;

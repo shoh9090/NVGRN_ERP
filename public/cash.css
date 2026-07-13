@@ -175,7 +175,6 @@
 .cash-flab { font-size: 13px; color: var(--muted); }
 .cash-filt { width: auto; }
 .cash-filt-q { flex: 1; min-width: 180px; }
-.cash-filt-amt { width: 100px; }
 .cash-tot-bar { display: flex; gap: 16px; flex-wrap: wrap; padding: 10px 12px; background: #fbfaf5; border: 1px solid var(--line); border-radius: 10px; margin-bottom: 10px; font-size: 13px; font-weight: 700; }
 .cash-tot-in { color: #2e7d32; }
 .cash-tot-out { color: #c0392b; }
