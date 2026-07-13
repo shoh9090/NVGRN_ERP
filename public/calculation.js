@@ -778,6 +778,22 @@
     const tax = Math.max(profit, 0) * taxPct / 100, net = profit - tax;
     return { retro, vat, profit, profit_tax: tax, net_profit: net, markup_pct: costCalc ? (price - costCalc) / costCalc * 100 : null, margin_pct: price ? net / price * 100 : null };
   }
+  // Клик по ⓘ — поповер с расчётом строки (не подсказка на hover, а «ссылка на расчёт»).
+  function showFormula(ev, label, text) {
+    ev.stopPropagation();
+    document.querySelectorAll('.calc-formula-pop').forEach((n) => n.remove());
+    const pop = el('div', { class: 'calc-formula-pop' }, [
+      el('div', { class: 'calc-formula-pop-h' }, label),
+      el('div', { class: 'calc-formula-pop-b' }, text),
+    ]);
+    document.body.appendChild(pop);
+    const r = ev.currentTarget.getBoundingClientRect();
+    pop.style.top = (r.bottom + window.scrollY + 6) + 'px';
+    pop.style.left = Math.max(8, Math.min(r.left + window.scrollX, window.scrollX + window.innerWidth - pop.offsetWidth - 12)) + 'px';
+    const close = (e) => { if (!pop.contains(e.target)) { pop.remove(); document.removeEventListener('click', close); } };
+    setTimeout(() => document.addEventListener('click', close), 0);
+  }
+
   // Секции и строки матрицы. edit → редактируемая; comp → считается; text → только показ.
   const MX_SECTIONS = [{ key: 'cost', label: 'Себестоимость' }, { key: 'price', label: 'Цена и прибыль' }];
   const MX_ROWS = [
@@ -799,7 +815,7 @@
     { s: 'price', key: 'a_retro', label: 'Ретро', comp: 'A.retro', title: 'Отгрузочная цена × Ретро %' },
     { s: 'price', key: 'a_vat', label: 'НДС', comp: 'A.vat', title: 'НДС 12% от отгрузочной цены' },
     { s: 'price', key: 'a_profit', label: 'Прибыль', comp: 'A.profit', title: 'Отгрузочная цена − с/с с браком − ретро − НДС' },
-    { s: 'price', key: 'a_tax', label: 'Налог', comp: 'A.profit_tax', title: 'Налог на прибыль 15% от прибыли' },
+    { s: 'price', key: 'a_tax', label: 'Налог на прибыль', comp: 'A.profit_tax', title: 'Налог на прибыль 15% от прибыли' },
     { s: 'price', key: 'a_net', label: 'Чистая прибыль', comp: 'A.net_profit', total: true, title: 'Прибыль − налог на прибыль' },
     { s: 'price', key: 'a_margin', label: 'ЧП %', comp: 'A.margin_pct', pct: true, title: 'Чистая прибыль ÷ отгрузочная цена' },
   ];
@@ -922,7 +938,9 @@
           if (row.text) return el('td', { title: row.title || '' }, row.text(m));
           const td = el('td', { class: 'tnum' }, ''); colCells[ci][row.key] = td; return td;
         });
-        body.push(el('tr', { class: (row.total ? 'calc-mx-total' : '') + (row.hl ? ' calc-mx-ship' : '') }, [el('th', { class: 'calc-mx-rowlabel', title: row.title || '' }, row.label), ...cells]));
+        const labelCell = el('th', { class: 'calc-mx-rowlabel' }, [el('span', {}, row.label),
+          row.title ? el('button', { class: 'calc-mx-info', title: 'Как считается', onclick: (e) => showFormula(e, row.label, row.title) }, 'ⓘ') : null]);
+        body.push(el('tr', { class: (row.total ? 'calc-mx-total' : '') + (row.hl ? ' calc-mx-ship' : '') }, [labelCell, ...cells]));
       });
     });
     models.forEach((_, ci) => refreshCol(ci));
