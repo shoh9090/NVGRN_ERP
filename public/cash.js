@@ -159,8 +159,8 @@
     const main = $('#cash-main'); main.innerHTML = '';
     const tab = (id, label) => el('button', { class: 'cash-tab' + (TAB === id ? ' on' : ''), onclick: () => { TAB = id; render(); } }, label);
     main.appendChild(el('div', { class: 'cash-tabs' }, [
-      tab('tx', '💸 Транзакции'),
       tab('cashbox', '🪙 Наличная касса'),
+      tab('tx', '💸 Транзакции'),
       tab('triage', '🧩 Разбор'),
       tab('cashflow', '📊 Кэш-флоу (ДДС)'),
       tab('pnl', '📈 P&L'),
@@ -538,19 +538,29 @@
     const cashWallets = (DICTS.wallets || []).filter((w) => w.kind === 'cash');
     if (!cbState.wallet && cashWallets.length) cbState.wallet = String(cashWallets[0].id);
     c.appendChild(el('div', { class: 'cash-head' }, [
-      el('div', {}, [el('div', { class: 'cash-h2' }, 'Наличная касса'), el('div', { class: 'cash-sub' }, 'Ежедневный ручной учёт нала — построчно, как в таблице.')]),
+      el('div', {}, [el('div', { class: 'cash-h2' }, 'Наличная касса')]),
+      el('div', { class: 'cash-tx-btns' }, [
+        el('button', { class: 'btn-ghost cash-add', onclick: openOpeningForm }, '💼 Начальные остатки'),
+      ]),
     ]));
     if (!cashWallets.length) { c.appendChild(el('div', { class: 'cash-empty' }, 'Нет ни одного кошелька типа «Наличные». Заведите его на вкладке «Кошельки».')); return; }
     const typeBtn = (v, label) => el('button', { class: 'btn-ghost cash-add' + (cbState.type === v ? ' cb-on' : ''), onclick: () => { cbState.type = v; renderCashbox(); } }, label);
     const walletSel = el('select', { class: 'cashf-inp', onchange: (e) => { cbState.wallet = e.target.value; renderCashbox(); } },
       cashWallets.map((w) => el('option', { value: w.id, selected: String(w.id) === cbState.wallet || null }, w.name)));
+    const periodOn = !!(cbState.from || cbState.to);
     const fromInp = el('input', { type: 'date', class: 'cashf-inp', value: cbState.from, onchange: (e) => { cbState.from = e.target.value; renderCashbox(); } });
     const toInp = el('input', { type: 'date', class: 'cashf-inp', value: cbState.to, onchange: (e) => { cbState.to = e.target.value; renderCashbox(); } });
-    c.appendChild(el('div', { class: 'cash-filters', style: 'margin-bottom:10px' }, [
+    const periodRow = el('div', { class: 'cash-filters', style: 'margin-top:6px' + (periodOn ? '' : ';display:none'), id: 'cb-period-row' }, [
+      el('span', { class: 'cash-flab' }, 'C'), fromInp, el('span', { class: 'cash-flab' }, 'по'), toInp,
+      el('button', { class: 'btn-ghost', onclick: () => { cbState.from = ''; cbState.to = ''; renderCashbox(); } }, 'Сбросить'),
+    ]);
+    const periodToggle = el('button', { class: 'btn-ghost cash-add', onclick: () => { const r = $('#cb-period-row'); if (r) r.style.display = r.style.display === 'none' ? '' : 'none'; } }, periodOn ? ('📅 ' + ruDate(cbState.from) + ' – ' + ruDate(cbState.to)) : '📅 Весь период');
+    c.appendChild(el('div', { class: 'cash-filters', style: 'margin-bottom:0' }, [
       typeBtn('in', '➕ Приход'), typeBtn('out', '➖ Расход'),
       el('span', { class: 'cash-flab' }, 'Касса'), walletSel,
-      el('span', { class: 'cash-flab' }, 'C'), fromInp, el('span', { class: 'cash-flab' }, 'по'), toInp,
+      periodToggle,
     ]));
+    c.appendChild(periodRow);
     const wrap = el('div', { id: 'cashbox-wrap' }); c.appendChild(wrap);
     loadCashbox();
   }
@@ -571,11 +581,14 @@
 
     wrap.appendChild(el('div', { class: 'cash-summary', style: 'margin-bottom:10px' }, [
       el('div', { class: 'cash-sum-card neutral' }, [el('div', { class: 'cash-sum-l' }, 'Сальдо на начало'), el('div', { class: 'cash-sum-v' }, money(sum.opening) + ' сум')]),
+      el('div', { class: 'cash-sum-card in' }, [el('div', { class: 'cash-sum-l' }, 'Приход за период'), el('div', { class: 'cash-sum-v' }, money(sum.inflow) + ' сум')]),
+      el('div', { class: 'cash-sum-card out' }, [el('div', { class: 'cash-sum-l' }, 'Расход за период'), el('div', { class: 'cash-sum-v' }, money(sum.outflow) + ' сум')]),
+      el('div', { class: 'cash-sum-card end' }, [el('div', { class: 'cash-sum-l' }, 'Сальдо на конец'), el('div', { class: 'cash-sum-v' }, money(sum.closing) + ' сум')]),
     ]));
 
     // ---- строка ввода (всегда сверху) ----
     const dateInp = el('input', { type: 'date', class: 'cashf-inp', value: todayStr() });
-    const purposeInp = el('input', { class: 'cashf-inp', placeholder: isIn ? 'Откуда…' : 'Куда / на что…' });
+    const purposeInp = el('input', { class: 'cashf-inp cb-purpose-inp', placeholder: isIn ? 'Откуда…' : 'Куда / на что…' });
     const catSel = fsel(catOptions(), '');
     const currSel = el('select', { class: 'cashf-inp' }, [el('option', { value: 'UZS' }, 'сум'), el('option', { value: 'USD' }, '$')]);
     const rateBox = el('span', { class: 'cash-sub cb-rate' }, '—');
@@ -618,14 +631,20 @@
           currency: isUsd ? 'USD' : 'UZS', fx_rate: isUsd ? rate : '', fx_amount: isUsd ? amtRaw : '',
         });
         cbState.lastAddedId = r.id || null;
-        purposeInp.value = ''; catSel.value = ''; amtInp.value = ''; rateOverride.value = ''; equivBox.textContent = '';
-        loadCashbox();
+        await loadCashbox();
       } catch (e) { toast(e.message, true); saving = false; }
     }
     const debouncedSave = () => { clearTimeout(window.__cbT); window.__cbT = setTimeout(trySave, 400); };
     catSel.addEventListener('change', debouncedSave);
     amtInp.addEventListener('input', debouncedSave);
     rateOverride.addEventListener('input', debouncedSave);
+    // Навигация по Enter: Откуда/Куда → Код → Валюта → Сумма → сохранение и снова на «Откуда/Куда».
+    const onEnterFocus = (el2, next) => el2.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); if (next) next.focus(); else trySaveNow(); } });
+    async function trySaveNow() { clearTimeout(window.__cbT); await trySave(); const row = $('#cashbox-wrap .cb-purpose-inp'); if (row) row.focus(); }
+    onEnterFocus(purposeInp, catSel);
+    onEnterFocus(catSel, currSel);
+    onEnterFocus(currSel, amtInp);
+    amtInp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); trySaveNow(); } });
 
     const inputRow = el('div', { class: 'cash-row cash-cb cb-input' }, [
       dateInp, purposeInp, catSel, currSel,
@@ -643,6 +662,7 @@
       const action = isPending
         ? el('span', { class: 'cb-confirm', onclick: () => openConfirmCash(x) }, '⏳ Подтвердить')
         : el('span', { class: 'cb-del', onclick: async () => { if (!confirm('Удалить запись?')) return; try { await post('/tx/' + x.id + '/delete', {}); loadCashbox(); } catch (e) { toast(e.message, true); } } }, isNew ? '✕ Отменить' : '✕');
+      const editIcon = x.tx_type === 'transfer' ? null : el('span', { class: 'cb-edit', onclick: (e) => { e.stopPropagation(); openCashboxRowEdit(x); } }, '✎');
       return el('div', { class: 'cash-row cash-cb' + (isNew ? ' cb-new' : '') + (isPending ? ' cb-pending' : '') }, [
         el('span', {}, ruDate(x.tx_date)),
         el('span', { class: 'cash-purpose' }, label),
@@ -650,17 +670,11 @@
         el('span', {}, fxNote),
         el('span', {}, x.currency === 'USD' ? money(x.fx_rate) : '—'),
         el('span', { style: 'text-align:right' }, money(x.amount)),
-        action,
+        el('span', { class: 'cb-actions' }, [editIcon, action]),
       ]);
     });
     wrap.appendChild(el('div', { class: 'cash-list' }, [head, inputRow, ...rows]));
     if (!rows.length) wrap.appendChild(el('div', { class: 'cash-empty' }, 'Операций пока нет.'));
-
-    const total = isIn ? Number(sum.inflow) : Number(sum.outflow);
-    wrap.appendChild(el('div', { class: 'cash-summary', style: 'margin-top:10px' }, [
-      el('div', { class: 'cash-sum-card' + (isIn ? ' in' : ' out') }, [el('div', { class: 'cash-sum-l' }, isIn ? 'Итого приход за период' : 'Итого расход за период'), el('div', { class: 'cash-sum-v' }, money(total) + ' сум')]),
-      el('div', { class: 'cash-sum-card end' }, [el('div', { class: 'cash-sum-l' }, 'Сальдо на конец'), el('div', { class: 'cash-sum-v' }, money(sum.closing) + ' сум')]),
-    ]));
     refreshRate();
   }
 
@@ -683,6 +697,36 @@
       catch (e) { toast(e.message, true); }
     } }, 'Подтвердить');
     modal('Факт. приход в кассу', el('div', { class: 'cashf' }, [note, frow('Факт. получено', fact), diffBox]), [save]);
+  }
+
+  // Правка уже сохранённой строки (карандашик) — дата/пояснение/статья/валюта/сумма.
+  function openCashboxRowEdit(x) {
+    const date = el('input', { type: 'date', class: 'cashf-inp', value: String(x.tx_date).slice(0, 10) });
+    const purpose = el('input', { class: 'cashf-inp', value: x.purpose || '', placeholder: 'Пояснение' });
+    const cat = fsel(catOptions(), x.category_id || '');
+    const curr = el('select', { class: 'cashf-inp' }, [el('option', { value: 'UZS', selected: x.currency !== 'USD' || null }, 'сум'), el('option', { value: 'USD', selected: x.currency === 'USD' || null }, '$')]);
+    const rate = fmoney(x.currency === 'USD' ? x.fx_rate : '', { placeholder: 'курс' });
+    const amt = fmoney(x.currency === 'USD' ? x.fx_amount : x.amount, { placeholder: '0' });
+    const rateRow = frow('Курс ЦБ', rate);
+    const toggleCurr = () => { rateRow.style.display = curr.value === 'USD' ? '' : 'none'; };
+    curr.onchange = toggleCurr; toggleCurr();
+    const body = el('div', { class: 'cashf' }, [frow('Дата', date), frow('Пояснение', purpose), frow('Статья ДДС', cat), frow('Валюта', curr), rateRow, frow('Сумма', amt)]);
+    const save = el('button', { class: 'btn-primary', onclick: async () => {
+      try {
+        const isUsd = curr.value === 'USD';
+        const a = Number(moneyVal(amt)) || 0;
+        const r = isUsd ? Number(moneyVal(rate)) || 0 : null;
+        if (isUsd && !(r > 0)) return toast('Укажите курс', true);
+        const equivAmount = isUsd ? a * r : a;
+        await post('/tx/' + x.id, {
+          tx_date: date.value, purpose: purpose.value, category_id: cat.value,
+          amount: equivAmount, currency: isUsd ? 'USD' : 'UZS', fx_rate: isUsd ? r : '', fx_amount: isUsd ? a : '',
+        });
+        toast('Сохранено'); closeModal(); loadCashbox();
+      } catch (e) { toast(e.message, true); }
+    } }, 'Сохранить');
+    const del = el('button', { class: 'btn-ghost cashf-arch', onclick: async () => { if (!confirm('Удалить запись?')) return; try { await post('/tx/' + x.id + '/delete', {}); toast('Удалено'); closeModal(); loadCashbox(); } catch (e) { toast(e.message, true); } } }, 'Удалить');
+    modal('Изменить запись', body, [del, save]);
   }
 
   function openTxForm(type, tx) {
