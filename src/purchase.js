@@ -744,7 +744,9 @@ function enrichOrderFinance(o) {
   const base = received ? factTotal : 0;          // долг по заявке = фактически принято
   const remainder = base - paid;
   const cond = o.pay_condition || 'on_fact';
-  const dOf = (d) => (d ? new Date(String(d).slice(0, 10)) : null);
+  // received_at приходит из pg как Date, delivery_date — как строка 'YYYY-MM-DD'.
+  // new Date(d) корректно обрабатывает оба; String(d).slice(0,10) у Date терял год (→ 2001).
+  const dOf = (d) => { if (!d) return null; const x = new Date(d); return isNaN(x.getTime()) ? null : x; };
   const today = new Date(new Date().toISOString().slice(0, 10));
   let dueDate = null;
   if (cond === 'prepay') dueDate = dOf(o.delivery_date);
