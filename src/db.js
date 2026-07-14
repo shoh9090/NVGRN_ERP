@@ -614,14 +614,12 @@ async function seed() {
   }
   await pool.query("UPDATE tiles SET description='Периоды, статьи затрат, ставки и каналы — фундамент калькуляции' WHERE url='/calculation'").catch(() => {});
 
-  // Снос старого модуля «Калькуляция себестоимости» (/costing) по ТЗ перезапуска:
-  // убрать плитку и дропнуть таблицы costing_* (в них были только dev-данные из calc_*).
+  // Старый модуль «Калькуляция себестоимости» (/costing) снят: скрываем его плитку из лаунчпада.
+  // ВАЖНО (P0.3): НЕ выполняем DROP TABLE при старте приложения. Таблицы costing_* уже удалены
+  // ранее разово; если где-то остались — они просто не используются (осиротевшие, безвредны).
+  // Их окончательное удаление, если понадобится, делается отдельной разовой миграцией, не на старте.
   await pool.query("DELETE FROM role_tiles WHERE tile_id IN (SELECT id FROM tiles WHERE url='/costing')").catch(() => {});
   await pool.query("DELETE FROM tiles WHERE url='/costing'").catch(() => {});
-  for (const t of ['costing_snapshot_items', 'costing_snapshots', 'costing_recipe_components', 'costing_recipes', 'costing_expense_items', 'costing_channel_terms', 'costing_periods']) {
-    await pool.query(`DROP TABLE IF EXISTS ${t} CASCADE`).catch(() => {});
-  }
-  await pool.query("DELETE FROM calc_settings WHERE key='costing_seed_v1'").catch(() => {});
 
   // Плитка «Персонал» — сотрудники, зарплата, табель
   const hrt = await pool.query("SELECT id FROM tiles WHERE url = '/hr' LIMIT 1");
