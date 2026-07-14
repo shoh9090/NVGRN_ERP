@@ -791,8 +791,11 @@
       d.orders.length ? el('div', {}, d.orders.map((o) =>
         el('details', { class: 'pur-details' }, [
           el('summary', {}, [
-            `${o.number} · ${dt(o.received_at)} · ${fmtMoney(o.total)} сум · ${payIcon(o.payment_type)} `,
-            el('a', { href: 'javascript:void(0)', style: 'margin-left:8px;font-weight:700', onclick: (e) => { e.preventDefault(); m.close(); openOrderCard(o.id); } }, 'открыть →'),
+            `${o.number} · ${dt(o.received_at)} · ${fmtMoney(o.fact_total || o.total)} сум · оплачено ${fmtMoney(o.paid)} · `,
+            el('b', { style: 'color:' + (o.remainder > 0 ? '#c0392b' : '#3f6a16') }, o.remainder > 0 ? 'остаток ' + fmtMoney(o.remainder) : 'закрыто'),
+            ' · ', payStatusPill(o.pay_status),
+            o.due_date ? el('span', { class: 'muted' }, ' · срок ' + dt(o.due_date)) : null,
+            o.remainder > 0 ? el('a', { href: 'javascript:void(0)', style: 'margin-left:8px;font-weight:700', onclick: (e) => { e.preventDefault(); m.close(); openPayment(s, o.id); } }, '💳 оплатить') : null,
           ]),
           el('table', { class: 'dict-table' }, [
             el('tbody', {}, (itemsByOrder[o.id] || []).map((i) =>
@@ -842,7 +845,7 @@
     ]);
   }
 
-  async function openPayment(presetSupplier) {
+  async function openPayment(presetSupplier, presetOrderId) {
     const suppliers = (await api('/suppliers')).items;
     const supSel = el('select', {}, suppliers.map((s) => el('option', { value: s.id }, s.name + ' (сальдо: ' + fmtMoney(s.balance) + ')')));
     if (presetSupplier) supSel.value = presetSupplier.id;
@@ -853,24 +856,51 @@
     ]);
     const date = el('input', { type: 'date', value: new Date().toISOString().slice(0, 10) });
     const comment = el('input', { placeholder: 'Комментарий (необязательно)' });
+    // Режим разнесения оплаты: по заявке / общая по долгам (FIFO) / аванс.
+    const modeSel = el('select', {}, [
+      el('option', { value: 'order' }, '🎯 По конкретной заявке'),
+      el('option', { value: 'fifo' }, '🧮 Общая — авторазнос по долгам (старые/просрочка первыми)'),
+      el('option', { value: 'advance' }, '💰 Аванс поставщику (без заявки)'),
+    ]);
+    const orderSel = el('select', {}, []);
+    const orderRow = el('label', {}, ['Заявка', orderSel]);
+    async function loadOpenOrders() {
+      orderSel.innerHTML = '';
+      if (!supSel.value) return;
+      const { items } = await api('/suppliers/' + supSel.value + '/open-orders');
+      if (!items.length) { orderSel.appendChild(el('option', { value: '' }, '— нет открытых заявок —')); return; }
+      items.forEach((o) => orderSel.appendChild(el('option', { value: o.id }, `${o.number} · остаток ${fmtMoney(o.remainder)} · срок ${o.due_date ? dt(o.due_date) : '—'} · ${o.pay_status}`)));
+      if (presetOrderId) orderSel.value = presetOrderId;
+    }
+    const toggleMode = () => { orderRow.style.display = modeSel.value === 'order' ? '' : 'none'; };
+    modeSel.addEventListener('change', toggleMode);
+    supSel.addEventListener('change', loadOpenOrders);
     const body = el('div', { class: 'form-col', style: 'max-width:100%' }, [
       el('label', {}, ['Поставщик', supSel]),
+      el('label', {}, ['Как разнести', modeSel]),
+      orderRow,
       el('label', {}, ['Сумма, сум *', amount]),
       el('label', {}, ['Тип платежа', pay]),
       el('label', {}, ['Дата', date]),
       el('label', {}, ['Комментарий', comment]),
+      el('div', { class: 'muted', style: 'font-size:12px' }, 'Оплата привязывается к заявке и уменьшает её остаток. Нераспределённый остаток при авторазносе становится авансом.'),
     ]);
+    if (presetOrderId) modeSel.value = 'order';
+    toggleMode();
+    await loadOpenOrders();
     const m = modal('💳 Внести оплату поставщику', body, [
       el('button', { onclick: () => m.close() }, 'Отмена'),
       el('button', {
         class: 'btn-primary',
         onclick: async (ev) => {
+          if (!(Number(amount.value) > 0)) return toast('Укажите сумму больше нуля', true);
+          if (modeSel.value === 'order' && !orderSel.value) return toast('Выберите заявку (или смените режим на «общая»/«аванс»)', true);
           ev.target.disabled = true;
+          const payload = { supplier_id: supSel.value, amount: amount.value, payment_type: pay.value, paid_at: date.value, comment: comment.value };
+          if (modeSel.value === 'order') payload.order_id = orderSel.value;
+          else if (modeSel.value === 'fifo') payload.distribute = 'fifo';
           try {
-            await api('/payments', {
-              method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ supplier_id: supSel.value, amount: amount.value, payment_type: pay.value, paid_at: date.value, comment: comment.value }),
-            });
+            await api('/payments', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
             toast('Оплата записана ✅');
             m.close();
             if (currentTab === 'settlements') loadSettlements(); else loadSuppliers();

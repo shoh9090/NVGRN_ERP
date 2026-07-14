@@ -129,15 +129,19 @@ router.get('/api/suppliers/:id(\\d+)/statement', async (req, res) => {
     [req.params.id]
   );
   if (!sup.rows.length) return res.status(404).json({ error: 'Поставщик не найден' });
-  const orders = await db.pool.query(
-    `SELECT po.id, po.number, po.received_at, po.payment_type, po.comment,
-            SUM(COALESCE(i.fact_qty, i.qty) * COALESCE(i.fact_price, i.price)) AS total
+  const ordersRaw = await db.pool.query(
+    `SELECT po.id, po.number, po.status, po.received_at, po.payment_type, po.pay_condition, po.defer_days,
+            po.delivery_date, po.comment,
+            SUM(COALESCE(i.fact_qty, i.qty) * COALESCE(i.fact_price, i.price)) AS total,
+            COALESCE(SUM(i.fact_qty * i.fact_price), 0) AS fact_total,
+            COALESCE((SELECT SUM(amount) FROM supplier_payments sp WHERE sp.order_id = po.id), 0) AS paid
      FROM purchase_orders po
      JOIN purchase_order_items i ON i.order_id = po.id
      WHERE po.supplier_id = $1 AND po.status = 'received'
      GROUP BY po.id ORDER BY po.received_at DESC`,
     [req.params.id]
   );
+  const orders = { rows: ordersRaw.rows.map(enrichOrderFinance) };
   const items = await db.pool.query(
     `SELECT i.order_id, i.item_kind, i.item_id, COALESCE(i.fact_qty, i.qty) AS qty, COALESCE(i.fact_price, i.price) AS price,
             COALESCE(rm.name, pk.name) AS item_name, COALESCE(rm.code, pk.code) AS item_code,
@@ -158,19 +162,59 @@ router.get('/api/suppliers/:id(\\d+)/statement', async (req, res) => {
   res.json({ supplier: sup.rows[0], orders: orders.rows, items: items.rows, payments: payments.rows });
 });
 
+// Открытые (принятые, с остатком) заявки поставщика — для оплаты по заявке и FIFO.
+// Порядок: сначала с самым ранним сроком оплаты (просроченные естественно первыми).
+async function supplierOpenOrders(supplierId) {
+  const r = await db.pool.query(
+    `SELECT po.id, po.number, po.status, po.pay_condition, po.defer_days, po.delivery_date, po.received_at,
+            COALESCE(SUM(i.fact_qty * i.fact_price), 0) AS fact_total,
+            COALESCE((SELECT SUM(amount) FROM supplier_payments sp WHERE sp.order_id = po.id), 0) AS paid
+     FROM purchase_orders po LEFT JOIN purchase_order_items i ON i.order_id = po.id
+     WHERE po.supplier_id = $1 AND po.status = 'received'
+     GROUP BY po.id`, [supplierId]);
+  return r.rows.map(enrichOrderFinance).filter((o) => o.remainder > 0.01)
+    .sort((a, b) => String(a.due_date || '9999').localeCompare(String(b.due_date || '9999')) || a.id - b.id);
+}
+
+router.get('/api/suppliers/:id(\\d+)/open-orders', async (req, res) => {
+  res.json({ items: await supplierOpenOrders(parseInt(req.params.id)) });
+});
+
 // ---------- Оплаты ----------
+// Режимы: order_id — оплата конкретной заявки; distribute='fifo' — общая сумма разносится
+// по старым долгам (просрочка/старые сроки → новые), остаток = аванс; иначе — аванс поставщику.
 router.post('/api/payments', express.json(), async (req, res) => {
   const amount = Number(req.body.amount);
   const supplierId = parseInt(req.body.supplier_id);
   if (!supplierId || !amount || amount <= 0) return res.status(400).json({ error: 'Укажите поставщика и сумму больше нуля' });
   const ptype = req.body.payment_type === 'наличка' ? 'наличка' : 'перечисление';
-  await db.pool.query(
-    `INSERT INTO supplier_payments (supplier_id, amount, payment_type, paid_at, comment, created_by)
-     VALUES ($1, $2, $3, COALESCE($4::date, CURRENT_DATE), $5, $6)`,
-    [supplierId, amount, ptype, req.body.paid_at || null, req.body.comment || '', req.user.id]
-  );
-  await db.log(req.user.id, 'purchase_payment', `supplier=${supplierId} sum=${amount} (${ptype})`);
-  res.json({ ok: true });
+  const paidAt = req.body.paid_at || null;
+  const comment = req.body.comment || '';
+  const orderId = intOrNull(req.body.order_id);
+  const insertPay = (amt, ordId) => db.pool.query(
+    `INSERT INTO supplier_payments (supplier_id, order_id, amount, payment_type, paid_at, comment, created_by)
+     VALUES ($1, $2, $3, $4, COALESCE($5::date, CURRENT_DATE), $6, $7)`,
+    [supplierId, ordId, amt, ptype, paidAt, comment, req.user.id]);
+  let mode = 'advance';
+  if (orderId) {
+    const ok = await db.pool.query("SELECT 1 FROM purchase_orders WHERE id=$1 AND supplier_id=$2 AND status='received'", [orderId, supplierId]);
+    if (!ok.rows.length) return res.status(400).json({ error: 'Заявка не найдена или ещё не принята' });
+    await insertPay(amount, orderId); mode = 'order';
+  } else if (req.body.distribute === 'fifo') {
+    const open = await supplierOpenOrders(supplierId);
+    let rest = amount;
+    for (const o of open) {
+      if (rest <= 0.01) break;
+      const pay = Math.min(rest, o.remainder);
+      await insertPay(pay, o.id); rest -= pay;
+    }
+    if (rest > 0.01) await insertPay(rest, null); // нераспределённый остаток — аванс
+    mode = 'fifo';
+  } else {
+    await insertPay(amount, null); // аванс поставщику
+  }
+  await db.log(req.user.id, 'purchase_payment', `supplier=${supplierId} sum=${amount} (${ptype}, ${mode})`);
+  res.json({ ok: true, mode });
 });
 
 // ---------- Номенклатура для заявки (сырьё + упаковка, с последней ценой поставщика) ----------
