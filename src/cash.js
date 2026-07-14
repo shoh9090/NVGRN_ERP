@@ -737,15 +737,20 @@ router.get('/api/transactions', async (req, res) => {
   if (to) { p.push(to); w.push(`t.tx_date <= $${p.length}`); }
   const wid = intOrNull(wallet);
   if (type && ['in', 'out', 'transfer'].includes(type)) {
-    // includeTransferIn: для «Приход» по конкретному кошельку также показываем переводы,
-    // которые зачисляются в этот кошелёк (напр. обналичивание банк→касса) — иначе такие
-    // поступления не видны в списке «Приход», хотя реально пришли.
-    if (type === 'in' && req.query.includeTransferIn && wid) {
-      p.push(type); const typeIdx = p.length; p.push(wid); const widIdx = p.length;
-      w.push(`(t.tx_type = $${typeIdx} OR (t.tx_type='transfer' AND t.wallet_to_id = $${widIdx}))`);
+    if (type === 'in' && wid) {
+      // «Приход» по кошельку = поступления (in) + переводы, зачисляемые В этот кошелёк.
+      p.push(wid); const widIdx = p.length;
+      w.push(`((t.tx_type='in' AND t.wallet_id = $${widIdx}) OR (t.tx_type='transfer' AND t.wallet_to_id = $${widIdx}))`);
+    } else if (type === 'out' && wid) {
+      // «Расход» по кошельку = списания (out) + переводы, уходящие ИЗ этого кошелька.
+      // Важно: перевод, где кошелёк — ПОЛУЧАТЕЛЬ, сюда НЕ попадает (это приход, не расход).
+      p.push(wid); const widIdx = p.length;
+      w.push(`((t.tx_type='out' AND t.wallet_id = $${widIdx}) OR (t.tx_type='transfer' AND t.wallet_id = $${widIdx}))`);
     } else { p.push(type); w.push(`t.tx_type = $${p.length}`); }
   }
-  if (wallet) { p.push(wid); w.push(`(t.wallet_id = $${p.length} OR t.wallet_to_id = $${p.length})`); }
+  // Общий фильтр по кошельку (для случаев без разбивки по типу — напр. «Все типы»).
+  if (wallet && !(type === 'in' || type === 'out')) { p.push(wid); w.push(`(t.wallet_id = $${p.length} OR t.wallet_to_id = $${p.length})`); }
+  else if (wallet && !wid) { p.push(parseInt(wallet)); w.push(`(t.wallet_id = $${p.length} OR t.wallet_to_id = $${p.length})`); }
   if (counterparty) { p.push(parseInt(counterparty)); w.push(`t.counterparty_id = $${p.length}`); }
   if (category) { p.push(parseInt(category)); w.push(`t.category_id = $${p.length}`); }
   if (req.query.catgroup === '__nogroup__') w.push(`EXISTS (SELECT 1 FROM cash_categories cg WHERE cg.id = t.category_id AND cg.group_name IS NULL)`);

@@ -547,6 +547,7 @@
     const typeBtn = (v, label) => el('button', { class: 'btn-ghost cash-add' + (cbState.type === v ? ' cb-on' : ''), onclick: () => { cbState.type = v; renderCashbox(); } }, label);
     const walletSel = el('select', { class: 'cashf-inp', onchange: (e) => { cbState.wallet = e.target.value; renderCashbox(); } },
       cashWallets.map((w) => el('option', { value: w.id, selected: String(w.id) === cbState.wallet || null }, w.name)));
+    const showWalletSel = cashWallets.length > 1;
     const periodOn = !!(cbState.from || cbState.to);
     const fromInp = el('input', { type: 'date', class: 'cashf-inp', value: cbState.from, onchange: (e) => { cbState.from = e.target.value; renderCashbox(); } });
     const toInp = el('input', { type: 'date', class: 'cashf-inp', value: cbState.to, onchange: (e) => { cbState.to = e.target.value; renderCashbox(); } });
@@ -574,7 +575,6 @@
       const sp = new URLSearchParams(); if (cbState.from) sp.set('from', cbState.from); if (cbState.to) sp.set('to', cbState.to); sp.set('wallet', cbState.wallet);
       sum = await api('/summary?' + sp.toString());
       const tp = new URLSearchParams(); tp.set('wallet', cbState.wallet); tp.set('type', cbState.type); tp.set('pageSize', '200');
-      if (isIn) tp.set('includeTransferIn', '1');
       if (cbState.from) tp.set('from', cbState.from); if (cbState.to) tp.set('to', cbState.to);
       list = await api('/transactions?' + tp.toString());
     } catch (e) { toast(e.message, true); return; }
