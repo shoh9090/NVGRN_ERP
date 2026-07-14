@@ -127,6 +127,14 @@ async function ensureCashSchema() {
   // Перевод банк→касса, где ещё не подтверждена реальная сумма прихода (обналичивание с комиссией,
   // которая станет известна только когда бухгалтер физически пересчитает наличные).
   await q(`ALTER TABLE cash_transactions ADD COLUMN IF NOT EXISTS needs_cash_confirm BOOLEAN NOT NULL DEFAULT false`);
+  // Связка двух «ног» перевода банк↔банк (у обоих счетов своя выписка): out в банке-А и in в банке-Б —
+  // это один перевод. Обе ноги двигают только свой кошелёк и исключены из прихода/расхода отчёта.
+  await q(`ALTER TABLE cash_transactions ADD COLUMN IF NOT EXISTS transfer_group_id INT`);
+  await q(`CREATE INDEX IF NOT EXISTS idx_cash_tx_tgroup ON cash_transactions (transfer_group_id)`);
+  // Есть ли у кошелька своя выписка (банки — да, наличная касса — нет). Определяет форму разбора А2:
+  // получатель с выпиской → пара ног; получатель без выписки (касса) → одиночный transfer.
+  await q(`ALTER TABLE cash_wallets ADD COLUMN IF NOT EXISTS has_statement BOOLEAN NOT NULL DEFAULT true`);
+  await q(`UPDATE cash_wallets SET has_statement=false WHERE kind='cash'`);
 
   await q(`CREATE TABLE IF NOT EXISTS cash_fx_rates (
     rate_date DATE PRIMARY KEY,
@@ -143,8 +151,8 @@ async function ensureCashSchema() {
   await seedGroups();
   await seedCategories();
   await seedWallets();
-  // Код 100 «A2A» — перемещение денег между своими счетами/кошельками (не доход/расход).
-  await db.pool.query("UPDATE cash_categories SET direction_hint='transfer' WHERE code='100' AND (direction_hint IS NULL OR direction_hint='')");
+  // Коды 100/110/111 — перемещения между своими счетами (не доход/расход): межбанк, обнал, пополнение карты.
+  await db.pool.query("UPDATE cash_categories SET direction_hint='transfer', only_transfer=true WHERE code IN ('100','110','111')");
   await db.pool.query("UPDATE cash_categories SET direction_hint='in' WHERE code IN ('200','201','202','203') AND (direction_hint IS NULL OR direction_hint='')");
   await seedSupplierCashCats();
   await seedCashCounterparties();
@@ -282,7 +290,9 @@ async function seedCategories() {
     ['80', 'День рождения', G8, 'operating', false],
     ['81', 'Питание «базар»', G8, 'operating', false],
     ['82', 'Проект уксус', G8, 'operating', false],
-    ['100', 'A2A (перевод между счетами)', G8, 'operating', false],
+    ['100', 'Межбанк (перевод между счетами)', G8, 'operating', true],
+    ['110', 'Обнал (перевод в кассу)', G8, 'operating', true],
+    ['111', 'Пополнение карты', G8, 'operating', true],
     ['101', 'Корректировка остатка', G8, 'operating', false],
   ];
   let i = 0;
@@ -919,12 +929,14 @@ router.post('/api/tx/:id(\\d+)', J, async (req, res) => {
   if (!cur) return res.status(404).json({ error: 'Операция не найдена' });
   let newType = null; // null = не менять
   let needsCashConfirm = null; // null = не менять
-  if (walletTo && walletTo !== cur.wallet_id && cur.tx_type !== 'transfer') {
-    const a2a = (await db.pool.query("SELECT id FROM cash_categories WHERE code='100' LIMIT 1")).rows[0];
-    if (a2a && cat === a2a.id) {
+  if (walletTo && walletTo !== cur.wallet_id && cur.tx_type !== 'transfer' && cat) {
+    // Любая под-категория перевода (межбанк/обнал/пополнение карты) с указанным получателем → это перевод.
+    const isTransferCat = (await db.pool.query("SELECT 1 FROM cash_categories WHERE id=$1 AND direction_hint='transfer' LIMIT 1", [cat])).rows[0];
+    if (isTransferCat) {
       newType = 'transfer';
-      const toWallet = (await db.pool.query('SELECT kind FROM cash_wallets WHERE id=$1', [walletTo])).rows[0];
-      needsCashConfirm = !!(toWallet && toWallet.kind === 'cash');
+      const toWallet = (await db.pool.query('SELECT kind, has_statement FROM cash_wallets WHERE id=$1', [walletTo])).rows[0];
+      // Подтверждение факт. суммы нужно, когда получатель без выписки (касса) — там всплывает комиссия обнала.
+      needsCashConfirm = !!(toWallet && toWallet.has_statement === false);
     }
   }
   const currency = (b.currency === 'USD' || b.currency === 'UZS') ? b.currency : null;
