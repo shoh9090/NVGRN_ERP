@@ -544,8 +544,26 @@
       el('option', { value: '' }, '— не задана —'),
       ...ccList.map((c) => el('option', { value: c.id }, `${c.code} · ${c.name}`)),
     ]);
-    if (sup && sup.cash_category_id) ccSel.value = sup.cash_category_id;
+    // Если у поставщика сохранена статья, которой нет в списке (архивная/иная группа) —
+    // добавляем её опцией из данных карточки, чтобы значение не «терялось».
+    if (sup && sup.cash_category_id && !ccList.some((c) => String(c.id) === String(sup.cash_category_id))) {
+      ccSel.appendChild(el('option', { value: sup.cash_category_id }, (sup.cash_cat_code ? sup.cash_cat_code + ' · ' : '') + (sup.cash_cat_name || ('статья #' + sup.cash_category_id))));
+    }
+    if (sup && sup.cash_category_id) ccSel.value = String(sup.cash_category_id);
     f['cash_category_id'] = ccSel;
+    // Автоподстановка статьи по родительской категории (только если ещё не задана вручную):
+    // «Свежая зелень» → 10 «Сырьё (зелень)», «Упаковка» → 11 «Упаковка».
+    const suggestCcByParent = () => {
+      if (ccSel.value) return; // не перетираем выбранное
+      const pOpt = pcSel.options[pcSel.selectedIndex];
+      const pName = (pOpt ? pOpt.textContent : '').toLowerCase();
+      let code = null;
+      if (/зелен|сырь/.test(pName)) code = '10';
+      else if (/упаков/.test(pName)) code = '11';
+      if (code) { const c = ccList.find((x) => String(x.code) === code); if (c) ccSel.value = String(c.id); }
+    };
+    pcSel.addEventListener('change', suggestCcByParent);
+    if (!(sup && sup.cash_category_id)) suggestCcByParent();
     rows.push(el('label', {}, [
       'Статья ДДС (Касса)',
       ccSel,

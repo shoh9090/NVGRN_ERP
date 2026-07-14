@@ -248,11 +248,13 @@ router.get('/api/filter-options', async (req, res) => {
      UNION ALL SELECT 'packaging', id, code, name FROM ref_packaging WHERE status='active'
      ORDER BY name`
   );
-  // Статьи ДДС из Кассы (для присвоения поставщику) — мягко, если таблицы ещё нет
+  // Статьи ДДС из Кассы (для присвоения поставщику) — ВСЕ активные (не только группа «Сырьё»),
+  // иначе сохранённая у поставщика статья из другой группы не находится в списке и «пропадает».
+  // Переводы (direction=transfer) не показываем — это не расходные статьи.
   let cashCats = [];
   try {
     const cc = await db.pool.query(
-      "SELECT id, code, name, group_name FROM cash_categories WHERE status = 'active' AND group_name ILIKE '%Сырьё%' ORDER BY sort_order, code"
+      "SELECT id, code, name, group_name FROM cash_categories WHERE status = 'active' AND direction_hint IS DISTINCT FROM 'transfer' ORDER BY sort_order, code"
     );
     cashCats = cc.rows;
   } catch (e) { /* Касса ещё не инициализирована */ }
