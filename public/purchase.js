@@ -120,23 +120,38 @@
       box.appendChild(el('p', { class: 'dict-empty' }, 'Заявок пока нет. Нажмите «+ Новая заявка».'));
       return;
     }
+    const rnum = 'text-align:right';
     const table = el('table', { class: 'dict-table' }, [
-      el('thead', {}, el('tr', {}, ['№', 'Дата', 'Поставщик', 'Категория', 'Позиций', 'Сумма', 'Оплата', 'Статус'].map((h, i) =>
-        el('th', { style: i === 5 ? 'text-align:right' : '' }, h)))),
+      el('thead', {}, el('tr', {}, [
+        ['№', ''], ['Дата пост.', ''], ['Поставщик', ''], ['Сумма', rnum], ['Оплата', ''], ['Условие', ''],
+        ['Срок опл.', ''], ['Оплачено', rnum], ['Остаток', rnum], ['Статус оплаты', ''], ['Заявка', ''],
+      ].map(([h, st]) => el('th', { style: st }, h)))),
       el('tbody', {}, data.items.map((o) =>
         el('tr', { onclick: () => openOrderCard(o.id) }, [
           el('td', { style: 'font-weight:800' }, o.number),
-          el('td', {}, dt(o.received_at || o.created_at)),
+          el('td', {}, o.delivery_date ? dt(o.delivery_date) : dt(o.created_at)),
           el('td', {}, o.supplier_name),
-          el('td', {}, pcBadge(o.parent_category_name, o.parent_category_color)),
-          el('td', {}, String(o.positions)),
-          el('td', { class: 'tnum', style: 'text-align:right;font-weight:700' }, fmtMoney(o.total)),
+          el('td', { class: 'tnum', style: rnum + ';font-weight:700' }, fmtMoney(o.total)),
           el('td', {}, payIcon(o.payment_type)),
+          el('td', {}, condLabel(o.pay_condition, o.defer_days)),
+          el('td', { class: 'muted' }, o.due_date ? dt(o.due_date) : '—'),
+          el('td', { class: 'tnum', style: rnum }, o.paid ? fmtMoney(o.paid) : '—'),
+          el('td', { class: 'tnum', style: rnum + (o.remainder > 0 ? ';color:#c0392b;font-weight:700' : '') }, o.remainder > 0 ? fmtMoney(o.remainder) : '—'),
+          el('td', {}, payStatusPill(o.pay_status)),
           el('td', {}, statusPill(o.status)),
         ])
       )),
     ]);
     box.appendChild(table);
+  }
+  const condLabel = (c, d) => ({ prepay: 'Предоплата', on_fact: 'По факту', defer: 'Отсрочка' + (d ? ' ' + d + 'д' : '') }[c] || '—');
+  function payStatusPill(s) {
+    const cls = {
+      'Оплачено': 'st-received', 'Просрочено': 'st-cancelled', 'Не оплачено': 'st-ordered',
+      'Частично оплачено': 'st-ordered', 'Переплата / аванс': 'st-received',
+      'Ожидает поставки': 'st-draft', 'Ожидает предоплаты': 'st-ordered',
+    }[s] || 'st-draft';
+    return el('span', { class: 'status-pill ' + cls }, s || '—');
   }
 
   // --- редактор заявки (создание/черновик) ---
@@ -185,6 +200,29 @@
       el('option', { value: 'наличка' }, '💵 Наличка'),
     ]);
     if (order) paySel.value = order.payment_type;
+    // Условие оплаты + дни отсрочки (отсрочка показывается только для условия «Отсрочка»).
+    const condSel = el('select', { id: 'oe-cond' }, [
+      el('option', { value: 'prepay' }, 'Предоплата'),
+      el('option', { value: 'on_fact' }, 'По факту поставки'),
+      el('option', { value: 'defer' }, 'Отсрочка'),
+    ]);
+    condSel.value = order ? (order.pay_condition || 'on_fact') : 'on_fact';
+    const deferIn = el('input', { id: 'oe-defer', type: 'number', min: '1', step: '1', placeholder: 'дней', style: 'width:80px', value: order && order.defer_days ? order.defer_days : '' });
+    const deferWrap = el('label', { style: 'flex:1 1 110px' }, ['Отсрочка, дней', deferIn]);
+    const toggleDefer = () => { deferWrap.style.display = condSel.value === 'defer' ? '' : 'none'; };
+    condSel.addEventListener('change', toggleDefer);
+    // Автоподстановка условий из карточки поставщика (только для новой заявки, не перетирая ручной выбор).
+    const applySupplierDefaults = () => {
+      if (order) return;
+      const s = suppliers.find((x) => String(x.id) === String(supSel.value));
+      if (!s) return;
+      if (s.def_payment_type) paySel.value = s.def_payment_type;
+      if (s.def_pay_condition) condSel.value = s.def_pay_condition;
+      if (s.def_defer_days) deferIn.value = s.def_defer_days;
+      toggleDefer();
+    };
+    supSel.addEventListener('change', applySupplierDefaults);
+    toggleDefer();
 
     const dateIn = el('input', { id: 'oe-date', type: 'date' });
     if (order && order.delivery_date) dateIn.value = String(order.delivery_date).slice(0, 10);
@@ -279,8 +317,10 @@
         el('label', { style: 'flex:1 1 150px' }, ['Родит. категория', pcSel]),
         el('label', { style: 'flex:2 1 180px' }, ['Поставщик', supSel]),
         el('label', { style: 'flex:1 1 140px' }, ['📅 Дата поставки', dateIn]),
-        el('label', { style: 'flex:1 1 130px' }, ['🕐 Время', winSel]),
-        el('label', { style: 'flex:1 1 130px' }, ['Тип платежа', paySel]),
+        el('label', { style: 'flex:1 1 150px' }, ['🕐 Время поставки на склад', winSel]),
+        el('label', { style: 'flex:1 1 130px' }, ['Тип оплаты', paySel]),
+        el('label', { style: 'flex:1 1 150px' }, ['Условие оплаты', condSel]),
+        deferWrap,
         el('label', { style: 'flex:1 1 160px' }, ['Комментарий', comment]),
       ]),
       el('div', { class: 'form-row', style: 'margin:10px 0' }, [search]),
@@ -294,17 +334,27 @@
       el('button', {
         class: 'btn-primary',
         onclick: async (ev) => {
+          // Валидация обязательных полей (ТЗ разд. 2.4) — понятные сообщения.
+          if (!pcSel.value) return toast('Укажите родительскую категорию', true);
           if (!supSel.value) return toast('Выберите поставщика', true);
+          if (!dateIn.value) return toast('Укажите дату поставки', true);
+          if (!winSel.value) return toast('Укажите время поставки на склад', true);
+          if (!paySel.value) return toast('Выберите тип оплаты', true);
+          if (!condSel.value) return toast('Выберите условие оплаты', true);
+          if (condSel.value === 'defer' && !(parseInt(deferIn.value, 10) > 0)) return toast('Укажите количество дней отсрочки', true);
+          const posItems = Object.entries(entered).map(([k, v]) => { const [kind, id] = k.split(':'); return { item_kind: kind, item_id: id, qty: v.qty, price: v.price }; });
+          if (!posItems.length) return toast('Добавьте хотя бы одну позицию', true);
+          if (posItems.some((it) => !(Number(it.qty) > 0))) return toast('Укажите количество по каждой позиции', true);
+          if (posItems.some((it) => !(Number(it.price) > 0))) return toast('Укажите цену по каждой позиции', true);
           const payload = {
             supplier_id: supSel.value,
             payment_type: paySel.value,
+            pay_condition: condSel.value,
+            defer_days: condSel.value === 'defer' ? parseInt(deferIn.value, 10) : 0,
             delivery_date: dateIn.value || null,
             delivery_window: winSel.value || '',
             comment: comment.value,
-            items: Object.entries(entered).map(([k, v]) => {
-              const [kind, id] = k.split(':');
-              return { item_kind: kind, item_id: id, qty: v.qty, price: v.price };
-            }),
+            items: posItems,
           };
           ev.target.disabled = true;
           try {
@@ -564,6 +614,20 @@
     };
     pcSel.addEventListener('change', suggestCcByParent);
     if (!(sup && sup.cash_category_id)) suggestCcByParent();
+    // Условия оплаты по умолчанию — подставляются в новую заявку после выбора поставщика.
+    const dPay = el('select', {}, [el('option', { value: '' }, '— не задан —'), el('option', { value: 'перечисление' }, '🏦 Перечисление'), el('option', { value: 'наличка' }, '💵 Наличка')]);
+    if (sup && sup.def_payment_type) dPay.value = sup.def_payment_type;
+    f['def_payment_type'] = dPay;
+    const dCond = el('select', {}, [el('option', { value: '' }, '— не задано —'), el('option', { value: 'prepay' }, 'Предоплата'), el('option', { value: 'on_fact' }, 'По факту'), el('option', { value: 'defer' }, 'Отсрочка')]);
+    if (sup && sup.def_pay_condition) dCond.value = sup.def_pay_condition;
+    f['def_pay_condition'] = dCond;
+    const dDefer = el('input', { type: 'number', min: '0', step: '1', placeholder: 'дней', value: sup && sup.def_defer_days ? sup.def_defer_days : '' });
+    f['def_defer_days'] = dDefer;
+    rows.push(el('div', { class: 'form-row', style: 'gap:8px' }, [
+      el('label', { style: 'flex:1 1 130px' }, ['Оплата по умолч.', dPay]),
+      el('label', { style: 'flex:1 1 130px' }, ['Условие по умолч.', dCond]),
+      el('label', { style: 'flex:1 1 90px' }, ['Отсрочка, дн.', dDefer]),
+    ]));
     rows.push(el('label', {}, [
       'Статья ДДС (Касса)',
       ccSel,

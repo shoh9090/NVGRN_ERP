@@ -299,6 +299,15 @@ async function migrate() {
   await pool.query("ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS temperature TEXT DEFAULT ''").catch(()=>{});
   await pool.query("ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS receipt_comment TEXT DEFAULT ''").catch(()=>{});
   await pool.query("ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS receipt_reason TEXT DEFAULT ''").catch(()=>{});
+  // Условия оплаты на уровне заявки (ТЗ «Закуп»): условие + дни отсрочки. payment_type уже есть.
+  await pool.query("ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS pay_condition TEXT DEFAULT 'on_fact'").catch(()=>{}); // prepay | on_fact | defer
+  await pool.query("ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS defer_days INTEGER DEFAULT 0").catch(()=>{});
+  // Условия оплаты по умолчанию в карточке поставщика (подставляются в новую заявку).
+  await pool.query("ALTER TABLE ref_counterparties ADD COLUMN IF NOT EXISTS def_payment_type TEXT").catch(()=>{});
+  await pool.query("ALTER TABLE ref_counterparties ADD COLUMN IF NOT EXISTS def_pay_condition TEXT").catch(()=>{});
+  await pool.query("ALTER TABLE ref_counterparties ADD COLUMN IF NOT EXISTS def_defer_days INTEGER").catch(()=>{});
+  // Привязка оплаты поставщику к конкретной заявке (иначе аванс). Для взаиморасчётов по заявкам.
+  await pool.query("ALTER TABLE supplier_payments ADD COLUMN IF NOT EXISTS order_id INTEGER").catch(()=>{});
 
   // сид справочника причин (один раз)
   const rcReasons = await pool.query('SELECT COUNT(*)::int AS n FROM reject_reasons');

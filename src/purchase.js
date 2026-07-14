@@ -33,6 +33,7 @@ router.get('/api/suppliers', async (req, res) => {
     `SELECT c.id, c.name, c.legal_name, c.phone, c.inn, c.supplies, c.payment_terms, c.status,
             c.parent_category_id, pc.name AS parent_category_name, pc.color AS parent_category_color,
             c.cash_category_id, cc.code AS cash_cat_code, cc.name AS cash_cat_name,
+            c.def_payment_type, c.def_pay_condition, c.def_defer_days,
             COALESCE(c.opening_balance, 0) AS opening_balance,
             COALESCE(d.delivered, 0) AS delivered,
             COALESCE(p.paid, 0) AS paid,
@@ -62,8 +63,8 @@ router.get('/api/suppliers', async (req, res) => {
 });
 
 router.put('/api/suppliers/:id(\\d+)', express.json(), async (req, res) => {
-  const allowed = ['name', 'legal_name', 'phone', 'inn', 'supplies', 'payment_terms', 'opening_balance', 'comment', 'parent_category_id', 'cash_category_id'];
-  const numeric = ['opening_balance', 'parent_category_id', 'cash_category_id'];
+  const allowed = ['name', 'legal_name', 'phone', 'inn', 'supplies', 'payment_terms', 'opening_balance', 'comment', 'parent_category_id', 'cash_category_id', 'def_payment_type', 'def_pay_condition', 'def_defer_days'];
+  const numeric = ['opening_balance', 'parent_category_id', 'cash_category_id', 'def_defer_days'];
   const sets = [];
   const vals = [];
   for (const k of allowed) {
@@ -629,9 +630,12 @@ router.get('/api/orders', async (req, res) => {
     where += ` AND EXISTS (SELECT 1 FROM purchase_order_items pi WHERE pi.order_id = po.id AND pi.item_id = ANY($${params.length}))`;
   }
   const r = await db.pool.query(
-    `SELECT po.id, po.number, po.status, po.payment_type, po.created_at, po.received_at, po.comment,
+    `SELECT po.id, po.number, po.status, po.payment_type, po.pay_condition, po.defer_days,
+            po.delivery_date, po.delivery_window, po.created_at, po.received_at, po.comment,
             c.name AS supplier_name, pc.name AS parent_category_name, pc.color AS parent_category_color,
             COALESCE(SUM(COALESCE(i.fact_qty, i.qty) * COALESCE(i.fact_price, i.price)), 0) AS total,
+            COALESCE(SUM(i.fact_qty * i.fact_price), 0) AS fact_total,
+            COALESCE((SELECT SUM(amount) FROM supplier_payments sp WHERE sp.order_id = po.id), 0) AS paid,
             COUNT(i.id)::int AS positions
      FROM purchase_orders po
      JOIN ref_counterparties c ON c.id = po.supplier_id
@@ -642,8 +646,41 @@ router.get('/api/orders', async (req, res) => {
      ORDER BY po.id DESC LIMIT 300`,
     params
   );
-  res.json({ items: r.rows });
+  res.json({ items: r.rows.map(enrichOrderFinance) });
 });
+
+// Расчёт срока и статуса оплаты по заявке (ТЗ разд. 7-8). Долг возникает по факту приёмки.
+function enrichOrderFinance(o) {
+  const received = o.status === 'received';
+  const factTotal = Number(o.fact_total) || 0;
+  const paid = Number(o.paid) || 0;
+  const base = received ? factTotal : 0;          // долг по заявке = фактически принято
+  const remainder = base - paid;
+  const cond = o.pay_condition || 'on_fact';
+  const dOf = (d) => (d ? new Date(String(d).slice(0, 10)) : null);
+  const today = new Date(new Date().toISOString().slice(0, 10));
+  let dueDate = null;
+  if (cond === 'prepay') dueDate = dOf(o.delivery_date);
+  else if (received && o.received_at) {
+    dueDate = dOf(o.received_at);
+    if (cond === 'defer') dueDate.setDate(dueDate.getDate() + (parseInt(o.defer_days, 10) || 0));
+  }
+  const overdue = dueDate && remainder > 0.01 && dueDate < today;
+  let payStatus;
+  if (!received) payStatus = (cond === 'prepay' && paid <= 0.01) ? 'Ожидает предоплаты' : 'Ожидает поставки';
+  else if (paid > base + 0.01) payStatus = 'Переплата / аванс';
+  else if (remainder <= 0.01) payStatus = 'Оплачено';
+  else if (overdue) payStatus = 'Просрочено';
+  else if (paid > 0.01) payStatus = 'Частично оплачено';
+  else payStatus = 'Не оплачено';
+  return {
+    ...o,
+    total: Number(o.total) || 0, fact_total: factTotal, paid,
+    remainder: received ? remainder : 0,
+    due_date: dueDate ? dueDate.toISOString().slice(0, 10) : null,
+    pay_status: payStatus, overdue: !!overdue,
+  };
+}
 
 router.get('/api/orders/:id(\\d+)', async (req, res) => {
   const o = await db.pool.query(
@@ -679,6 +716,18 @@ function cleanItems(raw) {
   return out;
 }
 
+// Разбор условий оплаты заявки: тип уже отдельно (payment_type), тут — условие + дни отсрочки.
+function parsePayTerms(b) {
+  const condition = ['prepay', 'on_fact', 'defer'].includes(b.pay_condition) ? b.pay_condition : null;
+  if (!condition) return { err: 'Выберите условие оплаты' };
+  let deferDays = 0;
+  if (condition === 'defer') {
+    deferDays = parseInt(b.defer_days, 10);
+    if (!(deferDays > 0)) return { err: 'Укажите количество дней отсрочки' };
+  }
+  return { condition, deferDays };
+}
+
 router.post('/api/orders', express.json({ limit: '2mb' }), async (req, res) => {
   const supplierId = parseInt(req.body.supplier_id);
   if (!supplierId) return res.status(400).json({ error: 'Выберите поставщика' });
@@ -692,13 +741,20 @@ router.post('/api/orders', express.json({ limit: '2mb' }), async (req, res) => {
     return res.status(400).json({ error: 'В заявке есть товары, не закреплённые за поставщиком. Сначала прикрепите их в карточке поставщика (📎 Товары поставщика).' });
   }
   const ptype = req.body.payment_type === 'наличка' ? 'наличка' : 'перечисление';
-  const number = await nextOrderNumber();
   const deliveryDate = req.body.delivery_date || null;
   const deliveryWindow = String(req.body.delivery_window || '').trim();
+  const { condition, deferDays, err } = parsePayTerms(req.body);
+  // Обязательные поля заявки (ТЗ разд. 2): дата и окно поставки, условие оплаты, дни отсрочки.
+  if (!deliveryDate) return res.status(400).json({ error: 'Укажите дату поставки' });
+  if (!deliveryWindow) return res.status(400).json({ error: 'Укажите время поставки на склад' });
+  if (err) return res.status(400).json({ error: err });
+  const badItem = items.find((it) => !(Number(it.qty) > 0) || !(Number(it.price) > 0));
+  if (badItem) return res.status(400).json({ error: 'У каждой позиции укажите количество и цену больше нуля' });
+  const number = await nextOrderNumber();
   const o = await db.pool.query(
-    `INSERT INTO purchase_orders (number, supplier_id, payment_type, delivery_date, delivery_window, comment, created_by)
-     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, number`,
-    [number, supplierId, ptype, deliveryDate, deliveryWindow, req.body.comment || '', req.user.id]
+    `INSERT INTO purchase_orders (number, supplier_id, payment_type, pay_condition, defer_days, delivery_date, delivery_window, comment, created_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id, number`,
+    [number, supplierId, ptype, condition, deferDays, deliveryDate, deliveryWindow, req.body.comment || '', req.user.id]
   );
   for (const it of items) {
     await db.pool.query(
@@ -731,8 +787,15 @@ router.put('/api/orders/:id(\\d+)', express.json({ limit: '2mb' }), async (req, 
   const items = cleanItems(req.body.items);
   if (!items.length) return res.status(400).json({ error: 'Добавьте хотя бы одну позицию' });
   const ptype = req.body.payment_type === 'наличка' ? 'наличка' : 'перечисление';
-  await db.pool.query('UPDATE purchase_orders SET payment_type = $1, comment = $2, delivery_date = $3, delivery_window = $4 WHERE id = $5', [
-    ptype, req.body.comment || '', req.body.delivery_date || null, String(req.body.delivery_window || '').trim(), req.params.id,
+  const deliveryWindow = String(req.body.delivery_window || '').trim();
+  const { condition, deferDays, err } = parsePayTerms(req.body);
+  if (!req.body.delivery_date) return res.status(400).json({ error: 'Укажите дату поставки' });
+  if (!deliveryWindow) return res.status(400).json({ error: 'Укажите время поставки на склад' });
+  if (err) return res.status(400).json({ error: err });
+  const badItem = items.find((it) => !(Number(it.qty) > 0) || !(Number(it.price) > 0));
+  if (badItem) return res.status(400).json({ error: 'У каждой позиции укажите количество и цену больше нуля' });
+  await db.pool.query('UPDATE purchase_orders SET payment_type = $1, pay_condition = $2, defer_days = $3, comment = $4, delivery_date = $5, delivery_window = $6 WHERE id = $7', [
+    ptype, condition, deferDays, req.body.comment || '', req.body.delivery_date || null, deliveryWindow, req.params.id,
   ]);
   await db.pool.query('DELETE FROM purchase_order_items WHERE order_id = $1', [req.params.id]);
   for (const it of items) {
