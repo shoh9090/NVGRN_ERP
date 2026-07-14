@@ -115,6 +115,22 @@
 .cash-preset:hover { background: var(--forest); color: #fff; }
 @media (max-width: 760px) { .cash-flow-cards, .cash-flow-cards-4 { grid-template-columns: 1fr 1fr; } }
 .cash-grp-sum { font-weight: 700; color: var(--muted); font-size: 12px; margin-left: 8px; }
+
+/* Внутренние перемещения (переводы) + детализация обнала */
+.cash-internal { margin: 16px 0; background: #fbfaf5; border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; }
+.cash-h3 { font-family: 'Lora', Georgia, serif; font-size: 17px; font-weight: 600; color: var(--ink); }
+.cash-internal-rows { margin-top: 10px; display: flex; flex-direction: column; gap: 2px; }
+.cash-internal-row { display: flex; justify-content: space-between; padding: 7px 10px; border-bottom: 1px solid #f0f2ef; font-size: 13.5px; }
+.cash-internal-row:last-child { border-bottom: none; }
+.cash-internal-name { color: var(--ink); font-weight: 600; }
+.cash-internal-val { font-variant-numeric: tabular-nums; font-weight: 700; }
+.cash-obnal { margin-top: 12px; background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+.cash-obnal-h { font-weight: 800; font-size: 13.5px; color: var(--ink); margin-bottom: 8px; }
+.cash-obnal-cells { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.cash-obnal-cell { background: #fbfaf5; border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; }
+.cash-obnal-cell-l { font-size: 12px; color: var(--muted); font-weight: 700; }
+.cash-obnal-cell-v { font-family: 'Lora', Georgia, serif; font-size: 18px; font-weight: 600; margin-top: 3px; }
+@media (max-width: 620px) { .cash-obnal-cells { grid-template-columns: 1fr; } }
 .cash-rep { grid-template-columns: 2fr 1fr 1fr; }
 .cash-pnl { max-width: 620px; border: 1px solid var(--line); border-radius: 14px; overflow: hidden; background: #fff; margin-top: 6px; }
 .cash-pnl-row { display: flex; justify-content: space-between; gap: 12px; padding: 10px 16px; border-bottom: 1px solid #f0f2ef; font-size: 14px; }

@@ -262,7 +262,7 @@
     const wq = repState.wallet ? '&wallet=' + repState.wallet : '';
     let d; try { d = await api('/report?from=' + repState.from + '&to=' + repState.to + wq); } catch (e) { c.innerHTML = ''; c.appendChild(el('div', { class: 'cash-empty' }, 'Ошибка: ' + e.message)); return; }
     c.innerHTML = '';
-    renderCashflow(c, d.rows || [], d.groups || [], d.a2a || { inc: 0, exp: 0 });
+    renderCashflow(c, d.rows || [], d.groups || [], d.a2a || { inc: 0, exp: 0 }, d.internal || [], d.obnal || { received: 0, commission: 0, sent: 0 });
   }
 
   function kpiBar(items) {
@@ -316,11 +316,12 @@
     return el('div', { class: 'cash-chart-card' }, [chart, legend]);
   }
 
-  function renderCashflow(c, rows, groupsOrder, a2a) {
+  function renderCashflow(c, rows, groupsOrder, a2a, internal, obnal) {
     a2a = a2a || { inc: 0, exp: 0 };
+    internal = internal || []; obnal = obnal || { received: 0, commission: 0, sent: 0 };
     c.appendChild(el('div', { class: 'cash-head' }, [el('div', {}, [
       el('div', { class: 'cash-h2' }, 'Кэш-флоу (ДДС)'),
-      el('div', { class: 'cash-sub' }, 'Движение денег по статьям за период. Переводы между счетами (A2A) — отдельной карточкой, в поток не входят.'),
+      el('div', { class: 'cash-sub' }, 'Движение денег по статьям за период. Переводы между счетами — отдельным блоком «Внутренние перемещения», в поток не входят.'),
     ])]));
     c.appendChild(repPeriodBar());
     const totalIn = rows.reduce((s, r) => s + r.inc, 0);
@@ -332,13 +333,38 @@
     rows.forEach((r) => { if (flows[r.flow_type] != null) flows[r.flow_type] += r.inc - r.exp; });
     const FLOW_HINT = { operating: 'Основная деятельность: продажи, сырьё, зарплаты, аренда', investing: 'Капвложения: оборудование, стройка', financing: 'Кредиты, проценты, налоги, взносы учредителей' };
     const flowCard = (l, hint, val) => el('div', { class: 'cash-flow-card', title: hint }, [el('div', { class: 'cash-flow-card-l' }, l), el('div', { class: 'cash-flow-card-hint' }, hint), el('div', { class: 'cash-flow-card-v ' + (val >= 0 ? 'cash-tot-in' : 'cash-tot-out') }, money(val))]);
+    const obnalCell = (l, val, cls) => el('div', { class: 'cash-obnal-cell' }, [el('div', { class: 'cash-obnal-cell-l' }, l), el('div', { class: 'cash-obnal-cell-v ' + (cls || '') }, money(val))]);
     const a2aNet = (a2a.inc || 0) - (a2a.exp || 0);
     c.appendChild(el('div', { class: 'cash-flow-cards cash-flow-cards-4' }, [
       flowCard('Операционный', FLOW_HINT.operating, flows.operating),
       flowCard('Инвестиции', FLOW_HINT.investing, flows.investing),
       flowCard('Финансы', FLOW_HINT.financing, flows.financing),
-      flowCard('A2A (переводы)', 'Перемещения между своими счетами/картами — не доход и не расход', a2aNet),
+      flowCard('Внутренние переводы', 'Перемещения между своими счетами/картами/кассой — не доход и не расход', a2aNet),
     ]));
+
+    // Внутренние перемещения: разбивка по под-категориям (межбанк / обнал / пополнение карты) + детализация обнала.
+    if ((internal && internal.length) || obnal.sent) {
+      const im = el('div', { class: 'cash-internal' });
+      im.appendChild(el('div', { class: 'cash-h3' }, 'Внутренние перемещения'));
+      im.appendChild(el('div', { class: 'cash-sub' }, 'Перемещения между своими счетами. В доходы/расходы не входят — по всем кошелькам в сумме гасятся. Реальный расход в обнале — только комиссия.'));
+      if (internal && internal.length) {
+        im.appendChild(el('div', { class: 'cash-internal-rows' }, internal.map((x) => el('div', { class: 'cash-internal-row' }, [
+          el('span', { class: 'cash-internal-name' }, (x.code ? x.code + ' ' : '') + x.name),
+          el('span', { class: 'cash-internal-val' }, money(x.moved)),
+        ]))));
+      }
+      if (obnal.sent) {
+        im.appendChild(el('div', { class: 'cash-obnal' }, [
+          el('div', { class: 'cash-obnal-h' }, '💵 Обнал за период'),
+          el('div', { class: 'cash-obnal-cells' }, [
+            obnalCell('Ушло со счёта', obnal.sent, ''),
+            obnalCell('Получено в кассу', obnal.received, 'cash-tot-in'),
+            obnalCell('Комиссия (расход)', obnal.commission, 'cash-tot-out'),
+          ]),
+        ]));
+      }
+      c.appendChild(im);
+    }
 
     // Пончик: структура расходов по группам
     const expByGroup = {};
@@ -819,20 +845,20 @@
     // «Из выписки» — исходный текст банка (кто платил/получал), read-only.
     if (tx.payer_name) rows.push(frow('Из выписки', el('div', { class: 'cash-note-info' }, tx.payer_name)));
     rows.push(frow('Статья ДДС', cat), frow('Назначение', purpose));
-    // A2A (перевод между счетами) — показываем «Откуда/Куда» по кошелькам.
-    const a2aCat = (DICTS.categories || []).find((c) => c.code === '100');
-    const a2aId = a2aCat ? String(a2aCat.id) : '';
+    // Перевод (межбанк/обнал/пополнение карты) — показываем «Откуда/Куда» по кошелькам.
+    const transferIds = new Set((DICTS.categories || []).filter((c) => c.direction_hint === 'transfer').map((c) => String(c.id)));
+    const isTransferCat = () => transferIds.has(String(cat.value));
     const walletTo = fsel([{ v: '', t: '— кошелёк-получатель —' }].concat((DICTS.wallets || []).map((x) => ({ v: x.id, t: x.name }))), tx.wallet_to_id || '');
     const fromW = (DICTS.wallets || []).find((x) => String(x.id) === String(tx.wallet_id));
     const a2aRow = el('div', {}, [frow('Откуда', el('div', { class: 'cash-note-info' }, (fromW && fromW.name) || tx.wallet_name || '—')), frow('Куда (кошелёк)', walletTo)]);
-    const toggleA2A = () => { a2aRow.style.display = (a2aId && String(cat.value) === a2aId) ? '' : 'none'; };
+    const toggleA2A = () => { a2aRow.style.display = isTransferCat() ? '' : 'none'; };
     cat.onchange = toggleA2A;
     rows.push(a2aRow);
     const body = el('div', { class: 'cashf' }, rows);
     toggleA2A();
     const save = el('button', { class: 'btn-primary', onclick: async () => {
       try {
-        const isA2A = a2aId && String(cat.value) === a2aId;
+        const isA2A = isTransferCat();
         if (tx.id) await post('/tx/' + tx.id, { tx_date: date.value, amount: moneyVal(amount), counterparty_id: tx.counterparty_id || '', category_id: cat.value, purpose: purpose.value, wallet_to_id: isA2A ? walletTo.value : '' });
         else await post('/tx', { tx_type: type, tx_date: date.value, amount: moneyVal(amount), wallet_id: wallet.value, category_id: cat.value, purpose: purpose.value, wallet_to_id: isA2A ? walletTo.value : '' });
         toast('Сохранено'); closeModal(); loadTx();

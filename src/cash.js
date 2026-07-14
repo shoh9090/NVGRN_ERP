@@ -765,7 +765,8 @@ router.get('/api/report', async (req, res) => {
   const p = [from, to];
   let wClause = '';
   if (req.query.wallet) { p.push(parseInt(req.query.wallet)); wClause = ` AND t.wallet_id = $${p.length}`; }
-  // По каждой статье — приход и расход. Переводы (A2A, код 100) считаем отдельно.
+  // Операционные статьи — приход/расход. Переводы (direction='transfer') исключаем полностью:
+  // они не доход/не расход, а перемещения между своими счетами (см. блок «Внутренние перемещения»).
   const rows = (await db.pool.query(
     `SELECT cat.id AS cat_id, cat.code, cat.name, cat.group_name, cat.flow_type,
             COALESCE(SUM(t.amount) FILTER (WHERE t.tx_type='in'),0) AS inc,
@@ -774,19 +775,38 @@ router.get('/api/report', async (req, res) => {
      FROM cash_transactions t
      LEFT JOIN cash_categories cat ON cat.id = t.category_id
      WHERE t.tx_date BETWEEN $1 AND $2 AND t.tx_type IN ('in','out') AND t.source <> 'opening'
-       AND (cat.code IS NULL OR cat.code <> '100')${wClause}
+       AND (cat.direction_hint IS DISTINCT FROM 'transfer')${wClause}
      GROUP BY cat.id, cat.code, cat.name, cat.group_name, cat.flow_type
      ORDER BY cat.code NULLS LAST`, p)).rows
     .map((r) => ({ cat_id: r.cat_id, code: r.code, name: r.name, group_name: r.group_name, flow_type: r.flow_type, inc: Number(r.inc), exp: Number(r.exp), cnt: Number(r.cnt) }));
-  // A2A (переводы между счетами, код 100) — отдельно: приход/расход.
-  const a2a = (await db.pool.query(
-    `SELECT COALESCE(SUM(t.amount) FILTER (WHERE t.tx_type='in'),0) AS inc,
-            COALESCE(SUM(t.amount) FILTER (WHERE t.tx_type='out'),0) AS exp
-     FROM cash_transactions t LEFT JOIN cash_categories cat ON cat.id = t.category_id
-     WHERE t.tx_date BETWEEN $1 AND $2 AND t.tx_type IN ('in','out') AND cat.code = '100'${wClause}`, p)).rows[0];
+  // Внутренние перемещения по под-категориям перевода (межбанк / обнал / пополнение карты).
+  // Оборот = деньги, ушедшие из счёта-источника: одиночные transfer (списание) + out-ноги банк↔банк.
+  // Итог по всем кошелькам по этим строкам = 0 (что ушло, то и пришло), поэтому в операционку не входят.
+  const internal = (await db.pool.query(
+    `SELECT cat.code, cat.name,
+            COALESCE(SUM(t.amount) FILTER (WHERE t.tx_type='transfer'),0)
+              + COALESCE(SUM(t.amount) FILTER (WHERE t.tx_type='out'),0) AS moved,
+            COALESCE(SUM(t.amount) FILTER (WHERE t.tx_type='in'),0) AS leg_in,
+            COUNT(*) AS cnt
+     FROM cash_transactions t JOIN cash_categories cat ON cat.id = t.category_id
+     WHERE t.tx_date BETWEEN $1 AND $2 AND t.source <> 'opening' AND cat.direction_hint='transfer'${wClause}
+     GROUP BY cat.code, cat.name ORDER BY cat.code`, p)).rows
+    .map((r) => ({ code: r.code, name: r.name, moved: Number(r.moved), leg_in: Number(r.leg_in), cnt: Number(r.cnt) }));
+  // Обнал (детально): получено в кассу (transfer/in по коду 110) + комиссия (расход код 64) = ушло со счёта.
+  const ob = (await db.pool.query(
+    `SELECT
+       COALESCE((SELECT SUM(t.amount) FROM cash_transactions t JOIN cash_categories c ON c.id=t.category_id
+                 WHERE c.code='110' AND t.tx_type IN ('transfer','in') AND t.tx_date BETWEEN $1 AND $2 AND t.source<>'opening'${wClause}),0) AS received,
+       COALESCE((SELECT SUM(t.amount) FROM cash_transactions t JOIN cash_categories c ON c.id=t.category_id
+                 WHERE c.code='64' AND t.tx_type='out' AND t.tx_date BETWEEN $1 AND $2 AND t.source<>'opening'${wClause}),0) AS commission`,
+    p)).rows[0];
+  const obnal = { received: Number(ob.received), commission: Number(ob.commission), sent: Number(ob.received) + Number(ob.commission) };
   const groups = (await db.pool.query("SELECT name FROM cash_groups WHERE status='active' ORDER BY sort_order, id")).rows.map((g) => g.name);
   const wallets = (await db.pool.query("SELECT id, name FROM cash_wallets WHERE status='active' ORDER BY sort_order, id")).rows;
-  res.json({ from, to, rows, groups, wallets, a2a: { inc: Number(a2a.inc), exp: Number(a2a.exp) } });
+  // a2a оставлен для обратной совместимости фронта (общий оборот переводов).
+  const a2aInc = internal.reduce((s, x) => s + x.leg_in, 0);
+  const a2aExp = internal.reduce((s, x) => s + x.moved, 0);
+  res.json({ from, to, rows, groups, wallets, internal, obnal, a2a: { inc: a2aInc, exp: a2aExp } });
 });
 
 // ---------- Журнал транзакций ----------
