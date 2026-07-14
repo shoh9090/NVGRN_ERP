@@ -814,15 +814,19 @@ router.post('/api/tx', J, async (req, res) => {
     const to = intOrNull(b.wallet_to_id);
     if (!to) return res.status(400).json({ error: 'Выберите кошелёк-получатель' });
     if (to === wallet) return res.status(400).json({ error: 'Кошельки источника и получателя совпадают' });
+    const fee = Number(b.fee_amount);
+    // Если получатель — касса, и комиссию/факт. сумму ещё не указали при создании (fee_amount пуст) —
+    // помечаем «требует подтверждения»: бухгалтер позже впишет факт. приход, комиссия посчитается сама.
+    const toWallet = (await db.pool.query('SELECT kind FROM cash_wallets WHERE id=$1', [to])).rows[0];
+    const needsCashConfirm = !!(toWallet && toWallet.kind === 'cash' && !(fee > 0));
     await db.pool.query(
-      `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, wallet_to_id, purpose, source, is_classified, created_by)
-       VALUES ($1,$2,'transfer',$3,$4,$5,'manual',true,$6)`,
-      [date, amount, wallet, to, b.purpose || null, req.user.id]);
+      `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, wallet_to_id, purpose, source, is_classified, needs_cash_confirm, created_by)
+       VALUES ($1,$2,'transfer',$3,$4,$5,'manual',true,$6,$7)`,
+      [date, amount, wallet, to, b.purpose || null, needsCashConfirm, req.user.id]);
     // Комиссия/% за перевод — отдельным расходом со своей статьёй ДДС (если указана).
     // fee_wallet='from' (по умолчанию) — комиссию берёт банк-отправитель отдельной проводкой (сумма перевода доходит полностью).
     // fee_wallet='to' — используется для обналичивания: банк списывает ровно указанную сумму (как в выписке),
     // а по факту в кассу приходит меньше — недостача списывается расходом с кошелька-получателя (кассы).
-    const fee = Number(b.fee_amount);
     if (fee > 0) {
       const feeCat = intOrNull(b.fee_category_id);
       const feeWallet = b.fee_wallet === 'to' ? to : wallet;
@@ -870,13 +874,15 @@ router.post('/api/tx/:id(\\d+)', J, async (req, res) => {
       needsCashConfirm = !!(toWallet && toWallet.kind === 'cash');
     }
   }
+  const currency = (b.currency === 'USD' || b.currency === 'UZS') ? b.currency : null;
   await db.pool.query(
     `UPDATE cash_transactions SET tx_date=COALESCE($1,tx_date), amount=COALESCE($2,amount),
        counterparty_id=$3, contract_id=$4, category_id=$5, purpose=$6, is_classified=$7,
        payer_name=COALESCE($9,payer_name), wallet_to_id=$10,
-       tx_type=COALESCE($11,tx_type), needs_cash_confirm=COALESCE($12,needs_cash_confirm)
+       tx_type=COALESCE($11,tx_type), needs_cash_confirm=COALESCE($12,needs_cash_confirm),
+       currency=COALESCE($13,currency), fx_rate=COALESCE($14,fx_rate), fx_amount=COALESCE($15,fx_amount)
      WHERE id=$8`,
-    [b.tx_date || null, b.amount ? Number(b.amount) : null, intOrNull(b.counterparty_id), intOrNull(b.contract_id), cat, b.purpose || null, !!cat, req.params.id, b.payer_name != null ? b.payer_name : null, walletTo, newType, needsCashConfirm]);
+    [b.tx_date || null, b.amount ? Number(b.amount) : null, intOrNull(b.counterparty_id), intOrNull(b.contract_id), cat, b.purpose || null, !!cat, req.params.id, b.payer_name != null ? b.payer_name : null, walletTo, newType, needsCashConfirm, currency, numOrNull(b.fx_rate), numOrNull(b.fx_amount)]);
   await db.log(req.user.id, 'cash_tx_edit', '#' + req.params.id);
   res.json({ ok: true });
 });
