@@ -672,6 +672,57 @@ router.post('/api/opening', J, async (req, res) => {
   finally { client.release(); }
 });
 
+// Начальные остатки наличной кассы РАЗДЕЛЬНО: сумовая часть + долларовая часть.
+// Пишем двумя opening-записями (UZS и USD) на выбранную дату — как обычные движения.
+router.get('/api/cash-opening', async (req, res) => {
+  const wid = intOrNull(req.query.wallet);
+  if (!wid) return res.status(400).json({ error: 'Не указан кошелёк' });
+  const rows = (await db.pool.query(
+    "SELECT amount, tx_type, currency, fx_amount, tx_date FROM cash_transactions WHERE source='opening' AND wallet_id=$1", [wid])).rows;
+  let uzs = null, usd = null, rate = null, date = null;
+  for (const r of rows) {
+    const sign = r.tx_type === 'out' ? -1 : 1;
+    if (r.currency === 'USD') { usd = sign * Number(r.fx_amount || 0); rate = r.amount && r.fx_amount ? Number(r.amount) / Number(r.fx_amount) : null; }
+    else uzs = sign * Number(r.amount);
+    if (r.tx_date) date = r.tx_date;
+  }
+  res.json({ date: date ? String(date).slice(0, 10) : null, uzs, usd, rate });
+});
+router.post('/api/cash-opening', J, async (req, res) => {
+  const b = req.body || {};
+  const wid = intOrNull(b.wallet_id);
+  if (!wid) return res.status(400).json({ error: 'Не указан кошелёк' });
+  const date = b.date || new Date().toISOString().slice(0, 10);
+  const uzs = numOrNull(b.uzs);
+  const usd = numOrNull(b.usd);
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    // Заменяем именно opening-записи ЭТОЙ кассы (другие кошельки не трогаем).
+    await client.query("DELETE FROM cash_transactions WHERE source='opening' AND wallet_id=$1", [wid]);
+    if (uzs && isFinite(uzs) && uzs !== 0) {
+      await client.query(
+        `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, purpose, source, is_classified, currency, created_by)
+         VALUES ($1,$2,$3,$4,'Начальный остаток (сум)','opening',true,'UZS',$5)`,
+        [date, Math.abs(uzs), uzs >= 0 ? 'in' : 'out', wid, req.user.id]);
+    }
+    if (usd && isFinite(usd) && usd !== 0) {
+      // Для долларовой части нужен курс на дату, чтобы amount (сум-эквивалент) был корректным.
+      let rate = numOrNull(b.rate);
+      if (!(rate > 0)) { try { rate = await getCbuUsdRate(date); } catch (e) { rate = null; } }
+      if (!(rate > 0)) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Нет курса ЦБ на дату — укажите курс вручную' }); }
+      await client.query(
+        `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, purpose, source, is_classified, currency, fx_rate, fx_amount, created_by)
+         VALUES ($1,$2,$3,$4,'Начальный остаток ($)','opening',true,'USD',$5,$6,$7)`,
+        [date, Math.abs(usd) * rate, usd >= 0 ? 'in' : 'out', wid, rate, Math.abs(usd), req.user.id]);
+    }
+    await client.query('COMMIT');
+    await db.log(req.user.id, 'cash_opening_fx_set', `касса ${wid}, дата ${date}, сум ${uzs}, $ ${usd}`);
+    res.json({ ok: true });
+  } catch (e) { await client.query('ROLLBACK').catch(() => {}); res.status(400).json({ error: e.message }); }
+  finally { client.release(); }
+});
+
 // ---------- Сверка остатка ----------
 // Сравнивает фактический остаток кошелька с ERP; при расхождении создаёт корректировку.
 router.post('/api/reconcile', J, async (req, res) => {
@@ -737,15 +788,17 @@ router.get('/api/transactions', async (req, res) => {
   if (to) { p.push(to); w.push(`t.tx_date <= $${p.length}`); }
   const wid = intOrNull(wallet);
   if (type && ['in', 'out', 'transfer'].includes(type)) {
-    // includeTransferIn: для «Приход» по конкретному кошельку также показываем переводы,
-    // которые зачисляются в этот кошелёк (напр. обналичивание банк→касса) — иначе такие
-    // поступления не видны в списке «Приход», хотя реально пришли.
-    if (type === 'in' && req.query.includeTransferIn && wid) {
-      p.push(type); const typeIdx = p.length; p.push(wid); const widIdx = p.length;
-      w.push(`(t.tx_type = $${typeIdx} OR (t.tx_type='transfer' AND t.wallet_to_id = $${widIdx}))`);
+    if (type === 'in' && wid) {
+      // «Приход» по кошельку = поступления (in) + переводы, зачисляемые В этот кошелёк.
+      p.push(wid); const widIdx = p.length;
+      w.push(`((t.tx_type='in' AND t.wallet_id = $${widIdx}) OR (t.tx_type='transfer' AND t.wallet_to_id = $${widIdx}))`);
+    } else if (type === 'out' && wid) {
+      // «Расход» по кошельку = списания (out) + переводы, уходящие ИЗ этого кошелька.
+      p.push(wid); const widIdx = p.length;
+      w.push(`((t.tx_type='out' AND t.wallet_id = $${widIdx}) OR (t.tx_type='transfer' AND t.wallet_id = $${widIdx}))`);
     } else { p.push(type); w.push(`t.tx_type = $${p.length}`); }
   }
-  if (wallet) { p.push(wid); w.push(`(t.wallet_id = $${p.length} OR t.wallet_to_id = $${p.length})`); }
+  if (wallet && !(type === 'in' || type === 'out')) { p.push(wid); w.push(`(t.wallet_id = $${p.length} OR t.wallet_to_id = $${p.length})`); }
   if (counterparty) { p.push(parseInt(counterparty)); w.push(`t.counterparty_id = $${p.length}`); }
   if (category) { p.push(parseInt(category)); w.push(`t.category_id = $${p.length}`); }
   if (req.query.catgroup === '__nogroup__') w.push(`EXISTS (SELECT 1 FROM cash_categories cg WHERE cg.id = t.category_id AND cg.group_name IS NULL)`);
