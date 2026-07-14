@@ -10,7 +10,16 @@ const { decideFileAccess } = require('./src/file-access');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const JWT_SECRET = process.env.JWT_SECRET || 'change-me-in-railway-variables';
+// P0.2: в production не запускаемся с запасным/слабым JWT_SECRET (им же шифруются пароли интеграций).
+const JWT_FALLBACK = 'change-me-in-railway-variables';
+const IS_PROD = process.env.NODE_ENV === 'production' || !!process.env.RAILWAY_ENVIRONMENT;
+if (IS_PROD && (!process.env.JWT_SECRET || process.env.JWT_SECRET === JWT_FALLBACK || process.env.JWT_SECRET.length < 16)) {
+  console.error('[FATAL] Не задан надёжный JWT_SECRET (production). Приложение остановлено. Задайте длинную случайную строку в переменных окружения.');
+  process.exit(1);
+}
+const JWT_SECRET = process.env.JWT_SECRET || JWT_FALLBACK;
+// За обратным прокси Railway (TLS завершается на прокси) — доверяем X-Forwarded-* для secure-cookie.
+app.set('trust proxy', 1);
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } });
 
 app.set('view engine', 'ejs');
@@ -84,7 +93,8 @@ app.post('/login', async (req, res) => {
     is_admin: roles.some((x) => x.is_admin),
     roles: roles.map((x) => x.name),
   });
-  res.cookie('hub_token', token, { httpOnly: true, sameSite: 'lax', maxAge: 12 * 3600 * 1000 });
+  // secure: req.secure — на https (Railway) кука только по https; на локальном http вход не ломается.
+  res.cookie('hub_token', token, { httpOnly: true, sameSite: 'lax', secure: req.secure, maxAge: 12 * 3600 * 1000 });
   await db.log(user.id, 'login');
   res.redirect('/');
 });

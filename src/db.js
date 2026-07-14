@@ -407,21 +407,23 @@ async function seed() {
     adminRoleId = r.rows[0].id;
   }
 
-  // Первый администратор
+  // Первый администратор (P0.2: не создаём с публично известным паролем admin/admin123).
+  // Создаём ТОЛЬКО если заданы переменные окружения ADMIN_LOGIN и ADMIN_PASSWORD.
   const u = await pool.query('SELECT id FROM users LIMIT 1');
   if (u.rows.length === 0) {
-    const login = process.env.ADMIN_LOGIN || 'admin';
-    const password = process.env.ADMIN_PASSWORD || 'admin123';
-    const hash = await bcrypt.hash(password, 10);
-    const ins = await pool.query(
-      "INSERT INTO users (login, full_name, password_hash) VALUES ($1, 'Администратор', $2) RETURNING id",
-      [login, hash]
-    );
-    await pool.query('INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)', [
-      ins.rows[0].id,
-      adminRoleId,
-    ]);
-    console.log(`[seed] Создан администратор: ${login} / ${password} — смените пароль после первого входа!`);
+    const login = process.env.ADMIN_LOGIN;
+    const password = process.env.ADMIN_PASSWORD;
+    if (login && password && password.length >= 8) {
+      const hash = await bcrypt.hash(password, 10);
+      const ins = await pool.query(
+        "INSERT INTO users (login, full_name, password_hash) VALUES ($1, 'Администратор', $2) RETURNING id",
+        [login, hash]
+      );
+      await pool.query('INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)', [ins.rows[0].id, adminRoleId]);
+      console.log(`[seed] Создан администратор «${login}» из переменных окружения. Смените пароль после первого входа.`);
+    } else {
+      console.warn('[seed] Пользователей нет, но ADMIN_LOGIN/ADMIN_PASSWORD (>=8 симв.) не заданы — администратор НЕ создан. Задайте их в переменных окружения и перезапустите.');
+    }
   }
 
   // Базовые единицы измерения
