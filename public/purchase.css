@@ -118,5 +118,11 @@
 .pur-multi-panel{position:absolute;top:calc(100% + 4px);left:0;z-index:30;background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow-lg);padding:10px;width:280px}
 .pur-multi-panel input{width:100%;margin-bottom:8px}
 .pur-multi-list{max-height:260px;overflow:auto;display:flex;flex-direction:column;gap:2px}
-.pur-multi-item{display:flex;align-items:center;gap:6px;font-size:13px;font-weight:500;padding:3px 4px;border-radius:7px;cursor:pointer}
+.pur-multi-item{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:500;padding:5px 6px;border-radius:7px;cursor:pointer;text-align:left;white-space:nowrap}
+.pur-multi-item input{margin:0;flex:none}
 .pur-multi-item:hover{background:var(--lime-soft)}
+
+/* Таблица заявок: компактная, без переносов — чтобы влезала без горизонтальной прокрутки */
+.pur-orders{font-size:13px}
+.pur-orders th,.pur-orders td{white-space:nowrap;padding:8px 10px}
+.pur-orders td:nth-child(3){white-space:normal}   /* поставщик может переноситься */

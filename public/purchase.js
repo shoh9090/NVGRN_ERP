@@ -121,9 +121,9 @@
       return;
     }
     const rnum = 'text-align:right';
-    const table = el('table', { class: 'dict-table' }, [
+    const table = el('table', { class: 'dict-table pur-orders' }, [
       el('thead', {}, el('tr', {}, [
-        ['№', ''], ['Дата пост.', ''], ['Поставщик', ''], ['Сумма', rnum], ['Оплата', ''], ['Условие', ''],
+        ['№', ''], ['Дата пост.', ''], ['Поставщик', ''], ['Сумма', rnum], ['Оплата', ''],
         ['Срок опл.', ''], ['Оплачено', rnum], ['Остаток', rnum], ['Статус оплаты', ''], ['Заявка', ''],
       ].map(([h, st]) => el('th', { style: st }, h)))),
       el('tbody', {}, data.items.map((o) =>
@@ -132,8 +132,7 @@
           el('td', {}, o.delivery_date ? dt(o.delivery_date) : dt(o.created_at)),
           el('td', {}, o.supplier_name),
           el('td', { class: 'tnum', style: rnum + ';font-weight:700' }, fmtMoney(o.total)),
-          el('td', {}, payIcon(o.payment_type)),
-          el('td', {}, condLabel(o.pay_condition, o.defer_days)),
+          el('td', {}, [payIcon(o.payment_type), ' ', el('span', { class: 'muted' }, condLabel(o.pay_condition, o.defer_days))]),
           el('td', { class: 'muted' }, o.due_date ? dt(o.due_date) : '—'),
           el('td', { class: 'tnum', style: rnum }, o.paid ? fmtMoney(o.paid) : '—'),
           el('td', { class: 'tnum', style: rnum + (o.remainder > 0 ? ';color:#c0392b;font-weight:700' : '') }, o.remainder > 0 ? fmtMoney(o.remainder) : '—'),

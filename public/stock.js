@@ -59,6 +59,7 @@
   function rPill(s) { const [l, c] = RSTATUS[s] || [s, '']; return el('span', { class: 'status-pill ' + c }, l); }
 
   let selDate = todayISO();
+  let stripStart = null; // ISO даты первого дня полоски (null = авто: selDate - 3)
 
   async function wipeStock() {
     const word = prompt('Полная зачистка склада для тестов: остатки, движения, приёмки, передачи будут удалены.\nВведите слово ОЧИСТИТЬ для подтверждения:');
@@ -89,12 +90,26 @@
       ]),
     ]);
 
-    // простой календарь-полоска: 14 дней вокруг сегодня
+    // Панель навигации по датам: прыжок к любой дате + перелистывание недель.
+    const shiftStrip = (days) => {
+      const b = new Date(stripStart || (() => { const t = new Date(selDate); t.setDate(t.getDate() - 3); return t.toISOString().slice(0, 10); })());
+      b.setDate(b.getDate() + days);
+      stripStart = b.toISOString().slice(0, 10);
+      viewReceiving();
+    };
+    const jump = el('input', { type: 'date', class: 'stk-datejump', value: selDate, onchange: (e) => { if (e.target.value) { selDate = e.target.value; stripStart = null; viewReceiving(); } } });
+    main.appendChild(el('div', { class: 'stk-datenav' }, [
+      el('button', { class: 'stk-nav-btn', title: 'Предыдущая неделя', onclick: () => shiftStrip(-7) }, '‹'),
+      el('button', { class: 'stk-nav-btn', title: 'Следующая неделя', onclick: () => shiftStrip(7) }, '›'),
+      el('button', { class: 'stk-nav-btn', title: 'К сегодняшнему дню', onclick: () => { selDate = todayISO(); stripStart = null; viewReceiving(); } }, 'Сегодня'),
+      el('label', { class: 'stk-datejump-lbl' }, ['Перейти к дате:', jump]),
+    ]));
+
+    // Календарь-полоска: 14 дней от stripStart (по умолчанию — выбранная дата минус 3).
     const calMap = {};
     for (const d of cal.days) calMap[d.d] = d;
     const strip = el('div', { class: 'stk-calendar' });
-    const base = new Date();
-    base.setDate(base.getDate() - 3);
+    const base = stripStart ? new Date(stripStart) : (() => { const t = new Date(selDate); t.setDate(t.getDate() - 3); return t; })();
     for (let i = 0; i < 14; i++) {
       const d = new Date(base); d.setDate(base.getDate() + i);
       const iso = d.toISOString().slice(0, 10);
