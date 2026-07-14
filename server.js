@@ -6,6 +6,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const db = require('./src/db');
+const { decideFileAccess } = require('./src/file-access');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -132,12 +133,41 @@ app.get('/', requireAuth, async (req, res) => {
   res.render('launcher', { settings, user: req.user, tiles: tiles.rows, groups: groupTiles(tiles.rows) });
 });
 
-// Выдача загруженных файлов (логотип, фон) из базы
+// Проверка доступа пользователя к плитке по URL (роль → плитка).
+async function userHasTileAccess(userId, url) {
+  const r = await db.pool.query(
+    `SELECT 1 FROM tiles t
+     JOIN role_tiles rt ON rt.tile_id = t.id
+     JOIN user_roles ur ON ur.role_id = rt.role_id
+     WHERE ur.user_id = $1 AND t.url = $2 LIMIT 1`, [userId, url]);
+  return r.rows.length > 0;
+}
+
+// Выдача файлов из базы с контролем доступа (P0.1: закрываем анонимный перебор /file/:id).
+// В спорных случаях — 404 (не раскрываем существование чужого файла).
 app.get('/file/:id', async (req, res) => {
-  const r = await db.pool.query('SELECT mime, data FROM files WHERE id = $1', [req.params.id]);
+  const id = parseInt(req.params.id, 10);
+  if (!id) return res.status(404).end();
+  const settings = await db.getSettings();
+  const isPublicAsset = String(id) === String(settings.logo_file_id) || String(id) === String(settings.bg_file_id);
+  let isComplaintMedia = false;
+  if (!isPublicAsset && req.user) {
+    try {
+      const c = await db.pool.query('SELECT 1 FROM tgbot.complaint_files WHERE file_ref = $1 LIMIT 1', [id]);
+      isComplaintMedia = c.rows.length > 0;
+    } catch (e) { /* схемы претензий может не быть — тогда это не медиа претензии */ }
+  }
+  const hasComplaintsTile = (isComplaintMedia && req.user && !req.user.isAdmin)
+    ? await userHasTileAccess(req.user.id, '/complaints') : false;
+  const decision = decideFileAccess({
+    isPublicAsset, hasUser: !!req.user, isComplaintMedia,
+    isAdmin: !!(req.user && req.user.isAdmin), hasComplaintsTile,
+  });
+  if (decision === 'deny') return res.status(404).end();
+  const r = await db.pool.query('SELECT mime, data FROM files WHERE id = $1', [id]);
   if (r.rows.length === 0) return res.status(404).end();
   res.set('Content-Type', r.rows[0].mime);
-  res.set('Cache-Control', 'public, max-age=3600');
+  res.set('Cache-Control', isPublicAsset ? 'public, max-age=3600' : 'private, no-store');
   res.send(r.rows[0].data);
 });
 
