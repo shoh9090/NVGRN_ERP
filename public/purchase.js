@@ -727,9 +727,12 @@
       el('h2', {}, 'Взаиморасчёты'),
       el('div', { class: 'pur-toolbar-right' }, [
         el('input', { id: 'set-q', placeholder: 'Поиск...', oninput: debounce(loadSettlements, 300) }),
+        el('button', { onclick: openAdvances }, '💼 Подотчёт'),
         el('button', { class: 'btn-primary', onclick: () => openPayment(null) }, '+ Оплата'),
       ]),
     ]));
+    main.appendChild(el('div', { id: 'set-advance' }));
+    loadAdvanceCard();
     await ensureOpts();
     const setPc = el('select', { id: 'set-pc', onchange: loadSettlements }, [
       el('option', { value: '' }, 'Все родительские категории'),
@@ -845,6 +848,59 @@
     ]);
   }
 
+  // Подотчёт закупщика (общий котёл): карточка-остаток в шапке взаиморасчётов.
+  async function loadAdvanceCard() {
+    const box = $('#set-advance'); if (!box) return;
+    let d; try { d = await api('/advances'); } catch (e) { return; }
+    box.innerHTML = '';
+    box.appendChild(el('div', { class: 'pur-advance-card', onclick: openAdvances, title: 'История подотчёта' }, [
+      el('span', { class: 'pur-advance-l' }, '💼 Подотчёт закупщика:'),
+      el('span', { class: 'pur-advance-v', style: 'color:' + (d.balance > 0 ? '#3f6a16' : d.balance < 0 ? 'var(--red)' : 'var(--muted)') }, fmtMoney(d.balance) + ' сум'),
+      el('span', { class: 'muted', style: 'font-size:12px' }, `(выдано ${fmtMoney(d.issued)} · потрачено ${fmtMoney(d.spent)})`),
+    ]));
+  }
+
+  async function openAdvances() {
+    const d = await api('/advances');
+    const isAdmin = window.HUB_USER && window.HUB_USER.isAdmin;
+    const amount = el('input', { type: 'number', step: 'any', min: '0', placeholder: 'Сумма' });
+    const comment = el('input', { placeholder: 'Комментарий (напр. выдал Шох)' });
+    const hist = el('div', { class: 'oe-table-wrap' });
+    const renderHist = (items) => {
+      hist.innerHTML = '';
+      hist.appendChild(el('table', { class: 'dict-table' }, [
+        el('thead', {}, el('tr', {}, ['Дата', 'Операция', 'Заявка', 'Сумма', ''].map((h) => el('th', {}, h)))),
+        el('tbody', {}, items.length ? items.map((a) => el('tr', {}, [
+          el('td', {}, dt(a.created_at)),
+          el('td', {}, (a.direction === 'in' ? '⬆️ Выдано под отчёт' : '⬇️ Оплата поставщику') + (a.comment ? ' · ' + a.comment : '')),
+          el('td', { class: 'muted' }, a.order_number || '—'),
+          el('td', { class: 'tnum', style: 'font-weight:700;color:' + (a.direction === 'in' ? '#3f6a16' : 'var(--red)') }, (a.direction === 'in' ? '+' : '−') + fmtMoney(a.amount)),
+          el('td', {}, isAdmin ? el('a', { href: 'javascript:void(0)', class: 'muted', onclick: async (e) => { e.preventDefault(); if (!confirm('Удалить запись?')) return; await api('/advances/' + a.id + '/delete', { method: 'POST' }); refresh(); } }, '✕') : null),
+        ])) : [el('tr', {}, el('td', { colspan: 5, class: 'muted' }, 'Записей нет.'))]),
+      ]));
+    };
+    async function refresh() { const r = await api('/advances'); renderHist(r.items); loadAdvanceCard(); }
+    renderHist(d.items);
+    const body = el('div', {}, [
+      el('div', { class: 'pur-kpis' }, [['Выдано', d.issued], ['Потрачено', d.spent], ['Остаток', d.balance]].map(([l, v], i) =>
+        el('div', { class: 'pur-kpi' }, [el('div', { class: 'pur-kpi-label' }, l), el('div', { class: 'pur-kpi-val tnum', style: i === 2 ? 'color:' + (d.balance >= 0 ? '#3f6a16' : 'var(--red)') : '' }, fmtMoney(v))]))),
+      el('p', { class: 'muted' }, 'Общий котёл на весь закуп. Наличные оплаты поставщикам по заявкам списывают подотчёт автоматически. Касса — отдельный контур (авто-проводок нет).'),
+      isAdmin ? el('div', { class: 'form-row', style: 'gap:8px;align-items:flex-end;margin:8px 0' }, [
+        el('label', { style: 'flex:1 1 140px' }, ['Выдать под отчёт, сум', amount]),
+        el('label', { style: 'flex:2 1 200px' }, ['Комментарий', comment]),
+        el('button', { class: 'btn-primary', onclick: async (ev) => {
+          if (!(Number(amount.value) > 0)) return toast('Укажите сумму', true);
+          ev.target.disabled = true;
+          try { await api('/advances', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ amount: amount.value, comment: comment.value }) }); toast('Выдано под отчёт ✅'); amount.value = ''; comment.value = ''; refresh(); }
+          catch (e) { toast(e.message, true); } finally { ev.target.disabled = false; }
+        } }, 'Выдать'),
+      ]) : el('p', { class: 'muted' }, 'Выдавать под отчёт может администратор/финансы.'),
+      el('h3', { class: 'pur-sub' }, 'История'),
+      hist,
+    ]);
+    const m = modal('💼 Подотчёт закупщика', body, [el('button', { onclick: () => m.close() }, 'Закрыть')]);
+  }
+
   async function openPayment(presetSupplier, presetOrderId) {
     const suppliers = (await api('/suppliers')).items;
     const supSel = el('select', {}, suppliers.map((s) => el('option', { value: s.id }, s.name + ' (сальдо: ' + fmtMoney(s.balance) + ')')));
@@ -903,7 +959,7 @@
             await api('/payments', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
             toast('Оплата записана ✅');
             m.close();
-            if (currentTab === 'settlements') loadSettlements(); else loadSuppliers();
+            if (currentTab === 'settlements') { loadSettlements(); loadAdvanceCard(); } else loadSuppliers();
           } catch (e) { toast(e.message, true); ev.target.disabled = false; }
         },
       }, 'Записать оплату'),

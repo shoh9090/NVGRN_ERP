@@ -308,6 +308,17 @@ async function migrate() {
   await pool.query("ALTER TABLE ref_counterparties ADD COLUMN IF NOT EXISTS def_defer_days INTEGER").catch(()=>{});
   // Привязка оплаты поставщику к конкретной заявке (иначе аванс). Для взаиморасчётов по заявкам.
   await pool.query("ALTER TABLE supplier_payments ADD COLUMN IF NOT EXISTS order_id INTEGER").catch(()=>{});
+  // Подотчёт закупщика (общий котёл): in = выдано под отчёт, out = потрачено наличными по заявкам.
+  // Касса остаётся отдельным контуром — авто-проводок в Кассу нет (по решению).
+  await pool.query(`CREATE TABLE IF NOT EXISTS purchaser_accountable (
+    id SERIAL PRIMARY KEY,
+    direction TEXT NOT NULL,          -- in | out
+    amount NUMERIC NOT NULL,
+    order_id INTEGER,
+    comment TEXT DEFAULT '',
+    created_by INTEGER,
+    created_at TIMESTAMPTZ DEFAULT now()
+  )`).catch(()=>{});
 
   // сид справочника причин (один раз)
   const rcReasons = await pool.query('SELECT COUNT(*)::int AS n FROM reject_reasons');

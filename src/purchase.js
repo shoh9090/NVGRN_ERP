@@ -191,6 +191,10 @@ router.post('/api/payments', express.json(), async (req, res) => {
   const paidAt = req.body.paid_at || null;
   const comment = req.body.comment || '';
   const orderId = intOrNull(req.body.order_id);
+  // ТЗ 11.5: закупщик (не админ) может платить только по конкретной заявке — без свободных оплат.
+  if (!(req.user && req.user.isAdmin) && !orderId) {
+    return res.status(403).json({ error: 'Оплата разрешена только по конкретной заявке. Общий авторазнос и аванс — для админа/финансов.' });
+  }
   const insertPay = (amt, ordId) => db.pool.query(
     `INSERT INTO supplier_payments (supplier_id, order_id, amount, payment_type, paid_at, comment, created_by)
      VALUES ($1, $2, $3, $4, COALESCE($5::date, CURRENT_DATE), $6, $7)`,
@@ -213,8 +217,47 @@ router.post('/api/payments', express.json(), async (req, res) => {
   } else {
     await insertPay(amount, null); // аванс поставщику
   }
+  // Наличная оплата поставщику расходует подотчёт закупщика (общий котёл) — списываем.
+  if (ptype === 'наличка') {
+    await db.pool.query(
+      "INSERT INTO purchaser_accountable (direction, amount, order_id, comment, created_by) VALUES ('out',$1,$2,$3,$4)",
+      [amount, orderId, 'Оплата поставщику наличными' + (comment ? ' — ' + comment : ''), req.user.id]).catch(() => {});
+  }
   await db.log(req.user.id, 'purchase_payment', `supplier=${supplierId} sum=${amount} (${ptype}, ${mode})`);
   res.json({ ok: true, mode });
+});
+
+// ---------- Подотчёт закупщика (общий котёл) ----------
+router.get('/api/advances', async (req, res) => {
+  const agg = (await db.pool.query(
+    `SELECT COALESCE(SUM(amount) FILTER (WHERE direction='in'),0) AS issued,
+            COALESCE(SUM(amount) FILTER (WHERE direction='out'),0) AS spent
+     FROM purchaser_accountable`)).rows[0];
+  const items = (await db.pool.query(
+    `SELECT a.id, a.direction, a.amount, a.comment, a.created_at, a.order_id, po.number AS order_number
+     FROM purchaser_accountable a LEFT JOIN purchase_orders po ON po.id = a.order_id
+     ORDER BY a.created_at DESC, a.id DESC LIMIT 100`)).rows;
+  const issued = Number(agg.issued), spent = Number(agg.spent);
+  res.json({ issued, spent, balance: issued - spent, items });
+});
+
+// Выдать под отчёт (только админ/финансы — вручную, без проводки в Кассу по решению).
+router.post('/api/advances', express.json(), async (req, res) => {
+  if (!(req.user && req.user.isAdmin)) return res.status(403).json({ error: 'Выдавать под отчёт может только администратор/финансы' });
+  const amount = Number(req.body.amount);
+  if (!(amount > 0)) return res.status(400).json({ error: 'Укажите сумму больше нуля' });
+  await db.pool.query(
+    "INSERT INTO purchaser_accountable (direction, amount, comment, created_by) VALUES ('in',$1,$2,$3)",
+    [amount, req.body.comment || 'Выдано под отчёт', req.user.id]);
+  await db.log(req.user.id, 'purchase_advance_issue', `sum=${amount}`);
+  res.json({ ok: true });
+});
+
+// Отмена/удаление записи подотчёта (админ) — на случай ошибки ввода.
+router.post('/api/advances/:id(\\d+)/delete', async (req, res) => {
+  if (!(req.user && req.user.isAdmin)) return res.status(403).json({ error: 'Только администратор' });
+  await db.pool.query('DELETE FROM purchaser_accountable WHERE id=$1', [req.params.id]);
+  res.json({ ok: true });
 });
 
 // ---------- Номенклатура для заявки (сырьё + упаковка, с последней ценой поставщика) ----------

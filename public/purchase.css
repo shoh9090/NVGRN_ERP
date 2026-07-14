@@ -20,6 +20,10 @@
 .pur-toolbar h2{margin:0;font-family:'Lora',serif;font-weight:600;font-size:21px}
 .pur-toolbar-right{margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .pur-toolbar-right input{width:220px}
+.pur-advance-card{display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:#fbfaf5;border:1px solid #e3e0d4;border-radius:12px;padding:9px 14px;margin-bottom:12px;cursor:pointer}
+.pur-advance-card:hover{border-color:#163a28}
+.pur-advance-l{font-weight:800;color:#14241b}
+.pur-advance-v{font-family:'Lora',serif;font-size:18px;font-weight:600}
 .pur-toolbar-right select{width:auto}
 .pur-link-btn{
   text-decoration:none;color:var(--ink);font-weight:700;font-size:13.5px;
