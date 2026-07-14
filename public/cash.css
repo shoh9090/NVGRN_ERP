@@ -218,9 +218,7 @@
   .cash-tx { grid-template-columns: 26px 64px 1.2fr 0.9fr 0.9fr; }
   .cash-tx > *:nth-child(4), .cash-tx > *:nth-child(5), .cash-tx > *:nth-child(6) { display: none; }
 }
-.cash-cb { grid-template-columns: 130px 1.4fr 150px 90px 100px 150px 70px; gap: 8px; align-items: center; }
-.cash-cb.cb-input .cashf-inp { width: 100%; box-sizing: border-box; }
-.cash-cb.cb-input .cashf-inp[type="date"] { min-width: 120px; }
+.cash-cb { grid-template-columns: 90px 1.5fr 70px 80px 90px 130px 60px; }
 .cash-cb.cb-input { background: #fbfff5; border-bottom: 2px solid var(--lime); align-items: start; }
 .cash-cb.cb-pending { background: #fff8e1; }
 .cb-confirm { color: #854f0b; cursor: pointer; font-size: 12px; text-align: right; white-space: nowrap; font-weight: 700; }

@@ -547,7 +547,6 @@
     const typeBtn = (v, label) => el('button', { class: 'btn-ghost cash-add' + (cbState.type === v ? ' cb-on' : ''), onclick: () => { cbState.type = v; renderCashbox(); } }, label);
     const walletSel = el('select', { class: 'cashf-inp', onchange: (e) => { cbState.wallet = e.target.value; renderCashbox(); } },
       cashWallets.map((w) => el('option', { value: w.id, selected: String(w.id) === cbState.wallet || null }, w.name)));
-    const showWalletSel = cashWallets.length > 1;
     const periodOn = !!(cbState.from || cbState.to);
     const fromInp = el('input', { type: 'date', class: 'cashf-inp', value: cbState.from, onchange: (e) => { cbState.from = e.target.value; renderCashbox(); } });
     const toInp = el('input', { type: 'date', class: 'cashf-inp', value: cbState.to, onchange: (e) => { cbState.to = e.target.value; renderCashbox(); } });
@@ -575,9 +574,27 @@
       const sp = new URLSearchParams(); if (cbState.from) sp.set('from', cbState.from); if (cbState.to) sp.set('to', cbState.to); sp.set('wallet', cbState.wallet);
       sum = await api('/summary?' + sp.toString());
       const tp = new URLSearchParams(); tp.set('wallet', cbState.wallet); tp.set('type', cbState.type); tp.set('pageSize', '200');
+      if (isIn) tp.set('includeTransferIn', '1');
       if (cbState.from) tp.set('from', cbState.from); if (cbState.to) tp.set('to', cbState.to);
       list = await api('/transactions?' + tp.toString());
     } catch (e) { toast(e.message, true); return; }
+
+    // Валютная разбивка остатка кассы: сумы / доллары / итог по текущему курсу ЦБ.
+    const fxRow = el('div', { class: 'cash-summary cash-fx-summary', style: 'margin-bottom:10px' }, [
+      el('div', { class: 'cash-sum-card neutral' }, [el('div', { class: 'cash-sum-l' }, 'Остаток в сумах'), el('div', { class: 'cash-sum-v cb-fx-uzs' }, '…')]),
+      el('div', { class: 'cash-sum-card neutral' }, [el('div', { class: 'cash-sum-l' }, 'Остаток в долларах'), el('div', { class: 'cash-sum-v cb-fx-usd' }, '…')]),
+      el('div', { class: 'cash-sum-card end' }, [el('div', { class: 'cash-sum-l' }, 'Итого в сумах'), el('div', { class: 'cash-sum-v cb-fx-total' }, '…')]),
+    ]);
+    wrap.appendChild(fxRow);
+    (async () => {
+      try {
+        const fx = await api('/cash-fx-balance?wallet=' + cbState.wallet + (cbState.to ? '&to=' + cbState.to : ''));
+        const u = wrap.querySelector('.cb-fx-uzs'), d = wrap.querySelector('.cb-fx-usd'), t = wrap.querySelector('.cb-fx-total');
+        if (u) u.textContent = money(fx.uzs) + ' сум';
+        if (d) d.textContent = '$ ' + money(fx.usd) + (fx.rate ? '' : ' (нет курса)');
+        if (t) t.textContent = money(Math.round(fx.total_uzs)) + ' сум';
+      } catch (e) { /* тихо — сводка ниже всё равно покажется */ }
+    })();
 
     wrap.appendChild(el('div', { class: 'cash-summary', style: 'margin-bottom:10px' }, [
       el('div', { class: 'cash-sum-card neutral' }, [el('div', { class: 'cash-sum-l' }, 'Сальдо на начало'), el('div', { class: 'cash-sum-v' }, money(sum.opening) + ' сум')]),

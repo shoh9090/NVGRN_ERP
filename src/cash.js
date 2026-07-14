@@ -737,20 +737,15 @@ router.get('/api/transactions', async (req, res) => {
   if (to) { p.push(to); w.push(`t.tx_date <= $${p.length}`); }
   const wid = intOrNull(wallet);
   if (type && ['in', 'out', 'transfer'].includes(type)) {
-    if (type === 'in' && wid) {
-      // «Приход» по кошельку = поступления (in) + переводы, зачисляемые В этот кошелёк.
-      p.push(wid); const widIdx = p.length;
-      w.push(`((t.tx_type='in' AND t.wallet_id = $${widIdx}) OR (t.tx_type='transfer' AND t.wallet_to_id = $${widIdx}))`);
-    } else if (type === 'out' && wid) {
-      // «Расход» по кошельку = списания (out) + переводы, уходящие ИЗ этого кошелька.
-      // Важно: перевод, где кошелёк — ПОЛУЧАТЕЛЬ, сюда НЕ попадает (это приход, не расход).
-      p.push(wid); const widIdx = p.length;
-      w.push(`((t.tx_type='out' AND t.wallet_id = $${widIdx}) OR (t.tx_type='transfer' AND t.wallet_id = $${widIdx}))`);
+    // includeTransferIn: для «Приход» по конкретному кошельку также показываем переводы,
+    // которые зачисляются в этот кошелёк (напр. обналичивание банк→касса) — иначе такие
+    // поступления не видны в списке «Приход», хотя реально пришли.
+    if (type === 'in' && req.query.includeTransferIn && wid) {
+      p.push(type); const typeIdx = p.length; p.push(wid); const widIdx = p.length;
+      w.push(`(t.tx_type = $${typeIdx} OR (t.tx_type='transfer' AND t.wallet_to_id = $${widIdx}))`);
     } else { p.push(type); w.push(`t.tx_type = $${p.length}`); }
   }
-  // Общий фильтр по кошельку (для случаев без разбивки по типу — напр. «Все типы»).
-  if (wallet && !(type === 'in' || type === 'out')) { p.push(wid); w.push(`(t.wallet_id = $${p.length} OR t.wallet_to_id = $${p.length})`); }
-  else if (wallet && !wid) { p.push(parseInt(wallet)); w.push(`(t.wallet_id = $${p.length} OR t.wallet_to_id = $${p.length})`); }
+  if (wallet) { p.push(wid); w.push(`(t.wallet_id = $${p.length} OR t.wallet_to_id = $${p.length})`); }
   if (counterparty) { p.push(parseInt(counterparty)); w.push(`t.counterparty_id = $${p.length}`); }
   if (category) { p.push(parseInt(category)); w.push(`t.category_id = $${p.length}`); }
   if (req.query.catgroup === '__nogroup__') w.push(`EXISTS (SELECT 1 FROM cash_categories cg WHERE cg.id = t.category_id AND cg.group_name IS NULL)`);
@@ -1405,6 +1400,45 @@ router.get('/api/fx-rate', async (req, res) => {
   const date = /^\d{4}-\d{2}-\d{2}$/.test(req.query.date || '') ? req.query.date : new Date().toISOString().slice(0, 10);
   try { res.json({ date, rate: await getCbuUsdRate(date) }); }
   catch (e) { res.status(400).json({ date, rate: null, error: e.message }); }
+});
+
+// Валютная сводка кассы: сумовый остаток + долларовый остаток (в штуках) + итог по текущему курсу ЦБ.
+// Доллары считаем по fx_amount (штуки валюты), сумы — по amount для UZS-операций.
+// Переводы (transfer) считаем в UZS-части (перевод банк→касса приходит в сумах).
+router.get('/api/cash-fx-balance', async (req, res) => {
+  const wid = intOrNull(req.query.wallet);
+  if (!wid) return res.status(400).json({ error: 'Не указан кошелёк' });
+  const to = req.query.to && /^\d{4}-\d{2}-\d{2}$/.test(req.query.to) ? req.query.to : null;
+  try {
+    const params = [wid];
+    let dateCond = '';
+    if (to) { params.push(to); dateCond = ` AND t.tx_date <= $${params.length}`; }
+    // Сумовая часть: UZS-операции (in/out) + переводы, где касса участвует.
+    const uzsRow = (await db.pool.query(
+      `SELECT COALESCE(SUM(
+         CASE WHEN t.currency='USD' THEN 0
+              WHEN t.tx_type='in' AND t.wallet_id=$1 THEN t.amount
+              WHEN t.tx_type='out' AND t.wallet_id=$1 THEN -t.amount
+              WHEN t.tx_type='transfer' AND t.wallet_to_id=$1 THEN t.amount
+              WHEN t.tx_type='transfer' AND t.wallet_id=$1 THEN -t.amount
+              ELSE 0 END),0) v
+       FROM cash_transactions t WHERE (t.wallet_id=$1 OR t.wallet_to_id=$1)${dateCond}`, params)).rows[0];
+    // Долларовая часть: USD-операции, в штуках валюты (fx_amount).
+    const usdRow = (await db.pool.query(
+      `SELECT COALESCE(SUM(
+         CASE WHEN t.currency<>'USD' THEN 0
+              WHEN t.tx_type='in' AND t.wallet_id=$1 THEN t.fx_amount
+              WHEN t.tx_type='out' AND t.wallet_id=$1 THEN -t.fx_amount
+              WHEN t.tx_type='transfer' AND t.wallet_to_id=$1 THEN t.fx_amount
+              WHEN t.tx_type='transfer' AND t.wallet_id=$1 THEN -t.fx_amount
+              ELSE 0 END),0) v
+       FROM cash_transactions t WHERE (t.wallet_id=$1 OR t.wallet_to_id=$1)${dateCond}`, params)).rows[0];
+    const uzs = Number(uzsRow.v), usd = Number(usdRow.v);
+    let rate = null;
+    try { rate = await getCbuUsdRate(new Date().toISOString().slice(0, 10)); } catch (e) { rate = null; }
+    const totalUzs = uzs + (rate ? usd * rate : 0);
+    res.json({ uzs, usd, rate, total_uzs: totalUzs });
+  } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 module.exports = router;
