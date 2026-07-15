@@ -234,7 +234,15 @@
   .cash-tx { grid-template-columns: 26px 64px 1.2fr 0.9fr 0.9fr; }
   .cash-tx > *:nth-child(4), .cash-tx > *:nth-child(5), .cash-tx > *:nth-child(6) { display: none; }
 }
-.cash-cb { grid-template-columns: 34px 120px 1.3fr 150px 85px 95px 150px 90px; gap: 10px; align-items: center; }
+.cash-cb { grid-template-columns: 34px 104px minmax(220px, 1.4fr) 210px 86px 84px 150px 150px; gap: 10px; align-items: center; }
+/* Таблица кассы шире экрана — прокручивается по горизонтали, колонки не сминаются */
+.cb-scroll { overflow-x: auto; }
+.cb-scroll .cash-list { min-width: 1040px; }
+.cb-fx-line { font-size: 13px; margin-top: 5px; }
+.cb-fx-uzs { font-weight: 700; color: var(--ink); }
+.cb-fx-usd { font-weight: 700; color: #0d5aa7; }
+.cb-fx-usd.cb-fx-neg { color: #c0392b; }
+.cb-fx-sep { color: var(--muted); }
 .cash-cb.cb-input { background: #fbfff5; border-bottom: 2px solid var(--lime); align-items: center; }
 .cash-cb.cb-input .cashf-inp { width: 100%; box-sizing: border-box; min-width: 0; }
 .cash-cb.cb-pending { background: #fff8e1; }
@@ -256,7 +264,4 @@ select.cb-cell { cursor: pointer; }
 .cb-del { color: #993c1d; cursor: pointer; font-size: 12px; text-align: right; white-space: nowrap; }
 .cb-rate { font-size: 12px; color: var(--muted); cursor: pointer; }
 .cb-equiv { display: block; font-size: 11px; color: var(--muted); margin-top: 2px; }
-@media (max-width: 760px) {
-  .cash-cb { grid-template-columns: 30px 66px 1fr 60px 0 0 90px 60px; }
-  .cash-cb > *:nth-child(5), .cash-cb > *:nth-child(6), .cash-cb > *:nth-child(7) { display: none; }
-}
+/* На узких экранах таблица прокручивается по горизонтали (см. .cb-scroll), колонки не прячем. */

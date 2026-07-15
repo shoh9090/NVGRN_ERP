@@ -558,7 +558,7 @@
   }
 
   // ---------- Наличная касса: построчный Приход/Расход, доллар + курс ЦБ, сальдо на начало/конец ----------
-  const cbState = { type: 'in', wallet: '', from: '', to: '', q: '', category: '', classified: '', pageSize: 50, lastAddedId: null, selected: {} };
+  const cbState = { type: 'in', wallet: '', from: '', to: '', q: '', category: '', classified: '', page: 1, pageSize: 50, lastAddedId: null, selected: {} };
 
   // Импорт «Наличной кассы» из Excel: предпросмотр → запись.
   function openCashboxImport(walletId) {
@@ -654,17 +654,17 @@
       ]),
     ]));
     if (!cashWallets.length) { c.appendChild(el('div', { class: 'cash-empty' }, 'Нет ни одного кошелька типа «Наличные». Заведите его на вкладке «Кошельки».')); return; }
-    const typeBtn = (v, label) => el('button', { class: 'btn-ghost cash-add' + (cbState.type === v ? ' cb-on' : ''), onclick: () => { cbState.type = v; cbState.selected = {}; renderCashbox(); } }, label);
-    const walletSel = el('select', { class: 'cashf-inp', onchange: (e) => { cbState.wallet = e.target.value; renderCashbox(); } },
+    const typeBtn = (v, label) => el('button', { class: 'btn-ghost cash-add' + (cbState.type === v ? ' cb-on' : ''), onclick: () => { cbState.type = v; cbState.selected = {}; cbState.page = 1; renderCashbox(); } }, label);
+    const walletSel = el('select', { class: 'cashf-inp', onchange: (e) => { cbState.wallet = e.target.value; cbState.page = 1; renderCashbox(); } },
       cashWallets.map((w) => el('option', { value: w.id, selected: String(w.id) === cbState.wallet || null }, w.name)));
-    const fromInp = el('input', { type: 'date', class: 'cashf-inp cash-filt', value: cbState.from, onchange: (e) => { cbState.from = e.target.value; loadCashbox(); } });
-    const toInp = el('input', { type: 'date', class: 'cashf-inp cash-filt', value: cbState.to, onchange: (e) => { cbState.to = e.target.value; loadCashbox(); } });
-    const catSel = el('select', { class: 'cashf-inp cash-filt', onchange: (e) => { cbState.category = e.target.value; loadCashbox(); } },
+    const fromInp = el('input', { type: 'date', class: 'cashf-inp cash-filt', value: cbState.from, onchange: (e) => { cbState.from = e.target.value; cbState.page = 1; loadCashbox(); } });
+    const toInp = el('input', { type: 'date', class: 'cashf-inp cash-filt', value: cbState.to, onchange: (e) => { cbState.to = e.target.value; cbState.page = 1; loadCashbox(); } });
+    const catSel = el('select', { class: 'cashf-inp cash-filt', onchange: (e) => { cbState.category = e.target.value; cbState.page = 1; loadCashbox(); } },
       [el('option', { value: '' }, 'Все статьи ДДС')].concat((DICTS.categories || []).map((x) => el('option', { value: x.id, selected: String(x.id) === cbState.category || null }, x.code + ' · ' + x.name))));
-    const search = el('input', { type: 'search', class: 'cashf-inp cash-filt cash-filt-q', placeholder: 'Поиск по назначению…', value: cbState.q, oninput: (e) => { cbState.q = e.target.value; clearTimeout(window.__cbQ); window.__cbQ = setTimeout(loadCashbox, 350); } });
-    const sizeSel = el('select', { class: 'cashf-inp cash-filt', onchange: (e) => { cbState.pageSize = parseInt(e.target.value); loadCashbox(); } },
+    const search = el('input', { type: 'search', class: 'cashf-inp cash-filt cash-filt-q', placeholder: 'Поиск по назначению…', value: cbState.q, oninput: (e) => { cbState.q = e.target.value; cbState.page = 1; clearTimeout(window.__cbQ); window.__cbQ = setTimeout(loadCashbox, 350); } });
+    const sizeSel = el('select', { class: 'cashf-inp cash-filt', onchange: (e) => { cbState.pageSize = parseInt(e.target.value); cbState.page = 1; loadCashbox(); } },
       [20, 50, 100, 200, 500].map((n) => el('option', { value: n, selected: n === cbState.pageSize || null }, 'по ' + n)));
-    const classSel = el('select', { class: 'cashf-inp cash-filt', onchange: (e) => { cbState.classified = e.target.value; loadCashbox(); } },
+    const classSel = el('select', { class: 'cashf-inp cash-filt', onchange: (e) => { cbState.classified = e.target.value; cbState.page = 1; loadCashbox(); } },
       [{ v: '', t: 'Все' }, { v: 'no', t: 'Не разобрано' }, { v: 'yes', t: 'Разобрано' }].map((o) => el('option', { value: o.v, selected: o.v === cbState.classified || null }, o.t)));
     c.appendChild(el('div', { class: 'cash-filters', style: 'margin-bottom:6px' }, [
       typeBtn('in', '➕ Приход'), typeBtn('out', '➖ Расход'),
@@ -686,7 +686,7 @@
     try {
       const sp = new URLSearchParams(); if (cbState.from) sp.set('from', cbState.from); if (cbState.to) sp.set('to', cbState.to); sp.set('wallet', cbState.wallet);
       sum = await api('/summary?' + sp.toString());
-      const tp = new URLSearchParams(); tp.set('wallet', cbState.wallet); tp.set('type', cbState.type); tp.set('pageSize', String(cbState.pageSize || 50));
+      const tp = new URLSearchParams(); tp.set('wallet', cbState.wallet); tp.set('type', cbState.type); tp.set('pageSize', String(cbState.pageSize || 50)); tp.set('page', String(cbState.page || 1));
       if (cbState.q) tp.set('q', cbState.q);
       if (cbState.category) tp.set('category', cbState.category);
       if (cbState.classified) tp.set('classified', cbState.classified);
@@ -694,21 +694,26 @@
       list = await api('/transactions?' + tp.toString());
     } catch (e) { toast(e.message, true); return; }
 
-    // Единый ряд: Сальдо на начало · Приход · Расход · Сальдо на конец (с разбивкой сумы+доллары).
+    // Единый ряд: Сальдо на начало · Приход · Расход · Сальдо на конец.
+    // У балансов (начало/конец) показываем состав: сумы + доллары, а крупным — общий сум-эквивалент.
+    const fxHtml = (uzs, usd) => '<span class="cb-fx-uzs">' + money(uzs) + ' сум</span><span class="cb-fx-sep"> · </span><span class="cb-fx-usd' + (Number(usd) < 0 ? ' cb-fx-neg' : '') + '">$ ' + money(usd) + '</span>';
     const openV = el('div', { class: 'cash-sum-v' }, money(sum.opening) + ' сум');
+    const openFx = el('div', { class: 'cash-sum-fx cb-fx-line' }, '…');
     const inV = el('div', { class: 'cash-sum-v' }, money(sum.inflow) + ' сум');
     const outV = el('div', { class: 'cash-sum-v' }, money(sum.outflow) + ' сум');
     const closeV = el('div', { class: 'cash-sum-v' }, money(sum.closing) + ' сум');
-    const fxLine = el('div', { class: 'cash-sum-fx cb-fx-line' }, '…');
+    const closeFx = el('div', { class: 'cash-sum-fx cb-fx-line' }, '…');
     wrap.appendChild(el('div', { class: 'cash-summary', style: 'margin-bottom:10px' }, [
-      el('div', { class: 'cash-sum-card neutral' }, [el('div', { class: 'cash-sum-l' }, 'Сальдо на начало'), openV]),
+      el('div', { class: 'cash-sum-card neutral' }, [el('div', { class: 'cash-sum-l' }, 'Сальдо на начало · всего'), openV, openFx]),
       el('div', { class: 'cash-sum-card in' }, [el('div', { class: 'cash-sum-l' }, 'Приход за период'), inV]),
       el('div', { class: 'cash-sum-card out' }, [el('div', { class: 'cash-sum-l' }, 'Расход за период'), outV]),
-      el('div', { class: 'cash-sum-card end' }, [el('div', { class: 'cash-sum-l' }, 'Сальдо на конец'), closeV, fxLine]),
+      el('div', { class: 'cash-sum-card end' }, [el('div', { class: 'cash-sum-l' }, 'Сальдо на конец · всего'), closeV, closeFx]),
     ]));
+    const cbDayMinus = (s) => { const d = new Date(s + 'T00:00:00'); d.setDate(d.getDate() - 1); return d.toISOString().slice(0, 10); };
     async function loadFx() {
-      try { const fx = await api('/cash-fx-balance?wallet=' + cbState.wallet + (cbState.to ? '&to=' + cbState.to : '')); fxLine.textContent = money(fx.uzs) + ' сум + $ ' + money(fx.usd); }
-      catch (e) { fxLine.textContent = ''; }
+      try { const fx = await api('/cash-fx-balance?wallet=' + cbState.wallet + (cbState.to ? '&to=' + cbState.to : '')); closeFx.innerHTML = fxHtml(fx.uzs, fx.usd); } catch (e) { closeFx.textContent = ''; }
+      if (cbState.from) { try { const fo = await api('/cash-fx-balance?wallet=' + cbState.wallet + '&to=' + cbDayMinus(cbState.from)); openFx.innerHTML = fxHtml(fo.uzs, fo.usd); } catch (e) { openFx.textContent = ''; } }
+      else { openFx.innerHTML = fxHtml(0, 0); }
     }
     loadFx();
     // Тихое обновление сводки после инлайн-правки (без перерисовки строк — фокус не теряется).
@@ -859,8 +864,27 @@
       el('button', { class: 'btn-ghost', onclick: () => { cbState.selected = {}; loadCashbox(); } }, 'Снять'),
     ]);
     wrap.appendChild(bulkBar);
-    wrap.appendChild(el('div', { class: 'cash-list' }, [head, inputRow, ...rows]));
-    if (!rows.length) wrap.appendChild(el('div', { class: 'cash-empty' }, 'Операций пока нет.'));
+    wrap.appendChild(el('div', { class: 'cb-scroll' }, [el('div', { class: 'cash-list' }, [head, inputRow, ...rows])]));
+    if (!rows.length && cbState.page <= 1) wrap.appendChild(el('div', { class: 'cash-empty' }, 'Операций пока нет.'));
+    // Пагинация (как в Транзакциях).
+    const total = list.total || rows.length;
+    const pageSize = list.pageSize || cbState.pageSize || 50;
+    const pages = Math.max(1, Math.ceil(total / pageSize));
+    if (cbState.page > pages) { cbState.page = pages; }
+    const goTo = (pg) => { cbState.page = Math.min(pages, Math.max(1, pg)); loadCashbox(); };
+    const fromN = total ? (cbState.page - 1) * pageSize + 1 : 0;
+    const toN = Math.min(total, cbState.page * pageSize);
+    const pbtn = (label, pg, dis) => el('button', { class: 'btn-ghost cash-page-btn', disabled: dis || null, onclick: () => goTo(pg) }, label);
+    wrap.appendChild(el('div', { class: 'cash-pager' }, [
+      el('span', { class: 'cash-flab' }, total ? (fromN + '–' + toN + ' из ' + total) : 'Нет записей'),
+      el('div', { class: 'cash-page-btns' }, [
+        pbtn('« Первая', 1, cbState.page <= 1),
+        pbtn('‹ Назад', cbState.page - 1, cbState.page <= 1),
+        el('span', { class: 'cash-flab' }, 'Стр. ' + cbState.page + ' из ' + pages),
+        pbtn('Вперёд ›', cbState.page + 1, cbState.page >= pages),
+        pbtn('Последняя »', pages, cbState.page >= pages),
+      ]),
+    ]));
     updateBulkBar();
     refreshRate();
   }
