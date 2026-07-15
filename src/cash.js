@@ -583,6 +583,11 @@ function summaryExprs(wid) {
       outExpr: `CASE WHEN t.tx_type='out' AND t.wallet_id=$1 THEN t.amount
                      WHEN t.tx_type='transfer' AND t.wallet_id=$1 THEN t.amount
                      ELSE 0 END`,
+      sign: `CASE WHEN t.tx_type='in' AND t.wallet_id=$1 THEN 1
+                  WHEN t.tx_type='out' AND t.wallet_id=$1 THEN -1
+                  WHEN t.tx_type='transfer' AND t.wallet_to_id=$1 THEN 1
+                  WHEN t.tx_type='transfer' AND t.wallet_id=$1 THEN -1
+                  ELSE 0 END`,
     };
   }
   return {
@@ -590,6 +595,7 @@ function summaryExprs(wid) {
     delta: `CASE WHEN t.tx_type='in' THEN t.amount WHEN t.tx_type='out' THEN -t.amount ELSE 0 END`,
     inExpr: `CASE WHEN t.tx_type='in' THEN t.amount ELSE 0 END`,
     outExpr: `CASE WHEN t.tx_type='out' THEN t.amount ELSE 0 END`,
+    sign: `CASE WHEN t.tx_type='in' THEN 1 WHEN t.tx_type='out' THEN -1 ELSE 0 END`,
   };
 }
 
@@ -621,7 +627,23 @@ router.get('/api/summary', async (req, res) => {
        WHERE t.source <> 'opening' AND t.tx_date BETWEEN $${p2.length - 1} AND $${p2.length}
          AND (t.category_id IS NULL OR t.category_id NOT IN (SELECT id FROM cash_categories WHERE code='102'))`, p2);
     const inflow = Number(r2.rows[0].inflow), outflow = Number(r2.rows[0].outflow);
-    res.json({ opening, inflow, outflow, closing: opening + inflow - outflow });
+    // Разбивка сальдо на сумы + доллары (штуки валюты) — та же логика дат, что и у opening/closing.
+    const uzsVal = `(${e.sign}) * (CASE WHEN t.currency <> 'USD' THEN t.amount ELSE 0 END)`;
+    const usdVal = `(${e.sign}) * (CASE WHEN t.currency = 'USD' THEN COALESCE(t.fx_amount,0) ELSE 0 END)`;
+    let opening_uzs = 0, opening_usd = 0, closing_uzs = 0, closing_usd = 0;
+    { // состав сальдо на начало
+      const p = e.params.slice(); let where;
+      if (from) { p.push(from); where = `((t.source='opening' AND t.tx_date <= $${p.length}) OR (t.source<>'opening' AND t.tx_date < $${p.length}))`; }
+      else { where = `t.source='opening'`; }
+      const r = await db.pool.query(`SELECT COALESCE(SUM(${uzsVal}),0) uzs, COALESCE(SUM(${usdVal}),0) usd FROM cash_transactions t WHERE ${where}`, p);
+      opening_uzs = Number(r.rows[0].uzs); opening_usd = Number(r.rows[0].usd);
+    }
+    { // состав сальдо на конец (всё до даты `to` включительно)
+      const p = e.params.slice(); p.push(to || '2999-12-31');
+      const r = await db.pool.query(`SELECT COALESCE(SUM(${uzsVal}),0) uzs, COALESCE(SUM(${usdVal}),0) usd FROM cash_transactions t WHERE t.tx_date <= $${p.length}`, p);
+      closing_uzs = Number(r.rows[0].uzs); closing_usd = Number(r.rows[0].usd);
+    }
+    res.json({ opening, inflow, outflow, closing: opening + inflow - outflow, opening_uzs, opening_usd, closing_uzs, closing_usd });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 

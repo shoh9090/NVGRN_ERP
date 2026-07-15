@@ -702,20 +702,15 @@
     const inV = el('div', { class: 'cash-sum-v' }, money(sum.inflow) + ' сум');
     const outV = el('div', { class: 'cash-sum-v' }, money(sum.outflow) + ' сум');
     const closeV = el('div', { class: 'cash-sum-v' }, money(sum.closing) + ' сум');
-    const closeFx = el('div', { class: 'cash-sum-fx cb-fx-line' }, '…');
+    const closeFx = el('div', { class: 'cash-sum-fx cb-fx-line' }, '');
     wrap.appendChild(el('div', { class: 'cash-summary', style: 'margin-bottom:10px' }, [
       el('div', { class: 'cash-sum-card neutral' }, [el('div', { class: 'cash-sum-l' }, 'Сальдо на начало · всего'), openV, openFx]),
       el('div', { class: 'cash-sum-card in' }, [el('div', { class: 'cash-sum-l' }, 'Приход за период'), inV]),
       el('div', { class: 'cash-sum-card out' }, [el('div', { class: 'cash-sum-l' }, 'Расход за период'), outV]),
       el('div', { class: 'cash-sum-card end' }, [el('div', { class: 'cash-sum-l' }, 'Сальдо на конец · всего'), closeV, closeFx]),
     ]));
-    const cbDayMinus = (s) => { const d = new Date(s + 'T00:00:00'); d.setDate(d.getDate() - 1); return d.toISOString().slice(0, 10); };
-    async function loadFx() {
-      try { const fx = await api('/cash-fx-balance?wallet=' + cbState.wallet + (cbState.to ? '&to=' + cbState.to : '')); closeFx.innerHTML = fxHtml(fx.uzs, fx.usd); } catch (e) { closeFx.textContent = ''; }
-      if (cbState.from) { try { const fo = await api('/cash-fx-balance?wallet=' + cbState.wallet + '&to=' + cbDayMinus(cbState.from)); openFx.innerHTML = fxHtml(fo.uzs, fo.usd); } catch (e) { openFx.textContent = ''; } }
-      else { openFx.innerHTML = fxHtml(0, 0); }
-    }
-    loadFx();
+    openFx.innerHTML = fxHtml(sum.opening_uzs || 0, sum.opening_usd || 0);
+    closeFx.innerHTML = fxHtml(sum.closing_uzs || 0, sum.closing_usd || 0);
     // Тихое обновление сводки после инлайн-правки (без перерисовки строк — фокус не теряется).
     async function cbUpdateSummary() {
       try {
@@ -723,8 +718,9 @@
         const s = await api('/summary?' + sp.toString());
         openV.textContent = money(s.opening) + ' сум'; inV.textContent = money(s.inflow) + ' сум';
         outV.textContent = money(s.outflow) + ' сум'; closeV.textContent = money(s.closing) + ' сум';
+        openFx.innerHTML = fxHtml(s.opening_uzs || 0, s.opening_usd || 0);
+        closeFx.innerHTML = fxHtml(s.closing_uzs || 0, s.closing_usd || 0);
       } catch (e) { /* не критично */ }
-      loadFx();
     }
 
     // ---- строка ввода (всегда сверху) ----
@@ -830,18 +826,32 @@
       const dateI = el('input', { type: 'date', class: 'cb-cell', value: String(x.tx_date).slice(0, 10), onchange: (e) => save({ tx_date: e.target.value }) });
       const purI = el('input', { class: 'cb-cell', value: x.purpose || '', placeholder: isIn ? 'Откуда…' : 'Куда…', onchange: (e) => save({ purpose: e.target.value }) });
       const catI = fsel(catOptions(), x.category_id || ''); catI.className = 'cb-cell'; catI.onchange = (e) => save({ category_id: e.target.value });
-      const amtI = el('input', { class: 'cb-cell', style: 'text-align:right', value: Math.round(Number(x.amount)), onchange: (e) => {
-        const v = Number(String(e.target.value).replace(/\s/g, '').replace(',', '.'));
-        if (!(v > 0)) { toast('Сумма должна быть больше 0', true); e.target.value = Math.round(Number(x.amount)); return; }
-        const patch = { amount: v };
-        if (x.currency === 'USD' && Number(x.fx_rate) > 0) patch.fx_amount = +(v / Number(x.fx_rate)).toFixed(2);
-        save(patch);
-      } });
+      const numOf = (i) => Number(String(i.value).replace(/\s/g, '').replace(',', '.')) || 0;
+      let valCell, rateCell, amtCell;
+      if (x.currency === 'USD') {
+        // Долларовая строка: редактируем $, курс и сумму — любое поле пересчитывает остальные.
+        valCell = el('input', { class: 'cb-cell', style: 'text-align:right', value: Math.round((Number(x.fx_amount) || 0) * 100) / 100 });
+        rateCell = el('input', { class: 'cb-cell', style: 'text-align:right', value: Math.round(Number(x.fx_rate) || 0) });
+        amtCell = el('input', { class: 'cb-cell', style: 'text-align:right', value: Math.round(Number(x.amount)) });
+        const saveUsd = (which) => {
+          let u = numOf(valCell), r = numOf(rateCell), a = numOf(amtCell);
+          if (which === 'amt') { if (r > 0) u = Math.round((a / r) * 100) / 100; } else { a = Math.round(u * r); }
+          if (!(u > 0) || !(r > 0)) { toast('Укажите $ и курс больше 0', true); return; }
+          valCell.value = u; rateCell.value = r; amtCell.value = a;
+          save({ currency: 'USD', fx_amount: u, fx_rate: r, amount: a });
+        };
+        valCell.onchange = () => saveUsd('usd'); rateCell.onchange = () => saveUsd('rate'); amtCell.onchange = () => saveUsd('amt');
+      } else {
+        valCell = el('span', {}, 'сум');
+        rateCell = el('span', {}, '—');
+        amtCell = el('input', { class: 'cb-cell', style: 'text-align:right', value: Math.round(Number(x.amount)), onchange: (e) => {
+          const v = numOf(e.target);
+          if (!(v > 0)) { toast('Сумма должна быть больше 0', true); e.target.value = Math.round(Number(x.amount)); return; }
+          save({ amount: v });
+        } });
+      }
       return el('div', { class: 'cash-row cash-cb' + (isNew ? ' cb-new' : '') }, [
-        cb, dateI, purI, catI,
-        el('span', {}, fxNote),
-        el('span', {}, x.currency === 'USD' ? money(x.fx_rate) : '—'),
-        amtI,
+        cb, dateI, purI, catI, valCell, rateCell, amtCell,
         el('span', { class: 'cb-actions' }, [trash]),
       ]);
     });
@@ -967,12 +977,12 @@
     let d = { uzs: null, usd: null, rate: null, date: null };
     try { d = await api('/cash-opening?wallet=' + walletId); } catch (e) { /* пусто — заведём заново */ }
     const wname = ((DICTS.wallets || []).find((w) => String(w.id) === String(walletId)) || {}).name || 'Наличная касса';
-    const date = el('input', { type: 'date', class: 'cashf-inp', value: d.date || todayStr() });
+    const date = el('input', { type: 'date', class: 'cashf-inp', value: d.date || cbState.from || todayStr() });
     const uzs = fmoney(d.uzs != null ? d.uzs : '', { placeholder: '0' });
     const usd = fmoney(d.usd != null ? d.usd : '', { placeholder: '0' });
     const rate = fmoney(d.rate != null ? Math.round(d.rate) : '', { placeholder: 'курс ЦБ (авто, если пусто)' });
     const body = el('div', { class: 'cashf' }, [
-      el('div', { class: 'cash-note-info' }, 'Начальный остаток кассы «' + wname + '» на выбранную дату. Сумы и доллары — раздельно. Курс нужен, чтобы привести доллары к сумам; если пусто — подставится курс ЦБ на дату.'),
+      el('div', { class: 'cash-note-info' }, 'Начальный остаток кассы «' + wname + '» на выбранную дату — ставьте первым днём периода (например, 01.06.2026). Сумы и доллары — раздельно. Курс нужен, чтобы привести доллары к сумам; если пусто — подставится курс ЦБ на дату.'),
       frow('Дата остатков', date),
       frow('Остаток в сумах', uzs),
       frow('Остаток в долларах ($)', usd),
