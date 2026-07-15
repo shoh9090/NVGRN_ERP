@@ -291,7 +291,7 @@ async function seedCategories() {
     ['81', 'Питание «базар»', G8, 'operating', false],
     ['82', 'Проект уксус', G8, 'operating', false],
     ['100', 'Межбанк (перевод между счетами)', G8, 'operating', true],
-    ['110', 'Обнал (перевод в кассу)', G8, 'operating', true],
+    ['110', 'Перевод в наличную кассу', G8, 'operating', true],
     ['111', 'Пополнение карты', G8, 'operating', true],
     ['101', 'Корректировка остатка', G8, 'operating', false],
     ['102', 'Конверсия валюты', G8, 'operating', false],
@@ -299,12 +299,12 @@ async function seedCategories() {
   let i = 0;
   for (const [code, name, grp, flow, onlyT] of CATS) {
     i += 10;
-    // status не трогаем при обновлении — чтобы не «воскрешать» заархивированные пользователем статьи.
+    // При обновлении НЕ трогаем name/group_name/sort_order/status — это правки пользователя
+    // (переименования, перегруппировки, порядок). Обновляем только служебные поля потока.
     await db.pool.query(
       `INSERT INTO cash_categories (code, name, group_name, flow_type, only_transfer, sort_order)
        VALUES ($1,$2,$3,$4,$5,$6)
-       ON CONFLICT (code) DO UPDATE SET name=EXCLUDED.name, group_name=EXCLUDED.group_name,
-         flow_type=EXCLUDED.flow_type, only_transfer=EXCLUDED.only_transfer, sort_order=EXCLUDED.sort_order`,
+       ON CONFLICT (code) DO UPDATE SET flow_type=EXCLUDED.flow_type, only_transfer=EXCLUDED.only_transfer`,
       [code, name, grp, flow, onlyT, i]
     );
   }
@@ -1229,7 +1229,7 @@ router.post('/api/tx/:id(\\d+)/confirm-cash', J, async (req, res) => {
     if (usdEquiv > 0) {
       const conv = (await client.query("SELECT id FROM cash_categories WHERE code='102' LIMIT 1")).rows[0];
       const cid = conv ? conv.id : null;
-      const p = 'Долларовая часть обнала' + (t.purpose ? ' — ' + t.purpose : '');
+      const p = 'Долларовая часть (наличные с банка)' + (t.purpose ? ' — ' + t.purpose : '');
       await client.query(
         `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, category_id, purpose, source, is_classified, currency, created_by)
          VALUES ($1,$2,'out',$3,$4,$5,'manual',true,'UZS',$6)`, [t.tx_date, usdEquiv, wid, cid, p, req.user.id]);

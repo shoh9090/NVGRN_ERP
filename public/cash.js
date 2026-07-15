@@ -78,7 +78,11 @@
     c = c || {};
     const code = finp(c.code, { placeholder: 'Код (напр. 10)' });
     const name = finp(c.name, { placeholder: 'Название' });
-    const grpOpts = [{ v: '', t: '— группа —' }].concat((DICTS.groups || []).map((g) => ({ v: g.name, t: g.name })));
+    // Текущая группа статьи всегда должна быть в списке — иначе выпадашка сбросится на пустую
+    // и при сохранении затрёт группу (статья «переедет» в раздел «—» и потеряется).
+    const grpNames = (DICTS.groups || []).map((g) => g.name);
+    if (c.group_name && grpNames.indexOf(c.group_name) === -1) grpNames.push(c.group_name);
+    const grpOpts = [{ v: '', t: '— группа —' }].concat(grpNames.map((n) => ({ v: n, t: n })));
     const grp = fsel(grpOpts, c.group_name || '');
     const flow = fsel([{ v: 'operating', t: 'Операционный' }, { v: 'investing', t: 'Инвестиции (капекс)' }, { v: 'financing', t: 'Финансы (кредиты/налоги)' }], c.flow_type || 'operating');
     const onlyT = el('input', { type: 'checkbox' }); if (c.only_transfer) onlyT.checked = true;
@@ -346,7 +350,7 @@
     if ((internal && internal.length) || obnal.sent) {
       const im = el('div', { class: 'cash-internal' });
       im.appendChild(el('div', { class: 'cash-h3' }, 'Внутренние перемещения'));
-      im.appendChild(el('div', { class: 'cash-sub' }, 'Перемещения между своими счетами. В доходы/расходы не входят — по всем кошелькам в сумме гасятся. Реальный расход в обнале — только комиссия.'));
+      im.appendChild(el('div', { class: 'cash-sub' }, 'Перемещения между своими счетами. В доходы/расходы не входят — по всем кошелькам в сумме гасятся. Реальный расход при получении наличных — только комиссия.'));
       if (internal && internal.length) {
         im.appendChild(el('div', { class: 'cash-internal-rows' }, internal.map((x) => el('div', { class: 'cash-internal-row' }, [
           el('span', { class: 'cash-internal-name' }, (x.code ? x.code + ' ' : '') + x.name),
@@ -355,7 +359,7 @@
       }
       if (obnal.sent) {
         im.appendChild(el('div', { class: 'cash-obnal' }, [
-          el('div', { class: 'cash-obnal-h' }, '💵 Обнал за период'),
+          el('div', { class: 'cash-obnal-h' }, '💵 Получение наличных за период'),
           el('div', { class: 'cash-obnal-cells' }, [
             obnalCell('Ушло со счёта', obnal.sent, ''),
             obnalCell('Получено в кассу', obnal.received, 'cash-tot-in'),
@@ -570,7 +574,7 @@
     const openingRow = el('label', { class: 'cashf-row', style: 'display:none' }, [el('span', {}, 'Начальный остаток'), el('span', {}, [setOpening, el('span', { class: 'cash-sub cb-open-lbl' }, '')])]);
     let payload = null;
     const body = el('div', { class: 'cashf' }, [
-      el('div', { class: 'cash-sub' }, 'Загрузите шаблон «Превью импорта». Обнал-приходы пропускаются; строки «сум+доллар» разбиваются на две; коды у расходов берутся из файла, приходы — без кодов.'),
+      el('div', { class: 'cash-sub' }, 'Загрузите шаблон «Превью импорта». Приходы «снятие наличных» пропускаются; строки «сум+доллар» разбиваются на две; коды у расходов берутся из файла, приходы — без кодов.'),
       frow('Касса', wallet), frow('Файл', file), openingRow, info,
     ]);
     const commitBtn = el('button', { class: 'btn-primary', style: 'display:none', onclick: async () => {
@@ -594,8 +598,8 @@
         info.innerHTML = '';
         const line = (t) => el('div', { class: 'cash-imp-sum' }, t);
         info.appendChild(line(`Строк в файле: ${s.fileRows}`));
-        info.appendChild(line(`Приходы (без обнала): ${s.inCnt} · Расходы: ${s.outCnt}`));
-        info.appendChild(line(`Обнал пропущено: ${s.skippedObnal} · Конверсия: ${s.konv}`));
+        info.appendChild(line(`Приходы (без снятий наличных): ${s.inCnt} · Расходы: ${s.outCnt}`));
+        info.appendChild(line(`Снятий наличных пропущено: ${s.skippedObnal} · Конверсия: ${s.konv}`));
         info.appendChild(line(`Строк «сум+доллар» разбито на 2: ${s.splitPairs}`));
         info.appendChild(line(`Будет записано строк: ${s.entries}`));
         if (s.badCodes && s.badCodes.length) info.appendChild(el('div', { class: 'cash-imp-sum', style: 'color:#c0392b' }, `Неизвестные коды ДДС: ${s.badCodes.join(', ')} (запишутся без статьи)`));
