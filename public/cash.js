@@ -696,36 +696,37 @@
 
     // Единый ряд: Сальдо на начало · Приход · Расход · Сальдо на конец.
     // У балансов (начало/конец) показываем состав: сумы + доллары, а крупным — общий сум-эквивалент.
-    const fxHtml = (uzs, usd) => '<span class="cb-fx-uzs">' + money(uzs) + ' сум</span><span class="cb-fx-sep"> · </span><span class="cb-fx-usd' + (Number(usd) < 0 ? ' cb-fx-neg' : '') + '">$ ' + money(usd) + '</span>';
-    const openV = el('div', { class: 'cash-sum-v' }, money(sum.opening) + ' сум');
-    const openFx = el('div', { class: 'cash-sum-fx cb-fx-line' }, '…');
-    const inV = el('div', { class: 'cash-sum-v' }, money(sum.inflow) + ' сум');
+    // Крупно — сумы (сумовая часть), отдельной строкой — доллары. Без смешанного сум-эквивалента.
+    const usdHtml = (usd) => '<span class="cb-fx-usd' + (Number(usd) < 0 ? ' cb-fx-neg' : '') + '">$ ' + money(usd) + '</span>';
+    const openV = el('div', { class: 'cash-sum-v' }, money(sum.opening_uzs || 0) + ' сум');
+    const openFx = el('div', { class: 'cash-sum-fx cb-fx-line' }, '');
+    const inV = el('div', { class: 'cash-sum-v' }, money(sum.inflow_uzs || 0) + ' сум');
     const inFx = el('div', { class: 'cash-sum-fx cb-fx-line' }, '');
-    const outV = el('div', { class: 'cash-sum-v' }, money(sum.outflow) + ' сум');
+    const outV = el('div', { class: 'cash-sum-v' }, money(sum.outflow_uzs || 0) + ' сум');
     const outFx = el('div', { class: 'cash-sum-fx cb-fx-line' }, '');
-    const closeV = el('div', { class: 'cash-sum-v' }, money(sum.closing) + ' сум');
+    const closeV = el('div', { class: 'cash-sum-v' }, money(sum.closing_uzs || 0) + ' сум');
     const closeFx = el('div', { class: 'cash-sum-fx cb-fx-line' }, '');
     wrap.appendChild(el('div', { class: 'cash-summary', style: 'margin-bottom:10px' }, [
-      el('div', { class: 'cash-sum-card neutral' }, [el('div', { class: 'cash-sum-l' }, 'Сальдо на начало · всего'), openV, openFx]),
+      el('div', { class: 'cash-sum-card neutral' }, [el('div', { class: 'cash-sum-l' }, 'Сальдо на начало'), openV, openFx]),
       el('div', { class: 'cash-sum-card in' }, [el('div', { class: 'cash-sum-l' }, 'Приход за период'), inV, inFx]),
       el('div', { class: 'cash-sum-card out' }, [el('div', { class: 'cash-sum-l' }, 'Расход за период'), outV, outFx]),
-      el('div', { class: 'cash-sum-card end' }, [el('div', { class: 'cash-sum-l' }, 'Сальдо на конец · всего'), closeV, closeFx]),
+      el('div', { class: 'cash-sum-card end' }, [el('div', { class: 'cash-sum-l' }, 'Сальдо на конец'), closeV, closeFx]),
     ]));
-    openFx.innerHTML = fxHtml(sum.opening_uzs || 0, sum.opening_usd || 0);
-    inFx.innerHTML = fxHtml(sum.inflow_uzs || 0, sum.inflow_usd || 0);
-    outFx.innerHTML = fxHtml(sum.outflow_uzs || 0, sum.outflow_usd || 0);
-    closeFx.innerHTML = fxHtml(sum.closing_uzs || 0, sum.closing_usd || 0);
+    openFx.innerHTML = usdHtml(sum.opening_usd || 0);
+    inFx.innerHTML = usdHtml(sum.inflow_usd || 0);
+    outFx.innerHTML = usdHtml(sum.outflow_usd || 0);
+    closeFx.innerHTML = usdHtml(sum.closing_usd || 0);
     // Тихое обновление сводки после инлайн-правки (без перерисовки строк — фокус не теряется).
     async function cbUpdateSummary() {
       try {
         const sp = new URLSearchParams(); if (cbState.from) sp.set('from', cbState.from); if (cbState.to) sp.set('to', cbState.to); sp.set('wallet', cbState.wallet); if (cbState.category) sp.set('category', cbState.category); if (cbState.classified) sp.set('classified', cbState.classified); if (cbState.q) sp.set('q', cbState.q);
         const s = await api('/summary?' + sp.toString());
-        openV.textContent = money(s.opening) + ' сум'; inV.textContent = money(s.inflow) + ' сум';
-        outV.textContent = money(s.outflow) + ' сум'; closeV.textContent = money(s.closing) + ' сум';
-        openFx.innerHTML = fxHtml(s.opening_uzs || 0, s.opening_usd || 0);
-        inFx.innerHTML = fxHtml(s.inflow_uzs || 0, s.inflow_usd || 0);
-        outFx.innerHTML = fxHtml(s.outflow_uzs || 0, s.outflow_usd || 0);
-        closeFx.innerHTML = fxHtml(s.closing_uzs || 0, s.closing_usd || 0);
+        openV.textContent = money(s.opening_uzs || 0) + ' сум'; inV.textContent = money(s.inflow_uzs || 0) + ' сум';
+        outV.textContent = money(s.outflow_uzs || 0) + ' сум'; closeV.textContent = money(s.closing_uzs || 0) + ' сум';
+        openFx.innerHTML = usdHtml(s.opening_usd || 0);
+        inFx.innerHTML = usdHtml(s.inflow_usd || 0);
+        outFx.innerHTML = usdHtml(s.outflow_usd || 0);
+        closeFx.innerHTML = usdHtml(s.closing_usd || 0);
       } catch (e) { /* не критично */ }
     }
 
