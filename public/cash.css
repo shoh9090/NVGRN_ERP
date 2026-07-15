@@ -242,8 +242,14 @@
 .cb-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
 .cb-edit { cursor: pointer; color: var(--muted); font-size: 13px; }
 .cb-edit:hover { color: var(--forest); }
-.cb-trash { cursor: pointer; color: var(--muted); font-size: 13px; }
-.cb-trash:hover { color: #c0392b; }
+.cb-trash { cursor: pointer; display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 8px; }
+.cb-trash svg { display: block; }
+.cb-trash:hover { background: #fdecea; }
+/* Инлайн-редактирование строк наличной кассы (как в Excel) */
+.cash-cb .cb-cell { border: 1px solid transparent; background: transparent; padding: 5px 6px; border-radius: 6px; font: inherit; font-size: 13px; width: 100%; box-sizing: border-box; min-width: 0; color: var(--ink); }
+.cash-cb .cb-cell:hover { border-color: var(--line); background: #fff; }
+.cash-cb .cb-cell:focus { border-color: var(--forest); background: #fff; outline: none; box-shadow: 0 0 0 2px rgba(22,58,40,.08); }
+select.cb-cell { cursor: pointer; }
 .cash-bulk-count { font-weight: 700; color: #c0392b; font-size: 13px; white-space: nowrap; }
 .cash-sum-fx { font-size: 12px; color: var(--muted); margin-top: 4px; font-variant-numeric: tabular-nums; }
 .cb-on { background: #eef4e9 !important; }

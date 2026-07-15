@@ -1156,24 +1156,52 @@ router.post('/api/tx/:id(\\d+)', J, async (req, res) => {
 // Подтверждение факт. суммы прихода по обналичиванию/переводу в кассу — считает и списывает
 // комиссию (статья 64) как разницу между тем, что снято с банка, и тем, что реально пришло.
 router.post('/api/tx/:id(\\d+)/confirm-cash', J, async (req, res) => {
-  const factAmount = numOrNull((req.body || {}).fact_amount);
-  if (!(factAmount > 0)) return res.status(400).json({ error: 'Укажите фактическую сумму прихода' });
+  const b = req.body || {};
+  // Факт получено: сумами + (опционально) долларами по курсу. fact_amount — обратная совместимость.
+  const factSum = numOrNull(b.fact_sum != null ? b.fact_sum : b.fact_amount) || 0;
+  const factUsd = numOrNull(b.fact_usd) || 0;
   const t = (await db.pool.query(
     "SELECT tx_date, amount, wallet_to_id, purpose FROM cash_transactions WHERE id=$1 AND tx_type='transfer' AND needs_cash_confirm=true", [req.params.id])).rows[0];
   if (!t) return res.status(404).json({ error: 'Операция не найдена или уже подтверждена' });
-  if (factAmount > Number(t.amount)) return res.status(400).json({ error: 'Факт. приход не может быть больше снятой суммы' });
-  const diff = Number(t.amount) - factAmount;
-  if (diff > 0) {
-    const feeCat = (await db.pool.query("SELECT id FROM cash_categories WHERE code='64' LIMIT 1")).rows[0];
-    const pct = (diff / Number(t.amount) * 100).toFixed(2);
-    await db.pool.query(
-      `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, category_id, purpose, source, is_classified, created_by)
-       VALUES ($1,$2,'out',$3,$4,$5,'manual',$6,$7)`,
-      [t.tx_date, diff, t.wallet_to_id, feeCat ? feeCat.id : null, `Комиссия при получении наличных (${pct}%)` + (t.purpose ? ' — ' + t.purpose : ''), !!feeCat, req.user.id]);
-  }
-  await db.pool.query('UPDATE cash_transactions SET needs_cash_confirm=false WHERE id=$1', [req.params.id]);
-  await db.log(req.user.id, 'cash_confirm_cash', '#' + req.params.id + ' факт=' + factAmount + ' комиссия=' + diff);
-  res.json({ ok: true, diff });
+  let rate = numOrNull(b.rate) || 0;
+  if (factUsd > 0 && !(rate > 0)) { try { rate = await getCbuUsdRate(String(t.tx_date).slice(0, 10)); } catch (e) { rate = null; } }
+  if (factUsd > 0 && !(rate > 0)) return res.status(400).json({ error: 'Укажите курс для долларовой части' });
+  const usdEquiv = factUsd > 0 ? Math.round(factUsd * rate) : 0;
+  const totalFact = Math.round(factSum) + usdEquiv;
+  if (!(totalFact > 0)) return res.status(400).json({ error: 'Укажите фактический приход' });
+  if (totalFact > Number(t.amount) + 0.5) return res.status(400).json({ error: 'Факт. приход не может быть больше снятой суммы' });
+  const diff = Number(t.amount) - totalFact;
+  const wid = t.wallet_to_id;
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    // Долларовая часть обнала: часть принесённых переводом сумов становится долларами (статья 102).
+    if (usdEquiv > 0) {
+      const conv = (await client.query("SELECT id FROM cash_categories WHERE code='102' LIMIT 1")).rows[0];
+      const cid = conv ? conv.id : null;
+      const p = 'Долларовая часть обнала' + (t.purpose ? ' — ' + t.purpose : '');
+      await client.query(
+        `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, category_id, purpose, source, is_classified, currency, created_by)
+         VALUES ($1,$2,'out',$3,$4,$5,'manual',true,'UZS',$6)`, [t.tx_date, usdEquiv, wid, cid, p, req.user.id]);
+      await client.query(
+        `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, category_id, purpose, source, is_classified, currency, fx_rate, fx_amount, created_by)
+         VALUES ($1,$2,'in',$3,$4,$5,'manual',true,'USD',$6,$7,$8)`, [t.tx_date, usdEquiv, wid, cid, p, rate, factUsd, req.user.id]);
+    }
+    // Комиссия обнала (статья 64) — разница между снятым и фактически полученным.
+    if (diff > 0.5) {
+      const feeCat = (await client.query("SELECT id FROM cash_categories WHERE code='64' LIMIT 1")).rows[0];
+      const pct = (diff / Number(t.amount) * 100).toFixed(2);
+      await client.query(
+        `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, category_id, purpose, source, is_classified, created_by)
+         VALUES ($1,$2,'out',$3,$4,$5,'manual',$6,$7)`,
+        [t.tx_date, diff, wid, feeCat ? feeCat.id : null, `Комиссия при получении наличных (${pct}%)` + (t.purpose ? ' — ' + t.purpose : ''), !!feeCat, req.user.id]);
+    }
+    await client.query('UPDATE cash_transactions SET needs_cash_confirm=false WHERE id=$1', [req.params.id]);
+    await client.query('COMMIT');
+    await db.log(req.user.id, 'cash_confirm_cash', `#${req.params.id} сум=${factSum} $=${factUsd} комиссия=${diff}`);
+    res.json({ ok: true, diff, usdEquiv });
+  } catch (e) { await client.query('ROLLBACK').catch(() => {}); res.status(400).json({ error: e.message }); }
+  finally { client.release(); }
 });
 router.post('/api/tx/:id(\\d+)/delete', async (req, res) => {
   await db.pool.query('DELETE FROM cash_transactions WHERE id=$1', [req.params.id]);

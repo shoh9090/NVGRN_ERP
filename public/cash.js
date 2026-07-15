@@ -582,7 +582,7 @@
         closeModal(); if (TAB === 'cashbox') renderCashbox();
       } catch (e) { toast(e.message, true); commitBtn.disabled = false; commitBtn.textContent = 'Записать в кассу'; }
     } }, 'Записать в кассу');
-    const checkBtn = el('button', { class: 'btn-ghost', onclick: async () => {
+    const checkBtn = el('button', { class: 'btn-primary', onclick: async () => {
       if (!wallet.value) return toast('Выберите кассу', true);
       if (!file.files[0]) return toast('Выберите файл', true);
       checkBtn.disabled = true; checkBtn.textContent = 'Проверяю…';
@@ -695,24 +695,32 @@
     } catch (e) { toast(e.message, true); return; }
 
     // Единый ряд: Сальдо на начало · Приход · Расход · Сальдо на конец (с разбивкой сумы+доллары).
-    const endCard = el('div', { class: 'cash-sum-card end' }, [
-      el('div', { class: 'cash-sum-l' }, 'Сальдо на конец'),
-      el('div', { class: 'cash-sum-v' }, money(sum.closing) + ' сум'),
-      el('div', { class: 'cash-sum-fx cb-fx-line' }, '…'),
-    ]);
+    const openV = el('div', { class: 'cash-sum-v' }, money(sum.opening) + ' сум');
+    const inV = el('div', { class: 'cash-sum-v' }, money(sum.inflow) + ' сум');
+    const outV = el('div', { class: 'cash-sum-v' }, money(sum.outflow) + ' сум');
+    const closeV = el('div', { class: 'cash-sum-v' }, money(sum.closing) + ' сум');
+    const fxLine = el('div', { class: 'cash-sum-fx cb-fx-line' }, '…');
     wrap.appendChild(el('div', { class: 'cash-summary', style: 'margin-bottom:10px' }, [
-      el('div', { class: 'cash-sum-card neutral' }, [el('div', { class: 'cash-sum-l' }, 'Сальдо на начало'), el('div', { class: 'cash-sum-v' }, money(sum.opening) + ' сум')]),
-      el('div', { class: 'cash-sum-card in' }, [el('div', { class: 'cash-sum-l' }, 'Приход за период'), el('div', { class: 'cash-sum-v' }, money(sum.inflow) + ' сум')]),
-      el('div', { class: 'cash-sum-card out' }, [el('div', { class: 'cash-sum-l' }, 'Расход за период'), el('div', { class: 'cash-sum-v' }, money(sum.outflow) + ' сум')]),
-      endCard,
+      el('div', { class: 'cash-sum-card neutral' }, [el('div', { class: 'cash-sum-l' }, 'Сальдо на начало'), openV]),
+      el('div', { class: 'cash-sum-card in' }, [el('div', { class: 'cash-sum-l' }, 'Приход за период'), inV]),
+      el('div', { class: 'cash-sum-card out' }, [el('div', { class: 'cash-sum-l' }, 'Расход за период'), outV]),
+      el('div', { class: 'cash-sum-card end' }, [el('div', { class: 'cash-sum-l' }, 'Сальдо на конец'), closeV, fxLine]),
     ]));
-    (async () => {
+    async function loadFx() {
+      try { const fx = await api('/cash-fx-balance?wallet=' + cbState.wallet + (cbState.to ? '&to=' + cbState.to : '')); fxLine.textContent = money(fx.uzs) + ' сум + $ ' + money(fx.usd); }
+      catch (e) { fxLine.textContent = ''; }
+    }
+    loadFx();
+    // Тихое обновление сводки после инлайн-правки (без перерисовки строк — фокус не теряется).
+    async function cbUpdateSummary() {
       try {
-        const fx = await api('/cash-fx-balance?wallet=' + cbState.wallet + (cbState.to ? '&to=' + cbState.to : ''));
-        const line = wrap.querySelector('.cb-fx-line');
-        if (line) line.textContent = money(fx.uzs) + ' сум + $ ' + money(fx.usd);
-      } catch (e) { const line = wrap.querySelector('.cb-fx-line'); if (line) line.textContent = ''; }
-    })();
+        const sp = new URLSearchParams(); if (cbState.from) sp.set('from', cbState.from); if (cbState.to) sp.set('to', cbState.to); sp.set('wallet', cbState.wallet);
+        const s = await api('/summary?' + sp.toString());
+        openV.textContent = money(s.opening) + ' сум'; inV.textContent = money(s.inflow) + ' сум';
+        outV.textContent = money(s.outflow) + ' сум'; closeV.textContent = money(s.closing) + ' сум';
+      } catch (e) { /* не критично */ }
+      loadFx();
+    }
 
     // ---- строка ввода (всегда сверху) ----
     const dateInp = el('input', { type: 'date', class: 'cashf-inp', value: todayStr() });
@@ -787,28 +795,49 @@
     } });
     const head = el('div', { class: 'cash-row head cash-cb' }, [selAll, ...['Дата', isIn ? 'Откуда' : 'Куда', 'Код', 'Валюта', 'Курс ЦБ', 'Сумма (экв.)', ''].map((h) => el('span', {}, h))]);
 
+    const trashSvg = '<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="#c0392b" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>';
     const rows = (list.items || []).map((x) => {
       const isNew = cbState.lastAddedId && x.id === cbState.lastAddedId;
       const isPending = x.tx_type === 'transfer' && x.needs_cash_confirm;
       const isTransfer = x.tx_type === 'transfer';
       const fxNote = x.currency === 'USD' ? ('$ ' + money(x.fx_amount)) : (isTransfer ? '—' : 'сум');
-      const label = isTransfer ? ('⏳ Перевод от ' + (x.wallet_name || '—')) : (x.purpose || x.cp_name || x.payer_name || '—');
-      const cb = isTransfer ? el('span', {}, '') : el('input', { type: 'checkbox', checked: !!cbState.selected[x.id] || null, onchange: (e) => { cbState.selected[x.id] = e.target.checked; updateBulkBar(); } });
-      const actions = [];
-      if (!isTransfer) {
-        actions.push(el('span', { class: 'cb-edit', title: 'Изменить', onclick: (e) => { e.stopPropagation(); openCashboxRowEdit(x); } }, '✎'));
-        actions.push(el('span', { class: 'cb-trash', title: 'Удалить', onclick: async (e) => { e.stopPropagation(); if (!confirm('Удалить эту запись? Действие необратимо.')) return; try { await post('/tx/' + x.id + '/delete', {}); delete cbState.selected[x.id]; loadCashbox(); } catch (er) { toast(er.message, true); } } }, '🗑'));
+      const trash = el('span', { class: 'cb-trash', title: 'Удалить', html: trashSvg, onclick: async (e) => { e.stopPropagation(); if (!confirm('Удалить эту запись? Действие необратимо.')) return; try { await post('/tx/' + x.id + '/delete', {}); delete cbState.selected[x.id]; loadCashbox(); } catch (er) { toast(er.message, true); } } });
+      // Переводы (обнал в кассу) не редактируем на месте — только подтверждение и удаление.
+      if (isTransfer) {
+        const actions = [trash];
+        if (isPending) actions.unshift(el('span', { class: 'cb-confirm', onclick: () => openConfirmCash(x) }, '⏳ Подтвердить'));
+        return el('div', { class: 'cash-row cash-cb' + (isPending ? ' cb-pending' : '') }, [
+          el('span', {}, ''),
+          el('span', {}, ruDate(x.tx_date)),
+          el('span', { class: 'cash-purpose' }, '⏳ Перевод от ' + (x.wallet_name || '—')),
+          el('span', {}, x.cat_code ? (x.cat_code + ' ' + (x.cat_name || '')) : '—'),
+          el('span', {}, fxNote),
+          el('span', {}, x.currency === 'USD' ? money(x.fx_rate) : '—'),
+          el('span', { style: 'text-align:right' }, money(x.amount)),
+          el('span', { class: 'cb-actions' }, actions),
+        ]);
       }
-      if (isPending) actions.unshift(el('span', { class: 'cb-confirm', onclick: () => openConfirmCash(x) }, '⏳ Подтвердить'));
-      return el('div', { class: 'cash-row cash-cb' + (isNew ? ' cb-new' : '') + (isPending ? ' cb-pending' : '') }, [
-        cb,
-        el('span', {}, ruDate(x.tx_date)),
-        el('span', { class: 'cash-purpose' }, label),
-        el('span', {}, x.cat_code ? (x.cat_code + ' ' + (x.cat_name || '')) : '—'),
+      // Инлайн-редактирование (как в Excel): меняем на месте, без окна. Сохранение по уходу из поля.
+      // Шлём ПОЛНОЕ состояние строки + правку — иначе /api/tx обнулит незаданные поля (статью, назначение).
+      const base = { tx_date: String(x.tx_date).slice(0, 10), amount: x.amount, category_id: x.category_id || '', purpose: x.purpose || '', counterparty_id: x.counterparty_id || '', contract_id: x.contract_id || '' };
+      const save = async (patch) => { try { await post('/tx/' + x.id, Object.assign({}, base, patch)); await cbUpdateSummary(); } catch (e) { toast(e.message, true); } };
+      const cb = el('input', { type: 'checkbox', checked: !!cbState.selected[x.id] || null, onchange: (e) => { cbState.selected[x.id] = e.target.checked; updateBulkBar(); } });
+      const dateI = el('input', { type: 'date', class: 'cb-cell', value: String(x.tx_date).slice(0, 10), onchange: (e) => save({ tx_date: e.target.value }) });
+      const purI = el('input', { class: 'cb-cell', value: x.purpose || '', placeholder: isIn ? 'Откуда…' : 'Куда…', onchange: (e) => save({ purpose: e.target.value }) });
+      const catI = fsel(catOptions(), x.category_id || ''); catI.className = 'cb-cell'; catI.onchange = (e) => save({ category_id: e.target.value });
+      const amtI = el('input', { class: 'cb-cell', style: 'text-align:right', value: Math.round(Number(x.amount)), onchange: (e) => {
+        const v = Number(String(e.target.value).replace(/\s/g, '').replace(',', '.'));
+        if (!(v > 0)) { toast('Сумма должна быть больше 0', true); e.target.value = Math.round(Number(x.amount)); return; }
+        const patch = { amount: v };
+        if (x.currency === 'USD' && Number(x.fx_rate) > 0) patch.fx_amount = +(v / Number(x.fx_rate)).toFixed(2);
+        save(patch);
+      } });
+      return el('div', { class: 'cash-row cash-cb' + (isNew ? ' cb-new' : '') }, [
+        cb, dateI, purI, catI,
         el('span', {}, fxNote),
         el('span', {}, x.currency === 'USD' ? money(x.fx_rate) : '—'),
-        el('span', { style: 'text-align:right' }, money(x.amount)),
-        el('span', { class: 'cb-actions' }, actions),
+        amtI,
+        el('span', { class: 'cb-actions' }, [trash]),
       ]);
     });
 
@@ -847,22 +876,36 @@
   // Подтверждение факт. суммы прихода по обналичиванию — комиссия (статья 64) считается и
   // списывается сама, как разница между снятой с банка суммой и тем, что реально пересчитали.
   function openConfirmCash(x) {
-    const fact = fmoney('', { placeholder: 'Факт. получено в кассе' });
-    const note = el('div', { class: 'cash-note-info' }, `Снято с банка: ${money(x.amount)} сум. Разница спишется расходом по статье «64 % расход наличку» автоматически.`);
-    const diffBox = el('div', { class: 'cash-recon-diff' }, '');
-    fact.oninput = () => {
-      const v = Number(moneyVal(fact)) || 0;
-      if (!v) { diffBox.textContent = ''; return; }
-      const diff = Number(x.amount) - v;
-      diffBox.textContent = diff > 0 ? `Комиссия: ${money(diff)} сум (${(diff / x.amount * 100).toFixed(2)}%)` : (diff < 0 ? 'Факт. приход больше снятой суммы — проверьте' : 'Без комиссии');
-    };
+    const factSum = fmoney('', { placeholder: 'Получено сумами' });
+    const factUsd = fmoney('', { placeholder: 'Получено долларами ($)' });
+    const rate = fmoney('', { placeholder: 'курс' });
+    const note = el('div', { class: 'cash-note-info' }, `Снято с банка: ${money(x.amount)} сум. Укажите, сколько пришло сумами и сколько долларами — доллары лягут в кассу как $. Разница спишется комиссией (статья «64»).`);
+    const calc = el('div', { class: 'cash-recon-diff' }, '');
+    function recalc() {
+      const fs = Number(moneyVal(factSum)) || 0;
+      const fu = Number(moneyVal(factUsd)) || 0;
+      const rt = Number(moneyVal(rate)) || 0;
+      const usdEq = (fu > 0 && rt > 0) ? Math.round(fu * rt) : 0;
+      const total = Math.round(fs) + usdEq;
+      if (!total) { calc.textContent = ''; calc.className = 'cash-recon-diff'; return; }
+      const diff = Number(x.amount) - total;
+      let txt = 'Итого получено: ' + money(total) + ' сум' + (usdEq ? ' (в т.ч. $' + fu + ' = ' + money(usdEq) + ')' : '');
+      txt += diff > 0 ? ' · комиссия ' + money(diff) + ' (' + (diff / x.amount * 100).toFixed(2) + '%)' : (diff < 0 ? ' · БОЛЬШЕ снятого — проверьте' : ' · без комиссии');
+      calc.textContent = txt;
+      calc.className = 'cash-recon-diff' + (diff < 0 ? ' warn' : ' ok');
+    }
+    async function autoRate() {
+      if (!String(rate.value).trim() && Number(moneyVal(factUsd)) > 0) { try { const r = await api('/fx-rate?date=' + String(x.tx_date).slice(0, 10)); if (r.rate) rate.value = r.rate; } catch (e) { /* нет курса */ } }
+      recalc();
+    }
+    factSum.oninput = recalc; rate.oninput = recalc; factUsd.oninput = autoRate;
     const save = el('button', { class: 'btn-primary', onclick: async () => {
-      const v = Number(moneyVal(fact));
-      if (!(v > 0)) return toast('Укажите сумму', true);
-      try { await post('/tx/' + x.id + '/confirm-cash', { fact_amount: v }); toast('Подтверждено'); closeModal(); loadCashbox(); }
+      const fs = Number(moneyVal(factSum)) || 0, fu = Number(moneyVal(factUsd)) || 0, rt = Number(moneyVal(rate)) || 0;
+      if (!(fs > 0) && !(fu > 0)) return toast('Укажите сумму', true);
+      try { await post('/tx/' + x.id + '/confirm-cash', { fact_sum: fs, fact_usd: fu, rate: rt }); toast('Подтверждено'); closeModal(); loadCashbox(); }
       catch (e) { toast(e.message, true); }
     } }, 'Подтвердить');
-    modal('Факт. приход в кассу', el('div', { class: 'cashf' }, [note, frow('Факт. получено', fact), diffBox]), [save]);
+    modal('Факт. приход в кассу', el('div', { class: 'cashf' }, [note, frow('Получено сумами', factSum), frow('Получено $', factUsd), frow('Курс', rate), calc]), [save]);
   }
 
   // Правка уже сохранённой строки (карандашик) — дата/пояснение/статья/валюта/сумма.
