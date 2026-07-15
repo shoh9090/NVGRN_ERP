@@ -640,15 +640,19 @@ router.get('/api/summary', async (req, res) => {
     // Приход/расход за период — без начальных остатков.
     const p2 = e.params.slice();
     p2.push(from || '1900-01-01', to || '2999-12-31');
+    // Сумовые потоки — БЕЗ обмена (конверсия 102 исключена): совпадают с ручным счётом.
+    // Долларовые потоки — С обменом (102 включена): доллары наличных/обмена видны в приходе $
+    // и сходятся: конец$ = начало$ + приход$ − расход$.
+    const notConv = `(t.category_id IS NULL OR t.category_id NOT IN (SELECT id FROM cash_categories WHERE code='102'))`;
     const r2 = await db.pool.query(
-      `SELECT COALESCE(SUM(${e.inExpr}),0) inflow, COALESCE(SUM(${e.outExpr}),0) outflow,
-              COALESCE(SUM((${e.inMember}) * (CASE WHEN t.currency<>'USD' THEN t.amount ELSE 0 END)),0) inflow_uzs,
+      `SELECT COALESCE(SUM(CASE WHEN ${notConv} THEN (${e.inExpr}) ELSE 0 END),0) inflow,
+              COALESCE(SUM(CASE WHEN ${notConv} THEN (${e.outExpr}) ELSE 0 END),0) outflow,
+              COALESCE(SUM((${e.inMember}) * (CASE WHEN t.currency<>'USD' AND ${notConv} THEN t.amount ELSE 0 END)),0) inflow_uzs,
               COALESCE(SUM((${e.inMember}) * (CASE WHEN t.currency='USD' THEN COALESCE(t.fx_amount,0) ELSE 0 END)),0) inflow_usd,
-              COALESCE(SUM((${e.outMember}) * (CASE WHEN t.currency<>'USD' THEN t.amount ELSE 0 END)),0) outflow_uzs,
+              COALESCE(SUM((${e.outMember}) * (CASE WHEN t.currency<>'USD' AND ${notConv} THEN t.amount ELSE 0 END)),0) outflow_uzs,
               COALESCE(SUM((${e.outMember}) * (CASE WHEN t.currency='USD' THEN COALESCE(t.fx_amount,0) ELSE 0 END)),0) outflow_usd
        FROM cash_transactions t
-       WHERE t.source <> 'opening' AND t.tx_date BETWEEN $${p2.length - 1} AND $${p2.length}
-         AND (t.category_id IS NULL OR t.category_id NOT IN (SELECT id FROM cash_categories WHERE code='102'))${filt(p2)}`, p2);
+       WHERE t.source <> 'opening' AND t.tx_date BETWEEN $${p2.length - 1} AND $${p2.length}${filt(p2)}`, p2);
     const inflow = Number(r2.rows[0].inflow), outflow = Number(r2.rows[0].outflow);
     // Разбивка сальдо на сумы + доллары (штуки валюты) — та же логика дат, что и у opening/closing.
     const uzsVal = `(${e.sign}) * (CASE WHEN t.currency <> 'USD' THEN t.amount ELSE 0 END)`;

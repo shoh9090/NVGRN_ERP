@@ -782,24 +782,20 @@
         await loadCashbox();
       } catch (e) { toast(e.message, true); saving = false; }
     }
-    const debouncedSave = () => { clearTimeout(window.__cbT); window.__cbT = setTimeout(trySave, 400); };
-    catSel.addEventListener('change', debouncedSave);
-    amtInp.addEventListener('input', debouncedSave);
-    rateOverride.addEventListener('input', debouncedSave);
-    // Навигация по Enter: Откуда/Куда → Код → Валюта → Сумма → сохранение и снова на «Откуда/Куда».
-    const onEnterFocus = (el2, next) => el2.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); if (next) next.focus(); else trySaveNow(); } });
-    async function trySaveNow() { clearTimeout(window.__cbT); await trySave(); const row = $('#cashbox-wrap .cb-purpose-inp'); if (row) row.focus(); }
-    onEnterFocus(purposeInp, catSel);
-    onEnterFocus(catSel, currSel);
-    onEnterFocus(currSel, amtInp);
-    amtInp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); trySaveNow(); } });
+    // Отправка — ДВА способа: Enter из любого поля строки ИЛИ кнопка «＋ Добавить».
+    // Авто-сохранение по паузе убрано, чтобы не создавались случайные записи.
+    async function trySaveNow() { await trySave(); const row = $('#cashbox-wrap .cb-purpose-inp'); if (row) row.focus(); }
+    [dateInp, purposeInp, catSel, currSel, rateOverride, amtInp].forEach((elm) => {
+      elm.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); trySaveNow(); } });
+    });
+    const addBtn = el('button', { class: 'btn-primary cb-add-btn', title: 'Добавить (или нажми Enter)', onclick: () => trySaveNow() }, '＋');
 
     const inputRow = el('div', { class: 'cash-row cash-cb cb-input' }, [
       el('span', {}, ''),
       dateInp, purposeInp, catSel, currSel,
       el('span', {}, [rateBox, rateOverride]),
       el('span', {}, [amtInp, equivBox]),
-      el('span', {}, ''),
+      el('span', {}, [addBtn]),
     ]);
     const selAll = el('input', { type: 'checkbox', onchange: (e) => {
       (list.items || []).forEach((x) => { if (x.tx_type !== 'transfer') cbState.selected[x.id] = e.target.checked; });
