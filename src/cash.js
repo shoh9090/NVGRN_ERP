@@ -733,6 +733,145 @@ router.post('/api/cash-opening', J, async (req, res) => {
   finally { client.release(); }
 });
 
+// ---------- Импорт «Наличная касса» из Excel ----------
+// Шаблон: # | Лист | Тип | Дата | Пояснение | Код ДДС | Сумма (сум) | Валюта $ | Курс
+// Правила: приход «обнал» пропускаем; строки «сум+доллар» бьём на 2 (сумовую и долларовую);
+// у приходов коды не ставим (пусто), у расходов — код из файла.
+const cbDate = (v) => {
+  if (v == null || v === '') return null;
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  const s = String(v).trim();
+  let m = s.match(/^(\d{4})-(\d{2})-(\d{2})/); if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  m = s.match(/^(\d{1,2})[.\/](\d{1,2})[.\/](\d{4})/); if (m) return `${m[3]}-${String(m[2]).padStart(2, '0')}-${String(m[1]).padStart(2, '0')}`;
+  const n = Number(s); if (n > 30000 && n < 60000) return new Date(Math.round((n - 25569) * 86400 * 1000)).toISOString().slice(0, 10);
+  return null;
+};
+const cbNum = (v) => { const t = String(v == null ? '' : v).replace(/ /g, '').replace(/\s/g, '').replace(',', '.'); const n = parseFloat(t); return isNaN(n) ? 0 : n; };
+
+function parseCashboxWorkbook(buf) {
+  const wb = XLSX.read(buf, { type: 'buffer' });
+  const shName = wb.SheetNames.find((n) => /превью|импорт|касс/i.test(n)) || wb.SheetNames[0];
+  const aoa = XLSX.utils.sheet_to_json(wb.Sheets[shName], { header: 1, raw: false, defval: '' });
+  let hi = aoa.findIndex((r) => r.some((c) => /^тип$/i.test(String(c).trim())) && r.some((c) => /сумм/i.test(String(c))));
+  if (hi < 0) hi = 0;
+  const head = aoa[hi].map((c) => String(c).toLowerCase().trim());
+  const col = (re) => head.findIndex((h) => re.test(h));
+  const ci = { type: col(/^тип/), date: col(/дата/), purpose: col(/поясн/), code: col(/код/), sum: col(/сумм/), usd: col(/валют|\$|доллар/), rate: col(/курс/) };
+  const rows = [];
+  for (let i = hi + 1; i < aoa.length; i++) {
+    const r = aoa[i];
+    const typeRaw = String(r[ci.type] || '').toLowerCase();
+    const tx_type = /приход/.test(typeRaw) ? 'in' : /расход/.test(typeRaw) ? 'out' : null;
+    if (!tx_type) continue;
+    const date = cbDate(r[ci.date]);
+    const sum = cbNum(r[ci.sum]);
+    if (!date || !(sum > 0)) continue;
+    rows.push({
+      tx_type, date,
+      purpose: String(r[ci.purpose] || '').trim(),
+      code: ci.code >= 0 ? String(r[ci.code] || '').trim().split('.')[0] : '',
+      sum, usd: ci.usd >= 0 ? cbNum(r[ci.usd]) : 0, rate: ci.rate >= 0 ? cbNum(r[ci.rate]) : 0,
+    });
+  }
+  // Начальный остаток из листа «Итоги» (самый ранний месяц).
+  let opening = null;
+  const tsh = wb.Sheets['Итоги'];
+  if (tsh) {
+    const t = XLSX.utils.sheet_to_json(tsh, { header: 1, raw: false, defval: '' });
+    const th = (t[0] || []).map((c) => String(c).toLowerCase());
+    let oi = th.findIndex((h) => /ост.*нач|нач.*ост/.test(h)); if (oi < 0) oi = (t[0] || []).length - 1;
+    let best = null;
+    for (let i = 1; i < t.length; i++) { const v = cbNum(t[i][oi]); if (t[i][0] && v) { best = { row: String(t[i][0]), sum: v }; break; } }
+    if (best) opening = best.sum;
+  }
+  return { rows, opening };
+}
+
+// Разбивка на записи: обнал-приходы пропускаем; сум+доллар → две записи.
+function buildCashboxEntries(rows) {
+  const entries = []; let skippedObnal = 0, konv = 0, splitPairs = 0;
+  for (const r of rows) {
+    if (r.tx_type === 'in' && /обнал/i.test(r.purpose)) { skippedObnal++; continue; }
+    if (/конверси/i.test(r.purpose)) konv++;
+    const dollarPart = (r.usd > 0 && r.rate > 0) ? Math.round(r.usd * r.rate) : 0;
+    let sumPart = Math.round(r.sum - dollarPart);
+    if (sumPart < 0) sumPart = 0;
+    const base = { tx_type: r.tx_type, date: r.date, purpose: r.purpose, code: r.tx_type === 'out' ? r.code : '' };
+    if (dollarPart > 0 && sumPart > 0) splitPairs++;
+    if (dollarPart === 0 || sumPart > 0) entries.push({ ...base, currency: 'UZS', amount: dollarPart === 0 ? Math.round(r.sum) : sumPart, fx_amount: null, fx_rate: null });
+    if (dollarPart > 0) entries.push({ ...base, currency: 'USD', amount: dollarPart, fx_amount: r.usd, fx_rate: r.rate });
+  }
+  return { entries, skippedObnal, konv, splitPairs };
+}
+
+router.post('/api/cashbox/import/preview', upload.single('file'), async (req, res) => {
+  try {
+    const wallet_id = intOrNull(req.body.wallet_id);
+    if (!wallet_id) return res.status(400).json({ error: 'Выберите наличную кассу' });
+    if (!req.file) return res.status(400).json({ error: 'Файл не выбран' });
+    const { rows, opening } = parseCashboxWorkbook(req.file.buffer);
+    if (!rows.length) return res.status(400).json({ error: 'Не нашёл строк в файле (проверьте шаблон).' });
+    const { entries, skippedObnal, konv, splitPairs } = buildCashboxEntries(rows);
+    // неизвестные коды (только у расходов)
+    const codeToCat = {};
+    (await db.pool.query("SELECT id, code FROM cash_categories WHERE status='active'")).rows.forEach((c) => { codeToCat[String(c.code)] = c.id; });
+    const badCodes = new Set();
+    for (const e of entries) { if (e.code && !codeToCat[e.code]) badCodes.add(e.code); }
+    const inCnt = rows.filter((r) => r.tx_type === 'in' && !/обнал/i.test(r.purpose)).length;
+    const outCnt = rows.filter((r) => r.tx_type === 'out').length;
+    const minDate = entries.map((e) => e.date).filter(Boolean).sort()[0] || null;
+    const openingDate = minDate ? minDate.slice(0, 7) + '-01' : null;
+    const payload = Buffer.from(JSON.stringify({ wallet_id, entries, opening, openingDate })).toString('base64');
+    res.json({
+      summary: { fileRows: rows.length, inCnt, outCnt, skippedObnal, konv, splitPairs, entries: entries.length, badCodes: [...badCodes], opening, openingDate },
+      sample: entries.slice(0, 40), payload,
+    });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+router.post('/api/cashbox/import/commit', J, async (req, res) => {
+  const client = await db.pool.connect();
+  try {
+    const data = JSON.parse(Buffer.from(String(req.body.payload || ''), 'base64').toString('utf8'));
+    const wallet_id = intOrNull(data.wallet_id);
+    if (!wallet_id) return res.status(400).json({ error: 'Нет кассы' });
+    const codeToCat = {};
+    (await db.pool.query("SELECT id, code FROM cash_categories WHERE status='active'")).rows.forEach((c) => { codeToCat[String(c.code)] = c.id; });
+    await client.query('BEGIN');
+    // Начальный остаток (по желанию) — заменяем opening этой кассы.
+    if (req.body.setOpening && data.opening && data.openingDate) {
+      await client.query("DELETE FROM cash_transactions WHERE source='opening' AND wallet_id=$1", [wallet_id]);
+      await client.query(
+        `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, purpose, source, is_classified, currency, created_by)
+         VALUES ($1,$2,'in',$3,'Начальный остаток (сум)','opening',true,'UZS',$4)`,
+        [data.openingDate, Math.abs(Number(data.opening)), wallet_id, req.user.id]);
+    }
+    const batch = (await client.query('INSERT INTO cash_import_batches (wallet_id, filename, count, created_by) VALUES ($1,$2,0,$3) RETURNING id', [wallet_id, req.body.filename || 'cashbox.xlsx', req.user.id])).rows[0].id;
+    // дедуп по натуральному ключу в пределах кассы
+    const existing = new Set();
+    (await client.query("SELECT to_char(tx_date,'YYYY-MM-DD') d, amount, tx_type, currency, COALESCE(purpose,'') p FROM cash_transactions WHERE wallet_id=$1 AND source='import'", [wallet_id])).rows
+      .forEach((x) => existing.add(x.d + '|' + Number(x.amount) + '|' + x.tx_type + '|' + x.currency + '|' + x.p));
+    let ins = 0, skip = 0;
+    for (const e of (data.entries || [])) {
+      // Дедуп только против уже существовавших строк (защита от повторной загрузки);
+      // одинаковые строки внутри одного файла НЕ теряем.
+      const key = e.date + '|' + Number(e.amount) + '|' + e.tx_type + '|' + e.currency + '|' + (e.purpose || '');
+      if (existing.has(key)) { skip++; continue; }
+      const catId = e.code ? (codeToCat[e.code] || null) : null;
+      await client.query(
+        `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, category_id, purpose, source, import_batch_id, is_classified, currency, fx_rate, fx_amount, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,'import',$7,$8,$9,$10,$11,$12)`,
+        [e.date, e.amount, e.tx_type, wallet_id, catId, e.purpose || null, batch, !!catId, e.currency || 'UZS', e.fx_rate, e.fx_amount, req.user.id]);
+      ins++;
+    }
+    await client.query('UPDATE cash_import_batches SET count=$1 WHERE id=$2', [ins, batch]);
+    await client.query('COMMIT');
+    await db.log(req.user.id, 'cashbox_import', `касса ${wallet_id}: +${ins}, пропущено ${skip}`);
+    res.json({ ok: true, inserted: ins, skipped: skip });
+  } catch (e) { await client.query('ROLLBACK').catch(() => {}); res.status(400).json({ error: e.message }); }
+  finally { client.release(); }
+});
+
 // ---------- Сверка остатка ----------
 // Сравнивает фактический остаток кошелька с ERP; при расхождении создаёт корректировку.
 router.post('/api/reconcile', J, async (req, res) => {

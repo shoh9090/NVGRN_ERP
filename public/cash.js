@@ -559,6 +559,53 @@
 
   // ---------- Наличная касса: построчный Приход/Расход, доллар + курс ЦБ, сальдо на начало/конец ----------
   const cbState = { type: 'in', wallet: '', from: '', to: '', q: '', category: '', pageSize: 50, lastAddedId: null, selected: {} };
+
+  // Импорт «Наличной кассы» из Excel: предпросмотр → запись.
+  function openCashboxImport(walletId) {
+    const cashWallets = (DICTS.wallets || []).filter((w) => w.kind === 'cash');
+    const wallet = fsel(cashWallets.map((w) => ({ v: w.id, t: w.name })), walletId || (cashWallets[0] && cashWallets[0].id) || '');
+    const file = el('input', { type: 'file', accept: '.xlsx,.xls', class: 'cashf-inp' });
+    const info = el('div', {});
+    const setOpening = el('input', { type: 'checkbox' }); setOpening.checked = true;
+    const openingRow = el('label', { class: 'cashf-row', style: 'display:none' }, [el('span', {}, 'Начальный остаток'), el('span', {}, [setOpening, el('span', { class: 'cash-sub cb-open-lbl' }, '')])]);
+    let payload = null;
+    const body = el('div', { class: 'cashf' }, [
+      el('div', { class: 'cash-sub' }, 'Загрузите шаблон «Превью импорта». Обнал-приходы пропускаются; строки «сум+доллар» разбиваются на две; коды у расходов берутся из файла, приходы — без кодов.'),
+      frow('Касса', wallet), frow('Файл', file), openingRow, info,
+    ]);
+    const commitBtn = el('button', { class: 'btn-primary', style: 'display:none', onclick: async () => {
+      if (!payload) return;
+      commitBtn.disabled = true; commitBtn.textContent = 'Записываю…';
+      try {
+        const d = await post('/cashbox/import/commit', { payload, setOpening: setOpening.checked, filename: (file.files[0] && file.files[0].name) || '' });
+        toast(`Записано ${d.inserted}, пропущено дублей ${d.skipped}`);
+        closeModal(); if (TAB === 'cashbox') renderCashbox();
+      } catch (e) { toast(e.message, true); commitBtn.disabled = false; commitBtn.textContent = 'Записать в кассу'; }
+    } }, 'Записать в кассу');
+    const checkBtn = el('button', { class: 'btn-ghost', onclick: async () => {
+      if (!wallet.value) return toast('Выберите кассу', true);
+      if (!file.files[0]) return toast('Выберите файл', true);
+      checkBtn.disabled = true; checkBtn.textContent = 'Проверяю…';
+      const fd = new FormData(); fd.append('wallet_id', wallet.value); fd.append('file', file.files[0]);
+      try {
+        const res = await fetch('/cash/api/cashbox/import/preview', { method: 'POST', body: fd });
+        const d = await res.json(); if (!res.ok) throw new Error(d.error || 'Ошибка');
+        payload = d.payload; const s = d.summary;
+        info.innerHTML = '';
+        const line = (t) => el('div', { class: 'cash-imp-sum' }, t);
+        info.appendChild(line(`Строк в файле: ${s.fileRows}`));
+        info.appendChild(line(`Приходы (без обнала): ${s.inCnt} · Расходы: ${s.outCnt}`));
+        info.appendChild(line(`Обнал пропущено: ${s.skippedObnal} · Конверсия: ${s.konv}`));
+        info.appendChild(line(`Строк «сум+доллар» разбито на 2: ${s.splitPairs}`));
+        info.appendChild(line(`Будет записано строк: ${s.entries}`));
+        if (s.badCodes && s.badCodes.length) info.appendChild(el('div', { class: 'cash-imp-sum', style: 'color:#c0392b' }, `Неизвестные коды ДДС: ${s.badCodes.join(', ')} (запишутся без статьи)`));
+        if (s.opening && s.openingDate) { openingRow.style.display = ''; openingRow.querySelector('.cb-open-lbl').textContent = ' ' + money(s.opening) + ' сум на ' + ruDate(s.openingDate); }
+        commitBtn.style.display = '';
+        checkBtn.textContent = 'Проверить снова'; checkBtn.disabled = false;
+      } catch (e) { toast(e.message, true); checkBtn.disabled = false; checkBtn.textContent = 'Проверить'; }
+    } }, 'Проверить');
+    modal('Импорт наличной кассы', body, [checkBtn, commitBtn]);
+  }
   async function renderCashbox() {
     const c = $('#cash-content'); c.innerHTML = '';
     const cashWallets = (DICTS.wallets || []).filter((w) => w.kind === 'cash');
@@ -567,6 +614,7 @@
       el('div', {}, [el('div', { class: 'cash-h2' }, 'Наличная касса')]),
       el('div', { class: 'cash-tx-btns' }, [
         el('button', { class: 'btn-ghost cash-add', onclick: () => openCashOpeningForm(cbState.wallet) }, '💼 Начальные остатки'),
+        el('button', { class: 'btn-ghost cash-add', onclick: () => openCashboxImport(cbState.wallet) }, '📥 Импорт из Excel'),
       ]),
     ]));
     if (!cashWallets.length) { c.appendChild(el('div', { class: 'cash-empty' }, 'Нет ни одного кошелька типа «Наличные». Заведите его на вкладке «Кошельки».')); return; }
