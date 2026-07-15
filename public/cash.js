@@ -782,13 +782,30 @@
         await loadCashbox();
       } catch (e) { toast(e.message, true); saving = false; }
     }
-    // Отправка — ДВА способа: Enter из любого поля строки ИЛИ кнопка «＋ Добавить».
-    // Авто-сохранение по паузе убрано, чтобы не создавались случайные записи.
+    // Навигация как в Excel: Enter — на следующую ячейку (Дата→Куда→Код→Валюта→Сумма);
+    // на «Сумме» Enter — отправка и снова на «Куда». Стрелки ←/→ — назад/вперёд по ячейкам.
+    // Плюс кнопка «＋» — второй способ отправки. Авто-сохранение по паузе убрано.
     async function trySaveNow() { await trySave(); const row = $('#cashbox-wrap .cb-purpose-inp'); if (row) row.focus(); }
-    [dateInp, purposeInp, catSel, currSel, rateOverride, amtInp].forEach((elm) => {
-      elm.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); trySaveNow(); } });
+    const navFields = [dateInp, purposeInp, catSel, currSel, amtInp];
+    function moveBy(cur, dir) {
+      const i = navFields.indexOf(cur); if (i < 0) return;
+      const ni = i + dir;
+      if (ni >= navFields.length) { trySaveNow(); return; }   // после «Суммы» — отправка
+      if (ni < 0) return;
+      const nx = navFields[ni]; nx.focus(); if (nx.select) { try { nx.select(); } catch (e) {} }
+    }
+    const atStart = (el2) => { try { return el2.selectionStart === 0 && el2.selectionEnd === 0; } catch (e) { return true; } };
+    const atEnd = (el2) => { try { return el2.selectionStart === (el2.value || '').length; } catch (e) { return true; } };
+    navFields.forEach((elm) => {
+      const isSelect = elm.tagName === 'SELECT';
+      const isDate = elm.type === 'date';
+      elm.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); moveBy(elm, +1); return; }
+        if (e.key === 'ArrowRight' && (isSelect || (!isDate && atEnd(elm)))) { e.preventDefault(); moveBy(elm, +1); return; }
+        if (e.key === 'ArrowLeft' && (isSelect || (!isDate && atStart(elm)))) { e.preventDefault(); moveBy(elm, -1); return; }
+      });
     });
-    const addBtn = el('button', { class: 'btn-primary cb-add-btn', title: 'Добавить (или нажми Enter)', onclick: () => trySaveNow() }, '＋');
+    const addBtn = el('button', { class: 'btn-primary cb-add-btn', title: 'Добавить (или Enter на «Сумме»)', onclick: () => trySaveNow() }, '＋');
 
     const inputRow = el('div', { class: 'cash-row cash-cb cb-input' }, [
       el('span', {}, ''),

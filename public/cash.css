@@ -234,7 +234,8 @@
   .cash-tx { grid-template-columns: 26px 64px 1.2fr 0.9fr 0.9fr; }
   .cash-tx > *:nth-child(4), .cash-tx > *:nth-child(5), .cash-tx > *:nth-child(6) { display: none; }
 }
-.cash-cb { grid-template-columns: 34px 104px minmax(220px, 1.4fr) 210px 86px 84px 150px 150px; gap: 10px; align-items: center; }
+.cash-cb { grid-template-columns: 34px 132px minmax(210px, 1.4fr) 200px 84px 82px 140px 132px; gap: 10px; align-items: center; }
+.cash-cb.cb-input .cashf-inp, .cash-cb.cb-input input, .cash-cb.cb-input select { min-width: 0; }
 /* Таблица кассы шире экрана — прокручивается по горизонтали, колонки не сминаются */
 .cb-scroll { overflow-x: auto; }
 .cb-scroll .cash-list { min-width: 1040px; }
