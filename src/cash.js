@@ -628,12 +628,13 @@ router.get('/api/summary', async (req, res) => {
     // датируют первым днём периода ("баланс на входе в этот день") — при единой строгой границе
     // такая запись выпадала бы и из сальдо (не "до"), и из прихода (явно исключён ниже по source).
     let opening = 0;
-    if (from) {
-      const p = e.params.slice(); p.push(from);
-      const r = await db.pool.query(
-        `SELECT COALESCE(SUM(${e.delta}),0) v FROM cash_transactions t
-         WHERE ((t.source = 'opening' AND t.tx_date <= $${p.length})
-            OR (t.source <> 'opening' AND t.tx_date < $${p.length}))${filt(p)}`, p);
+    {
+      // Без указанной даты начала «Сальдо на начало» = начальный остаток (source='opening'),
+      // а не 0 — иначе большое число расходилось с разбивкой и «Сальдо на конец» теряло остаток.
+      const p = e.params.slice(); let where;
+      if (from) { p.push(from); where = `((t.source = 'opening' AND t.tx_date <= $${p.length}) OR (t.source <> 'opening' AND t.tx_date < $${p.length}))`; }
+      else { where = `t.source = 'opening'`; }
+      const r = await db.pool.query(`SELECT COALESCE(SUM(${e.delta}),0) v FROM cash_transactions t WHERE ${where}${filt(p)}`, p);
       opening = Number(r.rows[0].v);
     }
     // Приход/расход за период — без начальных остатков.
