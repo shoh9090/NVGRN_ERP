@@ -647,8 +647,7 @@ router.get('/api/summary', async (req, res) => {
               COALESCE(SUM((${e.outMember}) * (CASE WHEN t.currency<>'USD' THEN t.amount ELSE 0 END)),0) outflow_uzs,
               COALESCE(SUM((${e.outMember}) * (CASE WHEN t.currency='USD' THEN COALESCE(t.fx_amount,0) ELSE 0 END)),0) outflow_usd
        FROM cash_transactions t
-       WHERE t.source <> 'opening' AND t.tx_date BETWEEN $${p2.length - 1} AND $${p2.length}
-         AND (t.category_id IS NULL OR t.category_id NOT IN (SELECT id FROM cash_categories WHERE code='102'))${filt(p2)}`, p2);
+       WHERE t.source <> 'opening' AND t.tx_date BETWEEN $${p2.length - 1} AND $${p2.length}${filt(p2)}`, p2);
     const inflow = Number(r2.rows[0].inflow), outflow = Number(r2.rows[0].outflow);
     // Разбивка сальдо на сумы + доллары (штуки валюты) — та же логика дат, что и у opening/closing.
     const uzsVal = `(${e.sign}) * (CASE WHEN t.currency <> 'USD' THEN t.amount ELSE 0 END)`;
