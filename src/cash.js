@@ -583,6 +583,8 @@ function summaryExprs(wid) {
       outExpr: `CASE WHEN t.tx_type='out' AND t.wallet_id=$1 THEN t.amount
                      WHEN t.tx_type='transfer' AND t.wallet_id=$1 THEN t.amount
                      ELSE 0 END`,
+      inMember: `CASE WHEN (t.tx_type='in' AND t.wallet_id=$1) OR (t.tx_type='transfer' AND t.wallet_to_id=$1) THEN 1 ELSE 0 END`,
+      outMember: `CASE WHEN (t.tx_type='out' AND t.wallet_id=$1) OR (t.tx_type='transfer' AND t.wallet_id=$1) THEN 1 ELSE 0 END`,
       sign: `CASE WHEN t.tx_type='in' AND t.wallet_id=$1 THEN 1
                   WHEN t.tx_type='out' AND t.wallet_id=$1 THEN -1
                   WHEN t.tx_type='transfer' AND t.wallet_to_id=$1 THEN 1
@@ -595,6 +597,8 @@ function summaryExprs(wid) {
     delta: `CASE WHEN t.tx_type='in' THEN t.amount WHEN t.tx_type='out' THEN -t.amount ELSE 0 END`,
     inExpr: `CASE WHEN t.tx_type='in' THEN t.amount ELSE 0 END`,
     outExpr: `CASE WHEN t.tx_type='out' THEN t.amount ELSE 0 END`,
+    inMember: `CASE WHEN t.tx_type='in' THEN 1 ELSE 0 END`,
+    outMember: `CASE WHEN t.tx_type='out' THEN 1 ELSE 0 END`,
     sign: `CASE WHEN t.tx_type='in' THEN 1 WHEN t.tx_type='out' THEN -1 ELSE 0 END`,
   };
 }
@@ -636,7 +640,11 @@ router.get('/api/summary', async (req, res) => {
     const p2 = e.params.slice();
     p2.push(from || '1900-01-01', to || '2999-12-31');
     const r2 = await db.pool.query(
-      `SELECT COALESCE(SUM(${e.inExpr}),0) inflow, COALESCE(SUM(${e.outExpr}),0) outflow
+      `SELECT COALESCE(SUM(${e.inExpr}),0) inflow, COALESCE(SUM(${e.outExpr}),0) outflow,
+              COALESCE(SUM((${e.inMember}) * (CASE WHEN t.currency<>'USD' THEN t.amount ELSE 0 END)),0) inflow_uzs,
+              COALESCE(SUM((${e.inMember}) * (CASE WHEN t.currency='USD' THEN COALESCE(t.fx_amount,0) ELSE 0 END)),0) inflow_usd,
+              COALESCE(SUM((${e.outMember}) * (CASE WHEN t.currency<>'USD' THEN t.amount ELSE 0 END)),0) outflow_uzs,
+              COALESCE(SUM((${e.outMember}) * (CASE WHEN t.currency='USD' THEN COALESCE(t.fx_amount,0) ELSE 0 END)),0) outflow_usd
        FROM cash_transactions t
        WHERE t.source <> 'opening' AND t.tx_date BETWEEN $${p2.length - 1} AND $${p2.length}
          AND (t.category_id IS NULL OR t.category_id NOT IN (SELECT id FROM cash_categories WHERE code='102'))${filt(p2)}`, p2);
@@ -657,7 +665,12 @@ router.get('/api/summary', async (req, res) => {
       const r = await db.pool.query(`SELECT COALESCE(SUM(${uzsVal}),0) uzs, COALESCE(SUM(${usdVal}),0) usd FROM cash_transactions t WHERE t.tx_date <= $${p.length}${filt(p)}`, p);
       closing_uzs = Number(r.rows[0].uzs); closing_usd = Number(r.rows[0].usd);
     }
-    res.json({ opening, inflow, outflow, closing: opening + inflow - outflow, opening_uzs, opening_usd, closing_uzs, closing_usd });
+    res.json({
+      opening, inflow, outflow, closing: opening + inflow - outflow,
+      opening_uzs, opening_usd, closing_uzs, closing_usd,
+      inflow_uzs: Number(r2.rows[0].inflow_uzs), inflow_usd: Number(r2.rows[0].inflow_usd),
+      outflow_uzs: Number(r2.rows[0].outflow_uzs), outflow_usd: Number(r2.rows[0].outflow_usd),
+    });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
