@@ -294,6 +294,7 @@ async function seedCategories() {
     ['110', 'Обнал (перевод в кассу)', G8, 'operating', true],
     ['111', 'Пополнение карты', G8, 'operating', true],
     ['101', 'Корректировка остатка', G8, 'operating', false],
+    ['102', 'Конверсия валюты', G8, 'operating', false],
   ];
   let i = 0;
   for (const [code, name, grp, flow, onlyT] of CATS) {
@@ -617,7 +618,8 @@ router.get('/api/summary', async (req, res) => {
     const r2 = await db.pool.query(
       `SELECT COALESCE(SUM(${e.inExpr}),0) inflow, COALESCE(SUM(${e.outExpr}),0) outflow
        FROM cash_transactions t
-       WHERE t.source <> 'opening' AND t.tx_date BETWEEN $${p2.length - 1} AND $${p2.length}`, p2);
+       WHERE t.source <> 'opening' AND t.tx_date BETWEEN $${p2.length - 1} AND $${p2.length}
+         AND (t.category_id IS NULL OR t.category_id NOT IN (SELECT id FROM cash_categories WHERE code='102'))`, p2);
     const inflow = Number(r2.rows[0].inflow), outflow = Number(r2.rows[0].outflow);
     res.json({ opening, inflow, outflow, closing: opening + inflow - outflow });
   } catch (e) { res.status(400).json({ error: e.message }); }
@@ -872,6 +874,46 @@ router.post('/api/cashbox/import/commit', J, async (req, res) => {
   finally { client.release(); }
 });
 
+// ---------- Конверсия валюты внутри наличной кассы ----------
+// Обмен $↔сум в одном кошельке: две ноги (сумовая + долларовая) со статьёй «Конверсия» (102).
+// Не доход/не расход, в ДДС не входит; сум-эквивалент нейтрален (обе ноги по одному курсу).
+router.post('/api/cashbox/convert', J, async (req, res) => {
+  const b = req.body || {};
+  const wid = intOrNull(b.wallet_id);
+  if (!wid) return res.status(400).json({ error: 'Выберите кассу' });
+  const dir = b.direction === 'uzs_to_usd' ? 'uzs_to_usd' : 'usd_to_uzs';
+  const usd = Number(String(b.usd == null ? '' : b.usd).replace(',', '.'));
+  const date = b.date || new Date().toISOString().slice(0, 10);
+  if (!(usd > 0)) return res.status(400).json({ error: 'Укажите сумму в долларах' });
+  let rate = Number(String(b.rate == null ? '' : b.rate).replace(',', '.'));
+  if (!(rate > 0)) { try { rate = await getCbuUsdRate(date); } catch (e) { rate = null; } }
+  if (!(rate > 0)) return res.status(400).json({ error: 'Нет курса — укажите вручную' });
+  const sumAmt = Math.round(usd * rate);
+  const cat = (await db.pool.query("SELECT id FROM cash_categories WHERE code='102' LIMIT 1")).rows[0];
+  const catId = cat ? cat.id : null;
+  const purpose = dir === 'usd_to_uzs'
+    ? `Конверсия $${usd} → ${sumAmt} сум @${rate}`
+    : `Конверсия ${sumAmt} сум → $${usd} @${rate}`;
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    const insUsd = (tx) => client.query(
+      `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, category_id, purpose, source, is_classified, currency, fx_rate, fx_amount, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,'manual',true,'USD',$7,$8,$9)`,
+      [date, sumAmt, tx, wid, catId, purpose, rate, usd, req.user.id]);
+    const insUzs = (tx) => client.query(
+      `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, category_id, purpose, source, is_classified, currency, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,'manual',true,'UZS',$7)`,
+      [date, sumAmt, tx, wid, catId, purpose, req.user.id]);
+    if (dir === 'usd_to_uzs') { await insUsd('out'); await insUzs('in'); }
+    else { await insUzs('out'); await insUsd('in'); }
+    await client.query('COMMIT');
+    await db.log(req.user.id, 'cash_convert', purpose);
+    res.json({ ok: true, sumAmt, rate });
+  } catch (e) { await client.query('ROLLBACK').catch(() => {}); res.status(400).json({ error: e.message }); }
+  finally { client.release(); }
+});
+
 // ---------- Сверка остатка ----------
 // Сравнивает фактический остаток кошелька с ERP; при расхождении создаёт корректировку.
 router.post('/api/reconcile', J, async (req, res) => {
@@ -914,7 +956,7 @@ router.get('/api/report', async (req, res) => {
      FROM cash_transactions t
      LEFT JOIN cash_categories cat ON cat.id = t.category_id
      WHERE t.tx_date BETWEEN $1 AND $2 AND t.tx_type IN ('in','out') AND t.source <> 'opening'
-       AND (cat.direction_hint IS DISTINCT FROM 'transfer')${wClause}
+       AND (cat.direction_hint IS DISTINCT FROM 'transfer') AND (cat.code IS DISTINCT FROM '102')${wClause}
      GROUP BY cat.id, cat.code, cat.name, cat.group_name, cat.flow_type
      ORDER BY cat.code NULLS LAST`, p)).rows
     .map((r) => ({ cat_id: r.cat_id, code: r.code, name: r.name, group_name: r.group_name, flow_type: r.flow_type, inc: Number(r.inc), exp: Number(r.exp), cnt: Number(r.cnt) }));

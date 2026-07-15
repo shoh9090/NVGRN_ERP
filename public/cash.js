@@ -558,7 +558,7 @@
   }
 
   // ---------- Наличная касса: построчный Приход/Расход, доллар + курс ЦБ, сальдо на начало/конец ----------
-  const cbState = { type: 'in', wallet: '', from: '', to: '', q: '', category: '', pageSize: 50, lastAddedId: null, selected: {} };
+  const cbState = { type: 'in', wallet: '', from: '', to: '', q: '', category: '', classified: '', pageSize: 50, lastAddedId: null, selected: {} };
 
   // Импорт «Наличной кассы» из Excel: предпросмотр → запись.
   function openCashboxImport(walletId) {
@@ -606,6 +606,41 @@
     } }, 'Проверить');
     modal('Импорт наличной кассы', body, [checkBtn, commitBtn]);
   }
+  // Конверсия валюты внутри кассы: $↔сум, одной операцией, не доход/не расход.
+  function openConvertForm(walletId) {
+    const cashWallets = (DICTS.wallets || []).filter((w) => w.kind === 'cash');
+    const wallet = fsel(cashWallets.map((w) => ({ v: w.id, t: w.name })), walletId || (cashWallets[0] && cashWallets[0].id) || '');
+    const date = finp(todayStr(), { type: 'date' });
+    const dir = fsel([{ v: 'usd_to_uzs', t: 'Доллары → Сумы' }, { v: 'uzs_to_usd', t: 'Сумы → Доллары' }], 'usd_to_uzs');
+    const usd = finp('', { inputmode: 'decimal', placeholder: 'Сколько долларов' });
+    const rate = finp('', { inputmode: 'decimal', placeholder: 'курс' });
+    const equiv = el('div', { class: 'cash-note-info' }, '');
+    function recalc() {
+      const u = Number(String(usd.value).replace(',', '.')) || 0;
+      const rt = Number(String(rate.value).replace(',', '.')) || 0;
+      equiv.textContent = (u && rt) ? ('= ' + money(Math.round(u * rt)) + ' сум' + (dir.value === 'usd_to_uzs' ? ' (получите сумами)' : ' (спишется сумами)')) : '';
+    }
+    async function refreshRate() {
+      if (!String(rate.value).trim()) { try { const r = await api('/fx-rate?date=' + (date.value || todayStr())); if (r.rate) rate.value = r.rate; } catch (e) { /* нет курса */ } }
+      recalc();
+    }
+    usd.oninput = recalc; rate.oninput = recalc; dir.onchange = recalc; date.onchange = refreshRate;
+    const body = el('div', { class: 'cashf' }, [
+      el('div', { class: 'cash-note-info' }, 'Обмен валют внутри кассы. Не считается доходом/расходом и в ДДС не входит — только меняет сумовую и долларовую часть остатка.'),
+      frow('Касса', wallet), frow('Дата', date), frow('Направление', dir),
+      frow('Сумма, $', usd), frow('Курс', rate), frow('', equiv),
+    ]);
+    const save = el('button', { class: 'btn-primary', onclick: async () => {
+      try {
+        const d = await post('/cashbox/convert', { wallet_id: wallet.value, date: date.value, direction: dir.value, usd: usd.value, rate: rate.value });
+        toast('Конверсия проведена: ' + money(d.sumAmt) + ' сум @' + d.rate);
+        closeModal(); if (TAB === 'cashbox') renderCashbox();
+      } catch (e) { toast(e.message, true); }
+    } }, 'Провести конверсию');
+    modal('Конверсия валюты', body, [save]);
+    refreshRate();
+  }
+
   async function renderCashbox() {
     const c = $('#cash-content'); c.innerHTML = '';
     const cashWallets = (DICTS.wallets || []).filter((w) => w.kind === 'cash');
@@ -614,6 +649,7 @@
       el('div', {}, [el('div', { class: 'cash-h2' }, 'Наличная касса')]),
       el('div', { class: 'cash-tx-btns' }, [
         el('button', { class: 'btn-ghost cash-add', onclick: () => openCashOpeningForm(cbState.wallet) }, '💼 Начальные остатки'),
+        el('button', { class: 'btn-ghost cash-add', onclick: () => openConvertForm(cbState.wallet) }, '🔄 Конверсия'),
         el('button', { class: 'btn-ghost cash-add', onclick: () => openCashboxImport(cbState.wallet) }, '📥 Импорт из Excel'),
       ]),
     ]));
@@ -628,13 +664,15 @@
     const search = el('input', { type: 'search', class: 'cashf-inp cash-filt cash-filt-q', placeholder: 'Поиск по назначению…', value: cbState.q, oninput: (e) => { cbState.q = e.target.value; clearTimeout(window.__cbQ); window.__cbQ = setTimeout(loadCashbox, 350); } });
     const sizeSel = el('select', { class: 'cashf-inp cash-filt', onchange: (e) => { cbState.pageSize = parseInt(e.target.value); loadCashbox(); } },
       [20, 50, 100, 200, 500].map((n) => el('option', { value: n, selected: n === cbState.pageSize || null }, 'по ' + n)));
+    const classSel = el('select', { class: 'cashf-inp cash-filt', onchange: (e) => { cbState.classified = e.target.value; loadCashbox(); } },
+      [{ v: '', t: 'Все' }, { v: 'no', t: 'Не разобрано' }, { v: 'yes', t: 'Разобрано' }].map((o) => el('option', { value: o.v, selected: o.v === cbState.classified || null }, o.t)));
     c.appendChild(el('div', { class: 'cash-filters', style: 'margin-bottom:6px' }, [
       typeBtn('in', '➕ Приход'), typeBtn('out', '➖ Расход'),
       el('span', { class: 'cash-flab' }, 'Касса'), walletSel,
     ]));
     c.appendChild(el('div', { class: 'cash-filters', style: 'margin-bottom:0' }, [
       el('span', { class: 'cash-flab' }, 'C'), fromInp, el('span', { class: 'cash-flab' }, 'по'), toInp,
-      catSel, search, sizeSel,
+      catSel, classSel, search, sizeSel,
     ]));
     const wrap = el('div', { id: 'cashbox-wrap' }); c.appendChild(wrap);
     loadCashbox();
@@ -651,6 +689,7 @@
       const tp = new URLSearchParams(); tp.set('wallet', cbState.wallet); tp.set('type', cbState.type); tp.set('pageSize', String(cbState.pageSize || 50));
       if (cbState.q) tp.set('q', cbState.q);
       if (cbState.category) tp.set('category', cbState.category);
+      if (cbState.classified) tp.set('classified', cbState.classified);
       if (cbState.from) tp.set('from', cbState.from); if (cbState.to) tp.set('to', cbState.to);
       list = await api('/transactions?' + tp.toString());
     } catch (e) { toast(e.message, true); return; }
