@@ -684,7 +684,7 @@
     const isIn = cbState.type === 'in';
     let sum, list;
     try {
-      const sp = new URLSearchParams(); if (cbState.from) sp.set('from', cbState.from); if (cbState.to) sp.set('to', cbState.to); sp.set('wallet', cbState.wallet);
+      const sp = new URLSearchParams(); if (cbState.from) sp.set('from', cbState.from); if (cbState.to) sp.set('to', cbState.to); sp.set('wallet', cbState.wallet); if (cbState.category) sp.set('category', cbState.category); if (cbState.classified) sp.set('classified', cbState.classified); if (cbState.q) sp.set('q', cbState.q);
       sum = await api('/summary?' + sp.toString());
       const tp = new URLSearchParams(); tp.set('wallet', cbState.wallet); tp.set('type', cbState.type); tp.set('pageSize', String(cbState.pageSize || 50)); tp.set('page', String(cbState.page || 1));
       if (cbState.q) tp.set('q', cbState.q);
@@ -714,7 +714,7 @@
     // Тихое обновление сводки после инлайн-правки (без перерисовки строк — фокус не теряется).
     async function cbUpdateSummary() {
       try {
-        const sp = new URLSearchParams(); if (cbState.from) sp.set('from', cbState.from); if (cbState.to) sp.set('to', cbState.to); sp.set('wallet', cbState.wallet);
+        const sp = new URLSearchParams(); if (cbState.from) sp.set('from', cbState.from); if (cbState.to) sp.set('to', cbState.to); sp.set('wallet', cbState.wallet); if (cbState.category) sp.set('category', cbState.category); if (cbState.classified) sp.set('classified', cbState.classified); if (cbState.q) sp.set('q', cbState.q);
         const s = await api('/summary?' + sp.toString());
         openV.textContent = money(s.opening) + ' сум'; inV.textContent = money(s.inflow) + ' сум';
         outV.textContent = money(s.outflow) + ' сум'; closeV.textContent = money(s.closing) + ' сум';

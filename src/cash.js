@@ -605,6 +605,20 @@ router.get('/api/summary', async (req, res) => {
     const to = req.query.to || null;
     const wid = intOrNull(req.query.wallet);
     const e = summaryExprs(wid);
+    // Фильтры строк (статья/разобрано/поиск) — те же, что в журнале. Применяем ко ВСЕМ числам сводки,
+    // иначе карточки не совпадают с отфильтрованной таблицей. Категория — целое (безопасно inline),
+    // поиск — параметром (добавляется последним в каждый запрос).
+    const catId = intOrNull(req.query.category);
+    const classified = req.query.classified === 'yes' ? 'yes' : (req.query.classified === 'no' ? 'no' : null);
+    const q = (req.query.q || '').trim();
+    const filt = (p) => {
+      let s = '';
+      if (catId) s += ` AND t.category_id = ${catId}`;
+      if (classified === 'no') s += ` AND t.is_classified = false`;
+      else if (classified === 'yes') s += ` AND t.is_classified = true`;
+      if (q) { p.push('%' + q + '%'); s += ` AND (t.purpose ILIKE $${p.length} OR t.payer_name ILIKE $${p.length})`; }
+      return s;
+    };
     // Сальдо на начало = обычные движения СТРОГО до начала периода + начальные остатки
     // (source='opening') на дату начала периода ВКЛЮЧИТЕЛЬНО. Раздельно, т.к. остатки обычно
     // датируют первым днём периода ("баланс на входе в этот день") — при единой строгой границе
@@ -614,8 +628,8 @@ router.get('/api/summary', async (req, res) => {
       const p = e.params.slice(); p.push(from);
       const r = await db.pool.query(
         `SELECT COALESCE(SUM(${e.delta}),0) v FROM cash_transactions t
-         WHERE (t.source = 'opening' AND t.tx_date <= $${p.length})
-            OR (t.source <> 'opening' AND t.tx_date < $${p.length})`, p);
+         WHERE ((t.source = 'opening' AND t.tx_date <= $${p.length})
+            OR (t.source <> 'opening' AND t.tx_date < $${p.length}))${filt(p)}`, p);
       opening = Number(r.rows[0].v);
     }
     // Приход/расход за период — без начальных остатков.
@@ -625,7 +639,7 @@ router.get('/api/summary', async (req, res) => {
       `SELECT COALESCE(SUM(${e.inExpr}),0) inflow, COALESCE(SUM(${e.outExpr}),0) outflow
        FROM cash_transactions t
        WHERE t.source <> 'opening' AND t.tx_date BETWEEN $${p2.length - 1} AND $${p2.length}
-         AND (t.category_id IS NULL OR t.category_id NOT IN (SELECT id FROM cash_categories WHERE code='102'))`, p2);
+         AND (t.category_id IS NULL OR t.category_id NOT IN (SELECT id FROM cash_categories WHERE code='102'))${filt(p2)}`, p2);
     const inflow = Number(r2.rows[0].inflow), outflow = Number(r2.rows[0].outflow);
     // Разбивка сальдо на сумы + доллары (штуки валюты) — та же логика дат, что и у opening/closing.
     const uzsVal = `(${e.sign}) * (CASE WHEN t.currency <> 'USD' THEN t.amount ELSE 0 END)`;
@@ -635,12 +649,12 @@ router.get('/api/summary', async (req, res) => {
       const p = e.params.slice(); let where;
       if (from) { p.push(from); where = `((t.source='opening' AND t.tx_date <= $${p.length}) OR (t.source<>'opening' AND t.tx_date < $${p.length}))`; }
       else { where = `t.source='opening'`; }
-      const r = await db.pool.query(`SELECT COALESCE(SUM(${uzsVal}),0) uzs, COALESCE(SUM(${usdVal}),0) usd FROM cash_transactions t WHERE ${where}`, p);
+      const r = await db.pool.query(`SELECT COALESCE(SUM(${uzsVal}),0) uzs, COALESCE(SUM(${usdVal}),0) usd FROM cash_transactions t WHERE ${where}${filt(p)}`, p);
       opening_uzs = Number(r.rows[0].uzs); opening_usd = Number(r.rows[0].usd);
     }
     { // состав сальдо на конец (всё до даты `to` включительно)
       const p = e.params.slice(); p.push(to || '2999-12-31');
-      const r = await db.pool.query(`SELECT COALESCE(SUM(${uzsVal}),0) uzs, COALESCE(SUM(${usdVal}),0) usd FROM cash_transactions t WHERE t.tx_date <= $${p.length}`, p);
+      const r = await db.pool.query(`SELECT COALESCE(SUM(${uzsVal}),0) uzs, COALESCE(SUM(${usdVal}),0) usd FROM cash_transactions t WHERE t.tx_date <= $${p.length}${filt(p)}`, p);
       closing_uzs = Number(r.rows[0].uzs); closing_usd = Number(r.rows[0].usd);
     }
     res.json({ opening, inflow, outflow, closing: opening + inflow - outflow, opening_uzs, opening_usd, closing_uzs, closing_usd });
