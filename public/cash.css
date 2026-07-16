@@ -200,8 +200,10 @@
 .cash-tot-unc { color: #b25b00; margin-left: auto; }
 
 /* Блок «Сводка»: сальдо на начало / приход / расход / сальдо на конец */
-.cash-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 12px; }
+.cash-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); gap: 12px; margin-bottom: 12px; }
 @media (max-width: 720px) { .cash-summary { grid-template-columns: repeat(2, 1fr); } }
+.cash-sum-card.ex { border-color: #d8cff0; background: #f8f6fd; }
+.cash-sum-card.ex .cash-sum-v { color: #5b3da8; }
 .cash-sum-card { background: #fbfaf5; border: 1px solid var(--line); border-radius: 14px; padding: 13px 15px; display: flex; flex-direction: column; gap: 4px; }
 .cash-sum-card.end { border-color: var(--forest); background: #f2f6ef; }
 .cash-sum-l { font-size: 12px; font-weight: 700; color: var(--muted); letter-spacing: .01em; }

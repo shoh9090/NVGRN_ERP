@@ -711,12 +711,21 @@
     const outFx = el('div', { class: 'cash-sum-fx cb-fx-line' }, '');
     const closeV = el('div', { class: 'cash-sum-v' }, money(sum.closing_uzs || 0) + ' сум');
     const closeFx = el('div', { class: 'cash-sum-fx cb-fx-line' }, '');
-    wrap.appendChild(el('div', { class: 'cash-summary', style: 'margin-bottom:10px' }, [
+    // Обмен замыкает сумовую колонку: конец = начало + приход − расход + обмен.
+    const exV = el('div', { class: 'cash-sum-v' }, money(sum.exchange_uzs || 0) + ' сум');
+    const cards = [
       el('div', { class: 'cash-sum-card neutral' }, [el('div', { class: 'cash-sum-l' }, 'Сальдо на начало'), openV, openFx]),
       el('div', { class: 'cash-sum-card in' }, [el('div', { class: 'cash-sum-l' }, 'Приход за период'), inV, inFx]),
       el('div', { class: 'cash-sum-card out' }, [el('div', { class: 'cash-sum-l' }, 'Расход за период'), outV, outFx]),
-      el('div', { class: 'cash-sum-card end' }, [el('div', { class: 'cash-sum-l' }, 'Сальдо на конец'), closeV, closeFx]),
-    ]));
+    ];
+    if (Number(sum.exchange_uzs)) {
+      cards.push(el('div', { class: 'cash-sum-card ex' }, [
+        el('div', { class: 'cash-sum-l' }, 'Обмен за период'), exV,
+        el('div', { class: 'cash-sum-fx cb-fx-line' }, 'сумы ↔ доллары'),
+      ]));
+    }
+    cards.push(el('div', { class: 'cash-sum-card end' }, [el('div', { class: 'cash-sum-l' }, 'Сальдо на конец'), closeV, closeFx]));
+    wrap.appendChild(el('div', { class: 'cash-summary', style: 'margin-bottom:10px' }, cards));
     openFx.innerHTML = usdHtml(sum.opening_usd || 0);
     inFx.innerHTML = usdHtml(sum.inflow_usd || 0);
     outFx.innerHTML = usdHtml(sum.outflow_usd || 0);
@@ -728,6 +737,7 @@
         const s = await api('/summary?' + sp.toString());
         openV.textContent = money(s.opening_uzs || 0) + ' сум'; inV.textContent = money(s.inflow_uzs || 0) + ' сум';
         outV.textContent = money(s.outflow_uzs || 0) + ' сум'; closeV.textContent = money(s.closing_uzs || 0) + ' сум';
+        exV.textContent = money(s.exchange_uzs || 0) + ' сум';
         openFx.innerHTML = usdHtml(s.opening_usd || 0);
         inFx.innerHTML = usdHtml(s.inflow_usd || 0);
         outFx.innerHTML = usdHtml(s.outflow_usd || 0);

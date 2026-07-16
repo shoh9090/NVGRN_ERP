@@ -706,7 +706,8 @@ router.get('/api/summary', async (req, res) => {
               COALESCE(SUM((${e.inMember}) * (CASE WHEN t.currency<>'USD' AND ${notConv} THEN t.amount ELSE 0 END)),0) inflow_uzs,
               COALESCE(SUM((${e.inMember}) * (CASE WHEN t.currency='USD' THEN COALESCE(t.fx_amount,0) ELSE 0 END)),0) inflow_usd,
               COALESCE(SUM((${e.outMember}) * (CASE WHEN t.currency<>'USD' AND ${notConv} THEN t.amount ELSE 0 END)),0) outflow_uzs,
-              COALESCE(SUM((${e.outMember}) * (CASE WHEN t.currency='USD' THEN COALESCE(t.fx_amount,0) ELSE 0 END)),0) outflow_usd
+              COALESCE(SUM((${e.outMember}) * (CASE WHEN t.currency='USD' THEN COALESCE(t.fx_amount,0) ELSE 0 END)),0) outflow_usd,
+              COALESCE(SUM((${e.sign}) * (CASE WHEN t.currency <> 'USD' AND NOT (${notConv}) THEN t.amount ELSE 0 END)),0) exchange_uzs
        FROM cash_transactions t
        WHERE t.source <> 'opening' AND t.tx_date BETWEEN $${p2.length - 1} AND $${p2.length}${filt(p2)}`, p2);
     const inflow = Number(r2.rows[0].inflow), outflow = Number(r2.rows[0].outflow);
@@ -731,6 +732,9 @@ router.get('/api/summary', async (req, res) => {
       opening_uzs, opening_usd, closing_uzs, closing_usd,
       inflow_uzs: Number(r2.rows[0].inflow_uzs), inflow_usd: Number(r2.rows[0].inflow_usd),
       outflow_uzs: Number(r2.rows[0].outflow_uzs), outflow_usd: Number(r2.rows[0].outflow_usd),
+      // Обмен за период (сумовая нога конверсии, со знаком): минус — сумы ушли в доллары.
+      // Замыкает сумовую колонку: конец = начало + приход − расход + обмен.
+      exchange_uzs: Number(r2.rows[0].exchange_uzs),
     });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
@@ -1588,9 +1592,11 @@ router.post('/api/import/run', upload.single('file'), async (req, res) => {
     const batch = (await db.pool.query('INSERT INTO cash_import_batches (wallet_id, filename, count, created_by) VALUES ($1,$2,0,$3) RETURNING id', [wallet_id, req.file.originalname || null, req.user.id])).rows[0].id;
     let ins = 0, skip = 0, newcp = 0;
     for (const r of rows) {
+      // Дедуп ТОЛЬКО против ранее загруженных строк (защита от повторной загрузки файла).
+      // Внутри одного файла одинаковые строки НЕ пропускаем: два клиента могут заплатить
+      // одну сумму в один день — раньше второй платёж молча терялся.
       const key = r.tx_date + '|' + Number(r.amount) + '|' + (r.doc_no || '');
       if (existing.has(key)) { skip++; continue; }
-      existing.add(key);
       let category_id = null, counterparty_id = null, is_classified = false;
       const inn = String(r.inn || '').trim();
       if (r.tx_type === 'in') { category_id = incomeCat ? incomeCat.id : null; is_classified = !!incomeCat; const cl = cpByInn[inn]; if (cl) counterparty_id = cl.id; }
