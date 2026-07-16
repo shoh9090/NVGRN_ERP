@@ -307,7 +307,15 @@ router.get('/api/payroll', async (req, res) => {
   try {
     const cs = await computeCashSalary(period);
     cashUnmatched = cs.unmatched;
-    items.forEach((r) => { const b = cs.byEmp[r.emp_id]; r.cash_advance = b ? b.advance : 0; r.cash_paid = b ? b.paid : 0; });
+    items.forEach((r) => {
+      const b = cs.byEmp[r.emp_id];
+      r.cash_advance = b ? b.advance : 0; r.cash_paid = b ? b.paid : 0;
+      // Наличная касса — источник наличных выплат: они СРАЗУ считаются в «Выплачено»/«Аванс»
+      // и уменьшают «К выплате» (раньше показывались только подсказкой и в остаток не шли).
+      r.paid = (Number(r.paid) || 0) + r.cash_paid;
+      r.deducted = (Number(r.deducted) || 0) + r.cash_advance;
+      r.to_pay = (Number(r.accrued) || 0) - r.deducted - r.paid;
+    });
   } catch (e) { console.error('cash salary:', e.message); }
   const sum = (f) => items.reduce((s, r) => s + (Number(r[f]) || 0), 0);
   const summary = {
@@ -500,10 +508,20 @@ router.post('/api/mass-op', J, async (req, res) => {
 router.get('/api/dashboard', async (req, res) => {
   const period = /^\d{4}-\d{2}$/.test(req.query.period) ? req.query.period : new Date().toISOString().slice(0, 7);
   const rows = (await db.pool.query(
-    `SELECT d.name AS dept, pr.*
+    `SELECT e.id AS emp_id, d.name AS dept, pr.*
      FROM hr_employees e LEFT JOIN hr_departments d ON d.id = e.department_id
      LEFT JOIN hr_payroll pr ON pr.employee_id = e.id AND pr.period = $1
      WHERE e.status <> 'archived'`, [period])).rows.map(withTotals);   // как в «Зарплате»: уволенные за месяц тоже в ФОТ
+  // Выплаты из наличной кассы — тот же учёт, что в «Зарплате», иначе дашборд снова разойдётся (ТЗ п.6).
+  try {
+    const cs = await computeCashSalary(period);
+    rows.forEach((r) => {
+      const b = cs.byEmp[r.emp_id];
+      r.paid = (Number(r.paid) || 0) + (b ? b.paid : 0);
+      r.deducted = (Number(r.deducted) || 0) + (b ? b.advance : 0);
+      r.to_pay = (Number(r.accrued) || 0) - r.deducted - r.paid;
+    });
+  } catch (e) { console.error('cash salary (dashboard):', e.message); }
   const byDept = {};
   rows.forEach((r) => { const d = r.dept || 'Без отдела'; const o = byDept[d] = byDept[d] || { name: d, count: 0, accrued: 0, to_pay: 0, paid: 0 }; o.count++; o.accrued += r.accrued; o.to_pay += r.to_pay; o.paid += r.paid; });
   const deptArr = Object.values(byDept).sort((a, b) => b.accrued - a.accrued);
