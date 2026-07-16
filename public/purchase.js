@@ -920,6 +920,8 @@
       el('h2', {}, 'Динамика цен закупа'),
       el('div', { class: 'pur-toolbar-right' }, [
         el('input', { id: 'pr-q', placeholder: 'Поиск по товару...', oninput: debounce(reloadPrices, 300) }),
+        el('button', { id: 'pr-last-btn', class: 'btn-primary', title: 'Актуальный прайс: последняя цена по каждому товару',
+          onclick: () => { priceMode = 'last'; const b = $('#pr-mode-btn'); if (b) b.textContent = '📊 Матрица цен'; reloadPrices(); } }, '💰 Последние цены'),
         el('button', { id: 'pr-mode-btn', onclick: togglePriceMode }, '📊 Матрица цен'),
         (window.HUB_USER && window.HUB_USER.isAdmin)
           ? el('button', { onclick: () => $('#pr-import-file').click(), title: 'Импорт истории закупочных цен из Excel' }, '📥 Импорт истории')
@@ -969,8 +971,49 @@
     reloadPrices();
   }
   function reloadPrices() {
-    if (priceMode === 'matrix') loadPriceMatrix();
+    if (priceMode === 'last') loadLastPrices();
+    else if (priceMode === 'matrix') loadPriceMatrix();
     else loadPriceList();
+  }
+
+  // Бейдж вердикта по цене относительно последних 12 месяцев.
+  const VERDICT_STYLE = {
+    best: 'background:#e8f5e9;color:#2e7d32', good: 'background:#f1f8e9;color:#3f6a16',
+    high: 'background:#fff3e0;color:#b25b00', worst: 'background:#fdecea;color:#c0392b',
+    single: 'background:#f1f4ee;color:#7c8579', none: 'background:#f1f4ee;color:#7c8579',
+  };
+  const verdictBadge = (it) => el('span', {
+    style: 'font-size:11px;font-weight:800;padding:3px 9px;border-radius:999px;white-space:nowrap;' + (VERDICT_STYLE[it.verdict] || VERDICT_STYLE.none),
+    title: it.y_buys ? `За год: мин ${fmtMoney(it.y_min)} · сред ${fmtMoney(it.y_avg)} · макс ${fmtMoney(it.y_max)} (закупок: ${it.y_buys})` : 'Нет закупок за последние 12 месяцев',
+  }, (it.verdict === 'best' ? '🟢 ' : it.verdict === 'worst' ? '🔴 ' : '') + it.verdict_text);
+
+  // «Последние цены» — актуальный прайс: последняя цена по каждому товару + дата обновления.
+  async function loadLastPrices() {
+    const p = new URLSearchParams();
+    if ($('#pr-q') && $('#pr-q').value.trim()) p.set('q', $('#pr-q').value.trim());
+    const data = await api('/last-prices' + (p.toString() ? '?' + p.toString() : ''));
+    const box = $('#pr-list');
+    box.innerHTML = '';
+    if (!data.items.length) {
+      box.appendChild(el('p', { class: 'dict-empty' }, 'Пока нет ни одной принятой закупки — цен нет.'));
+      return;
+    }
+    box.appendChild(el('p', { class: 'muted', style: 'margin:0 0 10px' },
+      'Актуальный прайс: последняя цена по каждому товару. Клик по строке — история цен и оценка: лучшая цена за год или самая высокая.'));
+    box.appendChild(el('table', { class: 'dict-table pur-lastprice' }, [
+      el('thead', {}, el('tr', {}, [
+        el('th', {}, 'Наименование'), el('th', {}, 'Ед.изм'),
+        el('th', { style: 'text-align:right' }, 'Цена за ед-цу'),
+        el('th', {}, 'Последнее обновление цен'), el('th', {}, 'Оценка за год'),
+      ])),
+      el('tbody', {}, data.items.map((it) => el('tr', { style: 'cursor:pointer', title: 'Открыть историю цен', onclick: () => openPriceHistory(it) }, [
+        el('td', { style: 'font-weight:700' }, it.name + (it.kind === 'packaging' ? ' 📦' : '')),
+        el('td', {}, it.unit || ''),
+        el('td', { class: 'tnum', style: 'text-align:right;font-weight:800' }, fmtMoney(it.last_price)),
+        el('td', { class: 'muted' }, it.last_at ? dt(it.last_at) : '—'),
+        el('td', {}, verdictBadge(it)),
+      ]))),
+    ]));
   }
 
   async function loadPriceMatrix() {
@@ -1151,6 +1194,13 @@
       )),
     ]);
     const body = el('div', {}, [
+      // Оценка последней цены за 12 месяцев (когда открыли из «Последних цен»).
+      mat.verdict_text ? el('div', { style: 'display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:#fbfaf5;border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-bottom:10px' }, [
+        el('span', { style: 'font-weight:800' }, 'Последняя цена: ' + fmtMoney(mat.last_price) + ' сум/' + (mat.unit || 'ед.')),
+        verdictBadge(mat),
+        mat.y_buys ? el('span', { class: 'muted', style: 'font-size:12px' },
+          `за год: мин ${fmtMoney(mat.y_min)} · сред ${fmtMoney(mat.y_avg)} · макс ${fmtMoney(mat.y_max)} · закупок ${mat.y_buys}`) : null,
+      ]) : null,
       rows.length < 2 ? el('p', { class: 'muted' }, 'Точек пока мало для графика — нужны минимум две закупки/цены.') : null,
       chart,
       legend,

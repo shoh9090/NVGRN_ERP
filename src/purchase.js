@@ -518,6 +518,65 @@ router.post('/api/spec', express.json({ limit: '1mb' }), async (req, res) => {
 });
 
 // ---------- Динамика цен ----------
+// Последние цены: наименование, ед.изм, цена за ед-цу, дата последнего обновления цены,
+// + статистика за последние 12 месяцев для вердикта («лучшая цена за год» / «самая высокая»).
+router.get('/api/last-prices', async (req, res) => {
+  const q = (req.query.q || '').trim();
+  const params = [];
+  let qSQL = '';
+  if (q) { params.push('%' + q + '%'); qSQL = ` AND (m.name ILIKE $${params.length} OR m.code ILIKE $${params.length})`; }
+  const r = await db.pool.query(
+    `WITH hist AS (
+       SELECT i.item_kind, i.item_id, COALESCE(i.fact_price, i.price) AS price,
+              COALESCE(po.received_at::date, po.delivery_date) AS d
+       FROM purchase_order_items i
+       JOIN purchase_orders po ON po.id = i.order_id AND po.status = 'received'
+       WHERE COALESCE(i.fact_price, i.price) > 0
+     ),
+     yr AS (  -- статистика за последние 12 месяцев
+       SELECT item_kind, item_id, MIN(price) AS y_min, MAX(price) AS y_max,
+              ROUND(AVG(price)) AS y_avg, COUNT(*)::int AS y_buys
+       FROM hist WHERE d >= CURRENT_DATE - INTERVAL '12 months'
+       GROUP BY item_kind, item_id
+     ),
+     last AS (
+       SELECT DISTINCT ON (item_kind, item_id) item_kind, item_id, price AS last_price, d AS last_at
+       FROM hist ORDER BY item_kind, item_id, d DESC
+     ),
+     mats AS (
+       SELECT 'raw' AS kind, rm.id, rm.code, rm.name, COALESCE(u.short_name,'кг') AS unit
+       FROM ref_raw_materials rm LEFT JOIN ref_units u ON u.id = rm.unit_id WHERE rm.status='active'
+       UNION ALL
+       SELECT 'packaging', pk.id, pk.code, pk.name, COALESCE(u.short_name,'шт')
+       FROM ref_packaging pk LEFT JOIN ref_units u ON u.id = pk.unit_id WHERE pk.status='active'
+     )
+     SELECT m.kind, m.id, m.code, m.name, m.unit,
+            l.last_price, l.last_at::text AS last_at,
+            y.y_min, y.y_max, y.y_avg, y.y_buys
+     FROM mats m
+     JOIN last l ON l.item_kind = m.kind AND l.item_id = m.id
+     LEFT JOIN yr y ON y.item_kind = m.kind AND y.item_id = m.id
+     WHERE TRUE${qSQL}
+     ORDER BY m.name`, params);
+  // Вердикт по последней цене относительно года.
+  const items = r.rows.map((x) => {
+    const last = Number(x.last_price), yMin = x.y_min == null ? null : Number(x.y_min), yMax = x.y_max == null ? null : Number(x.y_max);
+    let verdict = 'none', verdictText = 'Мало данных за год';
+    if (yMin != null && yMax != null) {
+      if (Number(x.y_buys) < 2 || yMin === yMax) { verdict = 'single'; verdictText = 'Единственная цена за год'; }
+      else if (last <= yMin) { verdict = 'best'; verdictText = 'Лучшая цена за последний год'; }
+      else if (last >= yMax) { verdict = 'worst'; verdictText = 'Самая высокая цена за год'; }
+      else {
+        const pos = Math.round((last - yMin) / (yMax - yMin) * 100);
+        verdict = pos <= 50 ? 'good' : 'high';
+        verdictText = (pos <= 50 ? 'Ниже середины' : 'Выше середины') + ' диапазона за год';
+      }
+    }
+    return { ...x, last_price: last, y_min: yMin, y_max: yMax, y_avg: x.y_avg == null ? null : Number(x.y_avg), y_buys: Number(x.y_buys || 0), verdict, verdict_text: verdictText };
+  });
+  res.json({ items });
+});
+
 // Сводка по номенклатуре: последняя/мин/макс/средняя цена и число закупок
 router.get('/api/price-list', async (req, res) => {
   const q = (req.query.q || '').trim();
