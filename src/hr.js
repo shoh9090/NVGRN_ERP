@@ -72,6 +72,7 @@ async function ensureSchema() {
   for (const col of ['accr_sick', 'accr_vacation', 'accr_mataid', 'accr_comp_vac']) {
     await q(`ALTER TABLE hr_payroll ADD COLUMN IF NOT EXISTS ${col} NUMERIC`);
   }
+  await q(`ALTER TABLE hr_payroll ADD COLUMN IF NOT EXISTS overtime_hours NUMERIC`); // переработка, часы (из табеля)
   await seedDepartments();
   _ready = true;
 }
@@ -83,6 +84,32 @@ const ACCR = ['accr_fact', 'accr_bonus', 'accr_premium', 'accr_gsm', 'accr_compa
 const DED = ['ded_fine', 'ded_advance_card', 'ded_advance_cash', 'ded_hold', 'ded_emp_debt', 'ded_other'];
 const PAID = ['paid_cash', 'paid_card'];
 const PAYROLL_NUM = [...ACCR_ALL, ...DED, ...PAID, 'plan_days', 'fact_days', 'plan_hours', 'fact_hours', 'amount_1c'];
+
+// Тип оплаты по графику: производство/смена — почасовая; офис (АУП) — фиксированный оклад.
+const POCHASOVOY = new Set(['production', 'shift']);
+// Авторасчёт оклада-начисления (accr_fact). Почасовые: оклад/план_часы × (факт_часы + переработка×2). АУП: оклад.
+function computePay(row) {
+  const oklad = Number(row.base_salary) || 0;
+  const planH = Number(row.plan_hours) || 0, factH = Number(row.fact_hours) || 0, otH = Number(row.overtime_hours) || 0;
+  if (POCHASOVOY.has(row.schedule_type)) {
+    if (!(planH > 0)) return { base: 0, overtime: 0 };
+    const rate = oklad / planH;
+    return { base: Math.round(rate * (factH + otH * 2)), overtime: Math.round(rate * otH * 2) };
+  }
+  return { base: Math.round(oklad), overtime: 0 };
+}
+// Пересчитать и сохранить accr_fact сотрудника за период (после норм/табеля/правки часов).
+async function recomputeAccrFact(empId, period) {
+  const r = (await db.pool.query(
+    `SELECT e.base_salary, e.schedule_type, pr.plan_hours, pr.fact_hours, pr.overtime_hours
+     FROM hr_employees e LEFT JOIN hr_payroll pr ON pr.employee_id = e.id AND pr.period = $2 WHERE e.id = $1`, [empId, period])).rows[0];
+  if (!r) return;
+  const pay = computePay(r);
+  await db.pool.query(
+    `INSERT INTO hr_payroll (employee_id, period, accr_fact) VALUES ($1,$2,$3)
+     ON CONFLICT (employee_id, period) DO UPDATE SET accr_fact = EXCLUDED.accr_fact, updated_at = now()`,
+    [empId, period, pay.base]);
+}
 const sumF = (row, fields) => fields.reduce((s, f) => s + (Number(row[f]) || 0), 0);
 async function seedDepartments() {
   const D = ['АУП', 'Производство', 'Производство смена', 'Склад', 'Продажи', 'Маркетинг', 'Бухгалтерия', 'Закупки', 'Логистика', 'Другое'];
@@ -265,11 +292,11 @@ router.get('/api/payroll', async (req, res) => {
   if (req.query.schedule && SCHEDULE_CODES.includes(req.query.schedule)) { p.push(req.query.schedule); w.push(`e.schedule_type = $${p.length}`); }
   if (req.query.q) { p.push('%' + String(req.query.q).trim() + '%'); w.push(`e.full_name ILIKE $${p.length}`); }
   const rows = (await db.pool.query(
-    `SELECT e.id AS emp_id, e.full_name, e.position, e.base_salary, d.name AS department_name, pr.*
+    `SELECT e.id AS emp_id, e.full_name, e.position, e.base_salary, e.schedule_type, d.name AS department_name, pr.*
      FROM hr_employees e
      LEFT JOIN hr_departments d ON d.id = e.department_id
      LEFT JOIN hr_payroll pr ON pr.employee_id = e.id AND pr.period = $1
-     WHERE ${w.join(' AND ')} ORDER BY e.full_name`, p)).rows.map(withTotals);
+     WHERE ${w.join(' AND ')} ORDER BY e.full_name`, p)).rows.map((r) => { const t = withTotals(r); t.overtime_pay = computePay(r).overtime; return t; });
   let items = rows;
   if (req.query.status) {
     if (req.query.status === 'none') items = rows.filter((r) => !r.id);
@@ -290,6 +317,31 @@ router.get('/api/payroll', async (req, res) => {
     cash_advance: sum('cash_advance'), cash_paid: sum('cash_paid'),
   };
   res.json({ period, items, summary, cash_unmatched: cashUnmatched });
+});
+
+// Заполнить плановые нормы (дни/часы) по графикам за месяц — всем активным сотрудникам графика,
+// затем пересчитать начисление (для АУП оклад проставится сразу; почасовым — после табеля).
+router.post('/api/fill-norms', J, async (req, res) => {
+  const period = /^\d{4}-\d{2}$/.test(req.body.period) ? req.body.period : null;
+  if (!period) return res.status(400).json({ error: 'Не указан месяц' });
+  const norms = req.body.norms || {};
+  let count = 0;
+  for (const [sched, v] of Object.entries(norms)) {
+    if (!SCHEDULE_CODES.includes(sched)) continue;
+    const pd = numOrNull(v.plan_days), ph = numOrNull(v.plan_hours);
+    if (pd == null && ph == null) continue;
+    const emps = (await db.pool.query("SELECT id FROM hr_employees WHERE status = 'active' AND schedule_type = $1", [sched])).rows;
+    for (const e of emps) {
+      await db.pool.query(
+        `INSERT INTO hr_payroll (employee_id, period, plan_days, plan_hours, created_by) VALUES ($1,$2,$3,$4,$5)
+         ON CONFLICT (employee_id, period) DO UPDATE SET plan_days = COALESCE($3, hr_payroll.plan_days), plan_hours = COALESCE($4, hr_payroll.plan_hours), updated_at = now()`,
+        [e.id, period, pd, ph, req.user.id]);
+      await recomputeAccrFact(e.id, period);
+      count++;
+    }
+  }
+  await db.log(req.user.id, 'hr_fill_norms', `${period}: ${count}`);
+  res.json({ ok: true, count });
 });
 router.post('/api/payroll', J, async (req, res) => {
   const b = req.body || {};

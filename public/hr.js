@@ -429,8 +429,28 @@
   async function renderSalary() {
     const c = $('#hr-content');
     if (!salState.period) salState.period = curMonth();
+    const NORM_DEFAULTS = { production: { d: 26, h: 208 }, office: { d: 22, h: 176 }, shift: { d: 15, h: 180 } };
+    function openFillNorms() {
+      const rows = {};
+      const body = el('div', { class: 'hrf' }, [
+        el('div', { class: 'hr-sub' }, 'Плановые нормы на месяц по графикам. Проставятся всем активным сотрудникам графика; начисление пересчитается (у офиса — сразу оклад, у почасовых — после табеля).'),
+        el('div', { style: 'display:grid;grid-template-columns:1fr 90px 90px;gap:8px;font-size:12px;color:#7c8579;font-weight:700' }, [el('span', {}, 'График'), el('span', {}, 'План дни'), el('span', {}, 'План часы')]),
+        ...(DICTS.schedules || []).map((s) => {
+          const def = NORM_DEFAULTS[s.code] || { d: '', h: '' };
+          const pd = minp(def.d, { placeholder: 'дни' }); const ph = minp(def.h, { placeholder: 'часы' });
+          rows[s.code] = { pd, ph };
+          return el('div', { style: 'display:grid;grid-template-columns:1fr 90px 90px;gap:8px;align-items:center' }, [el('span', {}, s.name), pd, ph]);
+        }),
+      ]);
+      const save = el('button', { class: 'btn-primary', onclick: async () => {
+        const norms = {}; Object.entries(rows).forEach(([c2, io]) => { norms[c2] = { plan_days: mval(io.pd), plan_hours: mval(io.ph) }; });
+        try { const r = await post('/fill-norms', { period: salState.period, norms }); toast('Нормы проставлены: ' + r.count); closeModal(); load(); } catch (e) { toast(e.message, true); }
+      } }, 'Применить');
+      modal('Заполнить нормы — ' + monthLabel(salState.period), body, [save]);
+    }
     c.appendChild(el('div', { class: 'hr-head' }, [
-      el('div', {}, [el('div', { class: 'hr-h2' }, 'Зарплата — ' + monthLabel(salState.period)), el('div', { class: 'hr-sub' }, 'Начисления за месяц. Клик по сотруднику — карточка с формулой. Итоги считаются сами.')]),
+      el('div', {}, [el('div', { class: 'hr-h2' }, 'Зарплата — ' + monthLabel(salState.period)), el('div', { class: 'hr-sub' }, 'Оклад считается сам по табелю. Клик по сотруднику — карточка. Итоги считаются сами.')]),
+      el('button', { class: 'btn-primary', style: 'align-self:flex-start', onclick: openFillNorms }, '📋 Заполнить нормы'),
     ]));
     const mInp = el('input', { type: 'month', class: 'hrf-inp hr-filt', value: salState.period, onchange: (e) => { salState.period = e.target.value || curMonth(); load(); } });
     const dSel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { salState.department = e.target.value; load(); } }, [el('option', { value: '' }, 'Все отделы'), ...DICTS.departments.map((d) => el('option', { value: d.id, selected: String(d.id) === salState.department || null }, d.name))]);
