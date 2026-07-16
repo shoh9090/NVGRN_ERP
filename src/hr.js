@@ -200,6 +200,63 @@ function withTotals(row) {
   const accrued = sumF(row, ACCR), deducted = sumF(row, DED), paid = sumF(row, PAID);
   return Object.assign({}, row, { accrued, deducted, paid, to_pay: accrued - deducted - paid });
 }
+// ---------- Выплаты зарплаты из наличной кассы (производно — всегда в синхроне с кассой) ----------
+// Расход наличной кассы со статьёй 20 (ЗП производство) / 40 (Зарплата офиса) → выплата сотруднику.
+// ФИО берём из назначения; «аванс» в тексте → аванс наличными, иначе — выплата наличными.
+// Период: «за <месяц>» из назначения, иначе месяц даты платежа. Сумма — сум-эквивалент (t.amount).
+const CS_MONTHS = { янв: 1, фев: 2, мар: 3, апр: 4, ма: 5, июн: 6, июл: 7, авг: 8, сен: 9, окт: 10, ноя: 11, дек: 12 };
+const csNorm = (s) => String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/[^a-zа-я0-9 ]/gi, ' ').replace(/\s+/g, ' ').trim();
+function csPeriod(purpose, txDate) {
+  const d = new Date(txDate);
+  let y = d.getFullYear(), mon = d.getMonth() + 1;
+  const m = csNorm(purpose).match(/за\s+([а-я]{3,})/);
+  if (m) { const pm = CS_MONTHS[m[1].slice(0, 3)]; if (pm) { if (pm > mon) y -= 1; mon = pm; } }
+  return y + '-' + String(mon).padStart(2, '0');
+}
+// Сравнение слов по ОСНОВЕ (общий префикс, терпит 1 букву окончания) — под русские склонения:
+// «смирнова»≈«смирновой», «полина»≈«полине», «абдушукур»≈«абдушукуру». Порядок ФИО не важен.
+function csWordMatch(a, b) {
+  const n = Math.min(a.length, b.length);
+  if (n < 5) return n >= 4 && a.slice(0, 4) === b.slice(0, 4);
+  let i = 0; while (i < n && a[i] === b[i]) i++;
+  return i >= 5 && i >= n - 1;
+}
+// Совпадение по числу совпавших слов ФИО; при ничьей (однофамильцы без имени) — не угадываем.
+function csMatchEmp(purpose, emps) {
+  const words = csNorm(purpose).split(' ').filter((w) => w.length >= 4);
+  if (!words.length) return null;
+  const scored = emps.map((e) => {
+    const parts = csNorm(e.full_name).split(' ').filter((w) => w.length >= 4);
+    // уникальное сопоставление: одно слово назначения закрывает максимум одно слово ФИО
+    const used = new Set(); let matched = 0;
+    for (const nw of parts) { const wi = words.findIndex((w, i) => !used.has(i) && csWordMatch(nw, w)); if (wi >= 0) { used.add(wi); matched++; } }
+    return { e, matched };
+  }).filter((x) => x.matched >= 1);
+  if (!scored.length) return null;
+  const max = Math.max(...scored.map((x) => x.matched));
+  const top = scored.filter((x) => x.matched === max);
+  return top.length === 1 ? top[0].e : null;
+}
+async function computeCashSalary(period) {
+  const byEmp = {}, unmatched = [];
+  const cats = (await db.pool.query("SELECT id FROM cash_categories WHERE code IN ('20','40')")).rows.map((r) => r.id);
+  if (!cats.length) return { byEmp, unmatched };
+  const emps = (await db.pool.query("SELECT id, full_name FROM hr_employees WHERE status <> 'archived'")).rows;
+  const txs = (await db.pool.query(
+    `SELECT t.id, to_char(t.tx_date,'YYYY-MM-DD') d, t.tx_date, t.amount, t.purpose
+     FROM cash_transactions t JOIN cash_wallets w ON w.id = t.wallet_id AND w.kind = 'cash'
+     WHERE t.tx_type = 'out' AND t.category_id = ANY($1)`, [cats])).rows;
+  for (const t of txs) {
+    if (csPeriod(t.purpose, t.tx_date) !== period) continue;
+    const kind = /аванс/i.test(t.purpose || '') ? 'advance' : 'salary';
+    const amt = Math.round(Number(t.amount) || 0);
+    const emp = csMatchEmp(t.purpose, emps);
+    if (emp) { const b = byEmp[emp.id] || (byEmp[emp.id] = { advance: 0, paid: 0 }); if (kind === 'advance') b.advance += amt; else b.paid += amt; }
+    else unmatched.push({ tx_id: t.id, date: t.d, amount: amt, kind, purpose: t.purpose || '' });
+  }
+  return { byEmp, unmatched };
+}
+
 router.get('/api/payroll', async (req, res) => {
   const period = /^\d{4}-\d{2}$/.test(req.query.period) ? req.query.period : new Date().toISOString().slice(0, 7);
   const p = [period], w = ["e.status <> 'archived'"];
@@ -218,13 +275,21 @@ router.get('/api/payroll', async (req, res) => {
     if (req.query.status === 'none') items = rows.filter((r) => !r.id);
     else items = rows.filter((r) => (r.status || 'draft') === req.query.status && r.id);
   }
+  // Выплаты из наличной кассы за период (производно) — добавляем к каждому сотруднику + список нераспознанных.
+  let cashUnmatched = [];
+  try {
+    const cs = await computeCashSalary(period);
+    cashUnmatched = cs.unmatched;
+    items.forEach((r) => { const b = cs.byEmp[r.emp_id]; r.cash_advance = b ? b.advance : 0; r.cash_paid = b ? b.paid : 0; });
+  } catch (e) { console.error('cash salary:', e.message); }
   const sum = (f) => items.reduce((s, r) => s + (Number(r[f]) || 0), 0);
   const summary = {
     accrued: sum('accrued'), deducted: sum('deducted'), paid: sum('paid'), to_pay: sum('to_pay'),
     bonus: sum('accr_bonus'), advances: items.reduce((s, r) => s + (Number(r.ded_advance_card) || 0) + (Number(r.ded_advance_cash) || 0), 0),
     amount_1c: sum('amount_1c'), count: items.length,
+    cash_advance: sum('cash_advance'), cash_paid: sum('cash_paid'),
   };
-  res.json({ period, items, summary });
+  res.json({ period, items, summary, cash_unmatched: cashUnmatched });
 });
 router.post('/api/payroll', J, async (req, res) => {
   const b = req.body || {};

@@ -453,6 +453,18 @@
         kpi('Авансы', moneyShort(s.advances), 'muted'), kpi('Выплачено', moneyShort(s.paid), 'ink'), kpi('К выплате', moneyShort(s.to_pay), 'green'),
       ]));
       box.appendChild(el('div', { class: 'hr-kpis hr-kpis-2', style: 'margin-bottom:14px' }, [kpi('Сотрудников', s.count, 'ink'), kpi('По 1С', money(s.amount_1c), 'muted')]));
+      // Выплаты из наличной кассы, которые система не привязала к сотруднику (проверить ФИО в назначении).
+      if (d.cash_unmatched && d.cash_unmatched.length) {
+        box.appendChild(el('div', { style: 'background:#fff3e0;border:1px solid #e6c98a;border-radius:10px;padding:10px 12px;margin-bottom:12px' }, [
+          el('div', { style: 'font-weight:700;color:#b25b00;margin-bottom:6px' }, '⚠ Выплаты из кассы без сотрудника (' + d.cash_unmatched.length + ') — впиши ФИО точнее в назначении кассы:'),
+          ...d.cash_unmatched.map((u) => el('div', { style: 'display:flex;gap:12px;font-size:13px;padding:2px 0' }, [
+            el('span', { style: 'min-width:88px' }, String(u.date)),
+            el('span', { style: 'min-width:70px' }, u.kind === 'advance' ? 'аванс' : 'зарплата'),
+            el('span', { class: 'tnum', style: 'min-width:120px;font-weight:700' }, money(u.amount)),
+            el('span', { class: 'muted' }, u.purpose || ''),
+          ])),
+        ]));
+      }
       if (!d.items.length) { box.appendChild(el('div', { class: 'hr-empty' }, 'Нет сотрудников по фильтру.')); return; }
       const bulk = el('div', { id: 'hr-sal-bulk', class: 'hr-bulkbar', style: 'display:none' });
       const bulkN = el('span', { class: 'hr-bulk-n' }, '');
@@ -475,8 +487,8 @@
           el('span', { class: 'tnum' }, (r.plan_days || 0) + '/' + (r.fact_days || 0)),
           el('span', { class: 'tnum' }, money(r.accrued)),
           el('span', { class: 'tnum' }, money(r.deducted)),
-          el('span', { class: 'tnum' }, money((Number(r.ded_advance_card) || 0) + (Number(r.ded_advance_cash) || 0))),
-          el('span', { class: 'tnum' }, money(r.paid)),
+          el('span', { class: 'tnum' }, [money((Number(r.ded_advance_card) || 0) + (Number(r.ded_advance_cash) || 0)), (Number(r.cash_advance) > 0 ? el('div', { style: 'font-size:11px;font-weight:700;color:#2e7d32;margin-top:2px' }, '💵 касса ' + money(r.cash_advance)) : null)]),
+          el('span', { class: 'tnum' }, [money(r.paid), (Number(r.cash_paid) > 0 ? el('div', { style: 'font-size:11px;font-weight:700;color:#2e7d32;margin-top:2px' }, '💵 касса ' + money(r.cash_paid)) : null)]),
           el('span', { class: 'tnum', style: 'font-weight:800;color:#2e7d32' }, money(r.to_pay)),
           el('span', {}, el('span', { class: 'hr-st hr-pr-' + (r.id ? (r.status || 'draft') : 'none') }, r.id ? PR_STATUS[r.status || 'draft'] : 'нет')),
         ]);
