@@ -499,7 +499,9 @@ router.post('/api/payroll/bulk-delete', J, async (req, res) => {
 
 // ---------- Массовые операции ----------
 // Начислить выбранным сотрудникам за период по одной статье (бонусы/ГСМ/больничные/…).
-const MASS_FIELDS = new Set(['accr_bonus', 'accr_premium', 'accr_gsm', 'accr_company_debt', 'accr_other', ...ACCR_EXTRA]);
+// Массовые операции: начисления + удержания (штрафы/удержания). Оклад (accr_fact) — только авторасчёт.
+const MASS_FIELDS = new Set(['accr_bonus', 'accr_premium', 'accr_gsm', 'accr_company_debt', 'accr_other', ...ACCR_EXTRA,
+  'ded_fine', 'ded_hold']);
 router.post('/api/mass-op', J, async (req, res) => {
   const period = /^\d{4}-\d{2}$/.test(req.body.period) ? req.body.period : null;
   const field = req.body.field;

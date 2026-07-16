@@ -153,7 +153,6 @@
     c.appendChild(el('div', { class: 'hr-head' }, [
       el('div', {}, [el('div', { class: 'hr-h2' }, 'Сотрудники'), el('div', { class: 'hr-sub' }, 'Единый справочник. Клик — карточка. Галочками — массовые действия.')]),
       el('div', { class: 'hr-head-btns' }, [
-        el('button', { class: 'btn-ghost hr-add', onclick: () => openCardImport() }, '💳 Карты (Excel)'),
         el('button', { class: 'btn-ghost hr-add', onclick: () => openEmpImport() }, '📥 Импорт'),
         el('button', { class: 'btn-primary hr-add', onclick: () => openEmp(null) }, '+ Сотрудник'),
       ]),
@@ -417,7 +416,8 @@
   // Фикса — справочно, НЕ входит в сумму «начислено». Счётные — ниже.
   const ACCR_FIELDS = [['accr_fact', 'Факт по табелю'], ['accr_bonus', 'Бонусы KPI'], ['accr_premium', 'Премия'], ['accr_gsm', 'ГСМ / компенсации'], ['accr_sick', 'Больничные'], ['accr_vacation', 'Отпускные'], ['accr_mataid', 'Матпомощь'], ['accr_comp_vac', 'Компенсация отпуска'], ['accr_company_debt', 'Долг компании'], ['accr_other', 'Другое начисление']];
   // Операции для вкладки «Массовые операции» (поле payroll → подпись).
-  const MASS_OPS = [['accr_bonus', 'Бонусы KPI'], ['accr_premium', 'Премия'], ['accr_gsm', 'ГСМ / компенсации'], ['accr_sick', 'Больничные'], ['accr_vacation', 'Отпускные'], ['accr_mataid', 'Матпомощь'], ['accr_comp_vac', 'Компенсация за неисп. отпуск'], ['accr_company_debt', 'Долг компании'], ['accr_other', 'Другое начисление']];
+  const MASS_OPS = [['accr_bonus', 'Бонусы KPI'], ['accr_premium', 'Премия'], ['accr_gsm', 'ГСМ / компенсации'], ['accr_sick', 'Больничные'], ['accr_vacation', 'Отпускные'], ['accr_mataid', 'Матпомощь'], ['accr_comp_vac', 'Компенсация за неисп. отпуск'], ['accr_company_debt', 'Долг компании'], ['accr_other', 'Другое начисление'],
+    ['ded_fine', 'Штрафы'], ['ded_hold', 'Удержания']];
   const DED_FIELDS = [['ded_fine', 'Штраф за опоздание'], ['ded_advance_card', 'Аванс на карту'], ['ded_advance_cash', 'Аванс наличными'], ['ded_hold', 'Удержание'], ['ded_emp_debt', 'Долг сотрудника'], ['ded_other', 'Другое удержание']];
   const PAID_FIELDS = [['paid_cash', 'Выплачено наличными'], ['paid_card', 'Выплачено на карту']];
   const salState = { period: '', department: '', schedule: '', status: '', q: '' };
@@ -478,6 +478,7 @@
       el('div', { style: 'display:flex;gap:8px;align-self:flex-start' }, [
         el('button', { class: 'btn-primary', onclick: openFillNorms }, '📋 Заполнить нормы'),
         el('button', { class: 'btn-ghost', onclick: openTimesheetImport }, '📥 Импорт табеля'),
+        el('button', { class: 'btn-ghost', onclick: () => openCardImport() }, '💳 Карты (Excel)'),
       ]),
     ]));
     const mInp = el('input', { type: 'month', class: 'hrf-inp hr-filt', value: salState.period, onchange: (e) => { salState.period = e.target.value || curMonth(); load(); } });
@@ -640,7 +641,7 @@
       const rowsModel = d.items.map((r) => ({ employee_id: r.emp_id }));
       const fillAll = el('input', { class: 'hrf-inp hr-filt', type: 'number', style: 'width:120px', placeholder: 'сумма' });
       const fillBtn = el('button', { class: 'btn-ghost', onclick: () => { if (fillAll.value === '') return; rowsModel.forEach((m) => { if (m.amountInp) m.amountInp.value = fillAll.value; }); toast('Проставлено всем — не забудьте «Начислить»'); } }, 'Заполнить всем');
-      const applyBtn = el('button', { class: 'btn-primary', onclick: apply }, '⚡ Начислить (' + (MASS_OPS.find((o) => o[0] === field) || ['', ''])[1] + ')');
+      const applyBtn = el('button', { class: 'btn-primary', onclick: apply }, '⚡ Начислить');
       box.appendChild(el('div', { class: 'hr-filters', style: 'justify-content:flex-end' }, [el('span', { class: 'hr-flab' }, 'Сумма всем:'), fillAll, fillBtn, applyBtn]));
       const head = el('div', { class: 'hr-row head hr-mass' }, ['#', 'ФИО', 'Отдел', 'Оклад', 'Текущее «' + opLabel + '»', 'Сумма к начислению'].map((h) => el('span', {}, h)));
       box.appendChild(el('div', { class: 'hr-list' }, [head, ...d.items.map((r, i) => {
