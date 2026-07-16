@@ -427,6 +427,7 @@
       el('div', { class: 'cash-wallet-nm' }, x.name),
       el('div', { class: 'cash-wallet-kind' }, KIND[x.kind] || x.kind),
       el('div', { class: 'cash-wallet-bal' }, money(x.balance) + ' сум'),
+      el('a', { class: 'cash-wallet-exp', href: '/cash/api/wallet-export?wallet_id=' + x.id, title: 'Выгрузить операции в Excel (с остатком по строкам)', onclick: (e) => e.stopPropagation() }, '⬇ Excel'),
     ]))));
     const total = w.reduce((s, x) => s + Number(x.balance || 0), 0);
     c.appendChild(el('div', { class: 'cash-total' }, 'Итого по кошелькам: ' + money(total) + ' сум'));

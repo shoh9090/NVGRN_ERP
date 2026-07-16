@@ -564,6 +564,62 @@ async function walletBalances() {
 }
 router.get('/api/wallets', async (req, res) => { res.json({ wallets: await walletBalances() }); });
 
+// Экспорт операций кошелька в Excel — с бегущим остатком по строкам (для сверки с выпиской).
+router.get('/api/wallet-export', async (req, res) => {
+  try {
+    const wid = intOrNull(req.query.wallet_id);
+    if (!wid) return res.status(400).send('Не указан кошелёк');
+    const wname = ((await db.pool.query('SELECT name FROM cash_wallets WHERE id=$1', [wid])).rows[0] || {}).name || ('Кошелёк ' + wid);
+    const p = [wid]; let dateW = '';
+    if (req.query.from) { p.push(req.query.from); dateW += ` AND t.tx_date >= $${p.length}`; }
+    if (req.query.to) { p.push(req.query.to); dateW += ` AND t.tx_date <= $${p.length}`; }
+    const eff = `CASE WHEN t.tx_type='in' AND t.wallet_id=$1 THEN t.amount
+                      WHEN t.tx_type='out' AND t.wallet_id=$1 THEN -t.amount
+                      WHEN t.tx_type='transfer' AND t.wallet_to_id=$1 THEN t.amount
+                      WHEN t.tx_type='transfer' AND t.wallet_id=$1 THEN -t.amount ELSE 0 END`;
+    const rows = (await db.pool.query(
+      `SELECT to_char(t.tx_date,'YYYY-MM-DD') d, t.tx_type, t.currency, t.fx_rate, t.fx_amount,
+              t.purpose, t.bank_doc_no, t.payer_name, t.source,
+              w.name w_name, w2.name w2_name, cat.code cat_code, cat.name cat_name, (${eff}) AS eff
+       FROM cash_transactions t
+       LEFT JOIN cash_wallets w ON w.id=t.wallet_id
+       LEFT JOIN cash_wallets w2 ON w2.id=t.wallet_to_id
+       LEFT JOIN cash_categories cat ON cat.id=t.category_id
+       WHERE (t.wallet_id=$1 OR t.wallet_to_id=$1)${dateW}
+       ORDER BY t.tx_date, t.id`, p)).rows;
+    let running = 0;
+    if (req.query.from) {
+      const r0 = await db.pool.query(
+        `SELECT COALESCE(SUM(${eff}),0) v FROM cash_transactions t WHERE (t.wallet_id=$1 OR t.wallet_to_id=$1) AND t.tx_date < $2`, [wid, req.query.from]);
+      running = Number(r0.rows[0].v);
+    }
+    const typeRu = { in: 'Приход', out: 'Расход', transfer: 'Перевод' };
+    const aoa = [['Дата', 'Тип', 'Откуда → Куда', 'Статья', 'Назначение / От кого', 'Валюта', 'Курс', '$', 'Приход (сум)', 'Расход (сум)', 'Остаток', 'Источник', '№ док']];
+    for (const r of rows) {
+      running += Number(r.eff);
+      const dir = r.tx_type === 'transfer' ? ((r.w_name || '?') + ' → ' + (r.w2_name || '?')) : (r.tx_type === 'in' ? ('→ ' + wname) : (wname + ' →'));
+      aoa.push([
+        r.d, typeRu[r.tx_type] || r.tx_type, dir,
+        r.cat_code ? (r.cat_code + ' ' + (r.cat_name || '')) : '',
+        r.purpose || r.payer_name || '', r.currency || 'UZS',
+        r.fx_rate ? Number(r.fx_rate) : '', r.fx_amount ? Number(r.fx_amount) : '',
+        Number(r.eff) > 0 ? Math.round(Number(r.eff)) : '', Number(r.eff) < 0 ? Math.round(-Number(r.eff)) : '',
+        Math.round(running), r.source || '', r.bank_doc_no || '',
+      ]);
+    }
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = [{ wch: 12 }, { wch: 9 }, { wch: 26 }, { wch: 22 }, { wch: 36 }, { wch: 7 }, { wch: 9 }, { wch: 8 }, { wch: 15 }, { wch: 15 }, { wch: 16 }, { wch: 9 }, { wch: 12 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Операции');
+    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    const safe = wname.replace(/[^\wа-яёА-ЯЁ]+/gi, '_').slice(0, 30);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="kassa_${safe}.xlsx"`);
+    res.send(buf);
+    await db.log(req.user.id, 'cash_wallet_export', `${wname} (${rows.length})`);
+  } catch (e) { res.status(400).send('Ошибка экспорта: ' + e.message); }
+});
+
 // ---------- Сводка: сальдо на начало/конец, приход, расход за период ----------
 // Начальные остатки (source='opening') входят в сальдо, но НЕ в «приход периода».
 // Для одного кошелька перевод внутрь/наружу — это приход/расход этого кошелька;

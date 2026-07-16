@@ -27,6 +27,8 @@
 .cash-wallet-nm { font-weight: 700; font-size: 14px; }
 .cash-wallet-kind { font-size: 12px; color: var(--muted); margin-top: 2px; }
 .cash-wallet-bal { font-family: 'Lora', Georgia, serif; font-size: 24px; font-weight: 600; margin-top: 10px; }
+.cash-wallet-exp { display: inline-block; margin-top: 8px; font-size: 12px; font-weight: 700; color: var(--forest); text-decoration: none; border: 1px solid var(--forest); border-radius: 8px; padding: 3px 10px; }
+.cash-wallet-exp:hover { background: var(--forest); color: #fff; }
 
 /* Классификатор */
 .cash-grp { margin-bottom: 16px; }
