@@ -529,7 +529,27 @@
       const withId = d.items.filter((x) => x.id);
       const selAll = el('input', { type: 'checkbox', class: 'hr-chk' });
       selAll.onclick = (ev) => { const on = ev.target.checked; salSel = new Set(on ? withId.map((x) => x.id) : []); box.querySelectorAll('.hr-salchk').forEach((cc) => { cc.checked = on; }); updBulk(); };
-      const head = el('div', { class: 'hr-row head hr-sal' }, [selAll, el('span', {}, '#'), ...['ФИО', 'Отдел', 'Дн. п/ф', 'Часы п/ф', 'Начислено', 'Удержано', 'Аванс', 'Выплачено', 'К выплате', 'Статус'].map((h) => el('span', {}, h))]);
+      const head = el('div', { class: 'hr-row head hr-sal' }, [selAll, el('span', {}, '#'), ...['ФИО', 'Отдел', 'Дн. п/ф', 'Часы п/ф', 'Начислено', 'Доп. нач.', 'Удержано', 'Доп. удерж.', 'Аванс', 'Выплачено', 'К выплате', 'Статус'].map((h) => el('span', {}, h))]);
+      // Доп. начисления/удержания: колонка — сумма, клик — компактное окно с полями (правится там).
+      const EXTRA_ACCR = ACCR_FIELDS.filter(([k]) => k !== 'accr_fact');
+      const EXTRA_DED = DED_FIELDS.filter(([k]) => k !== 'ded_advance_card' && k !== 'ded_advance_cash');
+      const sumOf = (r, fields) => fields.reduce((s, [k]) => s + (Number(r[k]) || 0), 0);
+      function openExtra(r, title, fields) {
+        const body = el('div', { class: 'hrf' }, [
+          el('div', { class: 'hr-note' }, r.full_name + ' · ' + monthLabel(salState.period)),
+          ...fields.map(([k, label]) => {
+            const i = minp(r[k] == null ? '' : Math.round(Number(r[k])), { placeholder: '0' });
+            i.onchange = async () => {
+              try { await post('/payroll/cell', { employee_id: r.emp_id, period: salState.period, field: k, value: mval(i) }); load(); }
+              catch (e) { toast(e.message, true); }
+            };
+            return frow(label, i);
+          }),
+          el('div', { class: 'hr-sub', style: 'margin:6px 0 0' }, 'Меняется сразу — итоги пересчитаются.'),
+        ]);
+        modal(title + ' — ' + r.full_name, body, [el('button', { class: 'btn-primary', onclick: closeModal }, 'Готово')]);
+      }
+      const extraCell = (r, title, fields) => el('span', { class: 'tnum hr-extra', title: 'Клик — изменить', onclick: (ev) => { ev.stopPropagation(); openExtra(r, title, fields); } }, money(sumOf(r, fields)));
       // Правка прямо в строке: дни/часы меняются на месте, оклад пересчитывается сам.
       const cellNum = (r, field) => {
         const inp = el('input', { class: 'hr-cell', value: r[field] == null ? '' : String(Math.round(Number(r[field]))), onclick: (ev) => ev.stopPropagation() });
@@ -550,7 +570,9 @@
           pf(r, 'plan_days', 'fact_days'),
           pf(r, 'plan_hours', 'fact_hours'),
           el('span', { class: 'tnum' }, money(r.accrued)),
+          extraCell(r, 'Доп. начисления', EXTRA_ACCR),
           el('span', { class: 'tnum' }, money(r.deducted)),
+          extraCell(r, 'Доп. удержания', EXTRA_DED),
           el('span', { class: 'tnum' }, [money((Number(r.ded_advance_card) || 0) + (Number(r.ded_advance_cash) || 0)), (Number(r.cash_advance) > 0 ? el('div', { style: 'font-size:11px;font-weight:700;color:#2e7d32;margin-top:2px' }, '💵 касса ' + money(r.cash_advance)) : null)]),
           el('span', { class: 'tnum' }, [money(r.paid), (Number(r.cash_paid) > 0 ? el('div', { style: 'font-size:11px;font-weight:700;color:#2e7d32;margin-top:2px' }, '💵 касса ' + money(r.cash_paid)) : null)]),
           el('span', { class: 'tnum', style: 'font-weight:800;color:#2e7d32' }, money(r.to_pay)),

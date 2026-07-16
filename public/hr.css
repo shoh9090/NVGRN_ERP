@@ -76,7 +76,10 @@
 .hr-kpis-6 { grid-template-columns: repeat(6, 1fr); }
 .hr-kpis-2 { grid-template-columns: 1fr 1fr; max-width: 420px; }
 .hr-flab { font-size: 13px; color: var(--muted); font-weight: 700; align-self: center; }
-.hr-sal { grid-template-columns: 28px 30px 1.25fr 0.8fr 0.72fr 0.72fr 0.95fr 0.9fr 0.9fr 1fr 0.95fr 0.8fr; font-size: 12.5px; }
+.hr-sal { grid-template-columns: 26px 28px 1.1fr 0.72fr 0.66fr 0.66fr 0.9fr 0.8fr 0.85fr 0.8fr 0.8fr 0.9fr 0.9fr 0.72fr; font-size: 12.5px; }
+/* Доп. начисления/удержания — колонка-сумма, кликабельна */
+.hr-extra { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
+.hr-extra:hover { color: var(--forest); font-weight: 700; }
 /* Правка прямо в строке (дни/часы): плоское поле, рамка появляется при наведении/фокусе */
 .hr-pf { display: inline-flex; align-items: center; gap: 2px; }
 .hr-pf-sep { color: var(--muted); }
