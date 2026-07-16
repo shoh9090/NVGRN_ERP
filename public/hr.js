@@ -79,7 +79,6 @@
       tab('employees', '👥 Сотрудники'),
       tab('salary', '💵 Зарплата'),
       tab('massops', '⚡ Массовые операции'),
-      tab('timesheet', '🕒 Табель'),
       tab('payouts', '💳 Выплаты'),
       tab('departments', '🏢 Отделы'),
     ]));
@@ -501,18 +500,22 @@
         kpi('ФОТ (начислено)', moneyShort(s.accrued), 'green'), kpi('Бонусы/KPI', moneyShort(s.bonus), 'ink'), kpi('Удержания', moneyShort(s.deducted), 'muted'),
         kpi('Авансы', moneyShort(s.advances), 'muted'), kpi('Выплачено', moneyShort(s.paid), 'ink'), kpi('К выплате', moneyShort(s.to_pay), 'green'),
       ]));
-      box.appendChild(el('div', { class: 'hr-kpis hr-kpis-2', style: 'margin-bottom:14px' }, [kpi('Сотрудников', s.count, 'ink'), kpi('По 1С', money(s.amount_1c), 'muted')]));
-      // Выплаты из наличной кассы, которые система не привязала к сотруднику (проверить ФИО в назначении).
+      box.appendChild(el('div', { class: 'hr-kpis hr-kpis-2', style: 'margin-bottom:14px' }, [kpi('Сотрудников', s.count, 'ink')]));
+      // Выплаты из кассы без сотрудника — по умолчанию свёрнуто, чтобы не мешало; разворачивается кликом.
       if (d.cash_unmatched && d.cash_unmatched.length) {
-        box.appendChild(el('div', { style: 'background:#fff3e0;border:1px solid #e6c98a;border-radius:10px;padding:10px 12px;margin-bottom:12px' }, [
-          el('div', { style: 'font-weight:700;color:#b25b00;margin-bottom:6px' }, '⚠ Выплаты из кассы без сотрудника (' + d.cash_unmatched.length + ') — впиши ФИО точнее в назначении кассы:'),
-          ...d.cash_unmatched.map((u) => el('div', { style: 'display:flex;gap:12px;font-size:13px;padding:2px 0' }, [
-            el('span', { style: 'min-width:88px' }, String(u.date)),
-            el('span', { style: 'min-width:70px' }, u.kind === 'advance' ? 'аванс' : 'зарплата'),
-            el('span', { class: 'tnum', style: 'min-width:120px;font-weight:700' }, money(u.amount)),
-            el('span', { class: 'muted' }, u.purpose || ''),
-          ])),
-        ]));
+        const list = el('div', { style: 'display:none;margin-top:8px' }, d.cash_unmatched.map((u) => el('div', { style: 'display:flex;gap:12px;font-size:13px;padding:2px 0' }, [
+          el('span', { style: 'min-width:88px' }, String(u.date)),
+          el('span', { style: 'min-width:70px' }, u.kind === 'advance' ? 'аванс' : 'зарплата'),
+          el('span', { class: 'tnum', style: 'min-width:120px;font-weight:700' }, money(u.amount)),
+          el('span', { class: 'muted' }, u.purpose || ''),
+        ])));
+        const cnt = d.cash_unmatched.length;
+        const arrow = el('span', {}, '▸');
+        const head2 = el('div', { style: 'font-weight:700;color:#b25b00;cursor:pointer;display:flex;gap:6px;align-items:center', onclick: () => {
+          const open = list.style.display === 'none';
+          list.style.display = open ? '' : 'none'; arrow.textContent = open ? '▾' : '▸';
+        } }, [arrow, el('span', {}, '⚠ Выплаты из кассы без сотрудника (' + cnt + ')'), el('span', { class: 'muted', style: 'font-weight:400;font-size:12px' }, '— показать')]);
+        box.appendChild(el('div', { style: 'background:#fff3e0;border:1px solid #e6c98a;border-radius:10px;padding:8px 12px;margin-bottom:12px' }, [head2, list]));
       }
       if (!d.items.length) { box.appendChild(el('div', { class: 'hr-empty' }, 'Нет сотрудников по фильтру.')); return; }
       const bulk = el('div', { id: 'hr-sal-bulk', class: 'hr-bulkbar', style: 'display:none' });
@@ -562,9 +565,8 @@
     const dinp = (k) => { const i = finp(r[k] ? String(r[k]).slice(0, 10) : '', { type: 'date' }); F[k] = i; return i; };
     const status = fsel(Object.keys(PR_STATUS).map((k) => ({ v: k, t: PR_STATUS[k] })), r.status || 'draft'); F.status = status;
     const comment = finp(r.comment, { placeholder: 'Комментарий' }); F.comment = comment;
-    const amount1c = inp('amount_1c');
     // Итоги (живой пересчёт)
-    const totAccr = el('b', {}), totDed = el('b', {}), totPaid = el('b', {}), totPay = el('b', { style: 'color:#2e7d32' }), diff1c = el('b', {});
+    const totAccr = el('b', {}), totDed = el('b', {}), totPaid = el('b', {}), totPay = el('b', { style: 'color:#2e7d32' });
     const recompute = () => {
       const val = (k) => (F[k] ? Number(mval(F[k])) : 0) || 0;
       const a = ACCR_FIELDS.reduce((s, [k]) => s + val(k), 0);
@@ -572,35 +574,35 @@
       const pd = PAID_FIELDS.reduce((s, [k]) => s + val(k), 0);
       totAccr.textContent = money(a); totDed.textContent = money(de); totPaid.textContent = money(pd);
       totPay.textContent = money(a - de - pd);
-      diff1c.textContent = money((a - de) - val('amount_1c'));
     };
     const block = (title, fields) => el('div', {}, [el('div', { class: 'hrf-sec' }, title), ...fields.map(([k, label]) => { const i = inp(k); i.addEventListener('input', recompute); return frow(label, i); })]);
     const tab = block('Табель', [['plan_days', 'План дней'], ['fact_days', 'Факт дней'], ['plan_hours', 'План часов'], ['fact_hours', 'Факт часов']]);
-    const fixa = inp('accr_salary'); // Фикса — справочно, не в сумме
+    // Оклад тянем из карточки сотрудника («Фикса»), а не из поля начисления — меняется у сотрудника.
+    const fixa = el('div', { class: 'hr-note', style: 'font-weight:800' }, money(r.base_salary || 0) + ' сум');
     const body = el('div', { class: 'hrf' }, [
       el('div', { class: 'hr-note' }, r.full_name + ' · ' + (r.department_name || '—') + ' · ' + monthLabel(salState.period)),
       frow('Статус', status),
-      frow('Оклад / фикса (справочно)', fixa),
+      frow('Оклад (фикса)', fixa),
       tab,
       block('Начисления (входят в сумму)', ACCR_FIELDS),
       block('Удержания', DED_FIELDS),
       block('Выплаты', PAID_FIELDS),
       frow('Дата выплаты', dinp('pay_date')),
-      frow('Сумма по 1С', (amount1c.addEventListener('input', recompute), amount1c)),
       frow('Комментарий', comment),
       el('div', { class: 'hr-formula' }, [
         el('div', {}, ['Начислено всего: ', totAccr]),
         el('div', {}, ['− Удержано всего: ', totDed]),
         el('div', {}, ['− Выплачено: ', totPaid]),
         el('div', { class: 'hr-formula-main' }, ['= К выплате: ', totPay]),
-        el('div', { class: 'muted' }, ['Разница с 1С (начислено−удержано − 1С): ', diff1c]),
       ]),
     ]);
     recompute();
     const save = el('button', { class: 'btn-primary', onclick: async () => {
-      const payload = { employee_id: r.emp_id, period: salState.period, status: status.value, pay_date: F.pay_date.value, comment: comment.value, accr_salary: mval(fixa) };
+      // Оклад (фикса) синхронизируем из карточки сотрудника; 1С не трогаем — сохраняем как было.
+      const payload = { employee_id: r.emp_id, period: salState.period, status: status.value, pay_date: F.pay_date.value, comment: comment.value, accr_salary: r.base_salary || '' };
       [...ACCR_FIELDS, ...DED_FIELDS, ...PAID_FIELDS].forEach(([k]) => { payload[k] = mval(F[k]); });
-      ['plan_days', 'fact_days', 'plan_hours', 'fact_hours', 'amount_1c'].forEach((k) => { payload[k] = mval(F[k]); });
+      ['plan_days', 'fact_days', 'plan_hours', 'fact_hours'].forEach((k) => { payload[k] = mval(F[k]); });
+      payload.amount_1c = r.amount_1c || '';
       try { await post('/payroll', payload); toast('Сохранено'); closeModal(); renderSalary(); } catch (e) { toast(e.message, true); }
     } }, 'Сохранить');
     modal('💵 Начисление — ' + r.full_name, body, [save]);
