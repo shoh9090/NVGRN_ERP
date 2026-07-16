@@ -343,6 +343,65 @@ router.post('/api/fill-norms', J, async (req, res) => {
   await db.log(req.user.id, 'hr_fill_norms', `${period}: ${count}`);
   res.json({ ok: true, count });
 });
+
+// Импорт табеля производства: 2 строки на сотрудника (1-я — факт дни/часы, 2-я — переработка дни/часы).
+function parseProductionTimesheet(buf) {
+  const wb = XLSX.read(buf, { type: 'buffer' });
+  const sh = wb.Sheets[wb.SheetNames[0]];
+  const aoa = XLSX.utils.sheet_to_json(sh, { header: 1, raw: false, defval: '' });
+  const norm = (s) => String(s).toLowerCase().replace(/[\s.]/g, '');
+  let hi = aoa.findIndex((r) => r.some((c) => /ф\.?и\.?о/i.test(String(c))));
+  if (hi < 0) hi = 0;
+  // Столбцы: факт «Дни»/«Часы» и «Переработка (дни)»/«Переработка (часы)».
+  let fioCol = -1, dniCol = -1, chasyCol = -1, otDniCol = -1, otChasyCol = -1;
+  for (let hr = hi; hr <= hi + 2 && hr < aoa.length; hr++) {
+    (aoa[hr] || []).forEach((c, idx) => {
+      const n = norm(c);
+      if (fioCol < 0 && /фио/.test(n)) fioCol = idx;
+      if (/переработка/.test(n)) { if (/час/.test(n) && otChasyCol < 0) otChasyCol = idx; else if (/дн/.test(n) && otDniCol < 0) otDniCol = idx; }
+      else { if (n === 'дни' && dniCol < 0) dniCol = idx; if (n === 'часы' && chasyCol < 0) chasyCol = idx; }
+    });
+  }
+  if (fioCol < 0 || dniCol < 0 || chasyCol < 0) return { rows: [], error: 'В файле не нашёл столбцы «Ф.И.О», «Дни», «Часы».' };
+  const num = (v) => { const t = String(v).replace(/\s/g, '').replace(',', '.'); const n = parseFloat(t); return isNaN(n) ? 0 : n; };
+  const isName = (s) => /[а-яё]{3,}/i.test(s) && !/ф\.?и\.?о|итого/i.test(s);
+  const rows = [];
+  for (let i = hi + 1; i < aoa.length; i++) {
+    const fio = String((aoa[i] || [])[fioCol] || '').trim();
+    if (!isName(fio)) continue;
+    // У сотрудника 2 строки: факт-часы в строке с ФИО, переработка — во второй (без ФИО). Складываем обе.
+    const sub = aoa[i + 1] || [];
+    const subEmpty = !isName(String(sub[fioCol] || '').trim());
+    const g = (col) => (col < 0 ? 0 : num(aoa[i][col]) + (subEmpty ? num(sub[col]) : 0));
+    rows.push({ fio, factDays: g(dniCol), factHours: g(chasyCol), otDays: g(otDniCol), otHours: g(otChasyCol) });
+  }
+  return { rows };
+}
+
+router.post('/api/timesheet-import', upload.single('file'), async (req, res) => {
+  try {
+    const period = /^\d{4}-\d{2}$/.test(req.body.period) ? req.body.period : null;
+    if (!period) return res.status(400).json({ error: 'Не указан месяц' });
+    if (!req.file) return res.status(400).json({ error: 'Файл не выбран' });
+    const parsed = parseProductionTimesheet(req.file.buffer);
+    if (parsed.error) return res.status(400).json({ error: parsed.error });
+    if (!parsed.rows.length) return res.status(400).json({ error: 'Не нашёл строк сотрудников в табеле.' });
+    const emps = (await db.pool.query("SELECT id, full_name FROM hr_employees WHERE status <> 'archived'")).rows;
+    let updated = 0; const unmatched = [];
+    for (const r of parsed.rows) {
+      const emp = csMatchEmp(r.fio, emps);
+      if (!emp) { unmatched.push({ fio: r.fio, fact_hours: r.factHours, overtime_hours: r.otHours }); continue; }
+      await db.pool.query(
+        `INSERT INTO hr_payroll (employee_id, period, fact_days, fact_hours, overtime_hours, created_by) VALUES ($1,$2,$3,$4,$5,$6)
+         ON CONFLICT (employee_id, period) DO UPDATE SET fact_days = EXCLUDED.fact_days, fact_hours = EXCLUDED.fact_hours, overtime_hours = EXCLUDED.overtime_hours, updated_at = now()`,
+        [emp.id, period, r.factDays, r.factHours, r.otHours, req.user.id]);
+      await recomputeAccrFact(emp.id, period);
+      updated++;
+    }
+    await db.log(req.user.id, 'hr_timesheet_import', `${period}: +${updated}, не разнесено ${unmatched.length}`);
+    res.json({ ok: true, updated, unmatched });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
 router.post('/api/payroll', J, async (req, res) => {
   const b = req.body || {};
   const empId = intOrNull(b.employee_id);

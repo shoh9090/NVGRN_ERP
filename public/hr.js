@@ -448,9 +448,38 @@
       } }, 'Применить');
       modal('Заполнить нормы — ' + monthLabel(salState.period), body, [save]);
     }
+    function openTimesheetImport() {
+      const file = el('input', { type: 'file', accept: '.xlsx,.xls', class: 'hrf-inp' });
+      const info = el('div', {});
+      const body = el('div', { class: 'hrf' }, [
+        el('div', { class: 'hr-sub' }, 'Табель производства (2 строки на сотрудника: факт-часы и переработка). Разнесётся по ФИО за ' + monthLabel(salState.period) + '; начисление посчитается по формуле.'),
+        el('label', { class: 'hrf-row' }, [el('span', {}, 'Файл'), file]), info,
+      ]);
+      const load2 = el('button', { class: 'btn-primary', onclick: async () => {
+        if (!file.files[0]) return toast('Выберите файл', true);
+        load2.disabled = true; load2.textContent = 'Загружаю…';
+        const fd = new FormData(); fd.append('period', salState.period); fd.append('file', file.files[0]);
+        try {
+          const r = await fetch('/hr/api/timesheet-import', { method: 'POST', body: fd });
+          const d = await r.json(); if (!r.ok) throw new Error(d.error || 'Ошибка');
+          toast('Разнесено: ' + d.updated + (d.unmatched.length ? (', не найдено ' + d.unmatched.length) : ''));
+          load();
+          if (d.unmatched && d.unmatched.length) {
+            info.innerHTML = '';
+            info.appendChild(el('div', { style: 'color:#b25b00;font-weight:700;margin-top:8px' }, 'Не нашлись в справочнике (' + d.unmatched.length + ') — впиши точнее или добавь сотрудника:'));
+            d.unmatched.forEach((u) => info.appendChild(el('div', { class: 'hr-sub', style: 'margin:0' }, u.fio + ' — ' + u.fact_hours + 'ч')));
+            load2.textContent = 'Готово'; load2.disabled = false;
+          } else { closeModal(); }
+        } catch (e) { toast(e.message, true); load2.disabled = false; load2.textContent = 'Загрузить'; }
+      } }, 'Загрузить');
+      modal('Импорт табеля — ' + monthLabel(salState.period), body, [load2]);
+    }
     c.appendChild(el('div', { class: 'hr-head' }, [
       el('div', {}, [el('div', { class: 'hr-h2' }, 'Зарплата — ' + monthLabel(salState.period)), el('div', { class: 'hr-sub' }, 'Оклад считается сам по табелю. Клик по сотруднику — карточка. Итоги считаются сами.')]),
-      el('button', { class: 'btn-primary', style: 'align-self:flex-start', onclick: openFillNorms }, '📋 Заполнить нормы'),
+      el('div', { style: 'display:flex;gap:8px;align-self:flex-start' }, [
+        el('button', { class: 'btn-primary', onclick: openFillNorms }, '📋 Заполнить нормы'),
+        el('button', { class: 'btn-ghost', onclick: openTimesheetImport }, '📥 Импорт табеля'),
+      ]),
     ]));
     const mInp = el('input', { type: 'month', class: 'hrf-inp hr-filt', value: salState.period, onchange: (e) => { salState.period = e.target.value || curMonth(); load(); } });
     const dSel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { salState.department = e.target.value; load(); } }, [el('option', { value: '' }, 'Все отделы'), ...DICTS.departments.map((d) => el('option', { value: d.id, selected: String(d.id) === salState.department || null }, d.name))]);
