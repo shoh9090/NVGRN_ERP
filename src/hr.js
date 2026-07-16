@@ -410,6 +410,31 @@ router.post('/api/timesheet-import', upload.single('file'), async (req, res) => 
     res.json({ ok: true, updated, unmatched });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
+// Точечная правка ОДНОГО поля строки зарплаты (инлайн-редактирование в таблице).
+// Обычный /api/payroll перезаписывает всю строку — для одной ячейки он не годится.
+// accr_fact сюда не входит: оклад считается автоматически по формуле.
+const CELL_FIELDS = new Set(['plan_days', 'fact_days', 'plan_hours', 'fact_hours', 'overtime_hours',
+  ...ACCR.filter((f) => f !== 'accr_fact'), ...DED, ...PAID]);
+const CELL_RECALC = ['plan_days', 'fact_days', 'plan_hours', 'fact_hours', 'overtime_hours'];
+router.post('/api/payroll/cell', J, async (req, res) => {
+  try {
+    const b = req.body || {};
+    const empId = intOrNull(b.employee_id);
+    const period = /^\d{4}-\d{2}$/.test(b.period) ? b.period : null;
+    const field = String(b.field || '');
+    if (!empId || !period) return res.status(400).json({ error: 'Нет сотрудника или периода' });
+    if (!CELL_FIELDS.has(field)) return res.status(400).json({ error: 'Это поле нельзя менять здесь' });
+    const val = numOrNull(b.value);
+    await db.pool.query(
+      `INSERT INTO hr_payroll (employee_id, period, ${field}, created_by) VALUES ($1,$2,$3,$4)
+       ON CONFLICT (employee_id, period) DO UPDATE SET ${field} = EXCLUDED.${field}, updated_at = now()`,
+      [empId, period, val, req.user.id]);
+    if (CELL_RECALC.includes(field)) await recomputeAccrFact(empId, period);  // часы/дни меняют оклад
+    await db.log(req.user.id, 'hr_payroll_cell', `emp ${empId} ${period} ${field}=${val}`);
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 router.post('/api/payroll', J, async (req, res) => {
   const b = req.body || {};
   const empId = intOrNull(b.employee_id);

@@ -525,7 +525,17 @@
       const withId = d.items.filter((x) => x.id);
       const selAll = el('input', { type: 'checkbox', class: 'hr-chk' });
       selAll.onclick = (ev) => { const on = ev.target.checked; salSel = new Set(on ? withId.map((x) => x.id) : []); box.querySelectorAll('.hr-salchk').forEach((cc) => { cc.checked = on; }); updBulk(); };
-      const head = el('div', { class: 'hr-row head hr-sal' }, [selAll, el('span', {}, '#'), ...['ФИО', 'Отдел', 'Дн. п/ф', 'Начислено', 'Удержано', 'Аванс', 'Выплачено', 'К выплате', 'Статус'].map((h) => el('span', {}, h))]);
+      const head = el('div', { class: 'hr-row head hr-sal' }, [selAll, el('span', {}, '#'), ...['ФИО', 'Отдел', 'Дн. п/ф', 'Часы п/ф', 'Начислено', 'Удержано', 'Аванс', 'Выплачено', 'К выплате', 'Статус'].map((h) => el('span', {}, h))]);
+      // Правка прямо в строке: дни/часы меняются на месте, оклад пересчитывается сам.
+      const cellNum = (r, field) => {
+        const inp = el('input', { class: 'hr-cell', value: r[field] == null ? '' : String(Math.round(Number(r[field]))), onclick: (ev) => ev.stopPropagation() });
+        inp.onchange = async () => {
+          try { await post('/payroll/cell', { employee_id: r.emp_id, period: salState.period, field, value: mval(inp) }); load(); }
+          catch (e) { toast(e.message, true); }
+        };
+        return inp;
+      };
+      const pf = (r, a, b2) => el('span', { class: 'hr-pf' }, [cellNum(r, a), el('span', { class: 'hr-pf-sep' }, '/'), cellNum(r, b2)]);
       box.appendChild(el('div', { class: 'hr-list' }, [head, ...d.items.map((r, i) => {
         const chk = r.id ? el('input', { type: 'checkbox', class: 'hr-chk hr-salchk', onclick: (ev) => { ev.stopPropagation(); if (ev.target.checked) salSel.add(r.id); else salSel.delete(r.id); updBulk(); } }) : el('span', {});
         return el('div', { class: 'hr-row hr-sal', onclick: () => openPayroll(r) }, [
@@ -533,7 +543,8 @@
           el('span', { class: 'hr-idx' }, String(i + 1)),
           el('span', { style: 'font-weight:700' }, r.full_name),
           el('span', { class: 'muted' }, r.department_name || '—'),
-          el('span', { class: 'tnum' }, (r.plan_days || 0) + '/' + (r.fact_days || 0)),
+          pf(r, 'plan_days', 'fact_days'),
+          pf(r, 'plan_hours', 'fact_hours'),
           el('span', { class: 'tnum' }, money(r.accrued)),
           el('span', { class: 'tnum' }, money(r.deducted)),
           el('span', { class: 'tnum' }, [money((Number(r.ded_advance_card) || 0) + (Number(r.ded_advance_cash) || 0)), (Number(r.cash_advance) > 0 ? el('div', { style: 'font-size:11px;font-weight:700;color:#2e7d32;margin-top:2px' }, '💵 касса ' + money(r.cash_advance)) : null)]),
