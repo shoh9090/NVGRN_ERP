@@ -10,6 +10,13 @@
 .hr-h2 { font-family: 'Lora', Georgia, serif; font-weight: 600; font-size: 24px; margin: 2px 0 4px; color: var(--ink); }
 .hr-sub { color: var(--muted); font-size: 13px; }
 .hr-add { white-space: nowrap; padding: 9px 15px; border-radius: 10px; font-weight: 700; font-size: 13px; cursor: pointer; }
+/* Вторичные кнопки — контурные зелёные, а не прозрачные (иначе выглядят выключенными) */
+.btn-ghost { background: #fff; border: 1px solid var(--forest); color: var(--forest); border-radius: 10px; padding: 8px 14px; font-weight: 700; font-size: 13px; cursor: pointer; white-space: nowrap; }
+.btn-ghost:hover { background: #eef4e9; }
+.btn-ghost.hrf-warn { color: #b25b00; border-color: #e6d3b0; }
+.btn-ghost.hrf-warn:hover { background: #fdf6e9; }
+.btn-ghost.hr-del { color: #c0392b; border-color: #e6c6c6; }
+.btn-ghost.hr-del:hover { background: #fdecea; }
 
 .hr-filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
 .hr-filt { width: auto; }
