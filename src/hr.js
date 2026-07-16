@@ -503,7 +503,7 @@ router.get('/api/dashboard', async (req, res) => {
     `SELECT d.name AS dept, pr.*
      FROM hr_employees e LEFT JOIN hr_departments d ON d.id = e.department_id
      LEFT JOIN hr_payroll pr ON pr.employee_id = e.id AND pr.period = $1
-     WHERE e.status = 'active'`, [period])).rows.map(withTotals);
+     WHERE e.status <> 'archived'`, [period])).rows.map(withTotals);   // как в «Зарплате»: уволенные за месяц тоже в ФОТ
   const byDept = {};
   rows.forEach((r) => { const d = r.dept || 'Без отдела'; const o = byDept[d] = byDept[d] || { name: d, count: 0, accrued: 0, to_pay: 0, paid: 0 }; o.count++; o.accrued += r.accrued; o.to_pay += r.to_pay; o.paid += r.paid; });
   const deptArr = Object.values(byDept).sort((a, b) => b.accrued - a.accrued);
