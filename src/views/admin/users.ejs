@@ -2,6 +2,19 @@
 
 <h2>Пользователи</h2>
 
+<% if (msg === 'self_admin') { %>
+  <p class="error">Нельзя снять полный доступ с самого себя — иначе вы потеряете доступ к админке. Попросите другого администратора.</p>
+<% } else if (msg === 'last_admin') { %>
+  <p class="error">Нельзя убрать последнего администратора — в системе должен остаться хотя бы один. Сначала выдайте полный доступ другому пользователю.</p>
+<% } else if (msg === 'roles_saved') { %>
+  <p style="color:#2e7d32;font-weight:700">Роли сохранены.</p>
+<% } %>
+
+<p class="muted" style="margin:6px 0 14px">
+  Роль <strong>«Администратор» = полный доступ</strong>: все плитки и все действия, как у владельца.
+  Отметьте её у пользователя — и он увидит систему так же, как вы.
+</p>
+
 <section class="card">
   <h3>Добавить пользователя</h3>
   <form method="POST" action="/admin/users" class="form-row">
@@ -11,7 +24,7 @@
     <fieldset class="checks">
       <legend>Роли:</legend>
       <% roles.forEach(function(r) { %>
-        <label class="check"><input type="checkbox" name="role_ids" value="<%= r.id %>"> <%= r.name %></label>
+        <label class="check"><input type="checkbox" name="role_ids" value="<%= r.id %>"> <%= r.name %><% if (r.is_admin) { %> <strong>(полный доступ)</strong><% } %></label>
       <% }) %>
     </fieldset>
     <button type="submit" class="btn-primary">Создать</button>
@@ -30,10 +43,13 @@
           <td><%= u.login %></td>
           <td>
             <details>
-              <summary><%= u.role_names %></summary>
+              <summary><%= u.role_names %><% if (u.is_admin) { %> 👑<% } %></summary>
               <form method="POST" action="/admin/users/<%= u.id %>/roles" class="checks">
                 <% roles.forEach(function(r) { %>
-                  <label class="check"><input type="checkbox" name="role_ids" value="<%= r.id %>"> <%= r.name %></label>
+                  <label class="check">
+                    <input type="checkbox" name="role_ids" value="<%= r.id %>" <%= (u.role_ids || []).indexOf(r.id) !== -1 ? 'checked' : '' %>>
+                    <%= r.name %><% if (r.is_admin) { %> <strong>(полный доступ)</strong><% } %>
+                  </label>
                 <% }) %>
                 <button type="submit">Сохранить роли</button>
               </form>

@@ -213,14 +213,16 @@ async function adminContext(section) {
 // Пользователи
 admin.get('/users', async (req, res) => {
   const users = await db.pool.query(
-    `SELECT u.*, COALESCE(string_agg(r.name, ', ' ORDER BY r.name), '—') AS role_names
+    `SELECT u.*, COALESCE(string_agg(r.name, ', ' ORDER BY r.name), '—') AS role_names,
+            COALESCE(array_agg(r.id) FILTER (WHERE r.id IS NOT NULL), '{}') AS role_ids,
+            BOOL_OR(COALESCE(r.is_admin, FALSE)) AS is_admin
      FROM users u
      LEFT JOIN user_roles ur ON ur.user_id = u.id
      LEFT JOIN roles r ON r.id = ur.role_id
      GROUP BY u.id ORDER BY u.id`
   );
   const roles = await db.pool.query('SELECT * FROM roles ORDER BY id');
-  res.render('admin/users', { ...(await adminContext('users')), user: req.user, users: users.rows, roles: roles.rows });
+  res.render('admin/users', { ...(await adminContext('users')), user: req.user, users: users.rows, roles: roles.rows, msg: req.query.msg || '' });
 });
 
 admin.post('/users', async (req, res) => {
@@ -263,12 +265,38 @@ admin.post('/users/:id/password', async (req, res) => {
 admin.post('/users/:id/roles', async (req, res) => {
   let roleIds = req.body.role_ids || [];
   if (!Array.isArray(roleIds)) roleIds = [roleIds];
-  await db.pool.query('DELETE FROM user_roles WHERE user_id = $1', [req.params.id]);
-  for (const rid of roleIds) {
-    await db.pool.query('INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [req.params.id, rid]);
+  roleIds = roleIds.map((x) => parseInt(x, 10)).filter(Boolean);
+  const targetId = parseInt(req.params.id, 10);
+  // Кто из выбранных ролей даёт админ-доступ.
+  const adminRoles = (await db.pool.query('SELECT id, name FROM roles WHERE is_admin = TRUE')).rows;
+  const adminIds = adminRoles.map((r) => r.id);
+  const willBeAdmin = roleIds.some((id) => adminIds.includes(id));
+  // Защита от потери доступа: нельзя снять админ-права с себя и нельзя убрать последнего админа.
+  if (!willBeAdmin) {
+    const wasAdmin = (await db.pool.query(
+      'SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = $1 AND r.is_admin = TRUE LIMIT 1',
+      [targetId])).rows.length > 0;
+    if (wasAdmin) {
+      if (targetId === req.user.id) return res.redirect('/admin/users?msg=self_admin');
+      const others = (await db.pool.query(
+        `SELECT COUNT(DISTINCT ur.user_id)::int AS n FROM user_roles ur
+         JOIN roles r ON r.id = ur.role_id JOIN users u ON u.id = ur.user_id
+         WHERE r.is_admin = TRUE AND u.is_active = TRUE AND ur.user_id <> $1`, [targetId])).rows[0].n;
+      if (others === 0) return res.redirect('/admin/users?msg=last_admin');
+    }
   }
-  await db.log(req.user.id, 'set_user_roles', req.params.id);
-  res.redirect('/admin/users');
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('DELETE FROM user_roles WHERE user_id = $1', [targetId]);
+    for (const rid of roleIds) {
+      await client.query('INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [targetId, rid]);
+    }
+    await client.query('COMMIT');
+  } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+  finally { client.release(); }
+  await db.log(req.user.id, 'set_user_roles', `user=${targetId} roles=[${roleIds.join(',')}]${willBeAdmin ? ' (АДМИН-ДОСТУП)' : ''}`);
+  res.redirect('/admin/users?msg=roles_saved');
 });
 
 // Роли
