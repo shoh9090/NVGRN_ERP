@@ -603,8 +603,67 @@
       el('span', { class: 'muted' }, r.nearest_date ? ruDate(r.nearest_date) : '—'),
       el('span', { class: 'muted' }, r.source),
     ]))]));
-    box.appendChild(el('div', { class: 'cash-sub', style: 'margin-top:8px' }, 'Строка «Задолженность поставщикам» — только для просмотра, считается из Закуп → Взаиморасчёты. Платёжный календарь появится на следующем этапе.'));
+    box.appendChild(el('div', { class: 'cash-sub', style: 'margin-top:8px' }, 'Строки — только для просмотра. Поставщики считаются из Закуп → Взаиморасчёты, кредиты/займы — из их графиков.'));
+    // Платёжный календарь.
+    const calBox = el('div', { style: 'margin-top:18px' }); box.appendChild(calBox);
+    oblCalendar(calBox);
   }
+  let oblCalDays = 30;
+  const CAL_COLOR = { supplier: '#163a28', bank_loan: '#c77800', loan: '#6a4fb6' };
+  async function oblCalendar(box) {
+    box.innerHTML = '';
+    box.appendChild(el('div', { style: 'display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px' }, [
+      el('div', { class: 'cash-h2', style: 'font-size:17px' }, 'Платёжный календарь'),
+      el('div', { class: 'cash-subtabs', style: 'margin:0' }, [[7, '7 дней'], [30, '30 дней'], [90, '90 дней'], [365, 'год']].map(([d, l]) =>
+        el('button', { class: 'cash-subtab' + (oblCalDays === d ? ' on' : ''), onclick: () => { oblCalDays = d; oblCalendar(box); } }, l))),
+    ]));
+    let d; try { d = await api('/obligations/calendar?days=' + oblCalDays); } catch (e) { box.appendChild(el('div', { class: 'cash-empty' }, 'Ошибка: ' + e.message)); return; }
+    const items = d.items || [];
+    if (!items.length) { box.appendChild(el('div', { class: 'cash-empty' }, 'В этом окне предстоящих платежей нет.')); return; }
+    // Группировка по корзинам: день (7/30), неделя (90), месяц (365).
+    const bucketOf = (iso) => {
+      if (oblCalDays <= 30) return iso;
+      const dt = new Date(iso);
+      if (oblCalDays <= 90) { const day = (dt.getDay() + 6) % 7; dt.setDate(dt.getDate() - day); return dt.toISOString().slice(0, 10); }
+      return iso.slice(0, 7);
+    };
+    const buckets = {};
+    items.forEach((x) => { const b = bucketOf(x.date); (buckets[b] = buckets[b] || { total: 0, overdue: false }); buckets[b].total += x.amount; if (x.overdue) buckets[b].overdue = true; });
+    const keys = Object.keys(buckets).sort();
+    const maxV = Math.max(1, ...keys.map((k) => buckets[k].total));
+    // Столбики (SVG).
+    const W = Math.max(560, keys.length * 46), H = 170, pad = 26;
+    const bw = Math.min(38, (W - pad * 2) / keys.length - 6);
+    let g = '';
+    keys.forEach((k, i) => {
+      const x = pad + i * ((W - pad * 2) / keys.length);
+      const h = (buckets[k].total / maxV) * (H - pad * 2);
+      const y = H - pad - h;
+      g += `<rect x="${x}" y="${y}" width="${bw}" height="${Math.max(1, h)}" rx="3" fill="${buckets[k].overdue ? '#c0392b' : '#163a28'}"><title>${ruDateB(k)} — ${money(buckets[k].total)} сум</title></rect>`;
+      const lbl = oblCalDays >= 365 ? monthShort(k) : (k.slice(8, 10) + '.' + k.slice(5, 7));
+      g += `<text x="${x + bw / 2}" y="${H - 8}" text-anchor="middle" font-size="10" fill="#7c8579">${lbl}</text>`;
+    });
+    const svg = document.createElement('div');
+    svg.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="max-height:180px">${g}</svg>`;
+    box.appendChild(el('div', { style: 'overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:#fff;padding:6px' }, svg.firstChild));
+    // Легенда.
+    box.appendChild(el('div', { style: 'display:flex;gap:14px;margin:8px 0;font-size:12px;color:var(--muted);flex-wrap:wrap' }, [
+      calLeg('#163a28', 'предстоит'), calLeg('#c0392b', 'есть просрочка в дне'),
+    ]));
+    // Таблица ближайших платежей.
+    const thead = el('thead', {}, el('tr', {}, ['Дата', 'Кредитор', 'Вид', 'Сумма', 'Статус'].map((h, i) => el('th', { style: (i === 3 ? 'text-align:right;' : '') + 'padding:7px 10px;background:#f2f5f1;white-space:nowrap' }, h))));
+    const tb = el('tbody', {}, items.slice(0, 60).map((x) => el('tr', {}, [
+      el('td', { style: 'padding:6px 10px;white-space:nowrap;' + (x.overdue ? 'color:#c0392b;font-weight:700' : '') }, ruDate(x.date)),
+      el('td', { style: 'padding:6px 10px;font-weight:600' }, x.creditor + (x.ref ? ' · ' + x.ref : '')),
+      el('td', { style: 'padding:6px 10px' }, el('span', { class: 'cash-flow', style: 'background:' + (CAL_COLOR[x.kind] || '#999') + '22;color:' + (CAL_COLOR[x.kind] || '#555') }, x.kind_label)),
+      el('td', { style: 'padding:6px 10px;text-align:right;font-weight:700' }, money(x.amount)),
+      el('td', { style: 'padding:6px 10px' }, x.overdue ? el('span', { style: 'color:#c0392b;font-weight:700' }, 'Просрочено') : 'Предстоит'),
+    ])));
+    box.appendChild(el('div', { style: 'overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:#fff;margin-top:6px' }, el('table', { style: 'border-collapse:collapse;width:100%;font-size:13px' }, [thead, tb])));
+  }
+  function calLeg(color, text) { return el('span', { style: 'display:inline-flex;align-items:center;gap:6px' }, [el('span', { style: 'width:11px;height:11px;border-radius:3px;background:' + color }), text]); }
+  const ruDateB = (k) => (k.length === 7 ? monthShort(k) : ruDate(k));
+  function monthShort(ym) { const n = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек']; const [y, m] = String(ym).slice(0, 7).split('-').map(Number); return n[(m || 1) - 1] + ' ' + String(y).slice(2); }
   const oblSup = { q: '', cat: '', status: '', from: '', to: '' };
   let OBL_SUP = null;
   function oblSupCols(period) {

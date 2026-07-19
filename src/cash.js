@@ -1914,6 +1914,38 @@ router.get('/api/obligations/summary', async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
+// Платёжный календарь: предстоящие выплаты (поставщики со сроком + строки графиков кредитов/займов).
+router.get('/api/obligations/calendar', async (req, res) => {
+  try {
+    const days = [7, 30, 90, 365].includes(parseInt(req.query.days, 10)) ? parseInt(req.query.days, 10) : 30;
+    const today = new Date(new Date().toISOString().slice(0, 10));
+    const end = new Date(today); end.setDate(end.getDate() + days);
+    const endISO = end.toISOString().slice(0, 10), todayISO = today.toISOString().slice(0, 10);
+    const items = [];
+    // Поставщики — принятые заявки с остатком и сроком в окне.
+    const sup = await pfin.openSupplierObligations();
+    for (const o of sup) {
+      if (o.due_date && o.remainder > 0.01 && o.due_date <= endISO) {
+        items.push({ date: o.due_date, kind: 'supplier', kind_label: 'Поставщик', creditor: o.supplier_name, amount: o.remainder, ref: o.number, overdue: o.due_date < todayISO });
+      }
+    }
+    // Кредиты/займы — строки текущей версии графика, не оплаченные, со сроком в окне.
+    const sch = (await db.pool.query(
+      `SELECT s.due_date, s.total_due, o.creditor_name, o.obligation_type, o.currency
+       FROM finance_obligation_schedule s
+       JOIN finance_obligations o ON o.id = s.obligation_id
+       WHERE o.status NOT IN ('cancelled','closed') AND s.status NOT IN ('paid','cancelled')
+         AND s.version_no = (SELECT MAX(version_no) FROM finance_obligation_schedule x WHERE x.obligation_id=o.id)
+         AND s.due_date <= $1`, [endISO])).rows;
+    for (const s of sch) {
+      const kind = s.obligation_type === 'bank_loan' ? 'bank_loan' : 'loan';
+      items.push({ date: String(s.due_date).slice(0, 10), kind, kind_label: kind === 'bank_loan' ? 'Кредит' : 'Заём', creditor: s.creditor_name, amount: Number(s.total_due) || 0, currency: s.currency, overdue: String(s.due_date).slice(0, 10) < todayISO });
+    }
+    items.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+    res.json({ days, from: todayISO, to: endISO, items });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 // Поставщики — read-only зеркало «Закуп → Взаиморасчёты» (тот же сервис, без изменений данных).
 router.get('/api/obligations/suppliers', async (req, res) => {
   try {
