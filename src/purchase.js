@@ -1,6 +1,7 @@
 // purchase.js — блок «Закуп»: поставщики, заявки, приёмка, взаиморасчёты
 const express = require('express');
 const db = require('./db');
+const { enrichOrderFinance } = require('./purchase-finance'); // единый расчёт долга (общий с Кассой)
 const { notify } = require('./notifications');
 
 const router = express.Router();
@@ -760,40 +761,7 @@ router.get('/api/orders', async (req, res) => {
   res.json({ items: r.rows.map(enrichOrderFinance) });
 });
 
-// Расчёт срока и статуса оплаты по заявке (ТЗ разд. 7-8). Долг возникает по факту приёмки.
-function enrichOrderFinance(o) {
-  const received = o.status === 'received';
-  const factTotal = Number(o.fact_total) || 0;
-  const paid = Number(o.paid) || 0;
-  const base = received ? factTotal : 0;          // долг по заявке = фактически принято
-  const remainder = base - paid;
-  const cond = o.pay_condition || 'on_fact';
-  // received_at приходит из pg как Date, delivery_date — как строка 'YYYY-MM-DD'.
-  // new Date(d) корректно обрабатывает оба; String(d).slice(0,10) у Date терял год (→ 2001).
-  const dOf = (d) => { if (!d) return null; const x = new Date(d); return isNaN(x.getTime()) ? null : x; };
-  const today = new Date(new Date().toISOString().slice(0, 10));
-  let dueDate = null;
-  if (cond === 'prepay') dueDate = dOf(o.delivery_date);
-  else if (received && o.received_at) {
-    dueDate = dOf(o.received_at);
-    if (cond === 'defer') dueDate.setDate(dueDate.getDate() + (parseInt(o.defer_days, 10) || 0));
-  }
-  const overdue = dueDate && remainder > 0.01 && dueDate < today;
-  let payStatus;
-  if (!received) payStatus = (cond === 'prepay' && paid <= 0.01) ? 'Ожидает предоплаты' : 'Ожидает поставки';
-  else if (paid > base + 0.01) payStatus = 'Переплата / аванс';
-  else if (remainder <= 0.01) payStatus = 'Оплачено';
-  else if (overdue) payStatus = 'Просрочено';
-  else if (paid > 0.01) payStatus = 'Частично оплачено';
-  else payStatus = 'Не оплачено';
-  return {
-    ...o,
-    total: Number(o.total) || 0, fact_total: factTotal, paid,
-    remainder: received ? remainder : 0,
-    due_date: dueDate ? dueDate.toISOString().slice(0, 10) : null,
-    pay_status: payStatus, overdue: !!overdue,
-  };
-}
+// enrichOrderFinance вынесен в общий сервис src/purchase-finance.js (используется и Кассой).
 
 router.get('/api/orders/:id(\\d+)', async (req, res) => {
   const o = await db.pool.query(

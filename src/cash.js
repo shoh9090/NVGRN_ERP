@@ -6,6 +6,7 @@ const multer = require('multer');
 const XLSX = require('xlsx');
 const db = require('./db');
 const integrations = require('./integrations');
+const pfin = require('./purchase-finance'); // общий расчёт долга поставщикам (read-only в «Обязательствах»)
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 16 * 1024 * 1024 } });
@@ -1848,6 +1849,59 @@ router.get('/api/cash-fx-balance', async (req, res) => {
     try { rate = await getCbuUsdRate(new Date().toISOString().slice(0, 10)); } catch (e) { rate = null; }
     const totalUzs = uzs + (rate ? usd * rate : 0);
     res.json({ uzs, usd, rate, total_uzs: totalUzs });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// ============ ОБЯЗАТЕЛЬСТВА (Этап 1: фундамент + поставщики) ============
+// Кому, сколько и когда Novagreen должна заплатить. Задолженность поставщикам — read-only
+// зеркало Закупа (общий сервис purchase-finance, без дублирования логики и без своих таблиц).
+// Дебиторка (кто должен нам) в этот раздел НЕ входит.
+
+// Сводка: карточки + одна агрегированная строка «Задолженность поставщикам».
+router.get('/api/obligations/summary', async (req, res) => {
+  try {
+    const orders = await pfin.openSupplierObligations(); // принятые заявки с остатком
+    const now = new Date();
+    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().slice(0, 10);
+    const today = now.toISOString().slice(0, 10);
+    let totalRemainder = 0, dueThisMonth = 0, overdue = 0, nearest = null;
+    for (const o of orders) {
+      totalRemainder += o.remainder;
+      if (o.overdue) overdue += o.remainder;
+      else if (o.due_date && o.due_date <= monthEnd) dueThisMonth += o.remainder;
+      if (o.due_date && o.remainder > 0.01) {
+        if (!nearest || o.due_date < nearest.due_date) {
+          const days = Math.round((new Date(o.due_date) - new Date(today)) / 86400000);
+          nearest = { due_date: o.due_date, creditor: o.supplier_name, amount: o.remainder, currency: 'UZS', days, status: o.pay_status, order_number: o.number };
+        }
+      }
+    }
+    // Ближайшая дата по поставщикам (для строки сводки).
+    const supNearest = orders.filter((o) => o.due_date && o.remainder > 0.01).map((o) => o.due_date).sort()[0] || null;
+    const suppliersRow = {
+      kind: 'Задолженность поставщикам',
+      total: totalRemainder, due_period: dueThisMonth, overdue,
+      nearest_date: supNearest, source: 'Закуп',
+    };
+    res.json({
+      currency: 'UZS',
+      cards: {
+        total_obligations: totalRemainder,      // Этап 1: только поставщики; кредиты/займы добавятся на Этапе 2
+        due_this_month: dueThisMonth,
+        overdue,
+        nearest_payment: nearest,
+      },
+      rows: [suppliersRow],
+      note: 'Этап 1: учтена только задолженность поставщикам (из Закупа). Кредиты и займы — на следующем этапе.',
+    });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Поставщики — read-only зеркало «Закуп → Взаиморасчёты» (тот же сервис, без изменений данных).
+router.get('/api/obligations/suppliers', async (req, res) => {
+  try {
+    const items = await pfin.supplierBalances({ q: req.query.q, parent_category_id: req.query.parent_category_id });
+    res.json({ items, readonly: true, source: 'Закуп → Взаиморасчёты' });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 

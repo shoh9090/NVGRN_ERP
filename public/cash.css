@@ -49,6 +49,9 @@
 .cash-row:last-child { border-bottom: none; }
 .cash-row.head { background: #f2f5f1; font-weight: 700; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .02em; }
 .cash-cp { grid-template-columns: 1.6fr 1fr 0.8fr 1.4fr; }
+.cash-obl { grid-template-columns: 1.6fr 1fr 1fr 1fr 1fr 0.7fr; }
+.cash-supbal { grid-template-columns: 1.8fr 1fr 1fr 1fr 1fr; }
+.cash-obl .tnum, .cash-supbal .tnum { text-align: right; font-variant-numeric: tabular-nums; }
 .cash-ct { grid-template-columns: 1.4fr 1.4fr 1.2fr 0.9fr; }
 
 .cash-subtabs { display: flex; gap: 6px; margin-bottom: 14px; flex-wrap: wrap; }

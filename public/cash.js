@@ -168,6 +168,7 @@
       tab('triage', '🧩 Разбор'),
       tab('cashflow', '📊 Кэш-флоу (ДДС)'),
       tab('pnl', '📈 P&L'),
+      tab('obligations', '📌 Обязательства'),
       tab('wallets', '👛 Кошельки'),
       tab('dicts', '📁 Справочники'),
     ]));
@@ -180,6 +181,7 @@
     if (TAB === 'triage') return renderTriage();
     if (TAB === 'cashflow') return renderReport('cashflow');
     if (TAB === 'pnl') return renderReport('pnl');
+    if (TAB === 'obligations') return renderObligations();
     if (TAB === 'wallets') return renderWallets();
     if (TAB === 'dicts') return renderDicts();
     return renderSoon();
@@ -410,6 +412,79 @@
       el('div', { class: 'cash-pnl-stub-t' }, 'Честный P&L считается с себестоимостью: сырьё → выход готовой продукции → маржа. Эти данные дадут модули «Производство» и «Склад». Когда они заработают, P&L соберётся сам — из выручки, реальной себестоимости и расходов Кассы.'),
       el('div', { class: 'cash-pnl-stub-t', style: 'margin-top:6px' }, 'Пока пользуйся вкладкой «Кэш-флоу (ДДС)» — там движение реальных денег за период.'),
     ]));
+  }
+
+  // ============ ОБЯЗАТЕЛЬСТВА (Этап 1) ============
+  let oblSub = 'summary';
+  async function renderObligations() {
+    const c = $('#cash-content');
+    c.appendChild(el('div', { class: 'cash-head' }, [el('div', {}, [
+      el('div', { class: 'cash-h2' }, 'Обязательства'),
+      el('div', { class: 'cash-sub' }, 'Кому, сколько и когда нужно заплатить. Дебиторка (кто должен нам) — отдельный будущий раздел.'),
+    ])]));
+    const sub = (id, label) => el('button', { class: 'cash-subtab' + (oblSub === id ? ' on' : ''), onclick: () => { oblSub = id; renderObligations(); } }, label);
+    c.appendChild(el('div', { class: 'cash-subtabs' }, [
+      sub('summary', 'Сводка'), sub('suppliers', 'Поставщики'),
+      sub('loans', 'Банковские кредиты'), sub('concept', 'Займы'),
+    ]));
+    const box = el('div', { id: 'obl-box' }); c.appendChild(box);
+    box.appendChild(el('div', { class: 'cash-loading' }, 'Загрузка…'));
+    if (oblSub === 'summary') return oblSummary(box);
+    if (oblSub === 'suppliers') return oblSuppliers(box);
+    box.innerHTML = '';
+    box.appendChild(el('div', { class: 'cash-soon' }, oblSub === 'loans'
+      ? 'Банковские кредиты — следующий этап: карточки кредитов, транши, загрузка графика из банка, платёжный календарь.'
+      : 'Понятийные и инвестиционные займы — следующий этап: соглашения, транши, графики возврата.'));
+  }
+  async function oblSummary(box) {
+    let d; try { d = await api('/obligations/summary'); } catch (e) { box.innerHTML = ''; box.appendChild(el('div', { class: 'cash-empty' }, 'Ошибка: ' + e.message)); return; }
+    box.innerHTML = '';
+    const k = d.cards;
+    box.appendChild(el('div', { class: 'cash-flow-cards cash-flow-cards-4' }, [
+      oblCard('Общий остаток обязательств', money(k.total_obligations) + ' сум', 'Сколько всего предстоит заплатить'),
+      oblCard('К оплате в этом месяце', money(k.due_this_month) + ' сум', 'Со сроком до конца месяца'),
+      oblCard('Просрочено', money(k.overdue) + ' сум', 'Срок прошёл, остаток не погашен', k.overdue > 0 ? 'cash-tot-out' : ''),
+      k.nearest_payment
+        ? oblCard('Ближайший платёж', money(k.nearest_payment.amount) + ' сум', k.nearest_payment.creditor + ' · ' + ruDate(k.nearest_payment.due_date) + ' · через ' + k.nearest_payment.days + ' дн.')
+        : oblCard('Ближайший платёж', '—', 'Нет предстоящих платежей'),
+    ]));
+    box.appendChild(el('div', { class: 'cash-sub', style: 'margin:10px 0 6px' }, d.note || ''));
+    // Одна агрегированная строка по видам обязательств.
+    const head = el('div', { class: 'cash-row head cash-obl' }, ['Вид обязательства', 'Общий остаток', 'К оплате в периоде', 'Просрочено', 'Ближайшая дата', 'Источник'].map((h) => el('span', {}, h)));
+    box.appendChild(el('div', { class: 'cash-list' }, [head, ...d.rows.map((r) => el('div', { class: 'cash-row cash-obl' }, [
+      el('span', { style: 'font-weight:700' }, r.kind),
+      el('span', { class: 'tnum' }, money(r.total)),
+      el('span', { class: 'tnum' }, money(r.due_period)),
+      el('span', { class: 'tnum' + (r.overdue > 0 ? ' cash-tot-out' : '') }, money(r.overdue)),
+      el('span', { class: 'muted' }, r.nearest_date ? ruDate(r.nearest_date) : '—'),
+      el('span', { class: 'muted' }, r.source),
+    ]))]));
+    box.appendChild(el('div', { class: 'cash-sub', style: 'margin-top:8px' }, 'Строка «Задолженность поставщикам» — только для просмотра, считается из Закуп → Взаиморасчёты. Платёжный календарь появится на следующем этапе.'));
+  }
+  async function oblSuppliers(box) {
+    let d; try { d = await api('/obligations/suppliers'); } catch (e) { box.innerHTML = ''; box.appendChild(el('div', { class: 'cash-empty' }, 'Ошибка: ' + e.message)); return; }
+    box.innerHTML = '';
+    box.appendChild(el('div', { class: 'cash-note-info', style: 'margin-bottom:10px' }, 'Данные синхронизируются из «Закуп → Взаиморасчёты» и доступны здесь только для просмотра.'));
+    const items = d.items || [];
+    if (!items.length) { box.appendChild(el('div', { class: 'cash-empty' }, 'Поставщиков нет.')); return; }
+    const owe = items.filter((s) => s.balance > 0.01).reduce((a, s) => a + s.balance, 0);
+    const adv = items.filter((s) => s.balance < -0.01).reduce((a, s) => a + Math.abs(s.balance), 0);
+    box.appendChild(kpiBar([['Всего должны поставщикам', owe, 'tot-out'], ['Наши авансы поставщикам', adv, 'tot-in']]));
+    const head = el('div', { class: 'cash-row head cash-supbal' }, ['Поставщик', 'Стартовый долг', 'Поставлено', 'Оплачено', 'Сальдо'].map((h) => el('span', {}, h)));
+    box.appendChild(el('div', { class: 'cash-list' }, [head, ...items.map((s) => el('div', { class: 'cash-row cash-supbal' }, [
+      el('span', { style: 'font-weight:600' }, s.name),
+      el('span', { class: 'tnum muted' }, money(s.opening_balance)),
+      el('span', { class: 'tnum' }, money(s.delivered)),
+      el('span', { class: 'tnum' }, money(s.paid)),
+      el('span', { class: 'tnum', style: 'font-weight:700;color:' + (s.balance > 0.01 ? '#c0392b' : s.balance < -0.01 ? '#2e7d32' : 'var(--muted)') }, money(s.balance)),
+    ]))]));
+  }
+  function oblCard(label, val, hint, cls) {
+    return el('div', { class: 'cash-flow-card' }, [
+      el('div', { class: 'cash-flow-card-l' }, label),
+      el('div', { class: 'cash-flow-card-hint' }, hint || ''),
+      el('div', { class: 'cash-flow-card-v ' + (cls || '') }, val),
+    ]);
   }
 
   async function renderWallets() {
