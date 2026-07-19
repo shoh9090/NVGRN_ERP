@@ -2023,8 +2023,84 @@ router.get('/api/obligations/loans/:id(\\d+)', async (req, res) => {
   if (!o) return res.status(404).json({ error: 'Не найдено' });
   const tranches = (await db.pool.query('SELECT * FROM finance_obligation_tranches WHERE obligation_id=$1 ORDER BY tranche_no, id', [req.params.id])).rows;
   const ver = (await db.pool.query('SELECT COALESCE(MAX(version_no),0) v FROM finance_obligation_schedule WHERE obligation_id=$1', [req.params.id])).rows[0].v;
-  const schedule = (await db.pool.query('SELECT * FROM finance_obligation_schedule WHERE obligation_id=$1 AND version_no=$2 ORDER BY installment_no', [req.params.id, ver])).rows;
+  const schedule = (await db.pool.query(
+    `SELECT s.*, COALESCE((SELECT SUM(principal_paid+interest_paid+fee_paid) FROM finance_obligation_payment_links l WHERE l.schedule_id=s.id AND l.reversed_at IS NULL),0) AS paid
+     FROM finance_obligation_schedule s WHERE s.obligation_id=$1 AND s.version_no=$2 ORDER BY s.installment_no`, [req.params.id, ver])).rows;
   res.json({ loan: o, tranches, schedule, version: ver });
+});
+
+// Хелпер: id статьи ДДС по коду.
+async function catIdByCode(code) { const r = await db.pool.query("SELECT id FROM cash_categories WHERE code=$1 LIMIT 1", [code]); return r.rows[0] ? r.rows[0].id : null; }
+
+// Оплата строки графика: пишет расход(ы) в Кассу (тело/проценты/комиссия по статьям ДДС 61/60/62)
+// и привязывает к строке — деньги вводятся ОДИН раз, двойного учёта нет. Всё в транзакции.
+router.post('/api/obligations/schedule/:id(\\d+)/pay', J, async (req, res) => {
+  if (!(req.user && req.user.isAdmin)) return res.status(403).json({ error: 'Проводить оплату может администратор/финансы' });
+  const b = req.body || {};
+  const sid = parseInt(req.params.id, 10);
+  const s = (await db.pool.query(
+    `SELECT s.*, o.id AS obligation_id, o.creditor_name FROM finance_obligation_schedule s
+     JOIN finance_obligations o ON o.id=s.obligation_id WHERE s.id=$1`, [sid])).rows[0];
+  if (!s) return res.status(404).json({ error: 'Строка графика не найдена' });
+  const walletId = intOrNull(b.wallet_id);
+  if (!walletId) return res.status(400).json({ error: 'Выберите кошелёк списания' });
+  const date = b.payment_date || new Date().toISOString().slice(0, 10);
+  const pr = Math.max(0, Number(b.principal_paid) || 0);
+  const ip = Math.max(0, Number(b.interest_paid) || 0);
+  const fe = Math.max(0, Number(b.fee_paid) || 0);
+  if (pr + ip + fe <= 0) return res.status(400).json({ error: 'Укажите сумму платежа' });
+  const [cBody, cInt, cFee] = await Promise.all([catIdByCode('61'), catIdByCode('60'), catIdByCode('62')]);
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    const mkTx = async (amount, catId, label) => {
+      if (amount <= 0) return null;
+      const r = await client.query(
+        `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, category_id, purpose, source, is_classified, created_by)
+         VALUES ($1,$2,'out',$3,$4,$5,'obligation',$6,$7) RETURNING id`,
+        [date, amount, walletId, catId, `${label}: ${s.creditor_name} · платёж №${s.installment_no}`, !!catId, req.user.id]);
+      return r.rows[0].id;
+    };
+    const txBody = await mkTx(pr, cBody, 'Возврат тела кредита');
+    const txInt = await mkTx(ip, cInt, 'Проценты по кредиту');
+    const txFee = await mkTx(fe, cFee, 'Комиссия банка');
+    await client.query(
+      `INSERT INTO finance_obligation_payment_links (schedule_id, obligation_id, cash_transaction_id, payment_date, principal_paid, interest_paid, fee_paid, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [sid, s.obligation_id, txBody || txInt || txFee, date, pr, ip, fe, req.user.id]);
+    // Статус строки: полностью/частично оплачено.
+    const paid = Number((await client.query('SELECT COALESCE(SUM(principal_paid+interest_paid+fee_paid),0) v FROM finance_obligation_payment_links WHERE schedule_id=$1 AND reversed_at IS NULL', [sid])).rows[0].v);
+    const st = paid >= Number(s.total_due) - 0.01 ? 'paid' : 'partial';
+    await client.query('UPDATE finance_obligation_schedule SET status=$1 WHERE id=$2', [st, sid]);
+    await client.query("UPDATE finance_obligations SET status='active', updated_at=now() WHERE id=$1 AND status='draft'", [s.obligation_id]);
+    await client.query('COMMIT');
+  } catch (e) { await client.query('ROLLBACK').catch(() => {}); return res.status(400).json({ error: e.message }); }
+  finally { client.release(); }
+  await db.log(req.user.id, 'obl_schedule_pay', `строка #${sid} тело=${pr} %=${ip} комис=${fe}`);
+  res.json({ ok: true });
+});
+
+// Сторно привязки оплаты: денежные операции не удаляем физически — помечаем reversed + удаляем расходы.
+router.post('/api/obligations/payment-links/:id(\\d+)/reverse', J, async (req, res) => {
+  if (!(req.user && req.user.isAdmin)) return res.status(403).json({ error: 'Только администратор/финансы' });
+  const link = (await db.pool.query('SELECT * FROM finance_obligation_payment_links WHERE id=$1 AND reversed_at IS NULL', [req.params.id])).rows[0];
+  if (!link) return res.status(404).json({ error: 'Привязка не найдена или уже сторнирована' });
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    if (link.cash_transaction_id) await client.query("DELETE FROM cash_transactions WHERE id=$1 AND source='obligation'", [link.cash_transaction_id]);
+    await client.query('UPDATE finance_obligation_payment_links SET reversed_at=now(), reversed_by=$1, reversal_reason=$2 WHERE id=$3', [req.user.id, (req.body || {}).reason || '', req.params.id]);
+    // Пересчёт статуса строки.
+    if (link.schedule_id) {
+      const s = (await client.query('SELECT total_due FROM finance_obligation_schedule WHERE id=$1', [link.schedule_id])).rows[0];
+      const paid = Number((await client.query('SELECT COALESCE(SUM(principal_paid+interest_paid+fee_paid),0) v FROM finance_obligation_payment_links WHERE schedule_id=$1 AND reversed_at IS NULL', [link.schedule_id])).rows[0].v);
+      const st = paid <= 0.01 ? 'planned' : (s && paid >= Number(s.total_due) - 0.01 ? 'paid' : 'partial');
+      await client.query('UPDATE finance_obligation_schedule SET status=$1 WHERE id=$2', [st, link.schedule_id]);
+    }
+    await client.query('COMMIT');
+  } catch (e) { await client.query('ROLLBACK').catch(() => {}); return res.status(400).json({ error: e.message }); }
+  finally { client.release(); }
+  res.json({ ok: true });
 });
 
 router.post('/api/obligations/loans/:id(\\d+)', J, async (req, res) => {

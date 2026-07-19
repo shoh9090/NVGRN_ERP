@@ -515,6 +515,30 @@
     modal((loan.id ? 'Изменить' : (isBank ? 'Новый кредит' : 'Новый заём')), el('div', { class: 'cashf' }, rows), [save]);
   }
 
+  function oblPayForm(s, loan, group) {
+    const rem = Math.max(0, (Number(s.total_due) || 0) - (Number(s.paid) || 0));
+    const remP = Math.max(0, (Number(s.principal_due) || 0) - Math.min(Number(s.paid) || 0, Number(s.principal_due) || 0));
+    const wallet = fsel([{ v: '', t: '— кошелёк списания —' }].concat((DICTS.wallets || []).map((w) => ({ v: w.id, t: w.name }))), '');
+    const date = finp(new Date().toISOString().slice(0, 10), { type: 'date' });
+    const pInp = fmoney(s.principal_due, { placeholder: 'тело' });
+    const iInp = fmoney(s.interest_due, { placeholder: 'проценты' });
+    const fInp = fmoney(s.fee_due, { placeholder: 'комиссия' });
+    const body = el('div', { class: 'cashf' }, [
+      el('div', { class: 'cash-note-info' }, 'Платёж спишется из кошелька в Кассе (тело → 61, проценты → 60, комиссия → 62) и погасит строку графика. Возврат тела — не расход P&L, только проценты и комиссия.'),
+      frow('Кошелёк', wallet), frow('Дата', date),
+      frow('Тело', pInp), frow('Проценты', iInp), frow('Комиссия', fInp),
+      el('div', { class: 'muted', style: 'font-size:12px' }, 'К оплате по строке (остаток): ' + curFmt(rem, loan.currency) + ' ' + loan.currency),
+    ]);
+    const save = el('button', { class: 'btn-primary', onclick: async () => {
+      if (!wallet.value) return toast('Выберите кошелёк', true);
+      try {
+        await post('/obligations/schedule/' + s.id + '/pay', { wallet_id: wallet.value, payment_date: date.value, principal_paid: moneyVal(pInp), interest_paid: moneyVal(iInp), fee_paid: moneyVal(fInp) });
+        toast('Оплата проведена'); oblLoanCard(loan.id, group);
+      } catch (e) { toast(e.message, true); }
+    } }, 'Провести оплату');
+    modal('💵 Оплата платежа №' + s.installment_no, body, [save]);
+  }
+
   async function oblLoanCard(id, group) {
     let d; try { d = await api('/obligations/loans/' + id); } catch (e) { return toast(e.message, true); }
     const o = d.loan;
@@ -538,12 +562,15 @@
     // Таблица графика.
     let schedBlock;
     if (d.schedule.length) {
-      const cols = ['№', 'Дата', 'Остаток', 'Тело', 'Проценты', 'Комиссии', 'Всего', 'Статус'];
+      const SST = { planned: ['Запланировано', 'var(--muted)'], partial: ['Частично', '#b25b00'], paid: ['Оплачено', '#2e7d32'], overdue: ['Просрочено', '#c0392b'], today: ['Сегодня', '#b25b00'], soon: ['Скоро', '#b25b00'] };
+      const admin = isAdmin();
+      const cols = ['№', 'Дата', 'Остаток', 'Тело', 'Проценты', 'Комиссии', 'Всего', 'Статус'].concat(admin ? [''] : []);
       const thead = el('thead', {}, el('tr', {}, cols.map((h, i) => el('th', { style: (i >= 2 && i <= 6 ? 'text-align:right;' : '') + 'padding:6px 9px;background:#f2f5f1;white-space:nowrap' }, h))));
       const tot = { p: 0, i: 0, f: 0, t: 0 };
       const tb = el('tbody', {}, d.schedule.map((s) => {
         tot.p += Number(s.principal_due) || 0; tot.i += Number(s.interest_due) || 0; tot.f += Number(s.fee_due) || 0; tot.t += Number(s.total_due) || 0;
-        return el('tr', {}, [
+        const st = SST[s.status] || [s.status, 'var(--muted)'];
+        const cells = [
           el('td', { style: 'padding:5px 9px' }, String(s.installment_no)),
           el('td', { style: 'padding:5px 9px' }, ruDate(s.due_date)),
           el('td', { style: 'text-align:right;padding:5px 9px;color:var(--muted)' }, curFmt(s.opening_principal, o.currency)),
@@ -551,8 +578,10 @@
           el('td', { style: 'text-align:right;padding:5px 9px' }, curFmt(s.interest_due, o.currency)),
           el('td', { style: 'text-align:right;padding:5px 9px' }, curFmt(s.fee_due, o.currency)),
           el('td', { style: 'text-align:right;padding:5px 9px;font-weight:700' }, curFmt(s.total_due, o.currency)),
-          el('td', { style: 'padding:5px 9px;color:var(--muted)' }, s.status === 'planned' ? 'Запланировано' : s.status),
-        ]);
+          el('td', { style: 'padding:5px 9px;font-weight:700;color:' + st[1] }, st[0] + (Number(s.paid) > 0.01 && s.status !== 'paid' ? ' (' + curFmt(s.paid, o.currency) + ')' : '')),
+        ];
+        if (admin) cells.push(el('td', { style: 'padding:5px 9px' }, s.status === 'paid' ? '' : el('button', { class: 'btn-ghost cash-add', style: 'padding:4px 9px;font-size:12px', onclick: () => oblPayForm(s, o, group) }, '💵 Оплатить')));
+        return el('tr', {}, cells);
       }));
       const foot = el('tr', { style: 'background:#f2f5f1;font-weight:800' }, [
         el('td', { colspan: 3, style: 'padding:6px 9px' }, 'ИТОГО'),
@@ -560,7 +589,7 @@
         el('td', { style: 'text-align:right;padding:6px 9px' }, curFmt(tot.i, o.currency)),
         el('td', { style: 'text-align:right;padding:6px 9px' }, curFmt(tot.f, o.currency)),
         el('td', { style: 'text-align:right;padding:6px 9px' }, curFmt(tot.t, o.currency)),
-        el('td', {}, ''),
+        el('td', { colspan: admin ? 2 : 1 }, ''),
       ]);
       schedBlock = el('div', { style: 'overflow-x:auto;border:1px solid var(--line);border-radius:10px;margin-top:8px' }, el('table', { style: 'border-collapse:collapse;width:100%;font-size:12.5px' }, [thead, tb, el('tfoot', {}, foot)]));
     } else {
