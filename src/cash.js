@@ -1901,10 +1901,8 @@ router.get('/api/obligations/summary', async (req, res) => {
 // Поставщики — read-only зеркало «Закуп → Взаиморасчёты» (тот же сервис, без изменений данных).
 router.get('/api/obligations/suppliers', async (req, res) => {
   try {
-    const balances = await pfin.supplierBalances({ q: req.query.q, parent_category_id: req.query.parent_category_id });
-    const due = await pfin.supplierDueAgg();
-    const items = balances.map((s) => ({ ...s, overdue: due[s.id] ? due[s.id].overdue : 0, nearest_due: due[s.id] ? due[s.id].nearest_due : null }));
-    res.json({ items, readonly: true, source: 'Закуп → Взаиморасчёты' });
+    const d = await pfin.settlements(req.query); // общий сервис (q/категория/статус/период)
+    res.json({ ...d, readonly: true, source: 'Закуп → Взаиморасчёты' });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 

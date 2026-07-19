@@ -462,35 +462,80 @@
     ]))]));
     box.appendChild(el('div', { class: 'cash-sub', style: 'margin-top:8px' }, 'Строка «Задолженность поставщикам» — только для просмотра, считается из Закуп → Взаиморасчёты. Платёжный календарь появится на следующем этапе.'));
   }
+  const oblSup = { q: '', cat: '', status: '', from: '', to: '' };
+  let OBL_SUP = null;
+  function oblSupCols(period) {
+    const c = [{ id: 'name', label: 'Поставщик', get: (s) => s.name, txt: 1 }, { id: 'cat', label: 'Категория', get: (s) => s.parent_category_name || '—', txt: 1 }];
+    if (period) c.push(
+      { id: 'bs', label: 'Баланс на начало', get: (s) => s.balance_start, num: 1 },
+      { id: 'dp', label: 'Поставлено (период)', get: (s) => s.delivered_period, num: 1 },
+      { id: 'pp', label: 'Оплачено (период)', get: (s) => s.paid_period, num: 1 },
+      { id: 'be', label: 'Баланс на конец', get: (s) => s.balance_end, num: 1, bal: 1 });
+    else c.push(
+      { id: 'ob', label: 'Стартовый долг', get: (s) => s.opening_balance, num: 1 },
+      { id: 'dl', label: 'Поставлено', get: (s) => s.delivered, num: 1 },
+      { id: 'pd', label: 'Оплачено', get: (s) => s.paid, num: 1 },
+      { id: 'bl', label: 'Сальдо', get: (s) => s.balance, num: 1, bal: 1 });
+    c.push({ id: 'ov', label: 'Просрочено', get: (s) => s.overdue || 0, num: 1, warn: 1 }, { id: 'nd', label: 'Ближайший срок', get: (s) => (s.nearest_due ? ruDate(s.nearest_due) : '—'), txt: 1 });
+    return c;
+  }
   async function oblSuppliers(box) {
-    let d; try { d = await api('/obligations/suppliers'); } catch (e) { box.innerHTML = ''; box.appendChild(el('div', { class: 'cash-empty' }, 'Ошибка: ' + e.message)); return; }
     box.innerHTML = '';
     box.appendChild(el('div', { class: 'cash-note-info', style: 'margin-bottom:10px' }, 'Данные синхронизируются из «Закуп → Взаиморасчёты» и доступны здесь только для просмотра.'));
-    const items = d.items || [];
-    if (!items.length) { box.appendChild(el('div', { class: 'cash-empty' }, 'Поставщиков нет.')); return; }
-    const owe = items.filter((s) => s.balance > 0.01).reduce((a, s) => a + s.balance, 0);
-    const adv = items.filter((s) => s.balance < -0.01).reduce((a, s) => a + Math.abs(s.balance), 0);
-    box.appendChild(kpiBar([['Всего должны поставщикам', owe, 'tot-out'], ['Наши авансы поставщикам', adv, 'tot-in']]));
-    const head = el('div', { class: 'cash-row head cash-supbal' }, ['Поставщик', 'Стартовый долг', 'Поставлено', 'Оплачено', 'Сальдо', 'Просрочено', 'Ближайший срок'].map((h) => el('span', {}, h)));
-    const sum = (f) => items.reduce((a, s) => a + (Number(s[f]) || 0), 0);
-    const foot = el('div', { class: 'cash-row foot cash-supbal' }, [
-      el('span', { style: 'font-weight:800' }, 'ИТОГО (' + items.length + ')'),
-      el('span', { class: 'tnum', style: 'font-weight:700' }, money(sum('opening_balance'))),
-      el('span', { class: 'tnum', style: 'font-weight:700' }, money(sum('delivered'))),
-      el('span', { class: 'tnum', style: 'font-weight:700' }, money(sum('paid'))),
-      el('span', { class: 'tnum', style: 'font-weight:800;color:' + (sum('balance') > 0 ? '#c0392b' : '#2e7d32') }, money(sum('balance'))),
-      el('span', { class: 'tnum', style: 'font-weight:700;color:#c0392b' }, money(sum('overdue'))),
-      el('span', {}, ''),
-    ]);
-    box.appendChild(el('div', { class: 'cash-list' }, [head, ...items.map((s) => el('div', { class: 'cash-row cash-supbal' }, [
-      el('span', { style: 'font-weight:600' }, s.name),
-      el('span', { class: 'tnum muted' }, money(s.opening_balance)),
-      el('span', { class: 'tnum' }, money(s.delivered)),
-      el('span', { class: 'tnum' }, money(s.paid)),
-      el('span', { class: 'tnum', style: 'font-weight:700;color:' + (s.balance > 0.01 ? '#c0392b' : s.balance < -0.01 ? '#2e7d32' : 'var(--muted)') }, money(s.balance)),
-      el('span', { class: 'tnum', style: s.overdue > 0.01 ? 'color:#c0392b;font-weight:700' : 'color:var(--muted)' }, s.overdue > 0.01 ? money(s.overdue) : '—'),
-      el('span', { class: 'muted' }, s.nearest_due ? ruDate(s.nearest_due) : '—'),
-    ])), foot]));
+    const catSel = el('select', { class: 'cashf-inp', onchange: (e) => { oblSup.cat = e.target.value; drawSup(); } });
+    const stSel = el('select', { class: 'cashf-inp', onchange: (e) => { oblSup.status = e.target.value; drawSup(); } },
+      [['', 'Все'], ['debt', 'С долгом'], ['overdue', 'Просроченные'], ['advance', 'Авансы']].map(([v, t]) => el('option', { value: v, selected: oblSup.status === v || null }, t)));
+    const qIn = el('input', { class: 'cashf-inp', placeholder: 'Поиск поставщика…', value: oblSup.q, oninput: (e) => { oblSup.q = e.target.value; drawSup(); } });
+    const fromIn = el('input', { class: 'cashf-inp', type: 'date', value: oblSup.from, onchange: (e) => { oblSup.from = e.target.value; loadSup(); } });
+    const toIn = el('input', { class: 'cashf-inp', type: 'date', value: oblSup.to, onchange: (e) => { oblSup.to = e.target.value; loadSup(); } });
+    box.appendChild(el('div', { class: 'cash-filters', style: 'display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px' }, [
+      el('span', { class: 'muted' }, 'Категория:'), catSel, el('span', { class: 'muted' }, 'Статус:'), stSel,
+      el('span', { class: 'muted' }, 'Период:'), fromIn, el('span', { class: 'muted' }, '—'), toIn, qIn,
+    ]));
+    const tableBox = el('div', { id: 'obl-sup-table' }); box.appendChild(tableBox);
+    async function loadSup() {
+      tableBox.innerHTML = '<div class="cash-loading">Загрузка…</div>';
+      const p = new URLSearchParams();
+      if (oblSup.from) p.set('from', oblSup.from);
+      if (oblSup.to) p.set('to', oblSup.to);
+      try { OBL_SUP = await api('/obligations/suppliers' + (p.toString() ? '?' + p.toString() : '')); } catch (e) { tableBox.innerHTML = ''; tableBox.appendChild(el('div', { class: 'cash-empty' }, 'Ошибка: ' + e.message)); return; }
+      // Наполняем список категорий.
+      const cats = Array.from(new Set((OBL_SUP.items || []).map((s) => s.parent_category_name).filter(Boolean))).sort();
+      catSel.innerHTML = ''; catSel.appendChild(el('option', { value: '' }, 'Все категории'));
+      cats.forEach((c) => catSel.appendChild(el('option', { value: c, selected: oblSup.cat === c || null }, c)));
+      drawSup();
+    }
+    function drawSup() {
+      let items = (OBL_SUP && OBL_SUP.items) || [];
+      if (oblSup.cat) items = items.filter((s) => s.parent_category_name === oblSup.cat);
+      if (oblSup.status === 'debt') items = items.filter((s) => s.balance > 0.01);
+      else if (oblSup.status === 'overdue') items = items.filter((s) => (s.overdue || 0) > 0.01);
+      else if (oblSup.status === 'advance') items = items.filter((s) => s.balance < -0.01);
+      if (oblSup.q) { const qq = oblSup.q.toLowerCase(); items = items.filter((s) => (s.name || '').toLowerCase().includes(qq)); }
+      const period = !!(OBL_SUP && OBL_SUP.period);
+      const cols = oblSupCols(period);
+      tableBox.innerHTML = '';
+      if (!items.length) { tableBox.appendChild(el('div', { class: 'cash-empty' }, 'Ничего не найдено по фильтру.')); return; }
+      const owe = items.filter((s) => s.balance > 0.01).reduce((a, s) => a + s.balance, 0);
+      const adv = items.filter((s) => s.balance < -0.01).reduce((a, s) => a + Math.abs(s.balance), 0);
+      tableBox.appendChild(kpiBar([['Всего должны поставщикам', owe, 'tot-out'], ['Наши авансы поставщикам', adv, 'tot-in']]));
+      const thNum = 'text-align:right';
+      const thead = el('thead', {}, el('tr', {}, cols.map((c) => el('th', { style: (c.num ? thNum : '') + ';white-space:nowrap;padding:8px 10px;background:#f2f5f1' }, c.label))));
+      const tb = el('tbody', {}, items.map((s) => el('tr', {}, cols.map((c) => {
+        if (c.num) { const v = Number(c.get(s)) || 0; const color = c.bal ? (v > 0 ? '#c0392b' : v < 0 ? '#2e7d32' : '') : (c.warn && v > 0 ? '#c0392b' : ''); return el('td', { style: 'text-align:right;white-space:nowrap;padding:7px 10px;font-variant-numeric:tabular-nums;' + (c.bal ? 'font-weight:800;' : '') + (color ? 'color:' + color : '') }, money(v)); }
+        return el('td', { style: 'white-space:nowrap;padding:7px 10px;' + (c.id === 'name' ? 'font-weight:700' : 'color:var(--muted)') }, c.get(s));
+      }))));
+      const foot = el('tr', { style: 'background:#f2f5f1;font-weight:800' }, cols.map((c, i) => {
+        if (i === 0) return el('td', { style: 'padding:8px 10px' }, 'ИТОГО (' + items.length + ')');
+        if (!c.num) return el('td', {}, '');
+        const sm = items.reduce((a, s) => a + (Number(c.get(s)) || 0), 0);
+        const color = c.bal ? (sm > 0 ? '#c0392b' : '#2e7d32') : (c.warn && sm > 0 ? '#c0392b' : '');
+        return el('td', { style: 'text-align:right;padding:8px 10px;font-variant-numeric:tabular-nums;' + (color ? 'color:' + color : '') }, money(sm));
+      }));
+      const table = el('table', { style: 'border-collapse:collapse;width:100%;font-size:13px' }, [thead, tb, el('tfoot', {}, foot)]);
+      tableBox.appendChild(el('div', { style: 'overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:#fff' }, table));
+    }
+    await loadSup();
   }
   function oblCard(label, val, hint, cls) {
     return el('div', { class: 'cash-flow-card' }, [

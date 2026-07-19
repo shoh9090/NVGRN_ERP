@@ -137,4 +137,15 @@ async function openSupplierObligations() {
   return r.rows.map(enrichOrderFinance).filter((o) => o.remainder > 0.01);
 }
 
-module.exports = { enrichOrderFinance, supplierBalances, openSupplierObligations, supplierDueAgg };
+// Взаиморасчёты «под ключ» (общее для Закупа и зеркала в Кассе): баланс+период+просрочка+фильтр статуса.
+async function settlements(opts = {}) {
+  const balances = await supplierBalances({ q: opts.q, parent_category_id: opts.parent_category_id, from: opts.from || null, to: opts.to || null });
+  const due = await supplierDueAgg();
+  let items = balances.map((s) => ({ ...s, overdue: due[s.id] ? due[s.id].overdue : 0, nearest_due: due[s.id] ? due[s.id].nearest_due : null }));
+  if (opts.status === 'debt') items = items.filter((s) => s.balance > 0.01);
+  else if (opts.status === 'overdue') items = items.filter((s) => s.overdue > 0.01);
+  else if (opts.status === 'advance') items = items.filter((s) => s.balance < -0.01);
+  return { items, period: !!(opts.from || opts.to), from: opts.from || null, to: opts.to || null };
+}
+
+module.exports = { enrichOrderFinance, supplierBalances, openSupplierObligations, supplierDueAgg, settlements };

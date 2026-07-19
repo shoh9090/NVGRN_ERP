@@ -183,17 +183,7 @@ router.get('/api/suppliers/:id(\\d+)/open-orders', async (req, res) => {
 });
 
 // ---------- Взаиморасчёты (SD-стиль: период-баланс, фильтры, итоги, экспорт) ----------
-async function settlementsData(query) {
-  const items = await pfin.supplierBalances({ q: query.q, parent_category_id: query.parent_category_id, from: query.from || null, to: query.to || null });
-  const due = await pfin.supplierDueAgg();
-  let rows = items.map((s) => ({ ...s, overdue: due[s.id] ? due[s.id].overdue : 0, nearest_due: due[s.id] ? due[s.id].nearest_due : null }));
-  // Фильтр статуса: с долгом / просроченные / аванс.
-  if (query.status === 'debt') rows = rows.filter((s) => s.balance > 0.01);
-  else if (query.status === 'overdue') rows = rows.filter((s) => s.overdue > 0.01);
-  else if (query.status === 'advance') rows = rows.filter((s) => s.balance < -0.01);
-  const period = !!(query.from || query.to);
-  return { items: rows, period, from: query.from || null, to: query.to || null };
-}
+const settlementsData = (query) => pfin.settlements(query);
 router.get('/api/settlements', async (req, res) => {
   try { res.json(await settlementsData(req.query)); } catch (e) { res.status(400).json({ error: e.message }); }
 });
