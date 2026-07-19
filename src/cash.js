@@ -1879,21 +1879,37 @@ router.get('/api/obligations/summary', async (req, res) => {
       }
     }
     const supNearest = orders.filter((o) => o.due_date && o.remainder > 0.01).map((o) => o.due_date).sort()[0] || null;
-    const suppliersRow = {
-      kind: 'Задолженность поставщикам',
-      total: totalOwed, due_period: dueThisMonth, overdue,
-      nearest_date: supNearest, source: 'Закуп',
-    };
+    const rows = [{ kind: 'Задолженность поставщикам', total: totalOwed, due_period: dueThisMonth, overdue, nearest_date: supNearest, source: 'Закуп' }];
+
+    // Кредиты и займы: остаток тела = получено − оплачено тела; просрочка/ближайшая дата из графика.
+    const loans = (await db.pool.query(
+      `SELECT o.id, o.obligation_type, o.currency,
+              COALESCE(o.principal_received,0) AS received,
+              COALESCE((SELECT SUM(principal_paid) FROM finance_obligation_payment_links l WHERE l.obligation_id=o.id AND l.reversed_at IS NULL),0) AS paid
+       FROM finance_obligations o WHERE o.status <> 'cancelled' AND o.status <> 'closed'`)).rows;
+    const bankTotal = loans.filter((l) => l.obligation_type === 'bank_loan').reduce((a, l) => a + (Number(l.received) - Number(l.paid)), 0);
+    const otherTotal = loans.filter((l) => l.obligation_type !== 'bank_loan').reduce((a, l) => a + (Number(l.received) - Number(l.paid)), 0);
+    const schAgg = (await db.pool.query(
+      `SELECT COALESCE(SUM(total_due) FILTER (WHERE due_date < CURRENT_DATE),0) AS ovd,
+              COALESCE(SUM(total_due) FILTER (WHERE due_date >= CURRENT_DATE AND due_date <= $1),0) AS duem,
+              MIN(due_date) FILTER (WHERE due_date >= CURRENT_DATE) AS nxt
+       FROM finance_obligation_schedule s JOIN finance_obligations o ON o.id=s.obligation_id
+       WHERE s.status NOT IN ('paid','cancelled') AND o.status NOT IN ('cancelled','closed')`, [monthEnd])).rows[0];
+    const loanOverdue = Number(schAgg.ovd) || 0, loanDueMonth = Number(schAgg.duem) || 0;
+    if (bankTotal > 0.01) rows.push({ kind: 'Банковские кредиты', total: bankTotal, due_period: loanDueMonth, overdue: loanOverdue, nearest_date: schAgg.nxt || null, source: 'Кредиты' });
+    if (otherTotal > 0.01) rows.push({ kind: 'Понятийные и инвестиционные займы', total: otherTotal, due_period: 0, overdue: 0, nearest_date: null, source: 'Займы' });
+
+    const totalAll = totalOwed + bankTotal + otherTotal;
     res.json({
       currency: 'UZS',
       cards: {
-        total_obligations: totalOwed,           // Этап 1: только поставщики; кредиты/займы добавятся на Этапе 2
-        due_this_month: dueThisMonth,
-        overdue,
+        total_obligations: totalAll,
+        due_this_month: dueThisMonth + loanDueMonth,
+        overdue: overdue + loanOverdue,
         nearest_payment: nearest,
       },
-      rows: [suppliersRow],
-      note: 'Этап 1: учтена только задолженность поставщикам (из Закупа). Кредиты и займы — на следующем этапе.',
+      rows,
+      note: 'Задолженность поставщикам — из Закупа. Кредиты и займы — из раздела «Обязательства». Платёжный календарь и уведомления — следующие этапы.',
     });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
@@ -1904,6 +1920,141 @@ router.get('/api/obligations/suppliers', async (req, res) => {
     const d = await pfin.settlements(req.query); // общий сервис (q/категория/статус/период)
     res.json({ ...d, readonly: true, source: 'Закуп → Взаиморасчёты' });
   } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// ---- Кредиты и займы (Этап 2): CRUD + генерация графика ----
+const OBL_TYPES = ['bank_loan', 'concept_loan', 'investment_loan', 'founder_loan', 'other_loan'];
+const round2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
+
+// Генерация графика по схеме погашения. opts: {installments, first_payment_date}.
+function genSchedule(loan, opts = {}) {
+  const P = Number(loan.principal_received) > 0 ? Number(loan.principal_received) : Number(loan.principal_limit) || 0;
+  const n = Math.max(1, parseInt(opts.installments, 10) || 12);
+  const r = (Number(loan.annual_rate) || 0) / 100 / 12;
+  const scheme = loan.repayment_scheme || 'annuity';
+  const first = opts.first_payment_date || loan.first_payment_date || loan.date_start;
+  if (!first || !P || scheme === 'custom') return [];
+  const dateAt = (i) => { const d = new Date(first); d.setMonth(d.getMonth() + i); return d.toISOString().slice(0, 10); };
+  const rows = []; let bal = P;
+  for (let i = 0; i < n; i++) {
+    const opening = bal; let principal = 0, interest = 0;
+    if (scheme === 'bullet' || scheme === 'interest_only') { interest = bal * r; principal = (i === n - 1) ? bal : 0; }
+    else if (scheme === 'differentiated' || scheme === 'equal_principal') { principal = P / n; interest = bal * r; }
+    else { // annuity
+      if (r > 0) { const A = P * r / (1 - Math.pow(1 + r, -n)); interest = bal * r; principal = A - interest; }
+      else { principal = P / n; interest = 0; }
+    }
+    if (i === n - 1 && scheme !== 'bullet' && scheme !== 'interest_only') principal = bal; // закрыть остаток
+    principal = Math.min(principal, bal);
+    rows.push({ installment_no: i + 1, due_date: dateAt(i), opening_principal: round2(opening), principal_due: round2(principal), interest_due: round2(interest), fee_due: 0, total_due: round2(principal + interest) });
+    bal = round2(bal - principal);
+  }
+  return rows;
+}
+
+const OBL_FIELDS = ['obligation_type', 'creditor_name', 'agreement_number', 'agreement_date', 'date_start', 'date_end',
+  'currency', 'principal_limit', 'principal_received', 'annual_rate', 'repayment_scheme', 'first_payment_date',
+  'payment_day', 'grace_period_months', 'wallet_id', 'status', 'comment', 'counterparty_id'];
+
+router.get('/api/obligations/loans', async (req, res) => {
+  try {
+    const group = req.query.group === 'bank' ? ['bank_loan'] : req.query.group === 'other' ? ['concept_loan', 'investment_loan', 'founder_loan', 'other_loan'] : OBL_TYPES;
+    const rows = (await db.pool.query(
+      `SELECT o.*, w.name AS wallet_name,
+              (SELECT COALESCE(SUM(principal_paid),0) FROM finance_obligation_payment_links l WHERE l.obligation_id=o.id AND l.reversed_at IS NULL) AS principal_paid,
+              (SELECT MIN(due_date) FROM finance_obligation_schedule s WHERE s.obligation_id=o.id AND s.status IN ('planned','soon','today','partial','overdue')) AS next_due
+       FROM finance_obligations o LEFT JOIN cash_wallets w ON w.id=o.wallet_id
+       WHERE o.obligation_type = ANY($1) ORDER BY o.status='closed', o.creditor_name`, [group])).rows;
+    res.json({ items: rows.map((o) => ({ ...o, principal_balance: (Number(o.principal_received) || 0) - (Number(o.principal_paid) || 0) })) });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+router.post('/api/obligations/loans', J, async (req, res) => {
+  if (!(req.user && req.user.isAdmin)) return res.status(403).json({ error: 'Создавать кредиты/займы может администратор/финансы' });
+  const b = req.body || {};
+  const type = OBL_TYPES.includes(b.obligation_type) ? b.obligation_type : 'bank_loan';
+  const r = await db.pool.query(
+    `INSERT INTO finance_obligations (obligation_type, creditor_name, agreement_number, agreement_date, date_start, date_end,
+       currency, principal_limit, principal_received, annual_rate, repayment_scheme, first_payment_date, payment_day,
+       grace_period_months, wallet_id, status, comment, counterparty_id, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'draft',$16,$17,$18) RETURNING id`,
+    [type, (b.creditor_name || 'Кредитор').trim(), b.agreement_number || '', b.agreement_date || null, b.date_start || null, b.date_end || null,
+      b.currency === 'USD' ? 'USD' : 'UZS', numOrNull(b.principal_limit), numOrNull(b.principal_received), numOrNull(b.annual_rate),
+      b.repayment_scheme || 'annuity', b.first_payment_date || null, intOrNull(b.payment_day), intOrNull(b.grace_period_months),
+      intOrNull(b.wallet_id), b.comment || '', intOrNull(b.counterparty_id), req.user.id]);
+  await db.log(req.user.id, 'obl_loan_create', `${type} ${b.creditor_name || ''}`);
+  res.json({ ok: true, id: r.rows[0].id });
+});
+
+router.get('/api/obligations/loans/:id(\\d+)', async (req, res) => {
+  const o = (await db.pool.query('SELECT o.*, w.name AS wallet_name FROM finance_obligations o LEFT JOIN cash_wallets w ON w.id=o.wallet_id WHERE o.id=$1', [req.params.id])).rows[0];
+  if (!o) return res.status(404).json({ error: 'Не найдено' });
+  const tranches = (await db.pool.query('SELECT * FROM finance_obligation_tranches WHERE obligation_id=$1 ORDER BY tranche_no, id', [req.params.id])).rows;
+  const ver = (await db.pool.query('SELECT COALESCE(MAX(version_no),0) v FROM finance_obligation_schedule WHERE obligation_id=$1', [req.params.id])).rows[0].v;
+  const schedule = (await db.pool.query('SELECT * FROM finance_obligation_schedule WHERE obligation_id=$1 AND version_no=$2 ORDER BY installment_no', [req.params.id, ver])).rows;
+  res.json({ loan: o, tranches, schedule, version: ver });
+});
+
+router.post('/api/obligations/loans/:id(\\d+)', J, async (req, res) => {
+  if (!(req.user && req.user.isAdmin)) return res.status(403).json({ error: 'Только администратор/финансы' });
+  const b = req.body || {};
+  const sets = [], vals = []; let i = 1;
+  for (const f of OBL_FIELDS) {
+    if (!(f in b)) continue;
+    let v = b[f];
+    if (['principal_limit', 'principal_received', 'annual_rate'].includes(f)) v = numOrNull(v);
+    else if (['payment_day', 'grace_period_months', 'wallet_id', 'counterparty_id'].includes(f)) v = intOrNull(v);
+    else if (['agreement_date', 'date_start', 'date_end', 'first_payment_date'].includes(f)) v = v || null;
+    sets.push(`${f}=$${i++}`); vals.push(v);
+  }
+  if (!sets.length) return res.json({ ok: true });
+  sets.push('updated_at=now()', `updated_by=$${i++}`); vals.push(req.user.id); vals.push(req.params.id);
+  await db.pool.query(`UPDATE finance_obligations SET ${sets.join(',')} WHERE id=$${i}`, vals);
+  res.json({ ok: true });
+});
+
+// Генерация нового графика (новая версия). Оплаченные строки прошлых версий не трогаем — версии отдельны.
+router.post('/api/obligations/loans/:id(\\d+)/generate-schedule', J, async (req, res) => {
+  if (!(req.user && req.user.isAdmin)) return res.status(403).json({ error: 'Только администратор/финансы' });
+  const loan = (await db.pool.query('SELECT * FROM finance_obligations WHERE id=$1', [req.params.id])).rows[0];
+  if (!loan) return res.status(404).json({ error: 'Не найдено' });
+  const rows = genSchedule(loan, req.body || {});
+  if (!rows.length) return res.status(400).json({ error: 'Не удалось построить график: проверьте сумму, дату первого платежа и число платежей.' });
+  const ver = (await db.pool.query('SELECT COALESCE(MAX(version_no),0)+1 v FROM finance_obligation_schedule WHERE obligation_id=$1', [req.params.id])).rows[0].v;
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    for (const r of rows) {
+      await client.query(
+        `INSERT INTO finance_obligation_schedule (obligation_id, version_no, installment_no, due_date, opening_principal, principal_due, interest_due, fee_due, total_due)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [req.params.id, ver, r.installment_no, r.due_date, r.opening_principal, r.principal_due, r.interest_due, r.fee_due, r.total_due]);
+    }
+    await client.query('COMMIT');
+  } catch (e) { await client.query('ROLLBACK').catch(() => {}); return res.status(400).json({ error: e.message }); }
+  finally { client.release(); }
+  await db.log(req.user.id, 'obl_schedule_gen', `#${req.params.id} v${ver} (${rows.length} строк)`);
+  res.json({ ok: true, version: ver, count: rows.length });
+});
+
+router.post('/api/obligations/loans/:id(\\d+)/tranches', J, async (req, res) => {
+  if (!(req.user && req.user.isAdmin)) return res.status(403).json({ error: 'Только администратор/финансы' });
+  const b = req.body || {};
+  const mx = (await db.pool.query('SELECT COALESCE(MAX(tranche_no),0)+1 n FROM finance_obligation_tranches WHERE obligation_id=$1', [req.params.id])).rows[0].n;
+  const r = await db.pool.query(
+    `INSERT INTO finance_obligation_tranches (obligation_id, tranche_no, received_date, amount, currency, due_date)
+     VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+    [req.params.id, mx, b.received_date || null, numOrNull(b.amount), b.currency === 'USD' ? 'USD' : 'UZS', b.due_date || null]);
+  res.json({ ok: true, id: r.rows[0].id });
+});
+
+router.post('/api/obligations/loans/:id(\\d+)/delete', async (req, res) => {
+  if (!(req.user && req.user.isAdmin)) return res.status(403).json({ error: 'Только администратор' });
+  // Есть ли фактические оплаты — тогда не удаляем физически, а помечаем отменённым.
+  const paid = (await db.pool.query('SELECT 1 FROM finance_obligation_payment_links WHERE obligation_id=$1 AND reversed_at IS NULL LIMIT 1', [req.params.id])).rows.length;
+  if (paid) { await db.pool.query("UPDATE finance_obligations SET status='cancelled', updated_at=now() WHERE id=$1", [req.params.id]); return res.json({ ok: true, archived: true }); }
+  await db.pool.query('DELETE FROM finance_obligations WHERE id=$1', [req.params.id]);
+  res.json({ ok: true });
 });
 
 module.exports = router;

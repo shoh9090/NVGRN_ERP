@@ -432,10 +432,153 @@
     box.appendChild(el('div', { class: 'cash-loading' }, 'Загрузка…'));
     if (oblSub === 'summary') return oblSummary(box);
     if (oblSub === 'suppliers') return oblSuppliers(box);
+    if (oblSub === 'loans') return oblLoans(box, 'bank');
+    return oblLoans(box, 'other');
+  }
+
+  const SCHEMES = [['annuity', 'Аннуитет'], ['differentiated', 'Дифференцированный'], ['equal_principal', 'Равными частями (тело)'], ['bullet', 'Тело в конце'], ['interest_only', 'Только проценты'], ['custom', 'Свой график']];
+  const LOAN_TYPES = [['concept_loan', 'Понятийный'], ['investment_loan', 'Инвестиционный'], ['founder_loan', 'Учредителя'], ['other_loan', 'Прочий']];
+  const LOAN_STATUS = { draft: 'Черновик', active: 'Активен', closed: 'Погашен', overdue: 'Просрочен', restructured: 'Реструктурирован', cancelled: 'Отменён' };
+  const curFmt = (v, cur) => (cur === 'USD' ? (Number(v) || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : money(v));
+  const isAdmin = () => !!(window.HUB_USER && window.HUB_USER.isAdmin);
+
+  async function oblLoans(box, group) {
     box.innerHTML = '';
-    box.appendChild(el('div', { class: 'cash-soon' }, oblSub === 'loans'
-      ? 'Банковские кредиты — следующий этап: карточки кредитов, транши, загрузка графика из банка, платёжный календарь.'
-      : 'Понятийные и инвестиционные займы — следующий этап: соглашения, транши, графики возврата.'));
+    const title = group === 'bank' ? 'Банковские кредиты' : 'Понятийные и инвестиционные займы';
+    box.appendChild(el('div', { style: 'display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px' }, [
+      el('div', { class: 'cash-sub' }, group === 'bank' ? 'Кредиты банков: сумма, ставка, график погашения.' : 'Займы учредителей/инвесторов, беспроцентные и понятийные соглашения, транши.'),
+      isAdmin() ? el('button', { class: 'btn-ghost cash-add', onclick: () => oblLoanForm(null, group) }, group === 'bank' ? '+ Кредит' : '+ Заём') : null,
+    ]));
+    let d; try { d = await api('/obligations/loans?group=' + group); } catch (e) { box.appendChild(el('div', { class: 'cash-empty' }, 'Ошибка: ' + e.message)); return; }
+    if (!d.items.length) { box.appendChild(el('div', { class: 'cash-empty' }, 'Пока нет записей. ' + (isAdmin() ? 'Нажмите «+».' : ''))); return; }
+    const cols = group === 'bank'
+      ? ['Кредитор', 'Договор', 'Вал.', 'Получено', 'Ставка', 'Остаток тела', 'След. платёж', 'Статус']
+      : ['Кредитор', 'Соглашение', 'Вал.', 'Получено', 'Выплачено', 'Остаток', 'Ближайший', 'Статус'];
+    const thead = el('thead', {}, el('tr', {}, cols.map((h, i) => el('th', { style: (i >= 3 && i <= 6 ? 'text-align:right;' : '') + 'white-space:nowrap;padding:8px 10px;background:#f2f5f1' }, h))));
+    const tb = el('tbody', {}, d.items.map((o) => el('tr', { style: 'cursor:pointer', onclick: () => oblLoanCard(o.id, group) }, [
+      el('td', { style: 'font-weight:700;padding:7px 10px' }, o.creditor_name),
+      el('td', { style: 'padding:7px 10px;color:var(--muted)' }, o.agreement_number || '—'),
+      el('td', { style: 'padding:7px 10px' }, o.currency),
+      el('td', { style: 'text-align:right;padding:7px 10px' }, curFmt(o.principal_received, o.currency)),
+      el('td', { style: 'text-align:right;padding:7px 10px' }, group === 'bank' ? (Number(o.annual_rate) || 0) + '%' : curFmt(o.principal_paid, o.currency)),
+      el('td', { style: 'text-align:right;padding:7px 10px;font-weight:700' }, curFmt(o.principal_balance, o.currency)),
+      el('td', { style: 'padding:7px 10px;color:var(--muted)' }, o.next_due ? ruDate(o.next_due) : '—'),
+      el('td', { style: 'padding:7px 10px' }, el('span', { class: 'cash-flow', style: 'background:#eef1ec;color:var(--forest)' }, LOAN_STATUS[o.status] || o.status)),
+    ])));
+    box.appendChild(el('div', { style: 'overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:#fff' }, el('table', { style: 'border-collapse:collapse;width:100%;font-size:13px' }, [thead, tb])));
+  }
+
+  function oblLoanForm(loan, group) {
+    loan = loan || {};
+    const isBank = group === 'bank';
+    const creditor = finp(loan.creditor_name, { placeholder: 'Название банка / кредитора' });
+    const typeSel = fsel(LOAN_TYPES.map(([v, t]) => ({ v, t })), loan.obligation_type || 'concept_loan');
+    const agree = finp(loan.agreement_number, { placeholder: '№ договора/соглашения' });
+    const agreeDate = finp(loan.agreement_date ? String(loan.agreement_date).slice(0, 10) : '', { type: 'date' });
+    const curSel = fsel([{ v: 'UZS', t: 'сум (UZS)' }, { v: 'USD', t: 'доллары (USD)' }], loan.currency || 'UZS');
+    const limit = fmoney(loan.principal_limit, { placeholder: 'Сумма по договору' });
+    const received = fmoney(loan.principal_received, { placeholder: 'Фактически получено' });
+    const rate = fmoney(loan.annual_rate, { placeholder: '% годовых (0 если беспроцентный)' });
+    const scheme = fsel(SCHEMES.map(([v, t]) => ({ v, t })), loan.repayment_scheme || (isBank ? 'annuity' : 'bullet'));
+    const dStart = finp(loan.date_start ? String(loan.date_start).slice(0, 10) : '', { type: 'date' });
+    const dEnd = finp(loan.date_end ? String(loan.date_end).slice(0, 10) : '', { type: 'date' });
+    const firstPay = finp(loan.first_payment_date ? String(loan.first_payment_date).slice(0, 10) : '', { type: 'date' });
+    const wallet = fsel([{ v: '', t: '— кошелёк получения —' }].concat((DICTS.wallets || []).map((w) => ({ v: w.id, t: w.name }))), loan.wallet_id || '');
+    const comment = finp(loan.comment, { placeholder: 'Комментарий' });
+    const rows = [
+      isBank ? null : frow('Тип займа', typeSel),
+      frow('Кредитор', creditor),
+      frow('Договор №', agree), frow('Дата договора', agreeDate),
+      frow('Валюта', curSel),
+      frow('Сумма по договору', limit), frow('Получено фактически', received),
+      frow('Ставка, % годовых', rate),
+      frow('Схема погашения', scheme),
+      frow('Дата начала', dStart), frow('Дата окончания', dEnd),
+      frow('Дата первого платежа', firstPay),
+      frow('Кошелёк получения', wallet),
+      frow('Комментарий', comment),
+    ].filter(Boolean);
+    const save = el('button', { class: 'btn-primary', onclick: async () => {
+      if (!creditor.value.trim()) return toast('Укажите кредитора', true);
+      const payload = {
+        obligation_type: isBank ? 'bank_loan' : typeSel.value,
+        creditor_name: creditor.value, agreement_number: agree.value, agreement_date: agreeDate.value || null,
+        currency: curSel.value, principal_limit: moneyVal(limit), principal_received: moneyVal(received),
+        annual_rate: moneyVal(rate), repayment_scheme: scheme.value, date_start: dStart.value || null,
+        date_end: dEnd.value || null, first_payment_date: firstPay.value || null, wallet_id: wallet.value || '', comment: comment.value,
+      };
+      try {
+        if (loan.id) { await post('/obligations/loans/' + loan.id, payload); toast('Сохранено'); oblLoanCard(loan.id, group); }
+        else { const r = await post('/obligations/loans', payload); toast('Создано'); closeModal(); renderObligations(); if (r.id) oblLoanCard(r.id, group); }
+      } catch (e) { toast(e.message, true); }
+    } }, loan.id ? 'Сохранить' : 'Создать');
+    modal((loan.id ? 'Изменить' : (isBank ? 'Новый кредит' : 'Новый заём')), el('div', { class: 'cashf' }, rows), [save]);
+  }
+
+  async function oblLoanCard(id, group) {
+    let d; try { d = await api('/obligations/loans/' + id); } catch (e) { return toast(e.message, true); }
+    const o = d.loan;
+    const kpi = (l, v) => el('div', { class: 'cash-flow-card', style: 'padding:9px 12px' }, [el('div', { class: 'cash-flow-card-l' }, l), el('div', { class: 'cash-flow-card-v', style: 'font-size:16px' }, v)]);
+    const head = el('div', { class: 'cash-flow-cards cash-flow-cards-4', style: 'margin-bottom:12px' }, [
+      kpi('Получено', curFmt(o.principal_received, o.currency) + ' ' + o.currency),
+      kpi('Ставка', (Number(o.annual_rate) || 0) + '% годовых'),
+      kpi('Схема', (SCHEMES.find((s) => s[0] === o.repayment_scheme) || [, '—'])[1]),
+      kpi('Статус', LOAN_STATUS[o.status] || o.status),
+    ]);
+    // Генерация графика (админ).
+    const nInp = finp('', { type: 'number', min: '1', placeholder: 'число платежей', style: 'width:120px' });
+    const fpInp = finp(o.first_payment_date ? String(o.first_payment_date).slice(0, 10) : '', { type: 'date' });
+    const genBtn = el('button', { class: 'btn-ghost cash-add', onclick: async () => {
+      try { const r = await post('/obligations/loans/' + id + '/generate-schedule', { installments: nInp.value, first_payment_date: fpInp.value }); toast('График построен (v' + r.version + ')'); oblLoanCard(id, group); }
+      catch (e) { toast(e.message, true); }
+    } }, '📅 Построить график');
+    const genRow = isAdmin() ? el('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0' }, [
+      el('span', { class: 'muted' }, 'Платежей:'), nInp, el('span', { class: 'muted' }, 'с даты:'), fpInp, genBtn,
+    ]) : null;
+    // Таблица графика.
+    let schedBlock;
+    if (d.schedule.length) {
+      const cols = ['№', 'Дата', 'Остаток', 'Тело', 'Проценты', 'Комиссии', 'Всего', 'Статус'];
+      const thead = el('thead', {}, el('tr', {}, cols.map((h, i) => el('th', { style: (i >= 2 && i <= 6 ? 'text-align:right;' : '') + 'padding:6px 9px;background:#f2f5f1;white-space:nowrap' }, h))));
+      const tot = { p: 0, i: 0, f: 0, t: 0 };
+      const tb = el('tbody', {}, d.schedule.map((s) => {
+        tot.p += Number(s.principal_due) || 0; tot.i += Number(s.interest_due) || 0; tot.f += Number(s.fee_due) || 0; tot.t += Number(s.total_due) || 0;
+        return el('tr', {}, [
+          el('td', { style: 'padding:5px 9px' }, String(s.installment_no)),
+          el('td', { style: 'padding:5px 9px' }, ruDate(s.due_date)),
+          el('td', { style: 'text-align:right;padding:5px 9px;color:var(--muted)' }, curFmt(s.opening_principal, o.currency)),
+          el('td', { style: 'text-align:right;padding:5px 9px' }, curFmt(s.principal_due, o.currency)),
+          el('td', { style: 'text-align:right;padding:5px 9px' }, curFmt(s.interest_due, o.currency)),
+          el('td', { style: 'text-align:right;padding:5px 9px' }, curFmt(s.fee_due, o.currency)),
+          el('td', { style: 'text-align:right;padding:5px 9px;font-weight:700' }, curFmt(s.total_due, o.currency)),
+          el('td', { style: 'padding:5px 9px;color:var(--muted)' }, s.status === 'planned' ? 'Запланировано' : s.status),
+        ]);
+      }));
+      const foot = el('tr', { style: 'background:#f2f5f1;font-weight:800' }, [
+        el('td', { colspan: 3, style: 'padding:6px 9px' }, 'ИТОГО'),
+        el('td', { style: 'text-align:right;padding:6px 9px' }, curFmt(tot.p, o.currency)),
+        el('td', { style: 'text-align:right;padding:6px 9px' }, curFmt(tot.i, o.currency)),
+        el('td', { style: 'text-align:right;padding:6px 9px' }, curFmt(tot.f, o.currency)),
+        el('td', { style: 'text-align:right;padding:6px 9px' }, curFmt(tot.t, o.currency)),
+        el('td', {}, ''),
+      ]);
+      schedBlock = el('div', { style: 'overflow-x:auto;border:1px solid var(--line);border-radius:10px;margin-top:8px' }, el('table', { style: 'border-collapse:collapse;width:100%;font-size:12.5px' }, [thead, tb, el('tfoot', {}, foot)]));
+    } else {
+      schedBlock = el('div', { class: 'cash-empty' }, 'График ещё не построен.' + (isAdmin() ? ' Задайте число платежей и дату — «Построить график».' : ''));
+    }
+    const body = el('div', {}, [
+      head,
+      el('p', { class: 'muted' }, [o.agreement_number ? '№ ' + o.agreement_number : '', o.wallet_name ? 'кошелёк: ' + o.wallet_name : '', o.comment].filter(Boolean).join(' · ')),
+      el('h3', { class: 'cash-h2', style: 'font-size:16px;margin:6px 0' }, 'График платежей' + (d.version ? ' (v' + d.version + ')' : '')),
+      genRow, schedBlock,
+    ]);
+    const acts = [];
+    if (isAdmin()) {
+      acts.push(el('button', { class: 'cashf-del', onclick: async () => { if (!confirm('Удалить/отменить «' + o.creditor_name + '»?')) return; try { await post('/obligations/loans/' + id + '/delete', {}); toast('Удалено'); closeModal(); renderObligations(); } catch (e) { toast(e.message, true); } } }, 'Удалить'));
+      acts.push(el('button', { class: 'btn-ghost', onclick: () => oblLoanForm(o, group) }, 'Изменить'));
+    }
+    acts.push(el('button', { class: 'btn-primary', onclick: closeModal }, 'Закрыть'));
+    modal('🏦 ' + o.creditor_name, body, acts);
   }
   async function oblSummary(box) {
     let d; try { d = await api('/obligations/summary'); } catch (e) { box.innerHTML = ''; box.appendChild(el('div', { class: 'cash-empty' }, 'Ошибка: ' + e.message)); return; }

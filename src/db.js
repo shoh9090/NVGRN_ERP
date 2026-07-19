@@ -308,6 +308,88 @@ async function migrate() {
   await pool.query("ALTER TABLE ref_counterparties ADD COLUMN IF NOT EXISTS def_defer_days INTEGER").catch(()=>{});
   // Привязка оплаты поставщику к конкретной заявке (иначе аванс). Для взаиморасчётов по заявкам.
   await pool.query("ALTER TABLE supplier_payments ADD COLUMN IF NOT EXISTS order_id INTEGER").catch(()=>{});
+  // Связь оплаты поставщику с денежной операцией Кассы (Обязательства, Этап 3) — против двойного учёта.
+  await pool.query("ALTER TABLE supplier_payments ADD COLUMN IF NOT EXISTS cash_transaction_id INTEGER").catch(()=>{});
+
+  // ===== Обязательства: банковские кредиты и займы (Касса → Обязательства, Этап 2) =====
+  await pool.query(`CREATE TABLE IF NOT EXISTS finance_obligations (
+    id SERIAL PRIMARY KEY,
+    obligation_type TEXT NOT NULL DEFAULT 'bank_loan',   -- bank_loan | concept_loan | investment_loan | founder_loan | other_loan
+    creditor_name TEXT NOT NULL,
+    counterparty_id INTEGER,
+    agreement_number TEXT DEFAULT '',
+    agreement_date DATE,
+    date_start DATE,
+    date_end DATE,
+    currency TEXT NOT NULL DEFAULT 'UZS',
+    principal_limit NUMERIC DEFAULT 0,
+    principal_received NUMERIC DEFAULT 0,
+    annual_rate NUMERIC DEFAULT 0,
+    repayment_scheme TEXT DEFAULT 'annuity',             -- annuity | differentiated | equal_principal | bullet | interest_only | custom
+    first_payment_date DATE,
+    payment_day INTEGER,
+    grace_period_months INTEGER DEFAULT 0,
+    wallet_id INTEGER,
+    status TEXT NOT NULL DEFAULT 'draft',                -- draft | active | closed | overdue | restructured | cancelled
+    comment TEXT DEFAULT '',
+    created_by INTEGER, created_at TIMESTAMPTZ DEFAULT now(),
+    updated_by INTEGER, updated_at TIMESTAMPTZ DEFAULT now()
+  )`).catch((e)=>console.error('fin_obl:', e.message));
+  await pool.query(`CREATE TABLE IF NOT EXISTS finance_obligation_tranches (
+    id SERIAL PRIMARY KEY,
+    obligation_id INTEGER REFERENCES finance_obligations(id) ON DELETE CASCADE,
+    tranche_no INTEGER DEFAULT 1,
+    received_date DATE,
+    amount NUMERIC DEFAULT 0,
+    currency TEXT DEFAULT 'UZS',
+    due_date DATE,
+    cash_transaction_id INTEGER,
+    status TEXT DEFAULT 'received',
+    created_at TIMESTAMPTZ DEFAULT now()
+  )`).catch(()=>{});
+  await pool.query(`CREATE TABLE IF NOT EXISTS finance_obligation_schedule (
+    id SERIAL PRIMARY KEY,
+    obligation_id INTEGER REFERENCES finance_obligations(id) ON DELETE CASCADE,
+    tranche_id INTEGER,
+    version_no INTEGER DEFAULT 1,
+    installment_no INTEGER,
+    due_date DATE,
+    opening_principal NUMERIC DEFAULT 0,
+    principal_due NUMERIC DEFAULT 0,
+    interest_due NUMERIC DEFAULT 0,
+    fee_due NUMERIC DEFAULT 0,
+    total_due NUMERIC DEFAULT 0,
+    status TEXT DEFAULT 'planned',                       -- planned | soon | today | partial | paid | overdue | rescheduled | cancelled
+    rescheduled_from_id INTEGER,
+    created_at TIMESTAMPTZ DEFAULT now()
+  )`).catch(()=>{});
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_fos_obl ON finance_obligation_schedule(obligation_id, version_no)`).catch(()=>{});
+  await pool.query(`CREATE TABLE IF NOT EXISTS finance_obligation_payment_links (
+    id SERIAL PRIMARY KEY,
+    schedule_id INTEGER,
+    obligation_id INTEGER,
+    cash_transaction_id INTEGER,
+    payment_date DATE,
+    principal_paid NUMERIC DEFAULT 0,
+    interest_paid NUMERIC DEFAULT 0,
+    fee_paid NUMERIC DEFAULT 0,
+    created_by INTEGER, created_at TIMESTAMPTZ DEFAULT now(),
+    reversed_at TIMESTAMPTZ, reversed_by INTEGER, reversal_reason TEXT
+  )`).catch(()=>{});
+  await pool.query(`CREATE TABLE IF NOT EXISTS finance_obligation_schedule_imports (
+    id SERIAL PRIMARY KEY,
+    obligation_id INTEGER,
+    version_no INTEGER,
+    source_file_id INTEGER,
+    source_filename TEXT,
+    source_file_hash TEXT,
+    source_sheet TEXT,
+    column_mapping_json JSONB,
+    validation_summary_json JSONB,
+    status TEXT DEFAULT 'preview',                       -- preview | confirmed | rejected | superseded
+    imported_by INTEGER, imported_at TIMESTAMPTZ DEFAULT now(),
+    confirmed_by INTEGER, confirmed_at TIMESTAMPTZ
+  )`).catch(()=>{});
   // Подотчёт закупщика (общий котёл): in = выдано под отчёт, out = потрачено наличными по заявкам.
   // Касса остаётся отдельным контуром — авто-проводок в Кассу нет (по решению).
   await pool.query(`CREATE TABLE IF NOT EXISTS purchaser_accountable (
