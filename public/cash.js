@@ -447,7 +447,10 @@
     const title = group === 'bank' ? 'Банковские кредиты' : 'Понятийные и инвестиционные займы';
     box.appendChild(el('div', { style: 'display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px' }, [
       el('div', { class: 'cash-sub' }, group === 'bank' ? 'Кредиты банков: сумма, ставка, график погашения.' : 'Займы учредителей/инвесторов, беспроцентные и понятийные соглашения, транши.'),
-      isAdmin() ? el('button', { class: 'btn-ghost cash-add', onclick: () => oblLoanForm(null, group) }, group === 'bank' ? '+ Кредит' : '+ Заём') : null,
+      el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' }, [
+        isAdmin() ? el('button', { class: 'btn-ghost cash-add', onclick: () => oblImportReturn(group) }, '📥 Импорт графика возврата') : null,
+        isAdmin() ? el('button', { class: 'btn-ghost cash-add', onclick: () => oblLoanForm(null, group) }, group === 'bank' ? '+ Кредит' : '+ Заём') : null,
+      ]),
     ]));
     let d; try { d = await api('/obligations/loans?group=' + group); } catch (e) { box.appendChild(el('div', { class: 'cash-empty' }, 'Ошибка: ' + e.message)); return; }
     if (!d.items.length) { box.appendChild(el('div', { class: 'cash-empty' }, 'Пока нет записей. ' + (isAdmin() ? 'Нажмите «+».' : ''))); return; }
@@ -513,6 +516,63 @@
       } catch (e) { toast(e.message, true); }
     } }, loan.id ? 'Сохранить' : 'Создать');
     modal((loan.id ? 'Изменить' : (isBank ? 'Новый кредит' : 'Новый заём')), el('div', { class: 'cashf' }, rows), [save]);
+  }
+
+  // Импорт «графика возврата» (Excel: дата выдачи, сумма, дата возврата) → заём с траншами и графиком.
+  function oblImportReturn(group) {
+    const file = el('input', { type: 'file', accept: '.xlsx,.xls,.csv', class: 'cashf-inp' });
+    const out = el('div', { style: 'margin-top:10px' });
+    let PREV = null;
+    const upBtn = el('button', { class: 'btn-primary', onclick: async () => {
+      if (!file.files[0]) return toast('Выберите файл', true);
+      out.innerHTML = '<div class="cash-loading">Читаю файл…</div>';
+      const fd = new FormData(); fd.append('file', file.files[0]);
+      try {
+        const r = await fetch('/cash/api/obligations/import-return-schedule/preview', { method: 'POST', body: fd });
+        const d = await r.json(); if (!r.ok) throw new Error(d.error || 'Ошибка');
+        PREV = d; renderPrev(d);
+      } catch (e) { out.innerHTML = ''; out.appendChild(el('div', { class: 'cash-empty' }, e.message)); }
+    } }, 'Прочитать');
+    const creditor = finp('', { placeholder: 'Напр. Хикматов К' });
+    const curSel = fsel([{ v: 'USD', t: 'доллары (USD)' }, { v: 'UZS', t: 'сум (UZS)' }], 'USD');
+    const typeSel = fsel(LOAN_TYPES.map(([v, t]) => ({ v, t })), 'concept_loan');
+    const totalInp = fmoney('', { placeholder: 'общий долг (если больше суммы графика)' });
+    function renderPrev(d) {
+      out.innerHTML = '';
+      const s = d.summary;
+      totalInp.value = totalInp.value || String(s.total);
+      out.appendChild(el('div', { class: 'cash-note-info' }, `Распознано траншей: ${s.count} на сумму ${money(s.total)}. График по дате возврата: ${s.count - s.no_due} строк.` + (s.skipped ? ` Пропущено строк-итогов/без даты: ${s.skipped}.` : '') + (s.no_due ? ` Без даты возврата: ${s.no_due}.` : '')));
+      out.appendChild(el('div', { class: 'cashf', style: 'margin:10px 0' }, [
+        frow('Кредитор', creditor), frow('Валюта', curSel), frow('Тип', typeSel),
+        frow('Общий долг', totalInp),
+        el('div', { class: 'muted', style: 'font-size:12px' }, 'Сумма графика = ' + money(s.total) + '. Если общий долг больше — разница будет «вне графика».'),
+      ]));
+      const thead = el('thead', {}, el('tr', {}, ['Дата выдачи', 'Сумма', 'Дата возврата', 'Комментарий'].map((h) => el('th', { style: 'padding:6px 9px;background:#f2f5f1' }, h))));
+      const tb = el('tbody', {}, d.rows.slice(0, 40).map((r) => el('tr', {}, [
+        el('td', { style: 'padding:5px 9px' }, ruDate(r.received_date)),
+        el('td', { style: 'padding:5px 9px;text-align:right' }, money(r.amount)),
+        el('td', { style: 'padding:5px 9px' }, r.due_date ? ruDate(r.due_date) : '—'),
+        el('td', { style: 'padding:5px 9px;color:var(--muted)' }, r.comment || ''),
+      ])));
+      out.appendChild(el('div', { style: 'overflow:auto;max-height:34vh;border:1px solid var(--line);border-radius:10px' }, el('table', { style: 'border-collapse:collapse;width:100%;font-size:12.5px' }, [thead, tb])));
+      if (d.rows.length < d.summary.count) out.appendChild(el('div', { class: 'muted', style: 'font-size:12px;margin-top:4px' }, '…показаны первые 40 из ' + d.summary.count));
+    }
+    const confirm = el('button', { class: 'btn-primary', onclick: async () => {
+      if (!PREV) return toast('Сначала прочитайте файл', true);
+      if (!creditor.value.trim()) return toast('Укажите кредитора', true);
+      try {
+        const r = await post('/obligations/import-return-schedule/confirm', {
+          creditor_name: creditor.value, currency: curSel.value, obligation_type: typeSel.value,
+          principal_received: moneyVal(totalInp), rows: PREV.full,
+        });
+        toast(`Создан заём: траншей ${r.tranches}, график ${r.schedule}`); closeModal(); renderObligations(); if (r.id) oblLoanCard(r.id, group);
+      } catch (e) { toast(e.message, true); }
+    } }, 'Создать заём и импортировать');
+    const body = el('div', { class: 'cashf' }, [
+      el('div', { class: 'cash-sub' }, 'Файл: дата выдачи · сумма · дата возврата · комментарий. Каждый транш возвращается в свою дату (беспроцентный).'),
+      frow('Файл', file), el('div', {}, upBtn), out,
+    ]);
+    modal('📥 Импорт графика возврата', body, [confirm]);
   }
 
   function oblPayForm(s, loan, group) {

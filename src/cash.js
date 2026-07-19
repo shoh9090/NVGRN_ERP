@@ -2165,4 +2165,80 @@ router.post('/api/obligations/loans/:id(\\d+)/delete', async (req, res) => {
   res.json({ ok: true });
 });
 
+// ---- Импорт «графика возврата» займа (транши: дата выдачи, сумма, дата возврата) ----
+function excelDate(n) {
+  if (typeof n === 'number' && n > 1) { const d = new Date(Date.UTC(1899, 11, 30) + Math.round(n) * 86400000); return d.toISOString().slice(0, 10); }
+  const s = String(n || '').trim(); const m = s.match(/(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{4})/);
+  if (m) return `${m[3]}-${String(m[2]).padStart(2, '0')}-${String(m[1]).padStart(2, '0')}`;
+  const m2 = s.match(/^(\d{4})-(\d{2})-(\d{2})/); return m2 ? m2[0] : null;
+}
+function parseReturnSchedule(buf) {
+  const wb = XLSX.read(buf, { type: 'buffer' });
+  const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, blankrows: false, defval: '' });
+  const out = []; let skipped = 0;
+  for (const r of rows) {
+    const d = excelDate(r[0]); const amt = Number(r[1]); const due = excelDate(r[2]);
+    if (!d || !(amt > 0)) { if (Number(r[1]) > 0 && !d) skipped++; continue; } // строки-итоги/без даты — пропускаем
+    out.push({ received_date: d, amount: amt, due_date: due, comment: String(r[3] || '').trim() });
+  }
+  return { rows: out, skipped };
+}
+
+router.post('/api/obligations/import-return-schedule/preview', upload.single('file'), async (req, res) => {
+  if (!(req.user && req.user.isAdmin)) return res.status(403).json({ error: 'Только администратор/финансы' });
+  try {
+    if (!req.file) return res.status(400).json({ error: 'Файл не выбран' });
+    const { rows, skipped } = parseReturnSchedule(req.file.buffer);
+    if (!rows.length) return res.status(400).json({ error: 'Не нашёл строк (дата выдачи + сумма + дата возврата). Проверьте файл.' });
+    const total = rows.reduce((a, r) => a + r.amount, 0);
+    const dues = rows.map((r) => r.due_date).filter(Boolean).sort();
+    res.json({
+      rows: rows.slice(0, 200), full: rows,
+      summary: { count: rows.length, total, skipped, first_due: dues[0] || null, last_due: dues[dues.length - 1] || null, no_due: rows.filter((r) => !r.due_date).length },
+    });
+  } catch (e) { res.status(400).json({ error: 'Не удалось прочитать файл: ' + e.message }); }
+});
+
+router.post('/api/obligations/import-return-schedule/confirm', J, async (req, res) => {
+  if (!(req.user && req.user.isAdmin)) return res.status(403).json({ error: 'Только администратор/финансы' });
+  const b = req.body || {};
+  const rows = Array.isArray(b.rows) ? b.rows.filter((r) => r.received_date && Number(r.amount) > 0) : [];
+  if (!rows.length) return res.status(400).json({ error: 'Нет строк для импорта' });
+  const type = OBL_TYPES.includes(b.obligation_type) ? b.obligation_type : 'concept_loan';
+  const scheduledSum = rows.reduce((a, r) => a + Number(r.amount), 0);
+  const totalPrincipal = numOrNull(b.principal_received);
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    const lo = await client.query(
+      `INSERT INTO finance_obligations (obligation_type, creditor_name, currency, principal_limit, principal_received, annual_rate, repayment_scheme, status, comment, created_by)
+       VALUES ($1,$2,$3,$4,$5,0,'custom','active',$6,$7) RETURNING id`,
+      [type, (b.creditor_name || 'Кредитор').trim(), b.currency === 'USD' ? 'USD' : 'UZS', scheduledSum,
+        totalPrincipal != null ? totalPrincipal : scheduledSum, b.comment || 'Импорт графика возврата', req.user.id]);
+    const oid = lo.rows[0].id;
+    // Транши + график (одна строка на транш по дате возврата; беспроцентный).
+    const withDue = rows.filter((r) => r.due_date).sort((a, b2) => (a.due_date < b2.due_date ? -1 : 1));
+    let no = 0;
+    for (const r of rows) {
+      no += 1;
+      await client.query(
+        `INSERT INTO finance_obligation_tranches (obligation_id, tranche_no, received_date, amount, currency, due_date)
+         VALUES ($1,$2,$3,$4,$5,$6)`,
+        [oid, no, r.received_date, Number(r.amount), b.currency === 'USD' ? 'USD' : 'UZS', r.due_date || null]);
+    }
+    let inst = 0;
+    for (const r of withDue) {
+      inst += 1;
+      await client.query(
+        `INSERT INTO finance_obligation_schedule (obligation_id, version_no, installment_no, due_date, opening_principal, principal_due, interest_due, fee_due, total_due, status)
+         VALUES ($1,1,$2,$3,0,$4,0,0,$4,'planned')`,
+        [oid, inst, r.due_date, Number(r.amount)]);
+    }
+    await client.query('COMMIT');
+    await db.log(req.user.id, 'obl_import_return', `${b.creditor_name}: траншей ${rows.length}, график ${withDue.length}`);
+    res.json({ ok: true, id: oid, tranches: rows.length, schedule: withDue.length });
+  } catch (e) { await client.query('ROLLBACK').catch(() => {}); res.status(400).json({ error: e.message }); }
+  finally { client.release(); }
+});
+
 module.exports = router;
