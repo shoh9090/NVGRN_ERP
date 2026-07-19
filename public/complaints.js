@@ -58,10 +58,34 @@
   let TAB = 'dash';
   const listState = { from: '', to: '', status: '', type: '', link: '', severity: '', q: '', inn: '', point: '' };
   let dashMonth = null;
-  let dashInn = '';   // выбранная сеть (ИНН/название)
+  let dashInn = '';   // выбранный контрагент (ИНН/название)
   let dashPoint = ''; // выбранная точка
-  let NETS = null;    // кэш справочника сетей/точек
+  let NETS = null;    // кэш справочника контрагентов/точек
   async function loadNets() { if (!NETS) { try { NETS = await api('/networks'); } catch (e) { NETS = { networks: [], points: [] }; } } return NETS; }
+
+  // Выпадашка с поиском по первым буквам. items: [{value,label}]; onPick(value).
+  function searchSelect(items, currentVal, placeholder, onPick) {
+    const cur = items.find((i) => String(i.value) === String(currentVal));
+    const inp = el('input', { class: 'cmp-f cmp-ss-inp', placeholder, value: cur ? cur.label : '', autocomplete: 'off' });
+    const panel = el('div', { class: 'cmp-ss-panel', style: 'display:none' });
+    const wrap = el('div', { class: 'cmp-ss' }, [inp, panel]);
+    const renderOpts = (q) => {
+      panel.innerHTML = '';
+      const qq = (q || '').trim().toLowerCase();
+      const list = [{ value: '', label: placeholder }].concat(items).filter((i) => !qq || i.label.toLowerCase().includes(qq));
+      if (!list.length) { panel.appendChild(el('div', { class: 'cmp-ss-empty' }, 'Ничего не найдено')); return; }
+      list.slice(0, 60).forEach((i) => panel.appendChild(el('div', {
+        class: 'cmp-ss-opt' + (String(i.value) === String(currentVal) ? ' on' : ''),
+        onmousedown: (e) => { e.preventDefault(); inp.value = i.value ? i.label : ''; panel.style.display = 'none'; onPick(i.value); },
+      }, i.label)));
+    };
+    inp.addEventListener('focus', () => { inp.select(); renderOpts(''); panel.style.display = 'block'; });
+    inp.addEventListener('input', () => { renderOpts(inp.value); panel.style.display = 'block'; });
+    inp.addEventListener('blur', () => setTimeout(() => { panel.style.display = 'none'; }, 150));
+    return wrap;
+  }
+  const netItems = () => ((NETS && NETS.networks) || []).map((n) => ({ value: n.inn, label: (n.name || n.inn) + ' (' + n.n + ')' }));
+  const pointItems = (inn) => ((NETS && NETS.points) || []).filter((p) => !inn || String(p.inn) === String(inn)).map((p) => ({ value: p.point, label: p.point + ' (' + p.n + ')' }));
 
   // ---------- Каркас с вкладками ----------
   function shell() {
@@ -91,20 +115,13 @@
 
     const monthSel = el('select', { class: 'cmp-f', onchange: (e) => { dashMonth = e.target.value; renderDashboard(); } },
       s.monthsAvail.map((m) => el('option', { value: m, selected: m === s.month || null }, monthLabelRu(m))));
-    // Фильтр по сети (ИНН) → точке.
-    const netSel = el('select', { class: 'cmp-f', onchange: (e) => { dashInn = e.target.value; dashPoint = ''; renderDashboard(); } }, [
-      el('option', { value: '' }, 'Все сети'),
-      ...((NETS.networks || []).map((n) => el('option', { value: n.inn, selected: n.inn === dashInn || null }, (n.name || n.inn) + ' (' + n.n + ')'))),
-    ]);
-    const netPoints = (NETS.points || []).filter((p) => !dashInn || String(p.inn) === String(dashInn));
-    const pointSel = el('select', { class: 'cmp-f', onchange: (e) => { dashPoint = e.target.value; renderDashboard(); } }, [
-      el('option', { value: '' }, dashInn ? 'Все точки сети' : 'Все точки'),
-      ...netPoints.map((p) => el('option', { value: p.point, selected: p.point === dashPoint || null }, p.point + ' (' + p.n + ')')),
-    ]);
+    // Фильтр по контрагенту (ИНН) → точке — с поиском по первым буквам.
+    const netSel = searchSelect(netItems(), dashInn, 'Все контрагенты', (v) => { dashInn = v; dashPoint = ''; renderDashboard(); });
+    const pointSel = searchSelect(pointItems(dashInn), dashPoint, dashInn ? 'Все точки контрагента' : 'Все точки', (v) => { dashPoint = v; renderDashboard(); });
     c.appendChild(el('div', { class: 'cmp-dash-top' }, [
-      el('div', {}, [el('div', { class: 'cmp-eyebrow' }, 'Контроль качества'), el('h2', { class: 'cmp-h2' }, 'Претензии — где течёт'), el('div', { class: 'cmp-dash-hint' }, 'Кликните по цифре, типу, звену, сети или ячейке — покажу сами претензии')]),
+      el('div', {}, [el('div', { class: 'cmp-eyebrow' }, 'Контроль качества'), el('h2', { class: 'cmp-h2' }, 'Претензии — где течёт'), el('div', { class: 'cmp-dash-hint' }, 'Кликните по цифре, типу, звену, контрагенту или ячейке — покажу сами претензии')]),
       el('div', { class: 'cmp-month', style: 'flex-wrap:wrap;gap:8px' }, [
-        el('span', {}, 'Сеть:'), netSel, pointSel,
+        el('span', {}, 'Контрагент:'), netSel, pointSel,
         el('span', {}, 'Месяц:'), monthSel,
         (dashInn || dashPoint) ? el('button', { class: 'cmp-f', style: 'cursor:pointer', onclick: () => { dashInn = ''; dashPoint = ''; renderDashboard(); } }, 'Сбросить') : null,
         el('button', { class: 'cmp-f', style: 'cursor:pointer', title: 'Выгрузить отфильтрованные претензии в Excel', onclick: () => { const ep = new URLSearchParams(monthRange(s.month)); if (dashInn) ep.set('inn', dashInn); if (dashPoint) ep.set('point', dashPoint); window.location = '/complaints/api/export.xlsx?' + ep.toString(); } }, '📥 Excel'),
@@ -135,11 +152,11 @@
     row2.appendChild(panel('Топ типов жалоб', '«Неположили» — это комплектация, не качество.', typeBars(s.byType)));
     c.appendChild(row2);
 
-    // Разбивка по сетям и точкам.
+    // Разбивка по контрагентам и точкам.
     const row3 = el('div', { class: 'cmp-grid cmp-grid-2' });
-    row3.appendChild(panel('По сетям', 'Сколько претензий от какой сети (по ИНН из SalesDoctor).',
+    row3.appendChild(panel('По контрагентам', 'Сколько претензий от какого контрагента (по ИНН из SalesDoctor).',
       namedDonut(s.byNetwork, (z) => { dashInn = z.code; dashPoint = ''; renderDashboard(); })));
-    row3.appendChild(panel(dashInn ? 'По точкам сети' : 'По точкам', 'Из какой торговой точки пришла претензия.',
+    row3.appendChild(panel(dashInn ? 'По точкам контрагента' : 'По точкам', 'Из какой торговой точки пришла претензия.',
       namedBars(s.byPoint, (z) => { dashPoint = z.name; renderDashboard(); })));
     c.appendChild(row3);
 
@@ -367,12 +384,9 @@
     const opt = (arr, val, ph) => [el('option', { value: '' }, ph), ...arr.map((x) => el('option', { value: x.code, selected: val === x.code || null }, x.label_ru))];
     const sel = (key, arr, ph) => el('select', { class: 'cmp-f', onchange: (e) => { listState[key] = e.target.value; loadList(); } }, opt(arr, listState[key], ph));
     const dateInp = (key) => el('input', { type: 'date', class: 'cmp-f', value: listState[key], onchange: (e) => { listState[key] = e.target.value; loadList(); } });
-    // Фильтр по сети (ИНН) → точке.
-    const netOpts = [el('option', { value: '' }, 'Все сети'), ...(((NETS && NETS.networks) || []).map((n) => el('option', { value: n.inn, selected: listState.inn === n.inn || null }, (n.name || n.inn) + ' (' + n.n + ')')))];
-    const netSel = el('select', { class: 'cmp-f', onchange: (e) => { listState.inn = e.target.value; listState.point = ''; loadList(); } }, netOpts);
-    const pts = ((NETS && NETS.points) || []).filter((p) => !listState.inn || String(p.inn) === String(listState.inn));
-    const ptOpts = [el('option', { value: '' }, listState.inn ? 'Все точки сети' : 'Все точки'), ...pts.map((p) => el('option', { value: p.point, selected: listState.point === p.point || null }, p.point + ' (' + p.n + ')'))];
-    const ptSel = el('select', { class: 'cmp-f', onchange: (e) => { listState.point = e.target.value; loadList(); } }, ptOpts);
+    // Фильтр по контрагенту (ИНН) → точке — с поиском по первым буквам.
+    const netSel = searchSelect(netItems(), listState.inn, 'Все контрагенты', (v) => { listState.inn = v; listState.point = ''; loadList(); });
+    const ptSel = searchSelect(pointItems(listState.inn), listState.point, listState.inn ? 'Все точки контрагента' : 'Все точки', (v) => { listState.point = v; loadList(); });
     return el('div', { class: 'cmp-filters' }, [
       el('div', { class: 'cmp-f-grp' }, [el('label', {}, 'С'), dateInp('from'), el('label', {}, 'по'), dateInp('to')]),
       netSel, ptSel,

@@ -4,6 +4,15 @@
 .cmp-filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
 .cmp-f { padding: 7px 9px; border: 1px solid #d8dcd6; border-radius: 8px; font-size: 13px; background: #fff; }
 .cmp-f-grp { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #5a665c; }
+
+/* Выпадашка с поиском по первым буквам */
+.cmp-ss { position: relative; display: inline-block; }
+.cmp-ss-inp { min-width: 190px; }
+.cmp-ss-panel { position: absolute; top: calc(100% + 3px); left: 0; z-index: 40; background: #fff; border: 1px solid #d8dcd6; border-radius: 10px; box-shadow: 0 10px 30px rgba(20,36,27,.16); padding: 5px; min-width: 240px; max-width: 340px; max-height: 280px; overflow: auto; }
+.cmp-ss-opt { padding: 7px 10px; border-radius: 7px; cursor: pointer; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cmp-ss-opt:hover { background: #eef4e9; }
+.cmp-ss-opt.on { background: #e3efd7; font-weight: 700; }
+.cmp-ss-empty { padding: 8px 10px; color: #7c8579; font-size: 13px; }
 .cmp-search { min-width: 220px; flex: 1; }
 .cmp-f-actions { display: flex; gap: 8px; margin-left: auto; }
 .cmp-btn { white-space: nowrap; }
