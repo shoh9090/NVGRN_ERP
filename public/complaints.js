@@ -56,8 +56,12 @@
   function monthLabelRu(ym) { const n = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек']; const [y, m] = String(ym).split('-').map(Number); return n[(m || 1) - 1] + ' ' + y; }
 
   let TAB = 'dash';
-  const listState = { from: '', to: '', status: '', type: '', link: '', severity: '', q: '' };
+  const listState = { from: '', to: '', status: '', type: '', link: '', severity: '', q: '', inn: '', point: '' };
   let dashMonth = null;
+  let dashInn = '';   // выбранная сеть (ИНН/название)
+  let dashPoint = ''; // выбранная точка
+  let NETS = null;    // кэш справочника сетей/точек
+  async function loadNets() { if (!NETS) { try { NETS = await api('/networks'); } catch (e) { NETS = { networks: [], points: [] }; } } return NETS; }
 
   // ---------- Каркас с вкладками ----------
   function shell() {
@@ -74,17 +78,37 @@
   async function renderDashboard() {
     const c = $('#cmp-content');
     c.innerHTML = '<div class="cmp-loading">Загрузка…</div>';
+    await loadNets();
+    const qp = new URLSearchParams();
+    if (dashMonth) qp.set('month', dashMonth);
+    if (dashInn) qp.set('inn', dashInn);
+    if (dashPoint) qp.set('point', dashPoint);
     let s;
-    try { s = await api('/stats' + (dashMonth ? '?month=' + dashMonth : '')); }
+    try { s = await api('/stats' + (qp.toString() ? '?' + qp.toString() : '')); }
     catch (e) { c.innerHTML = ''; c.appendChild(el('div', { class: 'cmp-empty' }, 'Не удалось загрузить дашборд: ' + e.message)); return; }
     dashMonth = s.month;
     c.innerHTML = '';
 
     const monthSel = el('select', { class: 'cmp-f', onchange: (e) => { dashMonth = e.target.value; renderDashboard(); } },
       s.monthsAvail.map((m) => el('option', { value: m, selected: m === s.month || null }, monthLabelRu(m))));
+    // Фильтр по сети (ИНН) → точке.
+    const netSel = el('select', { class: 'cmp-f', onchange: (e) => { dashInn = e.target.value; dashPoint = ''; renderDashboard(); } }, [
+      el('option', { value: '' }, 'Все сети'),
+      ...((NETS.networks || []).map((n) => el('option', { value: n.inn, selected: n.inn === dashInn || null }, (n.name || n.inn) + ' (' + n.n + ')'))),
+    ]);
+    const netPoints = (NETS.points || []).filter((p) => !dashInn || String(p.inn) === String(dashInn));
+    const pointSel = el('select', { class: 'cmp-f', onchange: (e) => { dashPoint = e.target.value; renderDashboard(); } }, [
+      el('option', { value: '' }, dashInn ? 'Все точки сети' : 'Все точки'),
+      ...netPoints.map((p) => el('option', { value: p.point, selected: p.point === dashPoint || null }, p.point + ' (' + p.n + ')')),
+    ]);
     c.appendChild(el('div', { class: 'cmp-dash-top' }, [
-      el('div', {}, [el('div', { class: 'cmp-eyebrow' }, 'Контроль качества'), el('h2', { class: 'cmp-h2' }, 'Претензии — где течёт'), el('div', { class: 'cmp-dash-hint' }, 'Кликните по цифре, типу, звену или ячейке — покажу сами претензии')]),
-      el('div', { class: 'cmp-month' }, [el('span', {}, 'Месяц:'), monthSel]),
+      el('div', {}, [el('div', { class: 'cmp-eyebrow' }, 'Контроль качества'), el('h2', { class: 'cmp-h2' }, 'Претензии — где течёт'), el('div', { class: 'cmp-dash-hint' }, 'Кликните по цифре, типу, звену, сети или ячейке — покажу сами претензии')]),
+      el('div', { class: 'cmp-month', style: 'flex-wrap:wrap;gap:8px' }, [
+        el('span', {}, 'Сеть:'), netSel, pointSel,
+        el('span', {}, 'Месяц:'), monthSel,
+        (dashInn || dashPoint) ? el('button', { class: 'cmp-f', style: 'cursor:pointer', onclick: () => { dashInn = ''; dashPoint = ''; renderDashboard(); } }, 'Сбросить') : null,
+        el('button', { class: 'cmp-f', style: 'cursor:pointer', title: 'Выгрузить отфильтрованные претензии в Excel', onclick: () => { const ep = new URLSearchParams(monthRange(s.month)); if (dashInn) ep.set('inn', dashInn); if (dashPoint) ep.set('point', dashPoint); window.location = '/complaints/api/export.xlsx?' + ep.toString(); } }, '📥 Excel'),
+      ]),
     ]));
 
     const k = s.kpi;
@@ -110,6 +134,14 @@
     row2.appendChild(panel('Динамика по месяцам', 'Сравнение из месяца в месяц.', trendChart(s.trend, s.month)));
     row2.appendChild(panel('Топ типов жалоб', '«Неположили» — это комплектация, не качество.', typeBars(s.byType)));
     c.appendChild(row2);
+
+    // Разбивка по сетям и точкам.
+    const row3 = el('div', { class: 'cmp-grid cmp-grid-2' });
+    row3.appendChild(panel('По сетям', 'Сколько претензий от какой сети (по ИНН из SalesDoctor).',
+      namedDonut(s.byNetwork, (z) => { dashInn = z.code; dashPoint = ''; renderDashboard(); })));
+    row3.appendChild(panel(dashInn ? 'По точкам сети' : 'По точкам', 'Из какой торговой точки пришла претензия.',
+      namedBars(s.byPoint, (z) => { dashPoint = z.name; renderDashboard(); })));
+    c.appendChild(row3);
 
     c.appendChild(panel('По назначению продукта', 'Для чего использовали продукт, по которому пожаловались.', usageBars(s.byUsage), true));
     c.appendChild(panel('По финальному виду в блюде', 'В каком виде продукт попадал в блюдо.', dishBars(s.byDish), true));
@@ -211,6 +243,42 @@
     return el('div', {}, [donut, leg]);
   }
 
+  // Универсальный пончик по произвольным категориям (сети/точки) с кликом.
+  const NAMED_COLORS = ['#163a28', '#8cc63f', '#c77800', '#0d5aa7', '#6a4fb6', '#2e7d32', '#ad1457', '#00838f', '#b25b00', '#5a665c'];
+  function namedDonut(items, onClick) {
+    if (!items || !items.length) return el('div', { class: 'cmp-empty' }, 'Нет данных за период.');
+    const tot = items.reduce((s, x) => s + x.n, 0);
+    let ang = -Math.PI / 2; const R = 78, cx = 100, cy = 100, sw = 30; let paths = '';
+    items.forEach((z, i) => {
+      const a2 = ang + (z.n / tot) * Math.PI * 2;
+      const x1 = cx + R * Math.cos(ang), y1 = cy + R * Math.sin(ang), x2 = cx + R * Math.cos(a2), y2 = cy + R * Math.sin(a2);
+      const large = (a2 - ang) > Math.PI ? 1 : 0;
+      paths += `<path d="M${x1.toFixed(1)} ${y1.toFixed(1)} A${R} ${R} 0 ${large} 1 ${x2.toFixed(1)} ${y2.toFixed(1)}" fill="none" stroke="${NAMED_COLORS[i % NAMED_COLORS.length]}" stroke-width="${sw}"/>`;
+      ang = a2;
+    });
+    paths += `<text x="100" y="96" text-anchor="middle" font-family="Lora,serif" font-size="30" font-weight="600" fill="#163a28">${tot}</text><text x="100" y="116" text-anchor="middle" font-size="11" fill="#7c8579">всего</text>`;
+    const donut = svgEl(paths, { vb: '0 0 200 200', style: 'max-height:185px' });
+    const leg = el('div', { class: 'cmp-leg' }, items.map((z, i) =>
+      el('div', { class: 'cmp-leg-it' + (onClick ? ' cmp-clk' : ''), onclick: onClick ? () => onClick(z) : null }, [
+        el('span', { class: 'cmp-leg-dot', style: 'background:' + NAMED_COLORS[i % NAMED_COLORS.length] }),
+        el('span', { class: 'cmp-leg-nm', title: z.name }, z.name),
+        el('span', { class: 'cmp-leg-vl' }, String(z.n)),
+        el('span', { class: 'cmp-leg-pc' }, Math.round(z.n / tot * 100) + '%'),
+      ])));
+    return el('div', {}, [donut, leg]);
+  }
+  // Универсальные горизонтальные бары по имени + клик.
+  function namedBars(items, onClick) {
+    if (!items || !items.length) return el('div', { class: 'cmp-empty' }, 'Нет данных за период.');
+    const max = Math.max(...items.map((t) => t.n));
+    return el('div', { class: 'cmp-bars' }, items.map((t) =>
+      el('div', { class: 'cmp-bar' + (onClick ? ' cmp-clk' : ''), onclick: onClick ? () => onClick(t) : null }, [
+        el('span', { class: 'cmp-bar-nm', title: t.name }, t.name),
+        el('span', { class: 'cmp-bar-track' }, [el('span', { class: 'cmp-bar-fill', style: `width:${Math.round(t.n / max * 100)}%` })]),
+        el('span', { class: 'cmp-bar-vl' }, String(t.n)),
+      ])));
+  }
+
   function trendChart(trend, curYm) {
     if (!trend || trend.length < 2) return el('div', { class: 'cmp-empty' }, 'Мало точек для графика (нужно ≥2 месяца).');
     const W = 560, H = 220, pad = 34, maxT = Math.max(1, ...trend.map((t) => t.n));
@@ -299,8 +367,15 @@
     const opt = (arr, val, ph) => [el('option', { value: '' }, ph), ...arr.map((x) => el('option', { value: x.code, selected: val === x.code || null }, x.label_ru))];
     const sel = (key, arr, ph) => el('select', { class: 'cmp-f', onchange: (e) => { listState[key] = e.target.value; loadList(); } }, opt(arr, listState[key], ph));
     const dateInp = (key) => el('input', { type: 'date', class: 'cmp-f', value: listState[key], onchange: (e) => { listState[key] = e.target.value; loadList(); } });
+    // Фильтр по сети (ИНН) → точке.
+    const netOpts = [el('option', { value: '' }, 'Все сети'), ...(((NETS && NETS.networks) || []).map((n) => el('option', { value: n.inn, selected: listState.inn === n.inn || null }, (n.name || n.inn) + ' (' + n.n + ')')))];
+    const netSel = el('select', { class: 'cmp-f', onchange: (e) => { listState.inn = e.target.value; listState.point = ''; loadList(); } }, netOpts);
+    const pts = ((NETS && NETS.points) || []).filter((p) => !listState.inn || String(p.inn) === String(listState.inn));
+    const ptOpts = [el('option', { value: '' }, listState.inn ? 'Все точки сети' : 'Все точки'), ...pts.map((p) => el('option', { value: p.point, selected: listState.point === p.point || null }, p.point + ' (' + p.n + ')'))];
+    const ptSel = el('select', { class: 'cmp-f', onchange: (e) => { listState.point = e.target.value; loadList(); } }, ptOpts);
     return el('div', { class: 'cmp-filters' }, [
       el('div', { class: 'cmp-f-grp' }, [el('label', {}, 'С'), dateInp('from'), el('label', {}, 'по'), dateInp('to')]),
+      netSel, ptSel,
       sel('status', DICTS.status, 'Все статусы'),
       sel('link', DICTS.link, 'Все звенья'),
       sel('type', DICTS.type, 'Все типы'),
@@ -340,8 +415,9 @@
   }
   async function loadList() {
     const wrap = $('#cmp-list-wrap'); if (!wrap) return;
+    await loadNets();
     const params = new URLSearchParams();
-    for (const k of ['from', 'to', 'status', 'type', 'link', 'severity', 'q']) if (listState[k]) params.set(k, listState[k]);
+    for (const k of ['from', 'to', 'status', 'type', 'link', 'severity', 'q', 'inn', 'point']) if (listState[k]) params.set(k, listState[k]);
     let data;
     try { data = await api('/list?' + params.toString()); } catch (e) { toast(e.message, true); return; }
     wrap.innerHTML = '';
@@ -407,7 +483,11 @@
     const m = modal('Претензия #' + c.id, el('div', { class: 'cmp-card' }, [left, right]), actions);
   }
 
-  function exportXlsx() { window.location = '/complaints/api/export.xlsx'; }
+  function exportXlsx() {
+    const p = new URLSearchParams();
+    for (const k of ['from', 'to', 'status', 'inn', 'point']) if (listState[k]) p.set(k, listState[k]);
+    window.location = '/complaints/api/export.xlsx' + (p.toString() ? '?' + p.toString() : '');
+  }
 
   function importDialog() {
     const inp = el('input', { type: 'file', accept: '.xlsx,.xls', class: 'cmp-edit' });

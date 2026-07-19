@@ -127,7 +127,7 @@ router.get('/api/list', async (req, res) => {
   // Собираем условия. base[] — фильтры без статуса (для сводки), full[] — со статусом (для списка).
   function build(includeStatus) {
     const p = [], w = [];
-    const add = (sql, val) => { p.push(val); w.push(sql.replace('$?', '$' + p.length)); };
+    const add = (sql, ...vals) => { for (const v of vals) { p.push(v); sql = sql.replace('$?', '$' + p.length); } w.push(sql); };
     if (from) add('c.created_at >= $?', from);
     if (to)   add('c.created_at < ($?::date + 1)', to);
     if (includeStatus && status) add('c.status = $?', status);
@@ -137,6 +137,9 @@ router.get('/api/list', async (req, res) => {
     if (dish) add('c.dish_form = $?', dish);
     if (link) add('c.link_code = $?', link);
     if (severity) add('c.severity = $?', severity);
+    // Фильтр «сеть (ИНН)» — по точкам сети из point_contacts, с запасным вариантом по названию фирмы.
+    if (req.query.inn) add('(c.sd_id IN (SELECT sd_id FROM tgbot.point_contacts WHERE inn = $?) OR c.firm_name = $?)', req.query.inn, req.query.inn);
+    if (req.query.point) add('c.point_name = $?', req.query.point);
     if (q) { p.push('%' + String(q).trim() + '%'); const i = p.length;
       w.push(`(c.product_name ILIKE $${i} OR c.point_name ILIKE $${i} OR c.firm_name ILIKE $${i} OR c.agent_name ILIKE $${i})`); }
     return { params: p, whereSQL: w.length ? 'WHERE ' + w.join(' AND ') : '' };
@@ -219,11 +222,20 @@ async function validCodes() {
 // ----- Выгрузка в Excel (в формате вкладки 02_претензии) -----
 router.get('/api/export.xlsx', async (req, res) => {
   const labels = await labelMaps();
+  // Экспорт учитывает фильтры дашборда/списка (даты, сеть/ИНН, точка), чтобы выгрузка совпадала с экраном.
+  const p = [], w = [];
+  const add = (sql, ...vals) => { for (const v of vals) { p.push(v); sql = sql.replace('$?', '$' + p.length); } w.push(sql); };
+  if (req.query.from) add('c.created_at >= $?', req.query.from);
+  if (req.query.to) add('c.created_at < ($?::date + 1)', req.query.to);
+  if (req.query.status) add('c.status = $?', req.query.status);
+  if (req.query.inn) add('(c.sd_id IN (SELECT sd_id FROM tgbot.point_contacts WHERE inn = $?) OR c.firm_name = $?)', req.query.inn, req.query.inn);
+  if (req.query.point) add('c.point_name = $?', req.query.point);
+  const whereSQL = w.length ? 'WHERE ' + w.join(' AND ') : '';
   const rows = (await db.pool.query(
     `SELECT c.*,
             (SELECT count(*) FROM tgbot.complaint_files f WHERE f.complaint_id=c.id AND f.kind='photo')::int AS photos,
             (SELECT count(*) FROM tgbot.complaint_files f WHERE f.complaint_id=c.id AND f.kind IN ('video','video_note'))::int AS videos
-     FROM tgbot.complaints c ORDER BY c.created_at`
+     FROM tgbot.complaints c ${whereSQL} ORDER BY c.created_at`, p
   )).rows;
   const data = rows.map((c) => ({
     'Дата обращения': fmtDate(c.created_at),
@@ -358,38 +370,65 @@ router.get('/api/stats', async (req, res) => {
   const one = async (sql, p) => (await db.pool.query(sql, p)).rows;
   const scalar = async (sql, p) => Number((await db.pool.query(sql, p)).rows[0]?.n || 0);
 
-  const inP = 'created_at >= $1 AND created_at < $2';
-  const total = await scalar(`SELECT count(*) n FROM tgbot.complaints WHERE ${inP}`, [from, to]);
-  const totalPrev = await scalar(`SELECT count(*) n FROM tgbot.complaints WHERE created_at >= $1 AND created_at < $2`, [prevFrom, prevTo]);
-  const zhiv = await scalar(`SELECT count(*) n FROM tgbot.complaints WHERE ${inP} AND complaint_type='zhivnost'`, [from, to]);
-  const zhivPrev = await scalar(`SELECT count(*) n FROM tgbot.complaints WHERE created_at >= $1 AND created_at < $2 AND complaint_type='zhivnost'`, [prevFrom, prevTo]);
-  const critical = await scalar(`SELECT count(*) n FROM tgbot.complaints WHERE ${inP} AND severity='critical'`, [from, to]);
+  // Фильтр «сеть (ИНН) / точка»: ИНН → точки берём из tgbot.point_contacts (SD-синхронизация).
+  // {{scope}} подставляется в каждый запрос с корректной нумерацией параметров.
+  const fInn = String(req.query.inn || '').trim() || null;
+  const fPoint = String(req.query.point || '').trim() || null;
+  const scoped = (baseSql, baseParams) => {
+    const parts = [], extra = [];
+    if (fInn) { extra.push(fInn); parts.push(`sd_id IN (SELECT sd_id FROM tgbot.point_contacts WHERE inn = $${baseParams.length + extra.length})`); }
+    if (fPoint) { extra.push(fPoint); parts.push(`point_name = $${baseParams.length + extra.length}`); }
+    return { sql: baseSql.replace('{{scope}}', parts.length ? ' AND ' + parts.join(' AND ') : ''), params: [...baseParams, ...extra] };
+  };
+  const sOne = async (base, p) => { const { sql, params } = scoped(base, p); return one(sql, params); };
+  const sScalar = async (base, p) => { const { sql, params } = scoped(base, p); return scalar(sql, params); };
 
-  const byLink = await one(`SELECT link_code code, count(*)::int n FROM tgbot.complaints WHERE ${inP} AND link_code IS NOT NULL GROUP BY 1 ORDER BY n DESC`, [from, to]);
-  const byType = await one(`SELECT complaint_type code, count(*)::int n FROM tgbot.complaints WHERE ${inP} AND complaint_type IS NOT NULL GROUP BY 1 ORDER BY n DESC LIMIT 8`, [from, to]);
-  const byProduct = await one(`SELECT product_name name, count(*)::int n FROM tgbot.complaints WHERE ${inP} AND product_name IS NOT NULL AND product_name<>'' GROUP BY 1 ORDER BY n DESC LIMIT 8`, [from, to]);
-  const byUsage = await one(`SELECT product_usage code, count(*)::int n FROM tgbot.complaints WHERE ${inP} AND product_usage IS NOT NULL AND product_usage<>'' GROUP BY 1 ORDER BY n DESC LIMIT 8`, [from, to]);
-  const byDish = await one(`SELECT dish_form code, count(*)::int n FROM tgbot.complaints WHERE ${inP} AND dish_form IS NOT NULL AND dish_form<>'' GROUP BY 1 ORDER BY n DESC LIMIT 8`, [from, to]);
-  const byAgent = await one(`SELECT COALESCE(NULLIF(agent_name,''),'—') name, count(*)::int n FROM tgbot.complaints WHERE ${inP} GROUP BY 1 ORDER BY n DESC LIMIT 8`, [from, to]);
+  const inP = 'created_at >= $1 AND created_at < $2 {{scope}}';
+  const total = await sScalar(`SELECT count(*) n FROM tgbot.complaints WHERE ${inP}`, [from, to]);
+  const totalPrev = await sScalar(`SELECT count(*) n FROM tgbot.complaints WHERE ${inP}`, [prevFrom, prevTo]);
+  const zhiv = await sScalar(`SELECT count(*) n FROM tgbot.complaints WHERE ${inP} AND complaint_type='zhivnost'`, [from, to]);
+  const zhivPrev = await sScalar(`SELECT count(*) n FROM tgbot.complaints WHERE ${inP} AND complaint_type='zhivnost'`, [prevFrom, prevTo]);
+  const critical = await sScalar(`SELECT count(*) n FROM tgbot.complaints WHERE ${inP} AND severity='critical'`, [from, to]);
+
+  const byLink = await sOne(`SELECT link_code code, count(*)::int n FROM tgbot.complaints WHERE ${inP} AND link_code IS NOT NULL GROUP BY 1 ORDER BY n DESC`, [from, to]);
+  const byType = await sOne(`SELECT complaint_type code, count(*)::int n FROM tgbot.complaints WHERE ${inP} AND complaint_type IS NOT NULL GROUP BY 1 ORDER BY n DESC LIMIT 8`, [from, to]);
+  const byProduct = await sOne(`SELECT product_name name, count(*)::int n FROM tgbot.complaints WHERE ${inP} AND product_name IS NOT NULL AND product_name<>'' GROUP BY 1 ORDER BY n DESC LIMIT 8`, [from, to]);
+  const byUsage = await sOne(`SELECT product_usage code, count(*)::int n FROM tgbot.complaints WHERE ${inP} AND product_usage IS NOT NULL AND product_usage<>'' GROUP BY 1 ORDER BY n DESC LIMIT 8`, [from, to]);
+  const byDish = await sOne(`SELECT dish_form code, count(*)::int n FROM tgbot.complaints WHERE ${inP} AND dish_form IS NOT NULL AND dish_form<>'' GROUP BY 1 ORDER BY n DESC LIMIT 8`, [from, to]);
+  const byAgent = await sOne(`SELECT COALESCE(NULLIF(agent_name,''),'—') name, count(*)::int n FROM tgbot.complaints WHERE ${inP} GROUP BY 1 ORDER BY n DESC LIMIT 8`, [from, to]);
+  // Разбивка по СЕТЯМ (группировка по ИНН из point_contacts; подпись — фирма) и по ТОЧКАМ.
+  const netParts = ['c.created_at >= $1', 'c.created_at < $2']; const netP = [from, to];
+  if (fInn) { netP.push(fInn); netParts.push(`c.sd_id IN (SELECT sd_id FROM tgbot.point_contacts WHERE inn = $${netP.length})`); }
+  if (fPoint) { netP.push(fPoint); netParts.push(`c.point_name = $${netP.length}`); }
+  const byNetwork = await one(
+    `SELECT COALESCE(pc.inn, NULLIF(c.firm_name,''), '—') code,
+            COALESCE(MAX(NULLIF(c.firm_name,'')), MAX(pc.firm_name), MAX(pc.inn), '—') name,
+            count(*)::int n
+     FROM tgbot.complaints c LEFT JOIN tgbot.point_contacts pc ON pc.sd_id = c.sd_id
+     WHERE ${netParts.join(' AND ')}
+     GROUP BY 1 ORDER BY n DESC LIMIT 10`, netP);
+  const byPoint = await sOne(
+    `SELECT COALESCE(NULLIF(point_name,''),'—') name, count(*)::int n
+     FROM tgbot.complaints WHERE ${inP} GROUP BY 1 ORDER BY n DESC LIMIT 10`, [from, to]);
 
   // Тренд: последние 12 месяцев до конца выбранного
   const trendFrom = new Date(Date.UTC(yy, mm - 12, 1)).toISOString().slice(0, 10);
-  const trend = await one(
+  const trend = await sOne(
     `SELECT to_char(date_trunc('month', created_at),'YYYY-MM') ym, count(*)::int n
-     FROM tgbot.complaints WHERE created_at >= $1 AND created_at < $2
+     FROM tgbot.complaints WHERE created_at >= $1 AND created_at < $2 {{scope}}
      GROUP BY 1 ORDER BY 1`, [trendFrom, to]);
 
   // Матрица продукт×месяц: топ-6 продуктов за последние 6 месяцев
   const mxFrom = new Date(Date.UTC(yy, mm - 6, 1)).toISOString().slice(0, 10);
-  const topProds = (await one(
+  const topProds = (await sOne(
     `SELECT product_name FROM tgbot.complaints
-     WHERE created_at >= $1 AND created_at < $2 AND product_name IS NOT NULL AND product_name<>''
+     WHERE created_at >= $1 AND created_at < $2 AND product_name IS NOT NULL AND product_name<>'' {{scope}}
      GROUP BY 1 ORDER BY count(*) DESC LIMIT 6`, [mxFrom, to])).map((r) => r.product_name);
   let matrix = { months: [], rows: [] };
   if (topProds.length) {
-    const cells = await one(
+    const cells = await sOne(
       `SELECT product_name, to_char(date_trunc('month', created_at),'YYYY-MM') ym, count(*)::int n
-       FROM tgbot.complaints WHERE created_at >= $1 AND created_at < $2 AND product_name = ANY($3)
+       FROM tgbot.complaints WHERE created_at >= $1 AND created_at < $2 AND product_name = ANY($3) {{scope}}
        GROUP BY 1,2`, [mxFrom, to, topProds]);
     const months = [];
     for (let i = 6; i >= 1; i--) months.push(new Date(Date.UTC(yy, mm - i, 1)).toISOString().slice(0, 7));
@@ -415,8 +454,27 @@ router.get('/api/stats', async (req, res) => {
       critical,
       topLink: byLink[0] || null, topProduct: byProduct[0] || null,
     },
-    byLink, byType, byProduct, byUsage, byDish, byAgent, trend, matrix,
+    byLink, byType, byProduct, byUsage, byDish, byAgent, byNetwork, byPoint, trend, matrix,
+    scope: { inn: fInn, point: fPoint },
   });
+});
+
+// Справочник сетей (ИНН) и их точек — для фильтра дашборда/списка. Только те, по кому есть претензии.
+router.get('/api/networks', async (req, res) => {
+  const nets = (await db.pool.query(
+    `SELECT COALESCE(pc.inn, NULLIF(c.firm_name,'')) inn,
+            COALESCE(MAX(NULLIF(c.firm_name,'')), MAX(pc.firm_name), MAX(pc.inn)) name,
+            count(*)::int n
+     FROM tgbot.complaints c LEFT JOIN tgbot.point_contacts pc ON pc.sd_id = c.sd_id
+     WHERE COALESCE(pc.inn, NULLIF(c.firm_name,'')) IS NOT NULL
+     GROUP BY 1 ORDER BY name`)).rows;
+  const points = (await db.pool.query(
+    `SELECT COALESCE(pc.inn, NULLIF(c.firm_name,'')) inn,
+            COALESCE(NULLIF(c.point_name,''),'—') point, count(*)::int n
+     FROM tgbot.complaints c LEFT JOIN tgbot.point_contacts pc ON pc.sd_id = c.sd_id
+     WHERE COALESCE(NULLIF(c.point_name,''),'') <> ''
+     GROUP BY 1,2 ORDER BY 2`)).rows;
+  res.json({ networks: nets, points });
 });
 
 function monthLabel(ym) {
