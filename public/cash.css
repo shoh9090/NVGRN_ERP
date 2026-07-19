@@ -53,6 +53,16 @@
 .cash-supbal { grid-template-columns: 1.6fr 1fr 1fr 1fr 1fr 1fr 1fr; }
 .cash-obl .tnum, .cash-supbal .tnum { text-align: right; font-variant-numeric: tabular-nums; }
 .cash-row.foot { background: #f2f5f1; border-top: 2px solid var(--line); }
+
+/* Компактные фильтры «Обязательства → Поставщики» — иконки + узкие контролы в одну строку */
+.obl-filt { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+.obl-pill { display: inline-flex; align-items: center; gap: 6px; background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 4px 8px; }
+.obl-ic { font-size: 14px; line-height: 1; opacity: .8; }
+.obl-f { border: none; background: transparent; font-size: 13px; padding: 3px 2px; outline: none; max-width: 190px; }
+.obl-f:focus { background: #fbfaf5; border-radius: 6px; }
+select.obl-f { cursor: pointer; }
+.obl-reset { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 5px 10px; font-size: 12px; font-weight: 700; color: var(--muted); cursor: pointer; }
+.obl-reset:hover { background: #fdecea; color: #c0392b; border-color: #e6c6c6; }
 .cash-ct { grid-template-columns: 1.4fr 1.4fr 1.2fr 0.9fr; }
 
 .cash-subtabs { display: flex; gap: 6px; margin-bottom: 14px; flex-wrap: wrap; }

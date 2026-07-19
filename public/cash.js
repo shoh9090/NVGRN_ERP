@@ -481,16 +481,19 @@
   }
   async function oblSuppliers(box) {
     box.innerHTML = '';
-    box.appendChild(el('div', { class: 'cash-note-info', style: 'margin-bottom:10px' }, 'Данные синхронизируются из «Закуп → Взаиморасчёты» и доступны здесь только для просмотра.'));
-    const catSel = el('select', { class: 'cashf-inp', onchange: (e) => { oblSup.cat = e.target.value; drawSup(); } });
-    const stSel = el('select', { class: 'cashf-inp', onchange: (e) => { oblSup.status = e.target.value; drawSup(); } },
-      [['', 'Все'], ['debt', 'С долгом'], ['overdue', 'Просроченные'], ['advance', 'Авансы']].map(([v, t]) => el('option', { value: v, selected: oblSup.status === v || null }, t)));
-    const qIn = el('input', { class: 'cashf-inp', placeholder: 'Поиск поставщика…', value: oblSup.q, oninput: (e) => { oblSup.q = e.target.value; drawSup(); } });
-    const fromIn = el('input', { class: 'cashf-inp', type: 'date', value: oblSup.from, onchange: (e) => { oblSup.from = e.target.value; loadSup(); } });
-    const toIn = el('input', { class: 'cashf-inp', type: 'date', value: oblSup.to, onchange: (e) => { oblSup.to = e.target.value; loadSup(); } });
-    box.appendChild(el('div', { class: 'cash-filters', style: 'display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px' }, [
-      el('span', { class: 'muted' }, 'Категория:'), catSel, el('span', { class: 'muted' }, 'Статус:'), stSel,
-      el('span', { class: 'muted' }, 'Период:'), fromIn, el('span', { class: 'muted' }, '—'), toIn, qIn,
+    box.appendChild(el('div', { class: 'cash-note-info', style: 'margin-bottom:10px' }, 'Данные синхронизируются из «Закуп → Взаиморасчёты», только для просмотра.'));
+    const catSel = el('select', { class: 'obl-f', title: 'Категория', onchange: (e) => { oblSup.cat = e.target.value; drawSup(); } });
+    const stSel = el('select', { class: 'obl-f', title: 'Статус', onchange: (e) => { oblSup.status = e.target.value; drawSup(); } },
+      [['', 'Все статусы'], ['debt', 'С долгом'], ['overdue', 'Просроченные'], ['advance', 'Авансы']].map(([v, t]) => el('option', { value: v, selected: oblSup.status === v || null }, t)));
+    const qIn = el('input', { class: 'obl-f', style: 'min-width:150px', placeholder: 'Поиск…', value: oblSup.q, oninput: (e) => { oblSup.q = e.target.value; drawSup(); } });
+    const fromIn = el('input', { class: 'obl-f', type: 'date', title: 'Период с', value: oblSup.from, onchange: (e) => { oblSup.from = e.target.value; loadSup(); } });
+    const toIn = el('input', { class: 'obl-f', type: 'date', title: 'Период по', value: oblSup.to, onchange: (e) => { oblSup.to = e.target.value; loadSup(); } });
+    const pill = (icon, ctrl) => el('span', { class: 'obl-pill' }, [el('span', { class: 'obl-ic' }, icon), ctrl]);
+    box.appendChild(el('div', { class: 'obl-filt' }, [
+      pill('🔎', qIn), pill('🏷', catSel), pill('⚑', stSel),
+      pill('📅', el('span', { style: 'display:inline-flex;align-items:center;gap:4px' }, [fromIn, el('span', { class: 'muted' }, '–'), toIn])),
+      (oblSup.from || oblSup.to || oblSup.cat || oblSup.status || oblSup.q)
+        ? el('button', { class: 'obl-reset', title: 'Сбросить фильтры', onclick: () => { oblSup.q = ''; oblSup.cat = ''; oblSup.status = ''; oblSup.from = ''; oblSup.to = ''; oblSuppliers(box); } }, '✕ сброс') : null,
     ]));
     const tableBox = el('div', { id: 'obl-sup-table' }); box.appendChild(tableBox);
     async function loadSup() {
