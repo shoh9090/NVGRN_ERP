@@ -1,7 +1,8 @@
 // purchase.js — блок «Закуп»: поставщики, заявки, приёмка, взаиморасчёты
 const express = require('express');
 const db = require('./db');
-const { enrichOrderFinance } = require('./purchase-finance'); // единый расчёт долга (общий с Кассой)
+const pfin = require('./purchase-finance'); // единый расчёт долга (общий с Кассой)
+const { enrichOrderFinance } = pfin;
 const { notify } = require('./notifications');
 
 const router = express.Router();
@@ -179,6 +180,58 @@ async function supplierOpenOrders(supplierId) {
 
 router.get('/api/suppliers/:id(\\d+)/open-orders', async (req, res) => {
   res.json({ items: await supplierOpenOrders(parseInt(req.params.id)) });
+});
+
+// ---------- Взаиморасчёты (SD-стиль: период-баланс, фильтры, итоги, экспорт) ----------
+async function settlementsData(query) {
+  const items = await pfin.supplierBalances({ q: query.q, parent_category_id: query.parent_category_id, from: query.from || null, to: query.to || null });
+  const due = await pfin.supplierDueAgg();
+  let rows = items.map((s) => ({ ...s, overdue: due[s.id] ? due[s.id].overdue : 0, nearest_due: due[s.id] ? due[s.id].nearest_due : null }));
+  // Фильтр статуса: с долгом / просроченные / аванс.
+  if (query.status === 'debt') rows = rows.filter((s) => s.balance > 0.01);
+  else if (query.status === 'overdue') rows = rows.filter((s) => s.overdue > 0.01);
+  else if (query.status === 'advance') rows = rows.filter((s) => s.balance < -0.01);
+  const period = !!(query.from || query.to);
+  return { items: rows, period, from: query.from || null, to: query.to || null };
+}
+router.get('/api/settlements', async (req, res) => {
+  try { res.json(await settlementsData(req.query)); } catch (e) { res.status(400).json({ error: e.message }); }
+});
+// Экспорт Взаиморасчётов в Excel с учётом фильтров и выбранных столбцов.
+router.get('/api/settlements-export.xlsx', async (req, res) => {
+  try {
+    const XLSX = require('xlsx');
+    const { items, period } = await settlementsData(req.query);
+    const cols = String(req.query.cols || '').split(',').filter(Boolean);
+    const has = (c) => !cols.length || cols.includes(c);
+    const data = items.map((s) => {
+      const row = {};
+      row['Поставщик'] = s.name;
+      if (has('inn')) row['ИНН'] = s.inn || '';
+      if (has('category')) row['Категория'] = s.parent_category_name || '';
+      if (period) {
+        if (has('balance_start')) row['Баланс на начало'] = Math.round(s.balance_start || 0);
+        if (has('delivered_period')) row['Поставлено за период'] = Math.round(s.delivered_period || 0);
+        if (has('paid_period')) row['Оплачено за период'] = Math.round(s.paid_period || 0);
+        if (has('balance_end')) row['Баланс на конец'] = Math.round(s.balance_end || 0);
+      } else {
+        if (has('opening')) row['Стартовый долг'] = Math.round(s.opening_balance);
+        if (has('delivered')) row['Поставлено'] = Math.round(s.delivered);
+        if (has('paid')) row['Оплачено'] = Math.round(s.paid);
+        if (has('balance')) row['Сальдо'] = Math.round(s.balance);
+      }
+      if (has('overdue')) row['Просрочено'] = Math.round(s.overdue || 0);
+      if (has('nearest_due')) row['Ближайший срок'] = s.nearest_due || '';
+      return row;
+    });
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'взаиморасчёты');
+    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    res.setHeader('Content-Disposition', 'attachment; filename="settlements.xlsx"');
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.send(buf);
+  } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 // ---------- Оплаты ----------

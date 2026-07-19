@@ -719,59 +719,105 @@
   }
 
   // ================= ВЗАИМОРАСЧЁТЫ =================
+  const setState = { q: '', pc: '', status: '', from: '', to: '' };
+  let setHidden = []; try { setHidden = JSON.parse(localStorage.getItem('pur_set_cols') || '[]'); } catch (e) { setHidden = []; }
+
+  function settlementCols(period) {
+    const c = [
+      { id: 'name', label: 'Поставщик', get: (s) => s.name, txt: 1, lock: 1 },
+      { id: 'inn', label: 'ИНН', get: (s) => s.inn || '—', txt: 1 },
+      { id: 'category', label: 'Категория', get: (s) => s.parent_category_name || '—', txt: 1 },
+    ];
+    if (period) c.push(
+      { id: 'balance_start', label: 'Баланс на начало', get: (s) => s.balance_start, num: 1 },
+      { id: 'delivered_period', label: 'Поставлено (период)', get: (s) => s.delivered_period, num: 1 },
+      { id: 'paid_period', label: 'Оплачено (период)', get: (s) => s.paid_period, num: 1 },
+      { id: 'balance_end', label: 'Баланс на конец', get: (s) => s.balance_end, num: 1, bal: 1 });
+    else c.push(
+      { id: 'opening', label: 'Стартовый долг', get: (s) => s.opening_balance, num: 1 },
+      { id: 'delivered', label: 'Поставлено', get: (s) => s.delivered, num: 1 },
+      { id: 'paid', label: 'Оплачено', get: (s) => s.paid, num: 1 },
+      { id: 'balance', label: 'Сальдо', get: (s) => s.balance, num: 1, bal: 1 });
+    c.push(
+      { id: 'overdue', label: 'Просрочено', get: (s) => s.overdue || 0, num: 1, warn: 1 },
+      { id: 'nearest_due', label: 'Ближайший срок', get: (s) => (s.nearest_due ? dt(s.nearest_due) : '—'), txt: 1 });
+    return c;
+  }
+
   async function viewSettlements() {
     const main = $('#pur-main');
     main.innerHTML = '';
     main.appendChild(el('div', { class: 'pur-toolbar' }, [
       el('h2', {}, 'Взаиморасчёты'),
       el('div', { class: 'pur-toolbar-right' }, [
-        el('input', { id: 'set-q', placeholder: 'Поиск...', oninput: debounce(loadSettlements, 300) }),
+        el('button', { class: 'btn-ghost', onclick: openColsMenu, title: 'Показать/скрыть столбцы' }, '⚙ Столбцы'),
+        el('a', { class: 'btn-ghost', href: '#', onclick: (e) => { e.preventDefault(); exportSettlements(); } }, '⬇ Excel'),
         el('button', { class: 'btn-primary', onclick: () => openPayment(null) }, '+ Оплата'),
       ]),
     ]));
     await ensureOpts();
-    const setPc = el('select', { id: 'set-pc', onchange: loadSettlements }, [
-      el('option', { value: '' }, 'Все родительские категории'),
-      ...FOPTS.parents.map((p) => el('option', { value: p.id }, p.name)),
+    const pcSel = el('select', { onchange: (e) => { setState.pc = e.target.value; loadSettlements(); } }, [
+      el('option', { value: '' }, 'Все категории'), ...FOPTS.parents.map((p) => el('option', { value: p.id, selected: setState.pc === String(p.id) || null }, p.name)),
     ]);
-    main.appendChild(el('div', { class: 'pur-filters' }, [el('label', {}, ['Родительская категория', setPc])]));
-    main.appendChild(el('div', { id: 'set-totals', class: 'pur-kpis' }));
-    main.appendChild(el('div', { id: 'set-list', class: 'pur-content' }));
+    const stSel = el('select', { onchange: (e) => { setState.status = e.target.value; loadSettlements(); } },
+      [['', 'Все'], ['debt', 'Только с долгом'], ['overdue', 'Только просроченные'], ['advance', 'Только авансы']].map(([v, t]) => el('option', { value: v, selected: setState.status === v || null }, t)));
+    const fromIn = el('input', { type: 'date', value: setState.from, onchange: (e) => { setState.from = e.target.value; loadSettlements(); } });
+    const toIn = el('input', { type: 'date', value: setState.to, onchange: (e) => { setState.to = e.target.value; loadSettlements(); } });
+    const qIn = el('input', { placeholder: 'Поиск поставщика…', value: setState.q, oninput: debounce((e) => { setState.q = e.target.value; loadSettlements(); }, 300) });
+    main.appendChild(el('div', { class: 'pur-filters' }, [
+      el('label', {}, ['Категория', pcSel]),
+      el('label', {}, ['Статус', stSel]),
+      el('label', {}, ['Период с', fromIn]),
+      el('label', {}, ['по', toIn]),
+      el('label', { style: 'flex:1 1 180px' }, ['Поиск', qIn]),
+      setState.from || setState.to ? el('button', { class: 'btn-ghost', style: 'align-self:flex-end', onclick: () => { setState.from = ''; setState.to = ''; viewSettlements(); } }, 'Сбросить период') : null,
+    ]));
+    main.appendChild(el('div', { id: 'set-list', class: 'pur-content', style: 'overflow-x:auto' }));
     await loadSettlements();
   }
 
   async function loadSettlements() {
     const p = new URLSearchParams();
-    if ($('#set-q') && $('#set-q').value.trim()) p.set('q', $('#set-q').value.trim());
-    if ($('#set-pc') && $('#set-pc').value) p.set('parent_category_id', $('#set-pc').value);
-    const data = await api('/suppliers' + (p.toString() ? '?' + p.toString() : ''));
-    const items = data.items;
-    const totalDebt = items.reduce((s, x) => s + Math.max(0, Number(x.balance)), 0);
-    const totalDelivered = items.reduce((s, x) => s + Number(x.delivered), 0);
-    const totalPaid = items.reduce((s, x) => s + Number(x.paid), 0);
-    const kpis = $('#set-totals');
-    kpis.innerHTML = '';
-    [['Мы должны (TOTAL)', totalDebt, 'var(--red)'], ['Поставлено всего', totalDelivered, 'var(--ink)'], ['Оплачено всего', totalPaid, '#3f6a16']]
-      .forEach(([label, v, color]) => kpis.appendChild(el('div', { class: 'pur-kpi' }, [
-        el('div', { class: 'pur-kpi-label' }, label),
-        el('div', { class: 'pur-kpi-val tnum', style: 'color:' + color }, fmtMoney(v) + ' сум'),
-      ])));
+    for (const [k, v] of [['q', setState.q], ['parent_category_id', setState.pc], ['status', setState.status], ['from', setState.from], ['to', setState.to]]) if (v) p.set(k, v);
+    const data = await api('/settlements' + (p.toString() ? '?' + p.toString() : ''));
+    const items = data.items || [];
+    const cols = settlementCols(data.period).filter((c) => c.lock || !setHidden.includes(c.id));
+    const box = $('#set-list'); box.innerHTML = '';
+    const head = el('tr', {}, cols.map((c) => el('th', { style: c.num ? 'text-align:right' : '' }, c.label)));
+    const body = items.map((s) => el('tr', { onclick: () => openStatement(s.id), style: 'cursor:pointer' }, cols.map((c) => {
+      if (c.num) {
+        const v = Number(c.get(s)) || 0;
+        const color = c.bal ? (v > 0 ? 'var(--red)' : v < 0 ? '#3f6a16' : '') : (c.warn && v > 0 ? 'var(--red)' : '');
+        return el('td', { class: 'tnum', style: 'text-align:right;' + (c.bal ? 'font-weight:800;' : '') + (color ? 'color:' + color : '') }, fmtMoney(v));
+      }
+      return el('td', { style: c.id === 'name' ? 'font-weight:700' : '' }, c.get(s));
+    })));
+    // Итоговая строка.
+    const foot = el('tr', { style: 'background:#f2f5f1;font-weight:800' }, cols.map((c, i) => {
+      if (i === 0) return el('td', {}, 'ИТОГО (' + items.length + ')');
+      if (!c.num) return el('td', {}, '');
+      const sum = items.reduce((a, s) => a + (Number(c.get(s)) || 0), 0);
+      const color = c.bal ? (sum > 0 ? 'var(--red)' : '#3f6a16') : (c.warn && sum > 0 ? 'var(--red)' : '');
+      return el('td', { class: 'tnum', style: 'text-align:right;' + (color ? 'color:' + color : '') }, fmtMoney(sum));
+    }));
+    box.appendChild(el('table', { class: 'dict-table' }, [el('thead', {}, head), el('tbody', {}, [...body, foot])]));
+  }
 
-    const box = $('#set-list');
-    box.innerHTML = '';
-    box.appendChild(el('table', { class: 'dict-table' }, [
-      el('thead', {}, el('tr', {}, ['Поставщик', 'Старт. долг', 'Поставлено', 'Оплачено', 'Сальдо'].map((h, i) =>
-        el('th', { style: i > 0 ? 'text-align:right' : '' }, h)))),
-      el('tbody', {}, items.map((s) =>
-        el('tr', { onclick: () => openStatement(s.id) }, [
-          el('td', { style: 'font-weight:700' }, s.name),
-          el('td', { class: 'tnum', style: 'text-align:right' }, fmtMoney(s.opening_balance)),
-          el('td', { class: 'tnum', style: 'text-align:right' }, fmtMoney(s.delivered)),
-          el('td', { class: 'tnum', style: 'text-align:right' }, fmtMoney(s.paid)),
-          el('td', { class: 'tnum', style: 'text-align:right;font-weight:800;color:' + (Number(s.balance) > 0 ? 'var(--red)' : '#3f6a16') }, fmtMoney(s.balance)),
-        ])
-      )),
-    ]));
+  function openColsMenu() {
+    const all = settlementCols(!!(setState.from || setState.to));
+    const body = el('div', { class: 'form-col' }, all.filter((c) => !c.lock).map((c) => {
+      const cb = el('input', { type: 'checkbox' }); cb.checked = !setHidden.includes(c.id);
+      cb.onchange = () => { setHidden = cb.checked ? setHidden.filter((x) => x !== c.id) : [...setHidden, c.id]; localStorage.setItem('pur_set_cols', JSON.stringify(setHidden)); loadSettlements(); };
+      return el('label', { class: 'check' }, [cb, ' ' + c.label]);
+    }));
+    const m = modal('⚙ Столбцы', body, [el('button', { class: 'btn-primary', onclick: () => m.close() }, 'Готово')]);
+  }
+  function exportSettlements() {
+    const cols = settlementCols(!!(setState.from || setState.to)).filter((c) => c.lock || !setHidden.includes(c.id)).map((c) => c.id);
+    const p = new URLSearchParams();
+    for (const [k, v] of [['q', setState.q], ['parent_category_id', setState.pc], ['status', setState.status], ['from', setState.from], ['to', setState.to]]) if (v) p.set(k, v);
+    p.set('cols', cols.join(','));
+    window.location = '/purchase/api/settlements-export.xlsx?' + p.toString();
   }
 
   // карточка-выписка поставщика

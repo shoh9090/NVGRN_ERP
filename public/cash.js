@@ -471,7 +471,7 @@
     const owe = items.filter((s) => s.balance > 0.01).reduce((a, s) => a + s.balance, 0);
     const adv = items.filter((s) => s.balance < -0.01).reduce((a, s) => a + Math.abs(s.balance), 0);
     box.appendChild(kpiBar([['Всего должны поставщикам', owe, 'tot-out'], ['Наши авансы поставщикам', adv, 'tot-in']]));
-    const head = el('div', { class: 'cash-row head cash-supbal' }, ['Поставщик', 'Стартовый долг', 'Поставлено', 'Оплачено', 'Сальдо'].map((h) => el('span', {}, h)));
+    const head = el('div', { class: 'cash-row head cash-supbal' }, ['Поставщик', 'Стартовый долг', 'Поставлено', 'Оплачено', 'Сальдо', 'Просрочено', 'Ближайший срок'].map((h) => el('span', {}, h)));
     const sum = (f) => items.reduce((a, s) => a + (Number(s[f]) || 0), 0);
     const foot = el('div', { class: 'cash-row foot cash-supbal' }, [
       el('span', { style: 'font-weight:800' }, 'ИТОГО (' + items.length + ')'),
@@ -479,6 +479,8 @@
       el('span', { class: 'tnum', style: 'font-weight:700' }, money(sum('delivered'))),
       el('span', { class: 'tnum', style: 'font-weight:700' }, money(sum('paid'))),
       el('span', { class: 'tnum', style: 'font-weight:800;color:' + (sum('balance') > 0 ? '#c0392b' : '#2e7d32') }, money(sum('balance'))),
+      el('span', { class: 'tnum', style: 'font-weight:700;color:#c0392b' }, money(sum('overdue'))),
+      el('span', {}, ''),
     ]);
     box.appendChild(el('div', { class: 'cash-list' }, [head, ...items.map((s) => el('div', { class: 'cash-row cash-supbal' }, [
       el('span', { style: 'font-weight:600' }, s.name),
@@ -486,6 +488,8 @@
       el('span', { class: 'tnum' }, money(s.delivered)),
       el('span', { class: 'tnum' }, money(s.paid)),
       el('span', { class: 'tnum', style: 'font-weight:700;color:' + (s.balance > 0.01 ? '#c0392b' : s.balance < -0.01 ? '#2e7d32' : 'var(--muted)') }, money(s.balance)),
+      el('span', { class: 'tnum', style: s.overdue > 0.01 ? 'color:#c0392b;font-weight:700' : 'color:var(--muted)' }, s.overdue > 0.01 ? money(s.overdue) : '—'),
+      el('span', { class: 'muted' }, s.nearest_due ? ruDate(s.nearest_due) : '—'),
     ])), foot]));
   }
   function oblCard(label, val, hint, cls) {
