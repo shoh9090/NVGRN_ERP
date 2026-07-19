@@ -750,8 +750,8 @@
     main.appendChild(el('div', { class: 'pur-toolbar' }, [
       el('h2', {}, 'Взаиморасчёты'),
       el('div', { class: 'pur-toolbar-right' }, [
-        el('button', { class: 'btn-ghost', onclick: openColsMenu, title: 'Показать/скрыть столбцы' }, '⚙ Столбцы'),
-        el('a', { class: 'btn-ghost', href: '#', onclick: (e) => { e.preventDefault(); exportSettlements(); } }, '⬇ Excel'),
+        el('button', { class: 'pur-tbtn', onclick: openColsMenu, title: 'Показать/скрыть столбцы' }, '⚙ Столбцы'),
+        el('a', { class: 'pur-tbtn', href: '#', onclick: (e) => { e.preventDefault(); exportSettlements(); } }, '⬇ Excel'),
         el('button', { class: 'btn-primary', onclick: () => openPayment(null) }, '+ Оплата'),
       ]),
     ]));
