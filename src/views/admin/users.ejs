@@ -8,6 +8,10 @@
   <p class="error">Нельзя убрать последнего администратора — в системе должен остаться хотя бы один. Сначала выдайте полный доступ другому пользователю.</p>
 <% } else if (msg === 'roles_saved') { %>
   <p style="color:#2e7d32;font-weight:700">Роли сохранены.</p>
+<% } else if (msg === 'user_deleted') { %>
+  <p style="color:#2e7d32;font-weight:700">Пользователь удалён.</p>
+<% } else if (msg === 'self_delete') { %>
+  <p class="error">Нельзя удалить самого себя.</p>
 <% } %>
 
 <p class="muted" style="margin:6px 0 14px">
@@ -67,6 +71,12 @@
                 <button type="submit">Сохранить</button>
               </form>
             </details>
+            <% if (u.id !== user.id) { %>
+              <form method="POST" action="/admin/users/<%= u.id %>/delete"
+                    onsubmit="return confirm('Удалить пользователя «<%= u.full_name %>» навсегда? Это действие нельзя отменить. Если у человека есть история операций — лучше «Отключить».');">
+                <button type="submit" class="btn-danger-link" style="color:#c0392b">Удалить</button>
+              </form>
+            <% } %>
           </td>
         </tr>
       <% }) %>

@@ -252,6 +252,28 @@ admin.post('/users/:id/toggle', async (req, res) => {
   res.redirect('/admin/users');
 });
 
+// Удаление пользователя (физическое). Роли снимаются каскадом; ссылки created_by в других
+// таблицах — просто числа (не ломаются). Защита: нельзя удалить себя и последнего администратора.
+admin.post('/users/:id/delete', async (req, res) => {
+  const targetId = parseInt(req.params.id, 10);
+  if (targetId === req.user.id) return res.redirect('/admin/users?msg=self_delete');
+  const isAdmin = (await db.pool.query(
+    'SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = $1 AND r.is_admin = TRUE LIMIT 1',
+    [targetId])).rows.length > 0;
+  if (isAdmin) {
+    const others = (await db.pool.query(
+      `SELECT COUNT(DISTINCT ur.user_id)::int AS n FROM user_roles ur
+       JOIN roles r ON r.id = ur.role_id JOIN users u ON u.id = ur.user_id
+       WHERE r.is_admin = TRUE AND u.is_active = TRUE AND ur.user_id <> $1`, [targetId])).rows[0].n;
+    if (others === 0) return res.redirect('/admin/users?msg=last_admin');
+  }
+  const info = (await db.pool.query('SELECT login FROM users WHERE id = $1', [targetId])).rows[0];
+  if (!info) return res.redirect('/admin/users');
+  await db.pool.query('DELETE FROM users WHERE id = $1', [targetId]);
+  await db.log(req.user.id, 'delete_user', `${targetId} (${info.login})`);
+  res.redirect('/admin/users?msg=user_deleted');
+});
+
 admin.post('/users/:id/password', async (req, res) => {
   const { password } = req.body;
   if (password && password.length >= 6) {
