@@ -52,6 +52,7 @@
 .cash-obl { grid-template-columns: 1.6fr 1fr 1fr 1fr 1fr 0.7fr; }
 .cash-supbal { grid-template-columns: 1.8fr 1fr 1fr 1fr 1fr; }
 .cash-obl .tnum, .cash-supbal .tnum { text-align: right; font-variant-numeric: tabular-nums; }
+.cash-row.foot { background: #f2f5f1; border-top: 2px solid var(--line); }
 .cash-ct { grid-template-columns: 1.4fr 1.4fr 1.2fr 0.9fr; }
 
 .cash-subtabs { display: flex; gap: 6px; margin-bottom: 14px; flex-wrap: wrap; }

@@ -1860,33 +1860,34 @@ router.get('/api/cash-fx-balance', async (req, res) => {
 // Сводка: карточки + одна агрегированная строка «Задолженность поставщикам».
 router.get('/api/obligations/summary', async (req, res) => {
   try {
-    const orders = await pfin.openSupplierObligations(); // принятые заявки с остатком
+    // Общий остаток долга поставщикам = сумма положительных сальдо (то же, что Закуп→Взаиморасчёты:
+    // стартовый долг + принято − оплачено). Именно так совпадает с цифрой во Взаиморасчётах.
+    const balances = await pfin.supplierBalances();
+    const totalOwed = balances.reduce((a, s) => a + Math.max(0, s.balance), 0);
+    // К оплате в периоде / просрочено / ближайшая дата — по заявкам с известным сроком.
+    const orders = await pfin.openSupplierObligations();
     const now = new Date();
     const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().slice(0, 10);
     const today = now.toISOString().slice(0, 10);
-    let totalRemainder = 0, dueThisMonth = 0, overdue = 0, nearest = null;
+    let dueThisMonth = 0, overdue = 0, nearest = null;
     for (const o of orders) {
-      totalRemainder += o.remainder;
       if (o.overdue) overdue += o.remainder;
       else if (o.due_date && o.due_date <= monthEnd) dueThisMonth += o.remainder;
-      if (o.due_date && o.remainder > 0.01) {
-        if (!nearest || o.due_date < nearest.due_date) {
-          const days = Math.round((new Date(o.due_date) - new Date(today)) / 86400000);
-          nearest = { due_date: o.due_date, creditor: o.supplier_name, amount: o.remainder, currency: 'UZS', days, status: o.pay_status, order_number: o.number };
-        }
+      if (o.due_date && o.remainder > 0.01 && (!nearest || o.due_date < nearest.due_date)) {
+        const days = Math.round((new Date(o.due_date) - new Date(today)) / 86400000);
+        nearest = { due_date: o.due_date, creditor: o.supplier_name, amount: o.remainder, currency: 'UZS', days, status: o.pay_status, order_number: o.number };
       }
     }
-    // Ближайшая дата по поставщикам (для строки сводки).
     const supNearest = orders.filter((o) => o.due_date && o.remainder > 0.01).map((o) => o.due_date).sort()[0] || null;
     const suppliersRow = {
       kind: 'Задолженность поставщикам',
-      total: totalRemainder, due_period: dueThisMonth, overdue,
+      total: totalOwed, due_period: dueThisMonth, overdue,
       nearest_date: supNearest, source: 'Закуп',
     };
     res.json({
       currency: 'UZS',
       cards: {
-        total_obligations: totalRemainder,      // Этап 1: только поставщики; кредиты/займы добавятся на Этапе 2
+        total_obligations: totalOwed,           // Этап 1: только поставщики; кредиты/займы добавятся на Этапе 2
         due_this_month: dueThisMonth,
         overdue,
         nearest_payment: nearest,

@@ -418,6 +418,7 @@
   let oblSub = 'summary';
   async function renderObligations() {
     const c = $('#cash-content');
+    c.innerHTML = '';
     c.appendChild(el('div', { class: 'cash-head' }, [el('div', {}, [
       el('div', { class: 'cash-h2' }, 'Обязательства'),
       el('div', { class: 'cash-sub' }, 'Кому, сколько и когда нужно заплатить. Дебиторка (кто должен нам) — отдельный будущий раздел.'),
@@ -471,13 +472,21 @@
     const adv = items.filter((s) => s.balance < -0.01).reduce((a, s) => a + Math.abs(s.balance), 0);
     box.appendChild(kpiBar([['Всего должны поставщикам', owe, 'tot-out'], ['Наши авансы поставщикам', adv, 'tot-in']]));
     const head = el('div', { class: 'cash-row head cash-supbal' }, ['Поставщик', 'Стартовый долг', 'Поставлено', 'Оплачено', 'Сальдо'].map((h) => el('span', {}, h)));
+    const sum = (f) => items.reduce((a, s) => a + (Number(s[f]) || 0), 0);
+    const foot = el('div', { class: 'cash-row foot cash-supbal' }, [
+      el('span', { style: 'font-weight:800' }, 'ИТОГО (' + items.length + ')'),
+      el('span', { class: 'tnum', style: 'font-weight:700' }, money(sum('opening_balance'))),
+      el('span', { class: 'tnum', style: 'font-weight:700' }, money(sum('delivered'))),
+      el('span', { class: 'tnum', style: 'font-weight:700' }, money(sum('paid'))),
+      el('span', { class: 'tnum', style: 'font-weight:800;color:' + (sum('balance') > 0 ? '#c0392b' : '#2e7d32') }, money(sum('balance'))),
+    ]);
     box.appendChild(el('div', { class: 'cash-list' }, [head, ...items.map((s) => el('div', { class: 'cash-row cash-supbal' }, [
       el('span', { style: 'font-weight:600' }, s.name),
       el('span', { class: 'tnum muted' }, money(s.opening_balance)),
       el('span', { class: 'tnum' }, money(s.delivered)),
       el('span', { class: 'tnum' }, money(s.paid)),
       el('span', { class: 'tnum', style: 'font-weight:700;color:' + (s.balance > 0.01 ? '#c0392b' : s.balance < -0.01 ? '#2e7d32' : 'var(--muted)') }, money(s.balance)),
-    ]))]));
+    ])), foot]));
   }
   function oblCard(label, val, hint, cls) {
     return el('div', { class: 'cash-flow-card' }, [
