@@ -448,7 +448,7 @@
     box.appendChild(el('div', { style: 'display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px' }, [
       el('div', { class: 'cash-sub' }, group === 'bank' ? 'Кредиты банков: сумма, ставка, график погашения.' : 'Займы учредителей/инвесторов, беспроцентные и понятийные соглашения, транши.'),
       el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' }, [
-        isAdmin() ? el('button', { class: 'btn-ghost cash-add', onclick: () => oblImportReturn(group) }, '📥 Импорт графика возврата') : null,
+        isAdmin() ? el('button', { class: 'btn-ghost cash-add', onclick: () => oblImportReturn(group) }, '📥 Импорт из Excel') : null,
         isAdmin() ? el('button', { class: 'btn-ghost cash-add', onclick: () => oblLoanForm(null, group) }, group === 'bank' ? '+ Кредит' : '+ Заём') : null,
       ]),
     ]));
@@ -545,17 +545,35 @@
     const typeSel = fsel(LOAN_TYPES.map(([v, t]) => ({ v, t })), 'concept_loan');
     const totalInp = fmoney('', { placeholder: 'общий долг (если больше суммы графика)' });
     const retInp = finp('15', { type: 'number', min: '0', style: 'width:90px', title: 'Если в файле нет даты возврата' });
+    const rateInp = finp('', { type: 'number', step: 'any', min: '0', style: 'width:90px', placeholder: '% годовых' });
     function renderPrev(d) {
       out.innerHTML = '';
       renderSheetPicker(d);
       const s = d.summary;
+      const commonFields = [frow('Кредитор', creditor), frow('Валюта', curSel), frow('Тип', typeSel)];
+      if (d.format === 'amortizing') {
+        // Амортизирующий график (тело + проценты).
+        out.appendChild(el('div', { class: 'cash-note-info' }, `Амортизирующий график: ${s.count} платежей. Тело ${money(s.principal)}, проценты ${money(s.interest)}, всего ${money(s.total)}. ${ruDate(s.first_due)} – ${ruDate(s.last_due)}.`));
+        out.appendChild(el('div', { class: 'cashf', style: 'margin:10px 0' }, [...commonFields, frow('Ставka, % годовых', rateInp)]));
+        const thead = el('thead', {}, el('tr', {}, ['№', 'Дата', 'Остаток', 'Тело', 'Проценты', 'Всего'].map((h, i) => el('th', { style: (i >= 2 ? 'text-align:right;' : '') + 'padding:6px 9px;background:#f2f5f1' }, h))));
+        const tb = el('tbody', {}, d.installments.map((r, i) => el('tr', {}, [
+          el('td', { style: 'padding:5px 9px' }, String(i + 1)),
+          el('td', { style: 'padding:5px 9px' }, ruDate(r.due_date)),
+          el('td', { style: 'padding:5px 9px;text-align:right;color:var(--muted)' }, money(r.opening_principal)),
+          el('td', { style: 'padding:5px 9px;text-align:right' }, money(r.principal_due)),
+          el('td', { style: 'padding:5px 9px;text-align:right' }, money(r.interest_due)),
+          el('td', { style: 'padding:5px 9px;text-align:right;font-weight:700' }, money(r.total_due)),
+        ])));
+        out.appendChild(el('div', { style: 'overflow:auto;max-height:34vh;border:1px solid var(--line);border-radius:10px' }, el('table', { style: 'border-collapse:collapse;width:100%;font-size:12.5px' }, [thead, tb])));
+        return;
+      }
+      // Формат «транши».
       totalInp.value = totalInp.value || String(s.total);
-      out.appendChild(el('div', { class: 'cash-note-info' }, `Распознано траншей: ${s.count} на сумму ${money(s.total)}. График по дате возврата: ${s.count - s.no_due} строк.` + (s.skipped ? ` Пропущено строк-итогов/без даты: ${s.skipped}.` : '') + (s.no_due ? ` Без даты возврата: ${s.no_due}.` : '')));
+      out.appendChild(el('div', { class: 'cash-note-info' }, `Распознано траншей: ${s.count} на сумму ${money(s.total)}.` + (s.skipped ? ` Пропущено строк-итогов/без даты: ${s.skipped}.` : '') + (s.no_due ? ` Без даты возврата: ${s.no_due}.` : '')));
       out.appendChild(el('div', { class: 'cashf', style: 'margin:10px 0' }, [
-        frow('Кредитор', creditor), frow('Валюта', curSel), frow('Тип', typeSel),
-        frow('Общий долг', totalInp),
+        ...commonFields, frow('Общий долг', totalInp),
         s.no_due ? frow('Срок возврата, мес (+к дате выдачи)', retInp) : null,
-        el('div', { class: 'muted', style: 'font-size:12px' }, 'Сумма графика = ' + money(s.total) + '. Если общий долг больше — разница будет «вне графика».' + (s.no_due ? ' В файле нет даты возврата у ' + s.no_due + ' строк — им поставим дату выдачи + указанные месяцы.' : '')),
+        el('div', { class: 'muted', style: 'font-size:12px' }, 'Сумма графика = ' + money(s.total) + '. Если общий долг больше — разница будет «вне графика».' + (s.no_due ? ' У ' + s.no_due + ' строк нет даты возврата — им поставим дату выдачи + месяцы.' : '')),
       ]));
       const thead = el('thead', {}, el('tr', {}, ['Дата выдачи', 'Сумма', 'Дата возврата', 'Комментарий'].map((h) => el('th', { style: 'padding:6px 9px;background:#f2f5f1' }, h))));
       const tb = el('tbody', {}, d.rows.slice(0, 40).map((r) => el('tr', {}, [
@@ -565,24 +583,26 @@
         el('td', { style: 'padding:5px 9px;color:var(--muted)' }, r.comment || ''),
       ])));
       out.appendChild(el('div', { style: 'overflow:auto;max-height:34vh;border:1px solid var(--line);border-radius:10px' }, el('table', { style: 'border-collapse:collapse;width:100%;font-size:12.5px' }, [thead, tb])));
-      if (d.rows.length < d.summary.count) out.appendChild(el('div', { class: 'muted', style: 'font-size:12px;margin-top:4px' }, '…показаны первые 40 из ' + d.summary.count));
+      if (d.rows.length < s.count) out.appendChild(el('div', { class: 'muted', style: 'font-size:12px;margin-top:4px' }, '…показаны первые 40 из ' + s.count));
     }
     const confirm = el('button', { class: 'btn-primary', onclick: async () => {
       if (!PREV) return toast('Сначала прочитайте файл', true);
       if (!creditor.value.trim()) return toast('Укажите кредитора', true);
       try {
         const r = await post('/obligations/import-return-schedule/confirm', {
-          creditor_name: creditor.value, currency: curSel.value, obligation_type: typeSel.value,
-          principal_received: moneyVal(totalInp), return_months: retInp.value, rows: PREV.full,
+          format: PREV.format, creditor_name: creditor.value, currency: curSel.value, obligation_type: typeSel.value,
+          principal_received: PREV.format === 'amortizing' ? PREV.principal_received : moneyVal(totalInp),
+          annual_rate: rateInp.value, return_months: retInp.value, rows: PREV.full,
         });
-        toast(`Создан заём: траншей ${r.tranches}, график ${r.schedule}`); closeModal(); renderObligations(); if (r.id) oblLoanCard(r.id, group);
+        toast(PREV.format === 'amortizing' ? `Создан кредит: график ${r.schedule}` : `Создан заём: траншей ${r.tranches}, график ${r.schedule}`);
+        closeModal(); renderObligations(); if (r.id) oblLoanCard(r.id, group);
       } catch (e) { toast(e.message, true); }
-    } }, 'Создать заём и импортировать');
+    } }, 'Создать и импортировать');
     const body = el('div', { class: 'cashf' }, [
-      el('div', { class: 'cash-sub' }, 'Файл: дата выдачи · сумма · дата возврата · комментарий. Каждый транш возвращается в свою дату (беспроцентный).'),
+      el('div', { class: 'cash-sub' }, 'Поддерживает два формата: список траншей (дата · сумма · возврат) и амортизирующий график (даты в столбцах: тело/проценты). Формат определяется автоматически.'),
       frow('Файл', file), el('div', {}, upBtn), out,
     ]);
-    modal('📥 Импорт графика возврата', body, [confirm]);
+    modal('📥 Импорт из Excel', body, [confirm]);
   }
 
   function oblPayForm(s, loan, group) {

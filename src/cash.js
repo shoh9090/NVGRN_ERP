@@ -2190,6 +2190,37 @@ function excelDate(n) {
   if (m) return `${m[3]}-${String(m[2]).padStart(2, '0')}-${String(m[1]).padStart(2, '0')}`;
   const m2 = s.match(/^(\d{4})-(\d{2})-(\d{2})/); return m2 ? m2[0] : null;
 }
+// Горизонтальный амортизирующий график (даты в столбцах; строки «проценты»/«тело»/«остаток»).
+function parseAmortizingSheet(ws) {
+  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, blankrows: false, defval: '' });
+  const num = (v) => { const n = Number(v); return isNaN(n) ? 0 : n; };
+  // строка с датами: >=3 ячеек-дат (серийники Excel).
+  let dateRow = -1, dateCols = [];
+  for (let i = 0; i < rows.length; i++) {
+    const cols = []; rows[i].forEach((c, j) => { if (typeof c === 'number' && c > 40000 && c < 60000) cols.push(j); });
+    if (cols.length >= 3) { dateRow = i; dateCols = cols; break; }
+  }
+  if (dateRow < 0) return null;
+  // Строки графика — те, у кого есть числа в колонках-датах (чтобы не поймать строки-настройки типа «Проценты: Ежеквартально»).
+  const hasData = (r) => dateCols.some((j) => typeof r[j] === 'number');
+  const findRow = (re) => rows.findIndex((r) => re.test(String(r[0] || '')) && hasData(r));
+  const rP = findRow(/процент/i), rB = findRow(/тел/i), rO = findRow(/остаток/i);
+  if (rB < 0) return null;
+  const inst = [];
+  let prevBal = rO >= 0 ? num(rows[rO][dateCols[0]]) : 0;
+  for (const j of dateCols) {
+    const principal = num(rows[rB] && rows[rB][j]);
+    const interest = rP >= 0 ? num(rows[rP] && rows[rP][j]) : 0;
+    const balAfter = rO >= 0 ? num(rows[rO][j]) : null;
+    if (principal <= 0 && interest <= 0) { if (balAfter !== null && balAfter <= 0) break; prevBal = (balAfter !== null ? balAfter : prevBal); continue; }
+    inst.push({ due_date: excelDate(rows[dateRow][j]), opening_principal: prevBal, principal_due: principal, interest_due: interest, fee_due: 0, total_due: principal + interest });
+    if (balAfter !== null) { prevBal = balAfter; if (balAfter <= 0) break; } else prevBal -= principal;
+  }
+  if (inst.length < 2) return null;
+  const principalReceived = rO >= 0 ? num(rows[rO][dateCols[0]]) : inst.reduce((a, x) => a + x.principal_due, 0);
+  return { installments: inst, principal_received: principalReceived };
+}
+
 function parseReturnScheduleSheet(ws) {
   const rows = XLSX.utils.sheet_to_json(ws, { header: 1, blankrows: false, defval: '' });
   const out = []; let skipped = 0;
@@ -2206,19 +2237,32 @@ router.post('/api/obligations/import-return-schedule/preview', upload.single('fi
   try {
     if (!req.file) return res.status(400).json({ error: 'Файл не выбран' });
     const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
-    // Список листов + число распознанных строк в каждом (для выбора).
-    const sheets = wb.SheetNames.map((nm) => ({ name: nm, count: parseReturnScheduleSheet(wb.Sheets[nm]).rows.length }));
-    // Выбранный лист: заданный явно, иначе — с максимумом распознанных строк.
+    // Число распознанных строк в каждом листе (макс из двух форматов) — для выбора листа.
+    const sheetInfo = (ws) => { const t = parseReturnScheduleSheet(ws).rows.length; const a = (parseAmortizingSheet(ws) || { installments: [] }).installments.length; return { tranches: t, amort: a, count: Math.max(t, a) }; };
+    const sheets = wb.SheetNames.map((nm) => ({ name: nm, ...sheetInfo(wb.Sheets[nm]) }));
     let chosen = req.body && req.body.sheet && wb.SheetNames.includes(req.body.sheet) ? req.body.sheet : null;
     if (!chosen) chosen = (sheets.slice().sort((a, b) => b.count - a.count)[0] || {}).name || wb.SheetNames[0];
-    const { rows, skipped } = parseReturnScheduleSheet(wb.Sheets[chosen]);
-    if (!rows.length) return res.status(400).json({ error: 'На листе «' + chosen + '» не нашёл строк (дата выдачи + сумма + дата возврата). Выберите другой лист.', sheets, sheet: chosen });
-    const total = rows.reduce((a, r) => a + r.amount, 0);
-    const dues = rows.map((r) => r.due_date).filter(Boolean).sort();
+    const ws = wb.Sheets[chosen];
+    const amort = parseAmortizingSheet(ws);
+    const tran = parseReturnScheduleSheet(ws);
+    // Формат: амортизирующий график в приоритете, если строк графика больше, чем траншей.
+    if (amort && amort.installments.length >= Math.max(2, tran.rows.length)) {
+      const inst = amort.installments;
+      const totalPrincipal = inst.reduce((a, r) => a + r.principal_due, 0);
+      const totalInterest = inst.reduce((a, r) => a + r.interest_due, 0);
+      return res.json({
+        sheets, sheet: chosen, format: 'amortizing',
+        installments: inst, full: inst, principal_received: amort.principal_received,
+        summary: { count: inst.length, principal: totalPrincipal, interest: totalInterest, total: totalPrincipal + totalInterest, first_due: inst[0].due_date, last_due: inst[inst.length - 1].due_date },
+      });
+    }
+    if (!tran.rows.length) return res.status(400).json({ error: 'На листе «' + chosen + '» не распознан ни список траншей (дата+сумма), ни амортизирующий график. Выберите другой лист.', sheets, sheet: chosen });
+    const total = tran.rows.reduce((a, r) => a + r.amount, 0);
+    const dues = tran.rows.map((r) => r.due_date).filter(Boolean).sort();
     res.json({
-      sheets, sheet: chosen,
-      rows: rows.slice(0, 200), full: rows,
-      summary: { count: rows.length, total, skipped, first_due: dues[0] || null, last_due: dues[dues.length - 1] || null, no_due: rows.filter((r) => !r.due_date).length },
+      sheets, sheet: chosen, format: 'tranches',
+      rows: tran.rows.slice(0, 200), full: tran.rows,
+      summary: { count: tran.rows.length, total, skipped: tran.skipped, first_due: dues[0] || null, last_due: dues[dues.length - 1] || null, no_due: tran.rows.filter((r) => !r.due_date).length },
     });
   } catch (e) { res.status(400).json({ error: 'Не удалось прочитать файл: ' + e.message }); }
 });
@@ -2226,13 +2270,43 @@ router.post('/api/obligations/import-return-schedule/preview', upload.single('fi
 router.post('/api/obligations/import-return-schedule/confirm', J, async (req, res) => {
   if (!(req.user && req.user.isAdmin)) return res.status(403).json({ error: 'Только администратор/финансы' });
   const b = req.body || {};
+  const type = OBL_TYPES.includes(b.obligation_type) ? b.obligation_type : 'concept_loan';
+  const cur = b.currency === 'USD' ? 'USD' : 'UZS';
+
+  // Амортизирующий график: создаём кредит + строки графика (с процентами).
+  if (b.format === 'amortizing') {
+    const inst = Array.isArray(b.rows) ? b.rows.filter((r) => r.due_date) : [];
+    if (!inst.length) return res.status(400).json({ error: 'Нет строк графика' });
+    const principal = numOrNull(b.principal_received) != null ? numOrNull(b.principal_received) : inst.reduce((a, r) => a + (Number(r.principal_due) || 0), 0);
+    const client = await db.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const lo = await client.query(
+        `INSERT INTO finance_obligations (obligation_type, creditor_name, currency, principal_limit, principal_received, annual_rate, repayment_scheme, status, comment, created_by)
+         VALUES ($1,$2,$3,$4,$4,$5,'differentiated','active',$6,$7) RETURNING id`,
+        [type, (b.creditor_name || 'Кредитор').trim(), cur, principal, numOrNull(b.annual_rate) || 0, b.comment || 'Импорт амортизирующего графика', req.user.id]);
+      const oid = lo.rows[0].id;
+      let no = 0;
+      for (const r of inst) {
+        no += 1;
+        await client.query(
+          `INSERT INTO finance_obligation_schedule (obligation_id, version_no, installment_no, due_date, opening_principal, principal_due, interest_due, fee_due, total_due, status)
+           VALUES ($1,1,$2,$3,$4,$5,$6,$7,$8,'planned')`,
+          [oid, no, r.due_date, Number(r.opening_principal) || 0, Number(r.principal_due) || 0, Number(r.interest_due) || 0, Number(r.fee_due) || 0, Number(r.total_due) || (Number(r.principal_due) || 0) + (Number(r.interest_due) || 0)]);
+      }
+      await client.query('COMMIT');
+      await db.log(req.user.id, 'obl_import_amort', `${b.creditor_name}: график ${inst.length}`);
+      return res.json({ ok: true, id: oid, tranches: 0, schedule: inst.length });
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); return res.status(400).json({ error: e.message }); }
+    finally { client.release(); }
+  }
+
   const rows = Array.isArray(b.rows) ? b.rows.filter((r) => r.received_date && Number(r.amount) > 0) : [];
   if (!rows.length) return res.status(400).json({ error: 'Нет строк для импорта' });
   // Срок возврата: если в файле нет даты возврата — считаем «дата выдачи + N месяцев» (напр. +15).
   const retMonths = parseInt(b.return_months, 10) || 0;
   const addMonths = (iso, m) => { const d = new Date(iso); d.setMonth(d.getMonth() + m); return d.toISOString().slice(0, 10); };
   if (retMonths > 0) rows.forEach((r) => { if (!r.due_date) r.due_date = addMonths(r.received_date, retMonths); });
-  const type = OBL_TYPES.includes(b.obligation_type) ? b.obligation_type : 'concept_loan';
   const scheduledSum = rows.reduce((a, r) => a + Number(r.amount), 0);
   const totalPrincipal = numOrNull(b.principal_received);
   const client = await db.pool.connect();
