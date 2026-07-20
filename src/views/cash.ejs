@@ -19,6 +19,7 @@
       </a>
     </div>
     <div class="topbar-right">
+      <div id="bell-root" class="bell-root"></div>
       <span style="font-size:13px; font-weight:700"><%= user.name %></span>
     </div>
   </header>
@@ -27,6 +28,7 @@
   <div id="cash-modal-root"></div>
 
   <script>window.HUB_USER = { isAdmin: <%= user.isAdmin ? "true" : "false" %>, isFinance: <%= user.isFinance ? "true" : "false" %>, name: "<%= user.name %>" };</script>
+  <script src="/static/bell.js"></script>
   <script src="/static/cash.js"></script>
 </body>
 </html>

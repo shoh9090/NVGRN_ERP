@@ -1,8 +1,17 @@
 // notifications.js — уведомления (колокольчик, принцип Trello)
 const express = require('express');
 const db = require('./db');
+const { ensureObligationReminders } = require('./obligation-reminders');
 
 const router = express.Router();
+
+// Генерация напоминаний о платежах — не чаще раза в ~минуту (колокольчик опрашивает часто).
+let lastReminderRun = 0;
+async function refreshReminders() {
+  if (Date.now() - lastReminderRun < 55000) return;
+  lastReminderRun = Date.now();
+  await ensureObligationReminders();
+}
 
 // Создать уведомление (вызывается из других модулей)
 async function notify({ role = null, userId = null, title, body = '', kind = 'info', link = '' }) {
@@ -19,13 +28,16 @@ async function notify({ role = null, userId = null, title, body = '', kind = 'in
 
 // Список уведомлений текущего пользователя (по роли или персонально)
 router.get('/api/notifications', async (req, res) => {
+  await refreshReminders();
   const roles = (req.user.roles || []).map((r) => String(r).toLowerCase());
   // сопоставление ролей с адресатами уведомлений
   const recipientRoles = [];
-  if (req.user.isAdmin) recipientRoles.push('purchaser', 'manager', 'warehouse');
+  if (req.user.isAdmin) recipientRoles.push('purchaser', 'manager', 'warehouse', 'finance');
+  if (req.user.isFinance) recipientRoles.push('finance');
   if (roles.some((r) => /закуп|purchas/.test(r))) recipientRoles.push('purchaser');
   if (roles.some((r) => /руковод|manager|директор/.test(r))) recipientRoles.push('manager');
   if (roles.some((r) => /склад|warehouse|кладов/.test(r))) recipientRoles.push('warehouse');
+  if (roles.some((r) => /финанс|бухгалт|finance/.test(r))) recipientRoles.push('finance');
 
   const params = [req.user.id];
   let roleClause = 'recipient_user_id = $1';
@@ -56,10 +68,12 @@ router.post('/api/notifications/read', express.json(), async (req, res) => {
 router.post('/api/notifications/read-all', async (req, res) => {
   const roles = (req.user.roles || []).map((r) => String(r).toLowerCase());
   const recipientRoles = [];
-  if (req.user.isAdmin) recipientRoles.push('purchaser', 'manager', 'warehouse');
+  if (req.user.isAdmin) recipientRoles.push('purchaser', 'manager', 'warehouse', 'finance');
+  if (req.user.isFinance) recipientRoles.push('finance');
   if (roles.some((r) => /закуп|purchas/.test(r))) recipientRoles.push('purchaser');
   if (roles.some((r) => /руковод|manager|директор/.test(r))) recipientRoles.push('manager');
   if (roles.some((r) => /склад|warehouse|кладов/.test(r))) recipientRoles.push('warehouse');
+  if (roles.some((r) => /финанс|бухгалт|finance/.test(r))) recipientRoles.push('finance');
   const params = [req.user.id];
   let roleClause = 'recipient_user_id = $1';
   if (recipientRoles.length) { params.push(recipientRoles); roleClause += ` OR recipient_role = ANY($${params.length})`; }

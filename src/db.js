@@ -189,6 +189,9 @@ CREATE TABLE IF NOT EXISTS notifications (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_notif_unread ON notifications (is_read, created_at DESC);
+-- Ключ дедупликации: не создавать одно и то же напоминание повторно
+ALTER TABLE notifications ADD COLUMN IF NOT EXISTS dedup_key TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_notif_dedup ON notifications (dedup_key) WHERE dedup_key IS NOT NULL;
 
 -- Передача сырья в производство
 CREATE TABLE IF NOT EXISTS production_issues (
