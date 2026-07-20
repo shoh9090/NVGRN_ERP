@@ -53,6 +53,12 @@
 .cash-obl.total { font-weight: 800; background: #f0efe6; border-top: 2px solid var(--forest, #163a28); }
 .cash-supbal { grid-template-columns: 1.6fr 1fr 1fr 1fr 1fr 1fr 1fr; }
 .cash-obl .tnum, .cash-supbal .tnum { text-align: right; font-variant-numeric: tabular-nums; }
+/* Заголовки числовых столбцов Сводки — вправо, над своими цифрами (столбцы 2–5) */
+.cash-obl.head span:nth-child(2), .cash-obl.head span:nth-child(3),
+.cash-obl.head span:nth-child(4), .cash-obl.head span:nth-child(5) { text-align: right; }
+/* Тонкие разделители столбцов, чтобы числа не «висели» между заголовками */
+.cash-obl > span:nth-child(n+2) { border-left: 1px solid #eef1ec; padding-left: 10px; }
+.cash-obl.head > span:nth-child(n+2) { border-left-color: #e2e7de; }
 .cash-row.foot { background: #f2f5f1; border-top: 2px solid var(--line); }
 
 /* Компактные фильтры «Обязательства → Поставщики» — иконки + узкие контролы в одну строку */
