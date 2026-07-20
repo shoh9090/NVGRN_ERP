@@ -36,10 +36,10 @@
     setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 300); }, 3500);
   }
   function closeModal() { $('#cash-modal-root').innerHTML = ''; }
-  function modal(title, body, actions) {
+  function modal(title, body, actions, opts) {
     const root = $('#cash-modal-root'); root.innerHTML = '';
     const overlay = el('div', { class: 'cashm-overlay', onclick: (e) => { if (e.target === overlay) closeModal(); } });
-    overlay.appendChild(el('div', { class: 'cashm-panel' }, [
+    overlay.appendChild(el('div', { class: 'cashm-panel' + (opts && opts.wide ? ' cashm-wide' : '') }, [
       el('div', { class: 'cashm-head' }, [el('h3', {}, title), el('button', { class: 'cashm-x', onclick: closeModal }, '✕')]),
       el('div', { class: 'cashm-body' }, [body]),
       actions && actions.length ? el('div', { class: 'cashm-acts' }, actions) : null,
@@ -602,7 +602,7 @@
       el('div', { class: 'cash-sub' }, 'Поддерживает два формата: список траншей (дата · сумма · возврат) и амортизирующий график (даты в столбцах: тело/проценты). Формат определяется автоматически.'),
       frow('Файл', file), el('div', {}, upBtn), out,
     ]);
-    modal('📥 Импорт из Excel', body, [confirm]);
+    modal('📥 Импорт из Excel', body, [confirm], { wide: true });
   }
 
   function oblPayForm(s, loan, group) {
@@ -632,23 +632,40 @@
   async function oblLoanCard(id, group) {
     let d; try { d = await api('/obligations/loans/' + id); } catch (e) { return toast(e.message, true); }
     const o = d.loan;
-    const kpi = (l, v) => el('div', { class: 'cash-flow-card', style: 'padding:9px 12px' }, [el('div', { class: 'cash-flow-card-l' }, l), el('div', { class: 'cash-flow-card-v', style: 'font-size:16px' }, v)]);
-    const head = el('div', { class: 'cash-flow-cards cash-flow-cards-4', style: 'margin-bottom:12px' }, [
-      kpi('Получено', curFmt(o.principal_received, o.currency) + ' ' + o.currency),
-      kpi('Ставка', (Number(o.annual_rate) || 0) + '% годовых'),
-      kpi('Схема', (SCHEMES.find((s) => s[0] === o.repayment_scheme) || [, '—'])[1]),
-      kpi('Статус', LOAN_STATUS[o.status] || o.status),
+    // Вычисляемые итоги из графика.
+    const totalDue = d.schedule.reduce((a, s) => a + (Number(s.total_due) || 0), 0);
+    const totalPaid = d.schedule.reduce((a, s) => a + (Number(s.paid) || 0), 0);
+    const remaining = totalDue - totalPaid;
+    const cur = o.currency;
+    const kpi = (l, v, cls) => el('div', { class: 'cash-flow-card', style: 'padding:9px 12px' }, [el('div', { class: 'cash-flow-card-l' }, l), el('div', { class: 'cash-flow-card-v ' + (cls || ''), style: 'font-size:16px' }, v)]);
+    const head = el('div', { class: 'cash-flow-cards cash-flow-cards-4', style: 'margin-bottom:6px' }, [
+      kpi('Получено', curFmt(o.principal_received, cur) + ' ' + cur),
+      kpi('Всего по графику', curFmt(totalDue, cur)),
+      kpi('Выплачено', curFmt(totalPaid, cur), 'cash-tot-in'),
+      kpi('Остаток к выплате', curFmt(remaining, cur), remaining > 0.01 ? 'cash-tot-out' : ''),
     ]);
-    // Генерация графика (админ).
+    const subline = el('div', { class: 'cash-sub', style: 'margin-bottom:10px' },
+      'Ставка ' + (Number(o.annual_rate) || 0) + '% годовых · схема ' + (SCHEMES.find((s) => s[0] === o.repayment_scheme) || [, '—'])[1] + ' · статус ' + (LOAN_STATUS[o.status] || o.status) + ' · валюта ' + cur);
+    // Генерация графика (админ). Если график уже есть — прячем за кнопкой (чтобы случайно не перезаписать).
     const nInp = finp('', { type: 'number', min: '1', placeholder: 'число платежей', style: 'width:120px' });
     const fpInp = finp(o.first_payment_date ? String(o.first_payment_date).slice(0, 10) : '', { type: 'date' });
     const genBtn = el('button', { class: 'btn-ghost cash-add', onclick: async () => {
+      if (!nInp.value || !fpInp.value) return toast('Укажите число платежей и дату первого платежа', true);
+      if (d.schedule.length && !confirm('Заменить текущий график сгенерированным? Импортированный/загруженный график будет перезаписан.')) return;
       try { const r = await post('/obligations/loans/' + id + '/generate-schedule', { installments: nInp.value, first_payment_date: fpInp.value }); toast('График построен (v' + r.version + ')'); oblLoanCard(id, group); }
       catch (e) { toast(e.message, true); }
     } }, '📅 Построить график');
-    const genRow = isAdmin() ? el('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0' }, [
+    const genInner = el('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0' }, [
       el('span', { class: 'muted' }, 'Платежей:'), nInp, el('span', { class: 'muted' }, 'с даты:'), fpInp, genBtn,
-    ]) : null;
+    ]);
+    let genRow = null;
+    if (isAdmin()) {
+      if (d.schedule.length) {
+        genInner.style.display = 'none';
+        const toggle = el('a', { href: 'javascript:void(0)', class: 'muted', style: 'font-size:12px', onclick: (e) => { e.preventDefault(); genInner.style.display = genInner.style.display === 'none' ? 'flex' : 'none'; } }, '↻ Перестроить график (заменит текущий)');
+        genRow = el('div', {}, [toggle, genInner]);
+      } else genRow = genInner;
+    }
     // Таблица графика.
     let schedBlock;
     if (d.schedule.length) {
@@ -686,7 +703,7 @@
       schedBlock = el('div', { class: 'cash-empty' }, 'График ещё не построен.' + (isAdmin() ? ' Задайте число платежей и дату — «Построить график».' : ''));
     }
     const body = el('div', {}, [
-      head,
+      head, subline,
       el('p', { class: 'muted' }, [o.agreement_number ? '№ ' + o.agreement_number : '', o.wallet_name ? 'кошелёк: ' + o.wallet_name : '', o.comment].filter(Boolean).join(' · ')),
       el('h3', { class: 'cash-h2', style: 'font-size:16px;margin:6px 0' }, 'График платежей' + (d.version ? ' (v' + d.version + ')' : '')),
       genRow, schedBlock,
@@ -697,7 +714,7 @@
       acts.push(el('button', { class: 'btn-ghost', onclick: () => oblLoanForm(o, group) }, 'Изменить'));
     }
     acts.push(el('button', { class: 'btn-primary', onclick: closeModal }, 'Закрыть'));
-    modal('🏦 ' + o.creditor_name, body, acts);
+    modal('🏦 ' + o.creditor_name, body, acts, { wide: true });
   }
   async function oblSummary(box) {
     let d; try { d = await api('/obligations/summary'); } catch (e) { box.innerHTML = ''; box.appendChild(el('div', { class: 'cash-empty' }, 'Ошибка: ' + e.message)); return; }
@@ -722,7 +739,8 @@
     // Строки по видам обязательств (валютные — в своей валюте).
     const head = el('div', { class: 'cash-row head cash-obl' }, ['Вид обязательства', 'Общий остаток', 'К оплате в периоде', 'Просрочено', 'Ближайшая дата', 'Источник'].map((h) => el('span', {}, h)));
     const rowAmt = (r, v) => (r.currency === 'USD' ? '$' + curFmt(v, 'USD') : money(v));
-    box.appendChild(el('div', { class: 'cash-list' }, [head, ...d.rows.map((r) => el('div', { class: 'cash-row cash-obl' }, [
+    const rowGo = (r) => { oblSub = r.source === 'Закуп' ? 'suppliers' : r.source === 'Кредиты' ? 'loans' : 'concept'; renderObligations(); };
+    box.appendChild(el('div', { class: 'cash-list' }, [head, ...d.rows.map((r) => el('div', { class: 'cash-row cash-obl', style: 'cursor:pointer', title: 'Открыть раздел', onclick: () => rowGo(r) }, [
       el('span', { style: 'font-weight:700' }, r.kind),
       el('span', { class: 'tnum' }, rowAmt(r, r.total)),
       el('span', { class: 'tnum' }, rowAmt(r, r.due_period)),

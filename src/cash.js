@@ -1900,18 +1900,23 @@ router.get('/api/obligations/summary', async (req, res) => {
       loanGrp[g + '|' + c] = (loanGrp[g + '|' + c] || 0) + bal;
     }
     const sch = (await db.pool.query(
-      `SELECT o.currency,
+      `SELECT o.currency, (o.obligation_type = 'bank_loan') AS is_bank,
               COALESCE(SUM(s.total_due) FILTER (WHERE s.due_date < CURRENT_DATE),0) AS ovd,
               COALESCE(SUM(s.total_due) FILTER (WHERE s.due_date >= CURRENT_DATE AND s.due_date <= $1),0) AS duem,
               MIN(s.due_date) FILTER (WHERE s.due_date >= CURRENT_DATE) AS nxt
        FROM finance_obligation_schedule s JOIN finance_obligations o ON o.id=s.obligation_id
-       WHERE s.status NOT IN ('paid','cancelled') AND o.status NOT IN ('cancelled','closed') GROUP BY o.currency`, [monthEnd])).rows;
+       WHERE s.status NOT IN ('paid','cancelled') AND o.status NOT IN ('cancelled','closed') GROUP BY o.currency, is_bank`, [monthEnd])).rows;
     const ovdCur = { UZS: overdue, USD: 0 }, dueCur = { UZS: dueThisMonth, USD: 0 };
-    const schByGrp = {}; // прикинем просрочку/срок на группу (по валюте)
-    sch.forEach((r) => { const c = cur1(r.currency); ovdCur[c] = (ovdCur[c] || 0) + Number(r.ovd || 0); dueCur[c] = (dueCur[c] || 0) + Number(r.duem || 0); schByGrp[c] = { ovd: Number(r.ovd || 0), duem: Number(r.duem || 0), nxt: r.nxt }; });
+    const schByGrp = {}; // просрочка/срок по группе(банк/займ)+валюте
+    sch.forEach((r) => {
+      const c = cur1(r.currency);
+      ovdCur[c] = (ovdCur[c] || 0) + Number(r.ovd || 0); dueCur[c] = (dueCur[c] || 0) + Number(r.duem || 0);
+      const g = r.is_bank ? 'Банковские кредиты' : 'Понятийные и инвестиционные займы';
+      schByGrp[g + '|' + c] = { ovd: Number(r.ovd || 0), duem: Number(r.duem || 0), nxt: r.nxt };
+    });
     for (const [k, v] of Object.entries(loanGrp)) {
       if (v <= 0.01) continue;
-      const [g, c] = k.split('|'); const sc = schByGrp[c] || {};
+      const [g, c] = k.split('|'); const sc = schByGrp[k] || {};
       rows.push({ kind: g + (c === 'USD' ? ' ($)' : ''), currency: c, total: v, due_period: sc.duem || 0, overdue: sc.ovd || 0, nearest_date: sc.nxt || null, source: g.includes('кредит') ? 'Кредиты' : 'Займы' });
     }
 
