@@ -1925,6 +1925,20 @@ router.get('/api/obligations/summary', async (req, res) => {
     const totalUzs = byCur.UZS + toUzs('USD', byCur.USD || 0);
     const overdueUzs = ovdCur.UZS + toUzs('USD', ovdCur.USD);
     const dueUzs = dueCur.UZS + toUzs('USD', dueCur.USD);
+
+    // Каждую строку показываем сразу в двух валютах: $ и сум (по курсу ЦБ).
+    const toUsd = (c, v) => (cur1(c) === 'USD' ? v : (rate ? v / rate : 0));
+    rows.forEach((r) => {
+      r.total_uzs = toUzs(r.currency, r.total);
+      r.total_usd = toUsd(r.currency, r.total);
+      r.due_uzs = toUzs(r.currency, r.due_period || 0);
+      r.overdue_uzs = toUzs(r.currency, r.overdue || 0);
+    });
+    const totals = rows.reduce((a, r) => ({
+      usd: a.usd + r.total_usd, uzs: a.uzs + r.total_uzs,
+      due_uzs: a.due_uzs + r.due_uzs, overdue_uzs: a.overdue_uzs + r.overdue_uzs,
+    }), { usd: 0, uzs: 0, due_uzs: 0, overdue_uzs: 0 });
+
     res.json({
       currency: 'UZS', rate, rate_date: today, by_currency: byCur,
       cards: {
@@ -1933,8 +1947,8 @@ router.get('/api/obligations/summary', async (req, res) => {
         overdue: overdueUzs,
         nearest_payment: nearest,
       },
-      rows,
-      note: 'Итог — в сумах по курсу ЦБ; валютные обязательства также показаны в своей валюте. Поставщики — из Закупа, кредиты/займы — из «Обязательств».',
+      rows, totals,
+      note: 'Каждая строка — в двух валютах: в долларах и в сумах по курсу ЦБ. ИТОГО суммирует всё в сумах. Поставщики — из Закупа, кредиты/займы — из «Обязательств».',
     });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });

@@ -737,19 +737,32 @@
     box.appendChild(el('div', { class: 'cash-sub', style: 'margin:10px 0 6px' }, [
       (parts.length > 1 ? 'В т.ч.: ' + parts.join(' + ') + (d.rate ? ' · курс ЦБ ' + money(d.rate) + ' сум/$' + (d.rate_date ? ' на ' + ruDate(d.rate_date) : '') : ' · курс ЦБ недоступен, доллары в итог не пересчитаны') + '. ' : '') + (d.note || ''),
     ]));
-    // Строки по видам обязательств (валютные — в своей валюте).
-    const head = el('div', { class: 'cash-row head cash-obl' }, ['Вид обязательства', 'Общий остаток', 'К оплате в периоде', 'Просрочено', 'Ближайшая дата', 'Источник'].map((h) => el('span', {}, h)));
-    const rowAmt = (r, v) => (r.currency === 'USD' ? '$' + curFmt(v, 'USD') : money(v));
+    // Строки по видам обязательств: каждая — в двух валютах ($ и сум).
+    const head = el('div', { class: 'cash-row head cash-obl' }, ['Вид обязательства', 'Остаток, $', 'Остаток, сум', 'К оплате (сум)', 'Просрочено (сум)', 'Ближайшая дата', 'Источник'].map((h) => el('span', {}, h)));
+    const usd = (v) => (v > 0.01 ? '$' + curFmt(v, 'USD') : '—');
+    const uzs = (v) => (v > 0.01 ? money(v) : '—');
     const rowGo = (r) => { oblSub = r.source === 'Закуп' ? 'suppliers' : r.source === 'Кредиты' ? 'loans' : 'concept'; renderObligations(); };
+    const t = d.totals || {};
     box.appendChild(el('div', { class: 'cash-list' }, [head, ...d.rows.map((r) => el('div', { class: 'cash-row cash-obl', style: 'cursor:pointer', title: 'Открыть раздел', onclick: () => rowGo(r) }, [
       el('span', { style: 'font-weight:700' }, r.kind),
-      el('span', { class: 'tnum' }, rowAmt(r, r.total)),
-      el('span', { class: 'tnum' }, rowAmt(r, r.due_period)),
-      el('span', { class: 'tnum' + (r.overdue > 0 ? ' cash-tot-out' : '') }, r.overdue > 0 ? rowAmt(r, r.overdue) : '—'),
+      el('span', { class: 'tnum' }, usd(r.total_usd)),
+      el('span', { class: 'tnum' }, uzs(r.total_uzs)),
+      el('span', { class: 'tnum' }, uzs(r.due_uzs)),
+      el('span', { class: 'tnum' + (r.overdue_uzs > 0.01 ? ' cash-tot-out' : '') }, r.overdue_uzs > 0.01 ? uzs(r.overdue_uzs) : '—'),
       el('span', { class: 'muted' }, r.nearest_date ? ruDate(r.nearest_date) : '—'),
       el('span', { class: 'muted' }, r.source),
-    ]))]));
-    box.appendChild(el('div', { class: 'cash-sub', style: 'margin-top:8px' }, 'Строки — только для просмотра. Поставщики считаются из Закуп → Взаиморасчёты, кредиты/займы — из их графиков.'));
+    ])),
+      el('div', { class: 'cash-row cash-obl total' }, [
+        el('span', {}, 'ИТОГО'),
+        el('span', { class: 'tnum' }, usd(t.usd || 0)),
+        el('span', { class: 'tnum' }, uzs(t.uzs || 0)),
+        el('span', { class: 'tnum' }, uzs(t.due_uzs || 0)),
+        el('span', { class: 'tnum' + ((t.overdue_uzs || 0) > 0.01 ? ' cash-tot-out' : '') }, (t.overdue_uzs || 0) > 0.01 ? uzs(t.overdue_uzs) : '—'),
+        el('span', {}, ''),
+        el('span', {}, ''),
+      ]),
+    ]));
+    box.appendChild(el('div', { class: 'cash-sub', style: 'margin-top:8px' }, 'Каждая строка — в двух валютах: остаток в долларах и в сумах по курсу ЦБ. ИТОГО в сумах. Строки — только для просмотра (поставщики из Закуп → Взаиморасчёты, кредиты/займы — из их графиков).'));
     // Платёжный календарь.
     const calBox = el('div', { style: 'margin-top:18px' }); box.appendChild(calBox);
     oblCalendar(calBox);
