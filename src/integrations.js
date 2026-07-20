@@ -565,10 +565,13 @@ async function syncCrmExpeditors() {
 
 // Карта «торговая точка → контрагент (юрлицо, ИНН)» из getContragent (двухуровневая модель SD).
 // На «обычном» сервере getContragent даёт 400 «Contragent mode is not enabled» → вернём null (фоллбэк).
+const CONTRAGENT_METHODS = [['getContragent', 'contragent'], ['getContragents', 'contragent'], ['getContragentList', 'contragent'], ['getCounteragent', 'counteragent']];
 async function getContragentMap(cfg, auth) {
-  let list;
-  try { list = await sdGetAll(cfg, auth, 'getContragent', 'contragent', {}); }
-  catch (e) { return null; }
+  let list = null;
+  for (const [method, key] of CONTRAGENT_METHODS) {
+    try { const r = await sdGetAll(cfg, auth, method, key, {}); if (Array.isArray(r) && r.length) { list = r; break; } }
+    catch (e) { /* метод недоступен — пробуем следующий */ }
+  }
   if (!Array.isArray(list) || !list.length) return null;
   const bySalepoint = {}, byInn = {};
   for (const k of list) {
@@ -587,13 +590,16 @@ async function probeContragent() {
   const cfg = await getSdConfig();
   if (!cfg.url || !cfg.login || !cfg.password) throw new Error('Сначала заполните доступ к SalesDoctor.');
   const auth = await sdLogin(cfg);
-  try {
-    const data = await sdRequest(cfg.url, { method: 'getContragent', auth: { userId: auth.userId, token: auth.token }, params: { limit: 3, page: 1 } });
-    const list = (data.result && (data.result.contragent || data.result.data && data.result.data.contragent)) || data.result || [];
-    return { enabled: true, sample: Array.isArray(list) ? list.slice(0, 3) : list };
-  } catch (e) {
-    return { enabled: false, error: e.message };
+  const tried = [];
+  for (const [method] of CONTRAGENT_METHODS) {
+    try {
+      const data = await sdRequest(cfg.url, { method, auth: { userId: auth.userId, token: auth.token }, params: { limit: 3, page: 1 } });
+      const r = data.result;
+      const list = (r && (r.contragent || r.counteragent || (r.data && (r.data.contragent || r.data.counteragent)))) || r || [];
+      return { enabled: true, method, sample: Array.isArray(list) ? list.slice(0, 3) : list };
+    } catch (e) { tried.push(method + ': ' + e.message); }
   }
+  return { enabled: false, error: tried.join(' | ') };
 }
 
 async function syncClientsToContacts() {
