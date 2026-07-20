@@ -14,6 +14,8 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 16 
 // Объявляем заранее — используются как middleware при регистрации маршрутов ниже.
 const J = express.json();
 const intOrNull = (v) => (v === undefined || v === null || v === '' ? null : parseInt(v, 10));
+// Право вести Кассу/Обязательства: администратор ИЛИ роль «Финансы/Бухгалтерия».
+const canFin = (req) => !!(req.user && (req.user.isAdmin || req.user.isFinance));
 const numOrNull = (v) => (v === undefined || v === null || v === '' ? null : Number(v));
 
 // Подбор статьи по ключевым словам для одной строки текста (Наличная касса, ввод в реальном времени) —
@@ -2025,7 +2027,7 @@ router.get('/api/obligations/loans', async (req, res) => {
 });
 
 router.post('/api/obligations/loans', J, async (req, res) => {
-  if (!(req.user && req.user.isAdmin)) return res.status(403).json({ error: 'Создавать кредиты/займы может администратор/финансы' });
+  if (!canFin(req)) return res.status(403).json({ error: 'Создавать кредиты/займы может администратор/финансы' });
   const b = req.body || {};
   const type = OBL_TYPES.includes(b.obligation_type) ? b.obligation_type : 'bank_loan';
   const r = await db.pool.query(
@@ -2058,7 +2060,7 @@ async function catIdByCode(code) { const r = await db.pool.query("SELECT id FROM
 // Оплата строки графика: пишет расход(ы) в Кассу (тело/проценты/комиссия по статьям ДДС 61/60/62)
 // и привязывает к строке — деньги вводятся ОДИН раз, двойного учёта нет. Всё в транзакции.
 router.post('/api/obligations/schedule/:id(\\d+)/pay', J, async (req, res) => {
-  if (!(req.user && req.user.isAdmin)) return res.status(403).json({ error: 'Проводить оплату может администратор/финансы' });
+  if (!canFin(req)) return res.status(403).json({ error: 'Проводить оплату может администратор/финансы' });
   const b = req.body || {};
   const sid = parseInt(req.params.id, 10);
   const s = (await db.pool.query(
@@ -2105,7 +2107,7 @@ router.post('/api/obligations/schedule/:id(\\d+)/pay', J, async (req, res) => {
 
 // Сторно привязки оплаты: денежные операции не удаляем физически — помечаем reversed + удаляем расходы.
 router.post('/api/obligations/payment-links/:id(\\d+)/reverse', J, async (req, res) => {
-  if (!(req.user && req.user.isAdmin)) return res.status(403).json({ error: 'Только администратор/финансы' });
+  if (!canFin(req)) return res.status(403).json({ error: 'Только администратор/финансы' });
   const link = (await db.pool.query('SELECT * FROM finance_obligation_payment_links WHERE id=$1 AND reversed_at IS NULL', [req.params.id])).rows[0];
   if (!link) return res.status(404).json({ error: 'Привязка не найдена или уже сторнирована' });
   const client = await db.pool.connect();
@@ -2127,7 +2129,7 @@ router.post('/api/obligations/payment-links/:id(\\d+)/reverse', J, async (req, r
 });
 
 router.post('/api/obligations/loans/:id(\\d+)', J, async (req, res) => {
-  if (!(req.user && req.user.isAdmin)) return res.status(403).json({ error: 'Только администратор/финансы' });
+  if (!canFin(req)) return res.status(403).json({ error: 'Только администратор/финансы' });
   const b = req.body || {};
   const sets = [], vals = []; let i = 1;
   for (const f of OBL_FIELDS) {
@@ -2146,7 +2148,7 @@ router.post('/api/obligations/loans/:id(\\d+)', J, async (req, res) => {
 
 // Генерация нового графика (новая версия). Оплаченные строки прошлых версий не трогаем — версии отдельны.
 router.post('/api/obligations/loans/:id(\\d+)/generate-schedule', J, async (req, res) => {
-  if (!(req.user && req.user.isAdmin)) return res.status(403).json({ error: 'Только администратор/финансы' });
+  if (!canFin(req)) return res.status(403).json({ error: 'Только администратор/финансы' });
   const loan = (await db.pool.query('SELECT * FROM finance_obligations WHERE id=$1', [req.params.id])).rows[0];
   if (!loan) return res.status(404).json({ error: 'Не найдено' });
   const rows = genSchedule(loan, req.body || {});
@@ -2169,7 +2171,7 @@ router.post('/api/obligations/loans/:id(\\d+)/generate-schedule', J, async (req,
 });
 
 router.post('/api/obligations/loans/:id(\\d+)/tranches', J, async (req, res) => {
-  if (!(req.user && req.user.isAdmin)) return res.status(403).json({ error: 'Только администратор/финансы' });
+  if (!canFin(req)) return res.status(403).json({ error: 'Только администратор/финансы' });
   const b = req.body || {};
   const mx = (await db.pool.query('SELECT COALESCE(MAX(tranche_no),0)+1 n FROM finance_obligation_tranches WHERE obligation_id=$1', [req.params.id])).rows[0].n;
   const r = await db.pool.query(
@@ -2180,7 +2182,7 @@ router.post('/api/obligations/loans/:id(\\d+)/tranches', J, async (req, res) => 
 });
 
 router.post('/api/obligations/loans/:id(\\d+)/delete', async (req, res) => {
-  if (!(req.user && req.user.isAdmin)) return res.status(403).json({ error: 'Только администратор' });
+  if (!canFin(req)) return res.status(403).json({ error: 'Только администратор' });
   // Есть ли фактические оплаты — тогда не удаляем физически, а помечаем отменённым.
   const paid = (await db.pool.query('SELECT 1 FROM finance_obligation_payment_links WHERE obligation_id=$1 AND reversed_at IS NULL LIMIT 1', [req.params.id])).rows.length;
   if (paid) { await db.pool.query("UPDATE finance_obligations SET status='cancelled', updated_at=now() WHERE id=$1", [req.params.id]); return res.json({ ok: true, archived: true }); }
@@ -2238,7 +2240,7 @@ function parseReturnScheduleSheet(ws) {
 }
 
 router.post('/api/obligations/import-return-schedule/preview', upload.single('file'), async (req, res) => {
-  if (!(req.user && req.user.isAdmin)) return res.status(403).json({ error: 'Только администратор/финансы' });
+  if (!canFin(req)) return res.status(403).json({ error: 'Только администратор/финансы' });
   try {
     if (!req.file) return res.status(400).json({ error: 'Файл не выбран' });
     const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
@@ -2273,7 +2275,7 @@ router.post('/api/obligations/import-return-schedule/preview', upload.single('fi
 });
 
 router.post('/api/obligations/import-return-schedule/confirm', J, async (req, res) => {
-  if (!(req.user && req.user.isAdmin)) return res.status(403).json({ error: 'Только администратор/финансы' });
+  if (!canFin(req)) return res.status(403).json({ error: 'Только администратор/финансы' });
   const b = req.body || {};
   const type = OBL_TYPES.includes(b.obligation_type) ? b.obligation_type : 'concept_loan';
   const cur = b.currency === 'USD' ? 'USD' : 'UZS';

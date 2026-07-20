@@ -26,7 +26,7 @@
   <main id="cash-main"></main>
   <div id="cash-modal-root"></div>
 
-  <script>window.HUB_USER = { isAdmin: <%= user.isAdmin ? "true" : "false" %>, name: "<%= user.name %>" };</script>
+  <script>window.HUB_USER = { isAdmin: <%= user.isAdmin ? "true" : "false" %>, isFinance: <%= user.isFinance ? "true" : "false" %>, name: "<%= user.name %>" };</script>
   <script src="/static/cash.js"></script>
 </body>
 </html>

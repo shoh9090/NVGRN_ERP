@@ -13,8 +13,11 @@
 
 <% roles.forEach(function(r) { %>
   <section class="card">
-    <h3><%= r.name %> <% if (r.is_admin) { %><span class="badge">админ — видит всё</span><% } %></h3>
+    <h3><%= r.name %> <% if (r.is_admin) { %><span class="badge">админ — видит всё</span><% } %><% if (r.is_finance) { %> <span class="badge" style="background:#e8f5e9;color:#2e7d32">финансы — ведёт Кассу/Обязательства</span><% } %></h3>
     <% if (!r.is_admin) { %>
+      <form method="POST" action="/admin/roles/<%= r.id %>/finance" style="margin-bottom:8px">
+        <label class="check"><input type="checkbox" name="is_finance" onchange="this.form.submit()" <%= r.is_finance ? 'checked' : '' %>> Роль «Финансы/Бухгалтерия» — может вести Кассу и Обязательства (вносить, править, проводить оплаты) без полного админа</label>
+      </form>
       <form method="POST" action="/admin/roles/<%= r.id %>/tiles" class="checks">
         <% tiles.forEach(function(t) { %>
           <% var checked = roleTiles.some(function(x){ return x.role_id === r.id && x.tile_id === t.id; }); %>

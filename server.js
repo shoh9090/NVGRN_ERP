@@ -32,7 +32,7 @@ app.use('/static', express.static(path.join(__dirname, 'public')));
 
 function signToken(user) {
   return jwt.sign(
-    { id: user.id, login: user.login, name: user.full_name, isAdmin: user.is_admin, roles: user.roles },
+    { id: user.id, login: user.login, name: user.full_name, isAdmin: user.is_admin, isFinance: user.is_finance || false, roles: user.roles },
     JWT_SECRET,
     { expiresIn: '12h' }
   );
@@ -81,7 +81,7 @@ app.post('/login', async (req, res) => {
     return res.render('login', { settings, error: 'Неверный логин или пароль' });
   }
   const rolesQ = await db.pool.query(
-    `SELECT r.id, r.name, r.is_admin FROM roles r
+    `SELECT r.id, r.name, r.is_admin, r.is_finance FROM roles r
      JOIN user_roles ur ON ur.role_id = r.id WHERE ur.user_id = $1`,
     [user.id]
   );
@@ -91,6 +91,7 @@ app.post('/login', async (req, res) => {
     login: user.login,
     full_name: user.full_name,
     is_admin: roles.some((x) => x.is_admin),
+    is_finance: roles.some((x) => x.is_finance),
     roles: roles.map((x) => x.name),
   });
   // secure: req.secure — на https (Railway) кука только по https; на локальном http вход не ломается.
@@ -351,6 +352,16 @@ admin.post('/roles', async (req, res) => {
       console.error(e.message);
     }
   }
+  res.redirect('/admin/roles');
+});
+
+// Переключение флага «Финансы/Бухгалтерия» у роли.
+admin.post('/roles/:id/finance', async (req, res) => {
+  const on = !!req.body.is_finance;
+  const r = await db.pool.query('SELECT is_admin FROM roles WHERE id = $1', [req.params.id]);
+  if (!r.rows.length || r.rows[0].is_admin) return res.redirect('/admin/roles'); // админ-роль не трогаем
+  await db.pool.query('UPDATE roles SET is_finance = $1 WHERE id = $2', [on, req.params.id]);
+  await db.log(req.user.id, 'set_role_finance', `${req.params.id} = ${on}`);
   res.redirect('/admin/roles');
 });
 

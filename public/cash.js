@@ -440,7 +440,8 @@
   const LOAN_TYPES = [['concept_loan', 'Понятийный'], ['investment_loan', 'Инвестиционный'], ['founder_loan', 'Учредителя'], ['other_loan', 'Прочий']];
   const LOAN_STATUS = { draft: 'Черновик', active: 'Активен', closed: 'Погашен', overdue: 'Просрочен', restructured: 'Реструктурирован', cancelled: 'Отменён' };
   const curFmt = (v, cur) => (cur === 'USD' ? (Number(v) || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : money(v));
-  const isAdmin = () => !!(window.HUB_USER && window.HUB_USER.isAdmin);
+  // Право вести обязательства: админ ИЛИ роль «Финансы/Бухгалтерия».
+  const isAdmin = () => !!(window.HUB_USER && (window.HUB_USER.isAdmin || window.HUB_USER.isFinance));
 
   async function oblLoans(box, group) {
     box.innerHTML = '';

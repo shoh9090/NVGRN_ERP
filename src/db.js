@@ -480,6 +480,20 @@ async function seed() {
   }
 
   // Роль администратора
+  // Роль «Финансы/Бухгалтерия»: ведёт Кассу и Обязательства (без полного админа).
+  await pool.query("ALTER TABLE roles ADD COLUMN IF NOT EXISTS is_finance BOOLEAN DEFAULT FALSE").catch(() => {});
+  {
+    const fin = await pool.query("SELECT id FROM roles WHERE is_finance = TRUE LIMIT 1");
+    let finId = fin.rows[0] && fin.rows[0].id;
+    if (!finId) {
+      const ins = await pool.query("INSERT INTO roles (name, is_admin, is_finance) VALUES ('Финансы/Бухгалтерия', FALSE, TRUE) ON CONFLICT (name) DO UPDATE SET is_finance=TRUE RETURNING id").catch(() => null);
+      finId = ins && ins.rows[0] && ins.rows[0].id;
+    }
+    // Даём роли доступ к плитке «Касса» (обязательства — внутри неё).
+    if (finId) await pool.query(
+      `INSERT INTO role_tiles (role_id, tile_id) SELECT $1, id FROM tiles WHERE url='/cash' ON CONFLICT DO NOTHING`, [finId]).catch(() => {});
+  }
+
   let r = await pool.query("SELECT id FROM roles WHERE is_admin = TRUE LIMIT 1");
   let adminRoleId;
   if (r.rows.length === 0) {
