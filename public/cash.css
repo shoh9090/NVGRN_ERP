@@ -87,6 +87,9 @@ select.obl-f { cursor: pointer; }
 .cashm-overlay { position: fixed; inset: 0; background: rgba(20,36,27,.45); display: flex; align-items: flex-start; justify-content: center; padding: 40px 14px; z-index: 60; overflow: auto; }
 .cashm-panel { background: #fff; border-radius: 16px; width: 100%; max-width: 640px; box-shadow: 0 20px 60px rgba(0,0,0,.25); }
 .cashm-panel.cashm-wide { max-width: 980px; }
+/* читаемые ghost-кнопки внутри модалки (глобальный .btn-ghost белый — невидим на светлом) */
+.cashm-panel .btn-ghost { background: #fff; border: 1px solid #cdd6cc; color: #163a28; }
+.cashm-panel .btn-ghost:hover { background: #eef4e9; border-color: #163a28; }
 .cashm-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--line); }
 .cashm-head h3 { margin: 0; font-size: 16px; }
 .cashm-x { background: none; border: none; font-size: 18px; color: var(--muted); cursor: pointer; }
