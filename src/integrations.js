@@ -563,6 +563,39 @@ async function syncCrmExpeditors() {
   return n;
 }
 
+// Карта «торговая точка → контрагент (юрлицо, ИНН)» из getContragent (двухуровневая модель SD).
+// На «обычном» сервере getContragent даёт 400 «Contragent mode is not enabled» → вернём null (фоллбэк).
+async function getContragentMap(cfg, auth) {
+  let list;
+  try { list = await sdGetAll(cfg, auth, 'getContragent', 'contragent', {}); }
+  catch (e) { return null; }
+  if (!Array.isArray(list) || !list.length) return null;
+  const bySalepoint = {}, byInn = {};
+  for (const k of list) {
+    const firm = String(k.firmName || k.shortName || k.name || '').trim() || null;
+    const inn = String(k.inn || '').trim() || null;
+    const rec = { contragent_sd_id: String(k.SD_id || ''), firm, inn };
+    if (inn) byInn[inn] = rec;
+    const sps = k.salepoints || k.salePoints || k.clients || [];
+    for (const sp of (Array.isArray(sps) ? sps : [])) { const spid = String(sp.SD_id || sp.sd_id || ''); if (spid) bySalepoint[spid] = rec; }
+  }
+  return { bySalepoint, byInn, count: list.length };
+}
+
+// Проба: включён ли режim контрагента и что отдаёт getContragent (для админ-диагностики, без изменений данных).
+async function probeContragent() {
+  const cfg = await getSdConfig();
+  if (!cfg.url || !cfg.login || !cfg.password) throw new Error('Сначала заполните доступ к SalesDoctor.');
+  const auth = await sdLogin(cfg);
+  try {
+    const data = await sdRequest(cfg.url, { method: 'getContragent', auth: { userId: auth.userId, token: auth.token }, params: { limit: 3, page: 1 } });
+    const list = (data.result && (data.result.contragent || data.result.data && data.result.data.contragent)) || data.result || [];
+    return { enabled: true, sample: Array.isArray(list) ? list.slice(0, 3) : list };
+  } catch (e) {
+    return { enabled: false, error: e.message };
+  }
+}
+
 async function syncClientsToContacts() {
   const cfg = await getSdConfig();
   if (!cfg.url || !cfg.login || !cfg.password) throw new Error('Сначала заполните доступ к SalesDoctor в разделе «Интеграции».');
@@ -572,15 +605,20 @@ async function syncClientsToContacts() {
   if (!horeca) throw new Error('В SalesDoctor не найдена категория «Horeca».');
   const clients = (await sdGetAll(cfg, auth, 'getClient', 'client', {}))
     .filter((c) => c.active === 'Y' && c.category && c.category.SD_id === horeca.SD_id);
+  // Юрлицо (firmName/ИНН) берём из контрагента точки (getClient.firmName у SD пустой). Фоллбэк — поля клиента.
+  const cmap = await getContragentMap(cfg, auth).catch(() => null);
   let n = 0;
   for (const c of clients) {
     if (!c.SD_id) continue;
     const agent = (c.agents && c.agents[0] && c.agents[0].id) || null;
+    const con = cmap && cmap.bySalepoint[String(c.SD_id)];
+    const firm = (con && con.firm) || c.firmName || null;
+    const inn = (con && con.inn) || c.inn || null;
     await db.pool.query(
       `INSERT INTO tgbot.point_contacts (sd_id, point_name, firm_name, inn, zavsklad_phone, agent_sd_id, active, updated_at, updated_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,now(),'sd_sync')
        ON CONFLICT (sd_id) DO UPDATE SET point_name=$2, firm_name=$3, inn=$4, zavsklad_phone=$5, agent_sd_id=$6, active=$7, updated_at=now(), updated_by='sd_sync'`,
-      [c.SD_id, c.name || c.SD_id, c.firmName || null, c.inn || null, c.tel || null, agent, c.active || 'Y']);
+      [c.SD_id, c.name || c.SD_id, firm, inn, c.tel || null, agent, c.active || 'Y']);
     n++;
   }
   await db.pool.query(`INSERT INTO tgbot.salesdoctor_sync_log (sync_type, created, updated) VALUES ('manual', 0, $1)`, [n]).catch(() => {});
@@ -609,17 +647,19 @@ async function syncCashClients() {
   await db.pool.query("ALTER TABLE cash_counterparties ADD COLUMN IF NOT EXISTS cp_role TEXT").catch(() => {});
   await db.pool.query("ALTER TABLE cash_counterparties ADD COLUMN IF NOT EXISTS firm_name TEXT").catch(() => {});
   const clients = (await sdGetAll(cfg, auth, 'getClient', 'client', {})).filter((c) => c.active === 'Y' && c.inn);
+  const cmap = await getContragentMap(cfg, auth).catch(() => null);
   const existing = {};
   (await db.pool.query("SELECT id, inn FROM cash_counterparties WHERE cp_role='client'")).rows.forEach((r) => { existing[String(r.inn).trim()] = r.id; });
   let created = 0, updated = 0;
   for (const c of clients) {
     const inn = String(c.inn).trim(); if (!inn) continue;
-    const name = c.name || c.firmName || inn;
-    const firm = c.firmName || null;
+    const con = cmap && (cmap.bySalepoint[String(c.SD_id)] || cmap.byInn[inn]);
+    const firm = (con && con.firm) || c.firmName || null;
+    const name = c.name || firm || inn;
     if (existing[inn]) { await db.pool.query("UPDATE cash_counterparties SET name=$1, firm_name=COALESCE($3, firm_name), status='active' WHERE id=$2", [name, existing[inn], firm]); updated++; }
     else { const r = await db.pool.query("INSERT INTO cash_counterparties (name, inn, firm_name, cp_role, status) VALUES ($1,$2,$3,'client','active') RETURNING id", [name, inn, firm]); existing[inn] = r.rows[0].id; created++; }
   }
   return { created, updated, total: created + updated };
 }
 
-module.exports = { getSdConfig, saveSdConfig, testConnection, syncFinishedGoods, syncPrices, diagSD, getHorecaPoints, getAgentCoverage, syncCrmAgents, syncCrmExpeditors, syncClientsToContacts, getSdProducts, syncCashClients };
+module.exports = { getSdConfig, saveSdConfig, testConnection, syncFinishedGoods, syncPrices, diagSD, getHorecaPoints, getAgentCoverage, syncCrmAgents, syncCrmExpeditors, syncClientsToContacts, getSdProducts, syncCashClients, probeContragent };

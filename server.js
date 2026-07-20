@@ -475,6 +475,18 @@ admin.get('/integrations/sd/diag', async (req, res) => {
   }
 });
 
+// Проба режима контрагента (двухуровневая модель SD): включён ли и что отдаёт getContragent.
+admin.get('/integrations/sd/contragent', async (req, res) => {
+  try {
+    const out = await integrations.probeContragent();
+    res.type('text/plain; charset=utf-8').send(
+      (out.enabled ? '✅ Режим «Контрагент» ВКЛЮЧЁН. Пример getContragent:\n\n' : '⚠️ Режим «Контрагент» ВЫКЛЮЧЕН (обычный сервер) или метод недоступен:\n' + (out.error || '') + '\n\n')
+      + JSON.stringify(out.sample || {}, null, 2));
+  } catch (e) {
+    res.type('text/plain; charset=utf-8').status(400).send('Ошибка пробы: ' + e.message);
+  }
+});
+
 admin.post('/integrations/sd/test', async (req, res) => {
   try {
     await integrations.saveSdConfig(req.body); // сохраняем то, что в форме, и сразу проверяем
