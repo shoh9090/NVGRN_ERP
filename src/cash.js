@@ -2190,9 +2190,8 @@ function excelDate(n) {
   if (m) return `${m[3]}-${String(m[2]).padStart(2, '0')}-${String(m[1]).padStart(2, '0')}`;
   const m2 = s.match(/^(\d{4})-(\d{2})-(\d{2})/); return m2 ? m2[0] : null;
 }
-function parseReturnSchedule(buf) {
-  const wb = XLSX.read(buf, { type: 'buffer' });
-  const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, blankrows: false, defval: '' });
+function parseReturnScheduleSheet(ws) {
+  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, blankrows: false, defval: '' });
   const out = []; let skipped = 0;
   for (const r of rows) {
     const d = excelDate(r[0]); const amt = Number(r[1]); const due = excelDate(r[2]);
@@ -2206,11 +2205,18 @@ router.post('/api/obligations/import-return-schedule/preview', upload.single('fi
   if (!(req.user && req.user.isAdmin)) return res.status(403).json({ error: 'Только администратор/финансы' });
   try {
     if (!req.file) return res.status(400).json({ error: 'Файл не выбран' });
-    const { rows, skipped } = parseReturnSchedule(req.file.buffer);
-    if (!rows.length) return res.status(400).json({ error: 'Не нашёл строк (дата выдачи + сумма + дата возврата). Проверьте файл.' });
+    const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
+    // Список листов + число распознанных строк в каждом (для выбора).
+    const sheets = wb.SheetNames.map((nm) => ({ name: nm, count: parseReturnScheduleSheet(wb.Sheets[nm]).rows.length }));
+    // Выбранный лист: заданный явно, иначе — с максимумом распознанных строк.
+    let chosen = req.body && req.body.sheet && wb.SheetNames.includes(req.body.sheet) ? req.body.sheet : null;
+    if (!chosen) chosen = (sheets.slice().sort((a, b) => b.count - a.count)[0] || {}).name || wb.SheetNames[0];
+    const { rows, skipped } = parseReturnScheduleSheet(wb.Sheets[chosen]);
+    if (!rows.length) return res.status(400).json({ error: 'На листе «' + chosen + '» не нашёл строк (дата выдачи + сумма + дата возврата). Выберите другой лист.', sheets, sheet: chosen });
     const total = rows.reduce((a, r) => a + r.amount, 0);
     const dues = rows.map((r) => r.due_date).filter(Boolean).sort();
     res.json({
+      sheets, sheet: chosen,
       rows: rows.slice(0, 200), full: rows,
       summary: { count: rows.length, total, skipped, first_due: dues[0] || null, last_due: dues[dues.length - 1] || null, no_due: rows.filter((r) => !r.due_date).length },
     });

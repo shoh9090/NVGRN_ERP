@@ -523,22 +523,30 @@
     const file = el('input', { type: 'file', accept: '.xlsx,.xls,.csv', class: 'cashf-inp' });
     const out = el('div', { style: 'margin-top:10px' });
     let PREV = null;
-    const upBtn = el('button', { class: 'btn-primary', onclick: async () => {
+    async function runPreview(sheet) {
       if (!file.files[0]) return toast('Выберите файл', true);
       out.innerHTML = '<div class="cash-loading">Читаю файл…</div>';
-      const fd = new FormData(); fd.append('file', file.files[0]);
+      const fd = new FormData(); fd.append('file', file.files[0]); if (sheet) fd.append('sheet', sheet);
       try {
         const r = await fetch('/cash/api/obligations/import-return-schedule/preview', { method: 'POST', body: fd });
-        const d = await r.json(); if (!r.ok) throw new Error(d.error || 'Ошибка');
+        const d = await r.json(); if (!r.ok) { out.innerHTML = ''; if (d.sheets) renderSheetPicker(d); out.appendChild(el('div', { class: 'cash-empty' }, d.error || 'Ошибка')); return; }
         PREV = d; renderPrev(d);
       } catch (e) { out.innerHTML = ''; out.appendChild(el('div', { class: 'cash-empty' }, e.message)); }
-    } }, 'Прочитать');
+    }
+    const upBtn = el('button', { class: 'btn-primary', onclick: () => runPreview(null) }, 'Прочитать');
+    function renderSheetPicker(d) {
+      if (!d.sheets || d.sheets.length <= 1) return;
+      const sel = fsel(d.sheets.map((s) => ({ v: s.name, t: s.name + ' (' + s.count + ' строк)' })), d.sheet);
+      sel.onchange = () => runPreview(sel.value);
+      out.appendChild(el('div', { class: 'cashf', style: 'margin-bottom:8px' }, [frow('Лист книги', sel)]));
+    }
     const creditor = finp('', { placeholder: 'Напр. Хикматов К' });
     const curSel = fsel([{ v: 'USD', t: 'доллары (USD)' }, { v: 'UZS', t: 'сум (UZS)' }], 'USD');
     const typeSel = fsel(LOAN_TYPES.map(([v, t]) => ({ v, t })), 'concept_loan');
     const totalInp = fmoney('', { placeholder: 'общий долг (если больше суммы графика)' });
     function renderPrev(d) {
       out.innerHTML = '';
+      renderSheetPicker(d);
       const s = d.summary;
       totalInp.value = totalInp.value || String(s.total);
       out.appendChild(el('div', { class: 'cash-note-info' }, `Распознано траншей: ${s.count} на сумму ${money(s.total)}. График по дате возврата: ${s.count - s.no_due} строк.` + (s.skipped ? ` Пропущено строк-итогов/без даты: ${s.skipped}.` : '') + (s.no_due ? ` Без даты возврата: ${s.no_due}.` : '')));
