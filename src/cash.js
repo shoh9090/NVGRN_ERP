@@ -2228,6 +2228,10 @@ router.post('/api/obligations/import-return-schedule/confirm', J, async (req, re
   const b = req.body || {};
   const rows = Array.isArray(b.rows) ? b.rows.filter((r) => r.received_date && Number(r.amount) > 0) : [];
   if (!rows.length) return res.status(400).json({ error: 'Нет строк для импорта' });
+  // Срок возврата: если в файле нет даты возврата — считаем «дата выдачи + N месяцев» (напр. +15).
+  const retMonths = parseInt(b.return_months, 10) || 0;
+  const addMonths = (iso, m) => { const d = new Date(iso); d.setMonth(d.getMonth() + m); return d.toISOString().slice(0, 10); };
+  if (retMonths > 0) rows.forEach((r) => { if (!r.due_date) r.due_date = addMonths(r.received_date, retMonths); });
   const type = OBL_TYPES.includes(b.obligation_type) ? b.obligation_type : 'concept_loan';
   const scheduledSum = rows.reduce((a, r) => a + Number(r.amount), 0);
   const totalPrincipal = numOrNull(b.principal_received);

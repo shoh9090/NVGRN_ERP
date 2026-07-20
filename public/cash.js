@@ -544,6 +544,7 @@
     const curSel = fsel([{ v: 'USD', t: 'доллары (USD)' }, { v: 'UZS', t: 'сум (UZS)' }], 'USD');
     const typeSel = fsel(LOAN_TYPES.map(([v, t]) => ({ v, t })), 'concept_loan');
     const totalInp = fmoney('', { placeholder: 'общий долг (если больше суммы графика)' });
+    const retInp = finp('15', { type: 'number', min: '0', style: 'width:90px', title: 'Если в файле нет даты возврата' });
     function renderPrev(d) {
       out.innerHTML = '';
       renderSheetPicker(d);
@@ -553,7 +554,8 @@
       out.appendChild(el('div', { class: 'cashf', style: 'margin:10px 0' }, [
         frow('Кредитор', creditor), frow('Валюта', curSel), frow('Тип', typeSel),
         frow('Общий долг', totalInp),
-        el('div', { class: 'muted', style: 'font-size:12px' }, 'Сумма графика = ' + money(s.total) + '. Если общий долг больше — разница будет «вне графика».'),
+        s.no_due ? frow('Срок возврата, мес (+к дате выдачи)', retInp) : null,
+        el('div', { class: 'muted', style: 'font-size:12px' }, 'Сумма графика = ' + money(s.total) + '. Если общий долг больше — разница будет «вне графика».' + (s.no_due ? ' В файле нет даты возврата у ' + s.no_due + ' строк — им поставим дату выдачи + указанные месяцы.' : '')),
       ]));
       const thead = el('thead', {}, el('tr', {}, ['Дата выдачи', 'Сумма', 'Дата возврата', 'Комментарий'].map((h) => el('th', { style: 'padding:6px 9px;background:#f2f5f1' }, h))));
       const tb = el('tbody', {}, d.rows.slice(0, 40).map((r) => el('tr', {}, [
@@ -571,7 +573,7 @@
       try {
         const r = await post('/obligations/import-return-schedule/confirm', {
           creditor_name: creditor.value, currency: curSel.value, obligation_type: typeSel.value,
-          principal_received: moneyVal(totalInp), rows: PREV.full,
+          principal_received: moneyVal(totalInp), return_months: retInp.value, rows: PREV.full,
         });
         toast(`Создан заём: траншей ${r.tranches}, график ${r.schedule}`); closeModal(); renderObligations(); if (r.id) oblLoanCard(r.id, group);
       } catch (e) { toast(e.message, true); }
