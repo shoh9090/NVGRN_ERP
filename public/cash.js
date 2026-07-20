@@ -681,14 +681,22 @@
         ? oblCard('Ближайший платёж', money(k.nearest_payment.amount) + ' сум', k.nearest_payment.creditor + ' · ' + ruDate(k.nearest_payment.due_date) + ' · через ' + k.nearest_payment.days + ' дн.')
         : oblCard('Ближайший платёж', '—', 'Нет предстоящих платежей'),
     ]));
-    box.appendChild(el('div', { class: 'cash-sub', style: 'margin:10px 0 6px' }, d.note || ''));
-    // Одна агрегированная строка по видам обязательств.
+    // Валютная расшифровка (итог в сумах по курсу ЦБ + суммы по валютам).
+    const bc = d.by_currency || {};
+    const parts = [];
+    if (bc.USD > 0.01) parts.push('$' + curFmt(bc.USD, 'USD'));
+    if (bc.UZS > 0.01) parts.push(money(bc.UZS) + ' сум');
+    box.appendChild(el('div', { class: 'cash-sub', style: 'margin:10px 0 6px' }, [
+      (parts.length > 1 ? 'В т.ч.: ' + parts.join(' + ') + (d.rate ? ' · курс ЦБ ' + money(d.rate) + ' сум/$' + (d.rate_date ? ' на ' + ruDate(d.rate_date) : '') : ' · курс ЦБ недоступен, доллары в итог не пересчитаны') + '. ' : '') + (d.note || ''),
+    ]));
+    // Строки по видам обязательств (валютные — в своей валюте).
     const head = el('div', { class: 'cash-row head cash-obl' }, ['Вид обязательства', 'Общий остаток', 'К оплате в периоде', 'Просрочено', 'Ближайшая дата', 'Источник'].map((h) => el('span', {}, h)));
+    const rowAmt = (r, v) => (r.currency === 'USD' ? '$' + curFmt(v, 'USD') : money(v));
     box.appendChild(el('div', { class: 'cash-list' }, [head, ...d.rows.map((r) => el('div', { class: 'cash-row cash-obl' }, [
       el('span', { style: 'font-weight:700' }, r.kind),
-      el('span', { class: 'tnum' }, money(r.total)),
-      el('span', { class: 'tnum' }, money(r.due_period)),
-      el('span', { class: 'tnum' + (r.overdue > 0 ? ' cash-tot-out' : '') }, money(r.overdue)),
+      el('span', { class: 'tnum' }, rowAmt(r, r.total)),
+      el('span', { class: 'tnum' }, rowAmt(r, r.due_period)),
+      el('span', { class: 'tnum' + (r.overdue > 0 ? ' cash-tot-out' : '') }, r.overdue > 0 ? rowAmt(r, r.overdue) : '—'),
       el('span', { class: 'muted' }, r.nearest_date ? ruDate(r.nearest_date) : '—'),
       el('span', { class: 'muted' }, r.source),
     ]))]));

@@ -1879,37 +1879,55 @@ router.get('/api/obligations/summary', async (req, res) => {
       }
     }
     const supNearest = orders.filter((o) => o.due_date && o.remainder > 0.01).map((o) => o.due_date).sort()[0] || null;
-    const rows = [{ kind: 'Задолженность поставщикам', total: totalOwed, due_period: dueThisMonth, overdue, nearest_date: supNearest, source: 'Закуп' }];
+    // Курс ЦБ для пересчёта валютных обязательств в UZS (итог) + расшифровка по валютам отдельно.
+    let rate = null; try { rate = await getCbuUsdRate(today); } catch (e) { rate = null; }
+    const cur1 = (c) => (c === 'USD' ? 'USD' : 'UZS');
+    const toUzs = (c, v) => (cur1(c) === 'USD' ? (rate ? v * rate : 0) : v);
+    const byCur = { UZS: totalOwed, USD: 0 };
+    const rows = [{ kind: 'Задолженность поставщикам', currency: 'UZS', total: totalOwed, due_period: dueThisMonth, overdue, nearest_date: supNearest, source: 'Закуп' }];
 
-    // Кредиты и займы: остаток тела = получено − оплачено тела; просрочка/ближайшая дата из графика.
+    // Кредиты/займы: остаток тела по валютам; просрочка/ближайшая дата из графика.
     const loans = (await db.pool.query(
-      `SELECT o.id, o.obligation_type, o.currency,
+      `SELECT o.obligation_type, o.currency,
               COALESCE(o.principal_received,0) AS received,
               COALESCE((SELECT SUM(principal_paid) FROM finance_obligation_payment_links l WHERE l.obligation_id=o.id AND l.reversed_at IS NULL),0) AS paid
        FROM finance_obligations o WHERE o.status <> 'cancelled' AND o.status <> 'closed'`)).rows;
-    const bankTotal = loans.filter((l) => l.obligation_type === 'bank_loan').reduce((a, l) => a + (Number(l.received) - Number(l.paid)), 0);
-    const otherTotal = loans.filter((l) => l.obligation_type !== 'bank_loan').reduce((a, l) => a + (Number(l.received) - Number(l.paid)), 0);
-    const schAgg = (await db.pool.query(
-      `SELECT COALESCE(SUM(total_due) FILTER (WHERE due_date < CURRENT_DATE),0) AS ovd,
-              COALESCE(SUM(total_due) FILTER (WHERE due_date >= CURRENT_DATE AND due_date <= $1),0) AS duem,
-              MIN(due_date) FILTER (WHERE due_date >= CURRENT_DATE) AS nxt
+    const loanGrp = {}; // 'Банковские кредиты|USD' → balance
+    for (const l of loans) {
+      const bal = Number(l.received) - Number(l.paid); const c = cur1(l.currency);
+      byCur[c] = (byCur[c] || 0) + bal;
+      const g = l.obligation_type === 'bank_loan' ? 'Банковские кредиты' : 'Понятийные и инвестиционные займы';
+      loanGrp[g + '|' + c] = (loanGrp[g + '|' + c] || 0) + bal;
+    }
+    const sch = (await db.pool.query(
+      `SELECT o.currency,
+              COALESCE(SUM(s.total_due) FILTER (WHERE s.due_date < CURRENT_DATE),0) AS ovd,
+              COALESCE(SUM(s.total_due) FILTER (WHERE s.due_date >= CURRENT_DATE AND s.due_date <= $1),0) AS duem,
+              MIN(s.due_date) FILTER (WHERE s.due_date >= CURRENT_DATE) AS nxt
        FROM finance_obligation_schedule s JOIN finance_obligations o ON o.id=s.obligation_id
-       WHERE s.status NOT IN ('paid','cancelled') AND o.status NOT IN ('cancelled','closed')`, [monthEnd])).rows[0];
-    const loanOverdue = Number(schAgg.ovd) || 0, loanDueMonth = Number(schAgg.duem) || 0;
-    if (bankTotal > 0.01) rows.push({ kind: 'Банковские кредиты', total: bankTotal, due_period: loanDueMonth, overdue: loanOverdue, nearest_date: schAgg.nxt || null, source: 'Кредиты' });
-    if (otherTotal > 0.01) rows.push({ kind: 'Понятийные и инвестиционные займы', total: otherTotal, due_period: 0, overdue: 0, nearest_date: null, source: 'Займы' });
+       WHERE s.status NOT IN ('paid','cancelled') AND o.status NOT IN ('cancelled','closed') GROUP BY o.currency`, [monthEnd])).rows;
+    const ovdCur = { UZS: overdue, USD: 0 }, dueCur = { UZS: dueThisMonth, USD: 0 };
+    const schByGrp = {}; // прикинем просрочку/срок на группу (по валюте)
+    sch.forEach((r) => { const c = cur1(r.currency); ovdCur[c] = (ovdCur[c] || 0) + Number(r.ovd || 0); dueCur[c] = (dueCur[c] || 0) + Number(r.duem || 0); schByGrp[c] = { ovd: Number(r.ovd || 0), duem: Number(r.duem || 0), nxt: r.nxt }; });
+    for (const [k, v] of Object.entries(loanGrp)) {
+      if (v <= 0.01) continue;
+      const [g, c] = k.split('|'); const sc = schByGrp[c] || {};
+      rows.push({ kind: g + (c === 'USD' ? ' ($)' : ''), currency: c, total: v, due_period: sc.duem || 0, overdue: sc.ovd || 0, nearest_date: sc.nxt || null, source: g.includes('кредит') ? 'Кредиты' : 'Займы' });
+    }
 
-    const totalAll = totalOwed + bankTotal + otherTotal;
+    const totalUzs = byCur.UZS + toUzs('USD', byCur.USD || 0);
+    const overdueUzs = ovdCur.UZS + toUzs('USD', ovdCur.USD);
+    const dueUzs = dueCur.UZS + toUzs('USD', dueCur.USD);
     res.json({
-      currency: 'UZS',
+      currency: 'UZS', rate, rate_date: today, by_currency: byCur,
       cards: {
-        total_obligations: totalAll,
-        due_this_month: dueThisMonth + loanDueMonth,
-        overdue: overdue + loanOverdue,
+        total_obligations: totalUzs,
+        due_this_month: dueUzs,
+        overdue: overdueUzs,
         nearest_payment: nearest,
       },
       rows,
-      note: 'Задолженность поставщикам — из Закупа. Кредиты и займы — из раздела «Обязательства». Платёжный календарь и уведомления — следующие этапы.',
+      note: 'Итог — в сумах по курсу ЦБ; валютные обязательства также показаны в своей валюте. Поставщики — из Закупа, кредиты/займы — из «Обязательств».',
     });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
