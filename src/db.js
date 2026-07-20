@@ -390,6 +390,8 @@ async function migrate() {
     imported_by INTEGER, imported_at TIMESTAMPTZ DEFAULT now(),
     confirmed_by INTEGER, confirmed_at TIMESTAMPTZ
   )`).catch(()=>{});
+  // Разовая загрузка обязательств (Хикматов/Хабибуллаев/прочие) — идемпотентно, потом можно удалить.
+  await require('./seed-obligations')(pool).catch((e) => console.error('[seed-obligations]', e.message));
   // Подотчёт закупщика (общий котёл): in = выдано под отчёт, out = потрачено наличными по заявкам.
   // Касса остаётся отдельным контуром — авто-проводок в Кассу нет (по решению).
   await pool.query(`CREATE TABLE IF NOT EXISTS purchaser_accountable (
