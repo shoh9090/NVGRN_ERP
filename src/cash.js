@@ -555,7 +555,7 @@ async function walletBalances() {
     SELECT w.id, w.name, w.kind, w.color, w.account_no, w.sort_order,
       COALESCE(SUM(CASE
         WHEN t.tx_type='in' AND t.wallet_id=w.id THEN t.amount
-        WHEN t.tx_type='transfer' AND t.wallet_to_id=w.id THEN t.amount
+        WHEN t.tx_type='transfer' AND t.wallet_to_id=w.id AND NOT t.needs_cash_confirm THEN t.amount
         WHEN t.tx_type='out' AND t.wallet_id=w.id THEN -t.amount
         WHEN t.tx_type='transfer' AND t.wallet_id=w.id THEN -t.amount
         ELSE 0 END), 0) AS balance
@@ -631,22 +631,24 @@ function summaryExprs(wid) {
   if (wid) {
     return {
       params: [wid],
+      // Зачисление перевода в кассу (wallet_to) считаем ТОЛЬКО после подтверждения факт-суммы
+      // (needs_cash_confirm=false). Списание с банка (wallet_id) — сразу (деньги реально сняты).
       delta: `CASE WHEN t.tx_type='in' AND t.wallet_id=$1 THEN t.amount
                    WHEN t.tx_type='out' AND t.wallet_id=$1 THEN -t.amount
-                   WHEN t.tx_type='transfer' AND t.wallet_to_id=$1 THEN t.amount
+                   WHEN t.tx_type='transfer' AND t.wallet_to_id=$1 AND NOT t.needs_cash_confirm THEN t.amount
                    WHEN t.tx_type='transfer' AND t.wallet_id=$1 THEN -t.amount
                    ELSE 0 END`,
       inExpr: `CASE WHEN t.tx_type='in' AND t.wallet_id=$1 THEN t.amount
-                    WHEN t.tx_type='transfer' AND t.wallet_to_id=$1 THEN t.amount
+                    WHEN t.tx_type='transfer' AND t.wallet_to_id=$1 AND NOT t.needs_cash_confirm THEN t.amount
                     ELSE 0 END`,
       outExpr: `CASE WHEN t.tx_type='out' AND t.wallet_id=$1 THEN t.amount
                      WHEN t.tx_type='transfer' AND t.wallet_id=$1 THEN t.amount
                      ELSE 0 END`,
-      inMember: `CASE WHEN (t.tx_type='in' AND t.wallet_id=$1) OR (t.tx_type='transfer' AND t.wallet_to_id=$1) THEN 1 ELSE 0 END`,
+      inMember: `CASE WHEN (t.tx_type='in' AND t.wallet_id=$1) OR (t.tx_type='transfer' AND t.wallet_to_id=$1 AND NOT t.needs_cash_confirm) THEN 1 ELSE 0 END`,
       outMember: `CASE WHEN (t.tx_type='out' AND t.wallet_id=$1) OR (t.tx_type='transfer' AND t.wallet_id=$1) THEN 1 ELSE 0 END`,
       sign: `CASE WHEN t.tx_type='in' AND t.wallet_id=$1 THEN 1
                   WHEN t.tx_type='out' AND t.wallet_id=$1 THEN -1
-                  WHEN t.tx_type='transfer' AND t.wallet_to_id=$1 THEN 1
+                  WHEN t.tx_type='transfer' AND t.wallet_to_id=$1 AND NOT t.needs_cash_confirm THEN 1
                   WHEN t.tx_type='transfer' AND t.wallet_id=$1 THEN -1
                   ELSE 0 END`,
     };
@@ -748,7 +750,7 @@ async function walletBalanceUpTo(wid, date) {
     `SELECT COALESCE(SUM(CASE
        WHEN t.tx_type='in' AND t.wallet_id=$1 THEN t.amount
        WHEN t.tx_type='out' AND t.wallet_id=$1 THEN -t.amount
-       WHEN t.tx_type='transfer' AND t.wallet_to_id=$1 THEN t.amount
+       WHEN t.tx_type='transfer' AND t.wallet_to_id=$1 AND NOT t.needs_cash_confirm THEN t.amount
        WHEN t.tx_type='transfer' AND t.wallet_id=$1 THEN -t.amount
        ELSE 0 END),0) bal
      FROM cash_transactions t WHERE t.tx_date <= $2`, [wid, date]);
@@ -1832,7 +1834,7 @@ router.get('/api/cash-fx-balance', async (req, res) => {
          CASE WHEN t.currency='USD' THEN 0
               WHEN t.tx_type='in' AND t.wallet_id=$1 THEN t.amount
               WHEN t.tx_type='out' AND t.wallet_id=$1 THEN -t.amount
-              WHEN t.tx_type='transfer' AND t.wallet_to_id=$1 THEN t.amount
+              WHEN t.tx_type='transfer' AND t.wallet_to_id=$1 AND NOT t.needs_cash_confirm THEN t.amount
               WHEN t.tx_type='transfer' AND t.wallet_id=$1 THEN -t.amount
               ELSE 0 END),0) v
        FROM cash_transactions t WHERE (t.wallet_id=$1 OR t.wallet_to_id=$1)${dateCond}`, params)).rows[0];
@@ -1842,7 +1844,7 @@ router.get('/api/cash-fx-balance', async (req, res) => {
          CASE WHEN t.currency<>'USD' THEN 0
               WHEN t.tx_type='in' AND t.wallet_id=$1 THEN t.fx_amount
               WHEN t.tx_type='out' AND t.wallet_id=$1 THEN -t.fx_amount
-              WHEN t.tx_type='transfer' AND t.wallet_to_id=$1 THEN t.fx_amount
+              WHEN t.tx_type='transfer' AND t.wallet_to_id=$1 AND NOT t.needs_cash_confirm THEN t.fx_amount
               WHEN t.tx_type='transfer' AND t.wallet_id=$1 THEN -t.fx_amount
               ELSE 0 END),0) v
        FROM cash_transactions t WHERE (t.wallet_id=$1 OR t.wallet_to_id=$1)${dateCond}`, params)).rows[0];
