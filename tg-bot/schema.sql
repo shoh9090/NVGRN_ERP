@@ -255,3 +255,11 @@ CREATE TABLE IF NOT EXISTS lost_sales (
 CREATE INDEX IF NOT EXISTS idx_lost_sales_detected ON lost_sales (detected_at);
 CREATE INDEX IF NOT EXISTS idx_lost_sales_agent ON lost_sales (agent_sd_id);
 CREATE INDEX IF NOT EXISTS idx_lost_sales_product ON lost_sales (product_name);
+
+-- Чаты, куда бот больше не может писать (выгнали из группы, заблокировали, чат не найден).
+-- Заполняется автоматически при ошибке отправки; снимается, когда пользователь снова пишет боту.
+CREATE TABLE IF NOT EXISTS dead_chats (
+  chat_id    BIGINT PRIMARY KEY,
+  reason     TEXT,
+  marked_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);

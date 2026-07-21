@@ -505,6 +505,56 @@ async function main() {
   await db.migrate();
   const bot = new TelegramBot(TOKEN, { polling: true });
   console.log("[СТАРТ] Бот на связи (режим polling).");
+
+  // ——— «Мёртвые» чаты: куда бот больше не может писать ———
+  // Держим их в памяти (быстрая проверка перед каждой отправкой) + в таблице dead_chats.
+  const deadChats = new Set();
+  try {
+    (await db.query("SELECT chat_id FROM dead_chats")).rows.forEach((r) => deadChats.add(String(r.chat_id)));
+    if (deadChats.size) console.log(`[МЁРТВЫЕ ЧАТЫ] загружено: ${deadChats.size}`);
+  } catch (e) { console.warn("[МЁРТВЫЕ ЧАТЫ] загрузка:", e.message); }
+
+  async function markDeadChat(chatId, reason) {
+    deadChats.add(String(chatId));
+    try {
+      await db.query(
+        `INSERT INTO dead_chats (chat_id, reason, marked_at) VALUES ($1,$2,now())
+         ON CONFLICT (chat_id) DO UPDATE SET reason=$2, marked_at=now()`,
+        [chatId, String(reason || "").slice(0, 300)]
+      );
+    } catch (e) { console.warn("[МЁРТВЫЕ ЧАТЫ] пометка:", e.message); }
+  }
+  async function reviveChat(chatId) {
+    if (!deadChats.has(String(chatId))) return;
+    deadChats.delete(String(chatId));
+    try { await db.query("DELETE FROM dead_chats WHERE chat_id=$1", [chatId]); } catch (e) {}
+    console.log("[МЁРТВЫЕ ЧАТЫ] чат", chatId, "снова активен (написал боту).");
+  }
+
+  // Обёртка над sendMessage: не шлём в мёртвые чаты; при «постоянной» ошибке
+  // (выгнали/заблокировал/чат не найден) — помечаем чат и больше не стучимся.
+  // Ни при какой ошибке не даём промису «упасть» необработанным.
+  const _sendMessage = bot.sendMessage.bind(bot);
+  bot.sendMessage = async (chatId, text, options) => {
+    if (deadChats.has(String(chatId))) return null;
+    try {
+      return await _sendMessage(chatId, text, options);
+    } catch (err) {
+      const body = err && err.response && err.response.body;
+      const desc = (body && body.description) || (err && err.message) || String(err);
+      const code = body && body.error_code;
+      if (/kicked|blocked|deactivated|chat not found|can't initiate|group chat was deleted|CHAT_WRITE_FORBIDDEN|user is deactivated/i.test(desc)) {
+        await markDeadChat(chatId, (code ? code + " " : "") + desc);
+        console.error("[ОТПРАВКА] чат", chatId, "помечен неактивным:", desc);
+      } else {
+        console.warn("[ОТПРАВКА]", chatId + ":", desc);
+      }
+      return null;
+    }
+  };
+  // Написал боту — значит чат живой: снимаем пометку.
+  bot.on("message", (msg) => { if (msg && msg.chat) reviveChat(msg.chat.id); });
+  bot.on("callback_query", (q) => { if (q && q.message && q.message.chat) reviveChat(q.message.chat.id); });
   bot.setMyCommands([
     { command: "zakaz", description: "Оформить заказ" },
     { command: "myorder", description: "Мой заказ и статус" },
