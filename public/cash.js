@@ -552,19 +552,23 @@
       renderSheetPicker(d);
       const s = d.summary;
       const commonFields = [frow('Кредитор', creditor), frow('Валюта', curSel), frow('Тип', typeSel)];
-      if (d.format === 'amortizing') {
-        // Амортизирующий график (тело + проценты).
-        out.appendChild(el('div', { class: 'cash-note-info' }, `Амортизирующий график: ${s.count} платежей. Тело ${money(s.principal)}, проценты ${money(s.interest)}, всего ${money(s.total)}. ${ruDate(s.first_due)} – ${ruDate(s.last_due)}.`));
-        out.appendChild(el('div', { class: 'cashf', style: 'margin:10px 0' }, [...commonFields, frow('Ставka, % годовых', rateInp)]));
-        const thead = el('thead', {}, el('tr', {}, ['№', 'Дата', 'Остаток', 'Тело', 'Проценты', 'Всего'].map((h, i) => el('th', { style: (i >= 2 ? 'text-align:right;' : '') + 'padding:6px 9px;background:#f2f5f1' }, h))));
+      if (d.format === 'amortizing' || d.format === 'schedule') {
+        // График с разбивкой по строкам. schedule — ещё и колонка «Комиссия» (лизинг).
+        const withFee = d.format === 'schedule';
+        const feeTxt = withFee && s.fee ? `, комиссия ${money(s.fee)}` : '';
+        out.appendChild(el('div', { class: 'cash-note-info' }, `${withFee ? 'График платежей' : 'Амортизирующий график'}: ${s.count} платежей. Тело ${money(s.principal)}, проценты ${money(s.interest)}${feeTxt}, всего ${money(s.total)}. ${ruDate(s.first_due)} – ${ruDate(s.last_due)}.`));
+        out.appendChild(el('div', { class: 'cashf', style: 'margin:10px 0' }, [...commonFields, frow('Ставка, % годовых', rateInp)]));
+        const heads = withFee ? ['№', 'Дата', 'Остаток', 'Тело', 'Проценты', 'Комиссия', 'Всего'] : ['№', 'Дата', 'Остаток', 'Тело', 'Проценты', 'Всего'];
+        const thead = el('thead', {}, el('tr', {}, heads.map((h, i) => el('th', { style: (i >= 2 ? 'text-align:right;' : '') + 'padding:6px 9px;background:#f2f5f1' }, h))));
         const tb = el('tbody', {}, d.installments.map((r, i) => el('tr', {}, [
           el('td', { style: 'padding:5px 9px' }, String(i + 1)),
           el('td', { style: 'padding:5px 9px' }, ruDate(r.due_date)),
           el('td', { style: 'padding:5px 9px;text-align:right;color:var(--muted)' }, money(r.opening_principal)),
           el('td', { style: 'padding:5px 9px;text-align:right' }, money(r.principal_due)),
           el('td', { style: 'padding:5px 9px;text-align:right' }, money(r.interest_due)),
+          withFee ? el('td', { style: 'padding:5px 9px;text-align:right' }, money(r.fee_due)) : null,
           el('td', { style: 'padding:5px 9px;text-align:right;font-weight:700' }, money(r.total_due)),
-        ])));
+        ].filter(Boolean))));
         out.appendChild(el('div', { style: 'overflow:auto;max-height:34vh;border:1px solid var(--line);border-radius:10px' }, el('table', { style: 'border-collapse:collapse;width:100%;font-size:12.5px' }, [thead, tb])));
         return;
       }
@@ -592,15 +596,17 @@
       try {
         const r = await post('/obligations/import-return-schedule/confirm', {
           format: PREV.format, creditor_name: creditor.value, currency: curSel.value, obligation_type: typeSel.value,
-          principal_received: PREV.format === 'amortizing' ? PREV.principal_received : moneyVal(totalInp),
+          principal_received: (PREV.format === 'amortizing' || PREV.format === 'schedule') ? PREV.principal_received : moneyVal(totalInp),
           annual_rate: rateInp.value, return_months: retInp.value, rows: PREV.full,
         });
-        toast(PREV.format === 'amortizing' ? `Создан кредит: график ${r.schedule}` : `Создан заём: траншей ${r.tranches}, график ${r.schedule}`);
+        toast((PREV.format === 'amortizing' || PREV.format === 'schedule') ? `Создано: график ${r.schedule} платежей` : `Создан заём: траншей ${r.tranches}, график ${r.schedule}`);
         closeModal(); renderObligations(); if (r.id) oblLoanCard(r.id, group);
       } catch (e) { toast(e.message, true); }
     } }, 'Создать и импортировать');
+    const tmplLink = el('a', { href: '/cash/api/obligations/schedule-template.xlsx', class: 'muted', style: 'font-size:12.5px;text-decoration:underline' }, '⬇ Скачать шаблон Excel');
     const body = el('div', { class: 'cashf' }, [
-      el('div', { class: 'cash-sub' }, 'Поддерживает два формата: список траншей (дата · сумма · возврат) и амортизирующий график (даты в столбцах: тело/проценты). Формат определяется автоматически.'),
+      el('div', { class: 'cash-sub' }, 'Форматы (определяются автоматически): построчный график (дата · тело · проценты · комиссия — для кредита и лизинга), список траншей (дата · сумма · возврат), амортизирующий график (даты в столбцах).'),
+      el('div', { style: 'margin:-2px 0 4px' }, tmplLink),
       frow('Файл', file), el('div', {}, upBtn), out,
     ]);
     modal('📥 Импорт из Excel', body, [confirm], { wide: true });

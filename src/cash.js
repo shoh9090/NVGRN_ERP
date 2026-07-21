@@ -2253,20 +2253,74 @@ function parseReturnScheduleSheet(ws) {
   return { rows: out, skipped };
 }
 
+// Построчный график платежей (по заголовкам колонок, порядок любой):
+// Дата · Тело(погашение/осн.часть) · Проценты(вознаграждение) · Комиссия.
+// Подходит для кредита (тело+проценты) и лизинга (осн.часть+вознаграждение+комиссия).
+// Даты — текстом (ДД.ММ.ГГГГ / ГГГГ-ММ-ДД) или серийником Excel (excelDate понимает оба).
+function parseScheduleRowsSheet(ws) {
+  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, blankrows: false, defval: '' });
+  const norm = (v) => String(v == null ? '' : v).toLowerCase().trim();
+  const num = (v) => { const n = Number(String(v == null ? '' : v).replace(/\s/g, '').replace(',', '.')); return isNaN(n) ? 0 : n; };
+  // Ищем строку заголовков: есть «дата» И «тело/погаш/осн» в одной строке (чтобы не спутать с траншами/амортизирующим).
+  let hi = -1; const col = { date: -1, principal: -1, interest: -1, fee: -1 };
+  for (let i = 0; i < Math.min(rows.length, 15); i++) {
+    const cells = (rows[i] || []).map(norm);
+    const dI = cells.findIndex((c) => /дат/.test(c));
+    const pI = cells.findIndex((c) => /тел|погаш|осн/.test(c));
+    if (dI >= 0 && pI >= 0) {
+      hi = i; col.date = dI; col.principal = pI;
+      col.interest = cells.findIndex((c) => /процент|вознагр/.test(c));
+      col.fee = cells.findIndex((c) => /комисс/.test(c));
+      break;
+    }
+  }
+  if (hi < 0) return null;
+  const inst = [];
+  for (let i = hi + 1; i < rows.length; i++) {
+    const r = rows[i] || [];
+    const due = excelDate(r[col.date]);
+    if (!due) continue; // строки-итоги/без даты — пропускаем
+    const principal = num(r[col.principal]);
+    const interest = col.interest >= 0 ? num(r[col.interest]) : 0;
+    const fee = col.fee >= 0 ? num(r[col.fee]) : 0;
+    if (principal <= 0 && interest <= 0 && fee <= 0) continue;
+    inst.push({ due_date: due, principal_due: principal, interest_due: interest, fee_due: fee, total_due: principal + interest + fee });
+  }
+  if (inst.length < 1) return null;
+  // Остаток тела на начало каждой строки — убывающий (для наглядности в графике).
+  let bal = inst.reduce((a, x) => a + x.principal_due, 0);
+  const principalReceived = bal;
+  for (const x of inst) { x.opening_principal = Math.round(bal * 100) / 100; bal = Math.round((bal - x.principal_due) * 100) / 100; }
+  return { installments: inst, principal_received: principalReceived };
+}
+
 router.post('/api/obligations/import-return-schedule/preview', upload.single('file'), async (req, res) => {
   if (!canFin(req)) return res.status(403).json({ error: 'Только администратор/финансы' });
   try {
     if (!req.file) return res.status(400).json({ error: 'Файл не выбран' });
     const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
     // Число распознанных строк в каждом листе (макс из двух форматов) — для выбора листа.
-    const sheetInfo = (ws) => { const t = parseReturnScheduleSheet(ws).rows.length; const a = (parseAmortizingSheet(ws) || { installments: [] }).installments.length; return { tranches: t, amort: a, count: Math.max(t, a) }; };
+    const sheetInfo = (ws) => { const s = (parseScheduleRowsSheet(ws) || { installments: [] }).installments.length; const t = parseReturnScheduleSheet(ws).rows.length; const a = (parseAmortizingSheet(ws) || { installments: [] }).installments.length; return { tranches: t, amort: a, schedule: s, count: Math.max(s, t, a) }; };
     const sheets = wb.SheetNames.map((nm) => ({ name: nm, ...sheetInfo(wb.Sheets[nm]) }));
     let chosen = req.body && req.body.sheet && wb.SheetNames.includes(req.body.sheet) ? req.body.sheet : null;
     if (!chosen) chosen = (sheets.slice().sort((a, b) => b.count - a.count)[0] || {}).name || wb.SheetNames[0];
     const ws = wb.Sheets[chosen];
+    const sched = parseScheduleRowsSheet(ws);
     const amort = parseAmortizingSheet(ws);
     const tran = parseReturnScheduleSheet(ws);
-    // Формат: амортизирующий график в приоритете, если строк графика больше, чем траншей.
+    // Приоритет 1: построчный график с колонками тело/проценты/комиссия (однозначно опознаётся по заголовкам).
+    if (sched && sched.installments.length >= 1) {
+      const inst = sched.installments;
+      const totalPrincipal = inst.reduce((a, r) => a + r.principal_due, 0);
+      const totalInterest = inst.reduce((a, r) => a + r.interest_due, 0);
+      const totalFee = inst.reduce((a, r) => a + r.fee_due, 0);
+      return res.json({
+        sheets, sheet: chosen, format: 'schedule',
+        installments: inst, full: inst, principal_received: sched.principal_received,
+        summary: { count: inst.length, principal: totalPrincipal, interest: totalInterest, fee: totalFee, total: totalPrincipal + totalInterest + totalFee, first_due: inst[0].due_date, last_due: inst[inst.length - 1].due_date },
+      });
+    }
+    // Приоритет 2: амортизирующий график, если строк графика больше, чем траншей.
     if (amort && amort.installments.length >= Math.max(2, tran.rows.length)) {
       const inst = amort.installments;
       const totalPrincipal = inst.reduce((a, r) => a + r.principal_due, 0);
@@ -2277,7 +2331,7 @@ router.post('/api/obligations/import-return-schedule/preview', upload.single('fi
         summary: { count: inst.length, principal: totalPrincipal, interest: totalInterest, total: totalPrincipal + totalInterest, first_due: inst[0].due_date, last_due: inst[inst.length - 1].due_date },
       });
     }
-    if (!tran.rows.length) return res.status(400).json({ error: 'На листе «' + chosen + '» не распознан ни список траншей (дата+сумма), ни амортизирующий график. Выберите другой лист.', sheets, sheet: chosen });
+    if (!tran.rows.length) return res.status(400).json({ error: 'На листе «' + chosen + '» не распознан ни построчный график (дата·тело·проценты·комиссия), ни список траншей (дата+сумма), ни амортизирующий график. Выберите другой лист.', sheets, sheet: chosen });
     const total = tran.rows.reduce((a, r) => a + r.amount, 0);
     const dues = tran.rows.map((r) => r.due_date).filter(Boolean).sort();
     res.json({
@@ -2294,18 +2348,21 @@ router.post('/api/obligations/import-return-schedule/confirm', J, async (req, re
   const type = OBL_TYPES.includes(b.obligation_type) ? b.obligation_type : 'concept_loan';
   const cur = b.currency === 'USD' ? 'USD' : 'UZS';
 
-  // Амортизирующий график: создаём кредит + строки графика (с процентами).
-  if (b.format === 'amortizing') {
+  // Графики с разбивкой по строкам: амортизирующий (тело+проценты) ИЛИ построчный (тело+проценты+комиссия).
+  // Оба создают кредит + строки графика finance_obligation_schedule.
+  if (b.format === 'amortizing' || b.format === 'schedule') {
     const inst = Array.isArray(b.rows) ? b.rows.filter((r) => r.due_date) : [];
     if (!inst.length) return res.status(400).json({ error: 'Нет строк графика' });
+    const scheme = b.format === 'amortizing' ? 'differentiated' : 'custom';
     const principal = numOrNull(b.principal_received) != null ? numOrNull(b.principal_received) : inst.reduce((a, r) => a + (Number(r.principal_due) || 0), 0);
     const client = await db.pool.connect();
     try {
       await client.query('BEGIN');
       const lo = await client.query(
         `INSERT INTO finance_obligations (obligation_type, creditor_name, currency, principal_limit, principal_received, annual_rate, repayment_scheme, status, comment, created_by)
-         VALUES ($1,$2,$3,$4,$4,$5,'differentiated','active',$6,$7) RETURNING id`,
-        [type, (b.creditor_name || 'Кредитор').trim(), cur, principal, numOrNull(b.annual_rate) || 0, b.comment || 'Импорт амортизирующего графика', req.user.id]);
+         VALUES ($1,$2,$3,$4,$4,$5,$6,'active',$7,$8) RETURNING id`,
+        [type, (b.creditor_name || 'Кредитор').trim(), cur, principal, numOrNull(b.annual_rate) || 0, scheme,
+          b.comment || (b.format === 'amortizing' ? 'Импорт амортизирующего графика' : 'Импорт графика платежей'), req.user.id]);
       const oid = lo.rows[0].id;
       let no = 0;
       for (const r of inst) {
@@ -2313,10 +2370,10 @@ router.post('/api/obligations/import-return-schedule/confirm', J, async (req, re
         await client.query(
           `INSERT INTO finance_obligation_schedule (obligation_id, version_no, installment_no, due_date, opening_principal, principal_due, interest_due, fee_due, total_due, status)
            VALUES ($1,1,$2,$3,$4,$5,$6,$7,$8,'planned')`,
-          [oid, no, r.due_date, Number(r.opening_principal) || 0, Number(r.principal_due) || 0, Number(r.interest_due) || 0, Number(r.fee_due) || 0, Number(r.total_due) || (Number(r.principal_due) || 0) + (Number(r.interest_due) || 0)]);
+          [oid, no, r.due_date, Number(r.opening_principal) || 0, Number(r.principal_due) || 0, Number(r.interest_due) || 0, Number(r.fee_due) || 0, Number(r.total_due) || (Number(r.principal_due) || 0) + (Number(r.interest_due) || 0) + (Number(r.fee_due) || 0)]);
       }
       await client.query('COMMIT');
-      await db.log(req.user.id, 'obl_import_amort', `${b.creditor_name}: график ${inst.length}`);
+      await db.log(req.user.id, b.format === 'amortizing' ? 'obl_import_amort' : 'obl_import_schedule', `${b.creditor_name}: график ${inst.length}`);
       return res.json({ ok: true, id: oid, tranches: 0, schedule: inst.length });
     } catch (e) { await client.query('ROLLBACK').catch(() => {}); return res.status(400).json({ error: e.message }); }
     finally { client.release(); }
@@ -2362,6 +2419,52 @@ router.post('/api/obligations/import-return-schedule/confirm', J, async (req, re
     res.json({ ok: true, id: oid, tranches: rows.length, schedule: withDue.length });
   } catch (e) { await client.query('ROLLBACK').catch(() => {}); res.status(400).json({ error: e.message }); }
   finally { client.release(); }
+});
+
+// Шаблон Excel для импорта графика обязательств: листы «Кредит» и «Лизинг» + подсказка.
+// Даты — обычным текстом ДД.ММ.ГГГГ (парсер excelDate понимает и текст, и дату Excel).
+router.get('/api/obligations/schedule-template.xlsx', async (req, res) => {
+  const wb = XLSX.utils.book_new();
+  // Лист 1 — Кредит: дата · тело (погашение) · проценты.
+  const credit = XLSX.utils.aoa_to_sheet([
+    ['Дата платежа', 'Тело (погашение)', 'Проценты'],
+    ['05.08.2026', 5000000, 1200000],
+    ['05.09.2026', 5000000, 1100000],
+    ['05.10.2026', 5000000, 1000000],
+  ]);
+  credit['!cols'] = [{ wch: 16 }, { wch: 18 }, { wch: 14 }];
+  XLSX.utils.book_append_sheet(wb, credit, 'Кредит');
+  // Лист 2 — Лизинг ($): дата · осн. часть (тело) · вознаграждение (проценты) · комиссия лизинга.
+  const leasing = XLSX.utils.aoa_to_sheet([
+    ['Дата платежа', 'Осн. часть (тело)', 'Вознаграждение (проценты)', 'Комиссия лизинга'],
+    ['05.08.2026', 800, 100, 50],
+    ['05.09.2026', 800, 95, 50],
+    ['05.10.2026', 800, 90, 50],
+  ]);
+  leasing['!cols'] = [{ wch: 16 }, { wch: 18 }, { wch: 24 }, { wch: 18 }];
+  XLSX.utils.book_append_sheet(wb, leasing, 'Лизинг ($)');
+  // Лист 3 — подсказка.
+  const help = XLSX.utils.aoa_to_sheet([
+    ['Как заполнять'],
+    [''],
+    ['1) Кредит — лист «Кредит»: колонки Дата · Тело (погашение) · Проценты.'],
+    ['2) Лизинг — лист «Лизинг ($)»: Дата · Осн. часть · Вознаграждение · Комиссия лизинга. Валюту (USD) выберите в окне импорта.'],
+    ['   • «Осн. часть» ложится в «Тело», «Вознаграждение» — в «Проценты», «Комиссия лизинга» — в «Комиссию».'],
+    ['3) Даты — в формате ДД.ММ.ГГГГ (например 05.08.2026). Суммы — числом, без пробелов и букв.'],
+    ['4) Порядок колонок и их точные названия можно менять — система ищет по словам «дата», «тело/погаш/осн», «процент/вознагр», «комисс».'],
+    ['5) Строки без даты (итоги/пустые) пропускаются автоматически.'],
+    [''],
+    ['Фин. аренда (равные платежи) — НЕ через Excel:'],
+    ['   создайте заём (тип «Прочий»), ставку 0, схему «Равными частями (тело)»,'],
+    ['   сумму = платёж × число месяцев; затем в карточке «📅 Построить график»:'],
+    ['   число платежей (напр. 24) и дату первого платежа (5-е число). Система создаст график сама.'],
+  ]);
+  help['!cols'] = [{ wch: 100 }];
+  XLSX.utils.book_append_sheet(wb, help, 'Как заполнять');
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', 'attachment; filename="obligations_schedule_template.xlsx"');
+  res.send(buf);
 });
 
 module.exports = router;
