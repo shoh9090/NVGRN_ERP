@@ -543,7 +543,10 @@
     }
     const creditor = finp('', { placeholder: 'Напр. Хикматов К' });
     const curSel = fsel([{ v: 'USD', t: 'доллары (USD)' }, { v: 'UZS', t: 'сум (UZS)' }], 'USD');
-    const typeSel = fsel(LOAN_TYPES.map(([v, t]) => ({ v, t })), 'concept_loan');
+    // При импорте доступен и «Банковский кредит» (bank_loan) — чтобы кредиты попадали в свою вкладку,
+    // а не только в «займы». По умолчанию выбран тип текущей вкладки (bank → банковский кредит).
+    const IMPORT_TYPES = [['bank_loan', 'Банковский кредит']].concat(LOAN_TYPES);
+    const typeSel = fsel(IMPORT_TYPES.map(([v, t]) => ({ v, t })), group === 'bank' ? 'bank_loan' : 'concept_loan');
     const totalInp = fmoney('', { placeholder: 'общий долг (если больше суммы графика)' });
     const retInp = finp('15', { type: 'number', min: '0', style: 'width:90px', title: 'Если в файле нет даты возврата' });
     const rateInp = finp('', { type: 'number', step: 'any', min: '0', style: 'width:90px', placeholder: '% годовых' });
