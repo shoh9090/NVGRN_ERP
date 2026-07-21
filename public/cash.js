@@ -476,7 +476,10 @@
     loan = loan || {};
     const isBank = group === 'bank';
     const creditor = finp(loan.creditor_name, { placeholder: 'Название банка / кредитора' });
-    const typeSel = fsel(LOAN_TYPES.map(([v, t]) => ({ v, t })), loan.obligation_type || 'concept_loan');
+    // Тип всегда со всеми вариантами (включая «Банковский кредит») — чтобы можно было
+    // переносить обязательство между «Банковскими кредитами» и «Займами» через «Изменить».
+    const ALL_OBL_TYPES = [['bank_loan', 'Банковский кредит']].concat(LOAN_TYPES);
+    const typeSel = fsel(ALL_OBL_TYPES.map(([v, t]) => ({ v, t })), loan.obligation_type || (isBank ? 'bank_loan' : 'concept_loan'));
     const agree = finp(loan.agreement_number, { placeholder: '№ договора/соглашения' });
     const agreeDate = finp(loan.agreement_date ? String(loan.agreement_date).slice(0, 10) : '', { type: 'date' });
     const curSel = fsel([{ v: 'UZS', t: 'сум (UZS)' }, { v: 'USD', t: 'доллары (USD)' }], loan.currency || 'UZS');
@@ -490,7 +493,7 @@
     const wallet = fsel([{ v: '', t: '— кошелёк получения —' }].concat((DICTS.wallets || []).map((w) => ({ v: w.id, t: w.name }))), loan.wallet_id || '');
     const comment = finp(loan.comment, { placeholder: 'Комментарий' });
     const rows = [
-      isBank ? null : frow('Тип займа', typeSel),
+      frow('Тип обязательства', typeSel),
       frow('Кредитор', creditor),
       frow('Договор №', agree), frow('Дата договора', agreeDate),
       frow('Валюта', curSel),
@@ -505,7 +508,7 @@
     const save = el('button', { class: 'btn-primary', onclick: async () => {
       if (!creditor.value.trim()) return toast('Укажите кредитора', true);
       const payload = {
-        obligation_type: isBank ? 'bank_loan' : typeSel.value,
+        obligation_type: typeSel.value,
         creditor_name: creditor.value, agreement_number: agree.value, agreement_date: agreeDate.value || null,
         currency: curSel.value, principal_limit: moneyVal(limit), principal_received: moneyVal(received),
         annual_rate: moneyVal(rate), repayment_scheme: scheme.value, date_start: dStart.value || null,
