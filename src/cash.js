@@ -1922,6 +1922,22 @@ router.get('/api/obligations/summary', async (req, res) => {
       rows.push({ kind: g + (c === 'USD' ? ' ($)' : ''), currency: c, total: v, due_period: sc.duem || 0, overdue: sc.ovd || 0, nearest_date: sc.nxt || null, source: g.includes('кредит') ? 'Кредиты' : 'Займы' });
     }
 
+    // Ближайший платёж — учитываем и графики кредитов/займов/лизинга, а не только поставщиков
+    // (раньше nearest брался лишь из заявок Закупа — платежи по обязательствам не показывались).
+    const nl = (await db.pool.query(
+      `SELECT s.due_date, s.total_due, o.currency, o.creditor_name
+       FROM finance_obligation_schedule s JOIN finance_obligations o ON o.id = s.obligation_id
+       WHERE s.status NOT IN ('paid','cancelled') AND o.status NOT IN ('cancelled','closed')
+         AND s.due_date >= CURRENT_DATE
+         AND s.version_no = (SELECT MAX(version_no) FROM finance_obligation_schedule x WHERE x.obligation_id = s.obligation_id)
+       ORDER BY s.due_date ASC, s.id ASC LIMIT 1`)).rows[0];
+    if (nl) {
+      const nd = String(nl.due_date).slice(0, 10);
+      if (!nearest || nd < nearest.due_date) {
+        nearest = { due_date: nd, creditor: nl.creditor_name, amount: Number(nl.total_due) || 0, currency: cur1(nl.currency), days: Math.round((new Date(nd) - new Date(today)) / 86400000) };
+      }
+    }
+
     const totalUzs = byCur.UZS + toUzs('USD', byCur.USD || 0);
     const overdueUzs = ovdCur.UZS + toUzs('USD', ovdCur.USD);
     const dueUzs = dueCur.UZS + toUzs('USD', dueCur.USD);

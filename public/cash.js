@@ -761,7 +761,7 @@
       oblCard('К оплате в этом месяце', money(k.due_this_month) + ' сум', 'Со сроком до конца месяца'),
       oblCard('Просрочено', money(k.overdue) + ' сум', 'Срок прошёл, остаток не погашен', k.overdue > 0 ? 'cash-tot-out' : ''),
       k.nearest_payment
-        ? oblCard('Ближайший платёж', money(k.nearest_payment.amount) + ' сум', k.nearest_payment.creditor + ' · ' + ruDate(k.nearest_payment.due_date) + ' · через ' + k.nearest_payment.days + ' дн.')
+        ? oblCard('Ближайший платёж', curFmt(k.nearest_payment.amount, k.nearest_payment.currency) + (k.nearest_payment.currency === 'USD' ? ' $' : ' сум'), k.nearest_payment.creditor + ' · ' + ruDate(k.nearest_payment.due_date) + ' · через ' + k.nearest_payment.days + ' дн.')
         : oblCard('Ближайший платёж', '—', 'Нет предстоящих платежей'),
     ]));
     // Валютная расшифровка (итог в сумах по курсу ЦБ + суммы по валютам).
