@@ -489,6 +489,18 @@ function renderCatalog(sdId, page, lang, catalog) {
 }
 const orderItemsText = (o) => (o.orderProducts || []).map((op) => `• ${(op.product && op.product.name) || "?"}: ${op.quantity}`).join("\n") || "—";
 
+// Глобальный перехват «непойманных» ошибок промисов (например, sendMessage в группу,
+// откуда бота выкинули, или пользователю, который заблокировал бота). Без этого Node
+// вываливает в лог весь объект ошибки (~500 строк) и может уронить процесс.
+// Теперь — одна короткая строка, бот продолжает работать.
+process.on("unhandledRejection", (reason) => {
+  const m = reason && (reason.message || reason.code) ? (reason.code ? reason.code + " " : "") + (reason.message || "") : String(reason);
+  console.error("[unhandledRejection]", m.trim());
+});
+process.on("uncaughtException", (err) => {
+  console.error("[uncaughtException]", (err && err.message) || String(err));
+});
+
 async function main() {
   await db.migrate();
   const bot = new TelegramBot(TOKEN, { polling: true });
