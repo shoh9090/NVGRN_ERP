@@ -437,7 +437,7 @@
   }
 
   const SCHEMES = [['annuity', 'Аннуитет'], ['differentiated', 'Дифференцированный'], ['equal_principal', 'Равными частями (тело)'], ['bullet', 'Тело в конце'], ['interest_only', 'Только проценты'], ['custom', 'Свой график']];
-  const LOAN_TYPES = [['concept_loan', 'Понятийный'], ['investment_loan', 'Инвестиционный'], ['founder_loan', 'Учредителя'], ['other_loan', 'Прочий']];
+  const LOAN_TYPES = [['concept_loan', 'Понятийный'], ['investment_loan', 'Инвестиционный'], ['founder_loan', 'Учредителя'], ['capex', 'Капитальные вложения'], ['other_loan', 'Прочий']];
   const LOAN_STATUS = { draft: 'Черновик', active: 'Активен', closed: 'Погашен', overdue: 'Просрочен', restructured: 'Реструктурирован', cancelled: 'Отменён' };
   const curFmt = (v, cur) => (cur === 'USD' ? (Number(v) || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : money(v));
   // Право вести обязательства: админ ИЛИ роль «Финансы/Бухгалтерия».
@@ -626,20 +626,42 @@
     const pInp = fmoney(s.principal_due, { placeholder: 'тело' });
     const iInp = fmoney(s.interest_due, { placeholder: 'проценты' });
     const fInp = fmoney(s.fee_due, { placeholder: 'комиссия' });
+    const noCash = el('input', { type: 'checkbox' });
+    const noCashRow = el('label', { style: 'display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;margin:2px 0 6px' }, [noCash, el('span', {}, 'Уже оплачено ранее — без списания из Кассы (историческая отметка)')]);
+    // При включённой галочке кошелёк не нужен: расход в Кассу не пишется.
+    noCash.onchange = () => { wallet.disabled = noCash.checked; wallet.style.opacity = noCash.checked ? '0.5' : '1'; };
     const body = el('div', { class: 'cashf' }, [
       el('div', { class: 'cash-note-info' }, 'Платёж спишется из кошелька в Кассе (тело → 61, проценты → 60, комиссия → 62) и погасит строку графика. Возврат тела — не расход P&L, только проценты и комиссия.'),
+      noCashRow,
       frow('Кошелёк', wallet), frow('Дата', date),
       frow('Тело', pInp), frow('Проценты', iInp), frow('Комиссия', fInp),
       el('div', { class: 'muted', style: 'font-size:12px' }, 'К оплате по строке (остаток): ' + curFmt(rem, loan.currency) + ' ' + loan.currency),
     ]);
     const save = el('button', { class: 'btn-primary', onclick: async () => {
-      if (!wallet.value) return toast('Выберите кошелёк', true);
+      if (!noCash.checked && !wallet.value) return toast('Выберите кошелёк (или отметьте «без списания из Кассы»)', true);
       try {
-        await post('/obligations/schedule/' + s.id + '/pay', { wallet_id: wallet.value, payment_date: date.value, principal_paid: moneyVal(pInp), interest_paid: moneyVal(iInp), fee_paid: moneyVal(fInp) });
-        toast('Оплата проведена'); oblLoanCard(loan.id, group);
+        await post('/obligations/schedule/' + s.id + '/pay', { wallet_id: wallet.value, payment_date: date.value, principal_paid: moneyVal(pInp), interest_paid: moneyVal(iInp), fee_paid: moneyVal(fInp), no_cash: noCash.checked });
+        toast(noCash.checked ? 'Отмечено оплаченным' : 'Оплата проведена'); oblLoanCard(loan.id, group);
       } catch (e) { toast(e.message, true); }
     } }, 'Провести оплату');
     modal('💵 Оплата платежа №' + s.installment_no, body, [save]);
+  }
+
+  // Массовая отметка «оплачено ранее» до даты — без движения денег в Кассе (старые кредиты/аренда).
+  function oblMarkPaidUntil(id, group) {
+    const date = finp(new Date().toISOString().slice(0, 10), { type: 'date' });
+    const body = el('div', { class: 'cashf' }, [
+      el('div', { class: 'cash-note-info' }, 'Все платежи графика со сроком ДО указанной даты (включительно) будут отмечены полностью оплаченными. Это историческая отметка — расход в Кассе не создаётся и баланс кассы не меняется.'),
+      frow('Оплачено по дату', date),
+    ]);
+    const save = el('button', { class: 'btn-primary', onclick: async () => {
+      if (!date.value) return toast('Укажите дату', true);
+      try {
+        const r = await post('/obligations/' + id + '/mark-paid-until', { until_date: date.value });
+        toast(r.marked ? ('Отмечено оплаченными: ' + r.marked) : 'Нет строк к отметке'); oblLoanCard(id, group);
+      } catch (e) { toast(e.message, true); }
+    } }, 'Отметить оплаченными');
+    modal('✓ Отметить оплаченными до даты', body, [save]);
   }
 
   async function oblLoanCard(id, group) {
@@ -719,6 +741,7 @@
       head, subline,
       el('p', { class: 'muted' }, [o.agreement_number ? '№ ' + o.agreement_number : '', o.wallet_name ? 'кошелёк: ' + o.wallet_name : '', o.comment].filter(Boolean).join(' · ')),
       el('h3', { class: 'cash-h2', style: 'font-size:16px;margin:6px 0' }, 'График платежей' + (d.version ? ' (v' + d.version + ')' : '')),
+      (isAdmin() && d.schedule.length) ? el('div', { style: 'margin:2px 0 6px' }, el('button', { class: 'btn-ghost cash-add', style: 'font-size:12px', onclick: () => oblMarkPaidUntil(id, group) }, '✓ Отметить оплаченными до даты…')) : null,
       genRow, schedBlock,
     ]);
     const acts = [];

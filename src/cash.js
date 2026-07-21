@@ -1994,7 +1994,7 @@ router.get('/api/obligations/suppliers', async (req, res) => {
 });
 
 // ---- Кредиты и займы (Этап 2): CRUD + генерация графика ----
-const OBL_TYPES = ['bank_loan', 'concept_loan', 'investment_loan', 'founder_loan', 'other_loan'];
+const OBL_TYPES = ['bank_loan', 'concept_loan', 'investment_loan', 'founder_loan', 'capex', 'other_loan'];
 const round2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
 
 // Генерация графика по схеме погашения. opts: {installments, first_payment_date}.
@@ -2029,7 +2029,7 @@ const OBL_FIELDS = ['obligation_type', 'creditor_name', 'agreement_number', 'agr
 
 router.get('/api/obligations/loans', async (req, res) => {
   try {
-    const group = req.query.group === 'bank' ? ['bank_loan'] : req.query.group === 'other' ? ['concept_loan', 'investment_loan', 'founder_loan', 'other_loan'] : OBL_TYPES;
+    const group = req.query.group === 'bank' ? ['bank_loan'] : req.query.group === 'other' ? ['concept_loan', 'investment_loan', 'founder_loan', 'capex', 'other_loan'] : OBL_TYPES;
     const rows = (await db.pool.query(
       `SELECT o.*, w.name AS wallet_name,
               (SELECT COALESCE(SUM(principal_paid),0) FROM finance_obligation_payment_links l WHERE l.obligation_id=o.id AND l.reversed_at IS NULL) AS principal_paid,
@@ -2081,32 +2081,37 @@ router.post('/api/obligations/schedule/:id(\\d+)/pay', J, async (req, res) => {
     `SELECT s.*, o.id AS obligation_id, o.creditor_name FROM finance_obligation_schedule s
      JOIN finance_obligations o ON o.id=s.obligation_id WHERE s.id=$1`, [sid])).rows[0];
   if (!s) return res.status(404).json({ error: 'Строка графика не найдена' });
+  const noCash = !!b.no_cash; // историческая отметка: закрыть строку без создания расхода в Кассе
   const walletId = intOrNull(b.wallet_id);
-  if (!walletId) return res.status(400).json({ error: 'Выберите кошелёк списания' });
+  if (!noCash && !walletId) return res.status(400).json({ error: 'Выберите кошелёк списания' });
   const date = b.payment_date || new Date().toISOString().slice(0, 10);
   const pr = Math.max(0, Number(b.principal_paid) || 0);
   const ip = Math.max(0, Number(b.interest_paid) || 0);
   const fe = Math.max(0, Number(b.fee_paid) || 0);
   if (pr + ip + fe <= 0) return res.status(400).json({ error: 'Укажите сумму платежа' });
-  const [cBody, cInt, cFee] = await Promise.all([catIdByCode('61'), catIdByCode('60'), catIdByCode('62')]);
   const client = await db.pool.connect();
   try {
     await client.query('BEGIN');
-    const mkTx = async (amount, catId, label) => {
-      if (amount <= 0) return null;
-      const r = await client.query(
-        `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, category_id, purpose, source, is_classified, created_by)
-         VALUES ($1,$2,'out',$3,$4,$5,'obligation',$6,$7) RETURNING id`,
-        [date, amount, walletId, catId, `${label}: ${s.creditor_name} · платёж №${s.installment_no}`, !!catId, req.user.id]);
-      return r.rows[0].id;
-    };
-    const txBody = await mkTx(pr, cBody, 'Возврат тела кредита');
-    const txInt = await mkTx(ip, cInt, 'Проценты по кредиту');
-    const txFee = await mkTx(fe, cFee, 'Комиссия банка');
+    let linkTx = null;
+    if (!noCash) {
+      const [cBody, cInt, cFee] = await Promise.all([catIdByCode('61'), catIdByCode('60'), catIdByCode('62')]);
+      const mkTx = async (amount, catId, label) => {
+        if (amount <= 0) return null;
+        const r = await client.query(
+          `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, category_id, purpose, source, is_classified, created_by)
+           VALUES ($1,$2,'out',$3,$4,$5,'obligation',$6,$7) RETURNING id`,
+          [date, amount, walletId, catId, `${label}: ${s.creditor_name} · платёж №${s.installment_no}`, !!catId, req.user.id]);
+        return r.rows[0].id;
+      };
+      const txBody = await mkTx(pr, cBody, 'Возврат тела кредита');
+      const txInt = await mkTx(ip, cInt, 'Проценты по кредиту');
+      const txFee = await mkTx(fe, cFee, 'Комиссия банка');
+      linkTx = txBody || txInt || txFee;
+    }
     await client.query(
       `INSERT INTO finance_obligation_payment_links (schedule_id, obligation_id, cash_transaction_id, payment_date, principal_paid, interest_paid, fee_paid, created_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [sid, s.obligation_id, txBody || txInt || txFee, date, pr, ip, fe, req.user.id]);
+      [sid, s.obligation_id, linkTx, date, pr, ip, fe, req.user.id]);
     // Статус строки: полностью/частично оплачено.
     const paid = Number((await client.query('SELECT COALESCE(SUM(principal_paid+interest_paid+fee_paid),0) v FROM finance_obligation_payment_links WHERE schedule_id=$1 AND reversed_at IS NULL', [sid])).rows[0].v);
     const st = paid >= Number(s.total_due) - 0.01 ? 'paid' : 'partial';
@@ -2115,8 +2120,48 @@ router.post('/api/obligations/schedule/:id(\\d+)/pay', J, async (req, res) => {
     await client.query('COMMIT');
   } catch (e) { await client.query('ROLLBACK').catch(() => {}); return res.status(400).json({ error: e.message }); }
   finally { client.release(); }
-  await db.log(req.user.id, 'obl_schedule_pay', `строка #${sid} тело=${pr} %=${ip} комис=${fe}`);
+  await db.log(req.user.id, noCash ? 'obl_schedule_mark_paid' : 'obl_schedule_pay', `строка #${sid} тело=${pr} %=${ip} комис=${fe}${noCash ? ' (без Кассы)' : ''}`);
   res.json({ ok: true });
+});
+
+// Массовая историческая отметка: все строки графика со сроком ДО указанной даты (включительно)
+// помечаются полностью оплаченными БЕЗ движения денег в Кассе (для старых кредитов/аренды с 2024-25).
+router.post('/api/obligations/:id(\\d+)/mark-paid-until', J, async (req, res) => {
+  if (!canFin(req)) return res.status(403).json({ error: 'Только администратор/финансы' });
+  const oid = parseInt(req.params.id, 10);
+  const until = req.body && req.body.until_date;
+  if (!until) return res.status(400).json({ error: 'Укажите дату' });
+  const ver = (await db.pool.query('SELECT COALESCE(MAX(version_no),0) v FROM finance_obligation_schedule WHERE obligation_id=$1', [oid])).rows[0].v;
+  const rows = (await db.pool.query(
+    `SELECT s.* FROM finance_obligation_schedule s
+     WHERE s.obligation_id=$1 AND s.version_no=$2 AND s.due_date <= $3 AND s.status NOT IN ('paid','cancelled')
+     ORDER BY s.installment_no`, [oid, ver, until])).rows;
+  if (!rows.length) return res.json({ ok: true, marked: 0 });
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    let marked = 0;
+    for (const s of rows) {
+      // Доводим каждую компоненту (тело/проценты/комиссия) до полной суммы строки — с учётом уже уплаченного.
+      const pc = (await client.query('SELECT COALESCE(SUM(principal_paid),0) pp, COALESCE(SUM(interest_paid),0) ii, COALESCE(SUM(fee_paid),0) ff FROM finance_obligation_payment_links WHERE schedule_id=$1 AND reversed_at IS NULL', [s.id])).rows[0];
+      const payP = Math.max(0, (Number(s.principal_due) || 0) - Number(pc.pp));
+      const payI = Math.max(0, (Number(s.interest_due) || 0) - Number(pc.ii));
+      const payF = Math.max(0, (Number(s.fee_due) || 0) - Number(pc.ff));
+      if (payP + payI + payF > 0.009) {
+        await client.query(
+          `INSERT INTO finance_obligation_payment_links (schedule_id, obligation_id, cash_transaction_id, payment_date, principal_paid, interest_paid, fee_paid, created_by)
+           VALUES ($1,$2,NULL,$3,$4,$5,$6,$7)`,
+          [s.id, oid, s.due_date, payP, payI, payF, req.user.id]);
+      }
+      await client.query("UPDATE finance_obligation_schedule SET status='paid' WHERE id=$1", [s.id]);
+      marked += 1;
+    }
+    await client.query("UPDATE finance_obligations SET status='active', updated_at=now() WHERE id=$1 AND status='draft'", [oid]);
+    await client.query('COMMIT');
+    await db.log(req.user.id, 'obl_mark_paid_until', `#${oid} до ${until}: строк ${marked}`);
+    res.json({ ok: true, marked });
+  } catch (e) { await client.query('ROLLBACK').catch(() => {}); res.status(400).json({ error: e.message }); }
+  finally { client.release(); }
 });
 
 // Сторно привязки оплаты: денежные операции не удаляем физически — помечаем reversed + удаляем расходы.
