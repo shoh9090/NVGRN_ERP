@@ -292,6 +292,14 @@ select.cb-cell { cursor: pointer; }
 .cash-bulk-count { font-weight: 700; color: #c0392b; font-size: 13px; white-space: nowrap; }
 .cash-sum-fx { font-size: 12px; color: var(--muted); margin-top: 4px; font-variant-numeric: tabular-nums; }
 .cb-on { background: #eef4e9 !important; }
+/* Активная кнопка типа: Приход — зелёный, Расход — красный (чтобы видеть, где находишься). */
+.cb-typebtn.cb-in.cb-on { background: #2e7d32 !important; border-color: #2e7d32 !important; color: #fff !important; }
+.cb-typebtn.cb-out.cb-on { background: #c0392b !important; border-color: #c0392b !important; color: #fff !important; }
+/* Кликабельные карточки-суммы (открыть все приходы/расходы). */
+.cash-sum-click { cursor: pointer; transition: box-shadow .12s, transform .12s; }
+.cash-sum-click:hover { box-shadow: 0 2px 10px rgba(20,36,27,.12); }
+.cash-sum-card.in.cash-sum-active { border-color: #2e7d32; box-shadow: 0 0 0 2px rgba(46,125,50,.25); }
+.cash-sum-card.out.cash-sum-active { border-color: #c0392b; box-shadow: 0 0 0 2px rgba(192,57,43,.25); }
 .cb-del { color: #993c1d; cursor: pointer; font-size: 12px; text-align: right; white-space: nowrap; }
 .cb-rate { font-size: 12px; color: var(--muted); cursor: pointer; }
 .cb-equiv { display: block; font-size: 11px; color: var(--muted); margin-top: 2px; }

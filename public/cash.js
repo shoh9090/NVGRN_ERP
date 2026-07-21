@@ -1019,7 +1019,12 @@
     } catch (e) { /* сводка не критична для журнала */ }
     wrap.innerHTML = '';
     if (sum) {
-      const scard = (label, val, cls, extra) => el('div', { class: 'cash-sum-card' + (cls ? ' ' + cls : '') }, [
+      // clickType — клик по карточке ставит фильтр типа (все приходы/расходы), повторный клик снимает.
+      const scard = (label, val, cls, extra, clickType) => el('div', {
+        class: 'cash-sum-card' + (cls ? ' ' + cls : '') + (clickType ? ' cash-sum-click' : '') + (clickType && txState.type === clickType ? ' cash-sum-active' : ''),
+        title: clickType ? ('Показать все ' + (clickType === 'in' ? 'приходы' : 'расходы')) : null,
+        onclick: clickType ? () => { txState.type = (txState.type === clickType ? '' : clickType); renderTransactions(); } : null,
+      }, [
         el('div', { class: 'cash-sum-l' }, label),
         el('div', { class: 'cash-sum-v' }, money(val) + ' сум'),
         extra || null,
@@ -1027,8 +1032,8 @@
       const reconcileBtn = el('button', { class: 'btn-ghost cash-sum-btn', onclick: () => openReconcileForm() }, '⚖ Сверить остаток');
       wrap.appendChild(el('div', { class: 'cash-summary' }, [
         scard('Сальдо на начало', sum.opening, 'neutral'),
-        scard('Приход', sum.inflow, 'in'),
-        scard('Расход', sum.outflow, 'out'),
+        scard('Приход', sum.inflow, 'in', null, 'in'),
+        scard('Расход', sum.outflow, 'out', null, 'out'),
         scard('Сальдо на конец', sum.closing, 'end', reconcileBtn),
       ]));
     }
@@ -1182,6 +1187,9 @@
     const c = $('#cash-content'); c.innerHTML = '';
     const cashWallets = (DICTS.wallets || []).filter((w) => w.kind === 'cash');
     if (!cbState.wallet && cashWallets.length) cbState.wallet = String(cashWallets[0].id);
+    // По умолчанию — текущий месяц: с 1-го числа по сегодня (сальдо на начало = остаток на начало месяца).
+    if (!cbState.from) cbState.from = monthStartStr();
+    if (!cbState.to) cbState.to = todayStr();
     c.appendChild(el('div', { class: 'cash-head' }, [
       el('div', {}, [el('div', { class: 'cash-h2' }, 'Наличная касса')]),
       el('div', { class: 'cash-tx-btns' }, [
@@ -1191,7 +1199,7 @@
       ]),
     ]));
     if (!cashWallets.length) { c.appendChild(el('div', { class: 'cash-empty' }, 'Нет ни одного кошелька типа «Наличные». Заведите его на вкладке «Кошельки».')); return; }
-    const typeBtn = (v, label) => el('button', { class: 'btn-ghost cash-add' + (cbState.type === v ? ' cb-on' : ''), onclick: () => { cbState.type = v; cbState.selected = {}; cbState.page = 1; renderCashbox(); } }, label);
+    const typeBtn = (v, label) => el('button', { class: 'btn-ghost cash-add cb-typebtn cb-' + v + (cbState.type === v ? ' cb-on' : ''), onclick: () => { cbState.type = v; cbState.selected = {}; cbState.page = 1; renderCashbox(); } }, label);
     const walletSel = el('select', { class: 'cashf-inp', onchange: (e) => { cbState.wallet = e.target.value; cbState.page = 1; renderCashbox(); } },
       cashWallets.map((w) => el('option', { value: w.id, selected: String(w.id) === cbState.wallet || null }, w.name)));
     const fromInp = el('input', { type: 'date', class: 'cashf-inp cash-filt', value: cbState.from, onchange: (e) => { cbState.from = e.target.value; cbState.page = 1; loadCashbox(); } });
@@ -1247,8 +1255,8 @@
     const exV = el('div', { class: 'cash-sum-v' }, money(sum.exchange_uzs || 0) + ' сум');
     const cards = [
       el('div', { class: 'cash-sum-card neutral' }, [el('div', { class: 'cash-sum-l' }, 'Сальдо на начало'), openV, openFx]),
-      el('div', { class: 'cash-sum-card in' }, [el('div', { class: 'cash-sum-l' }, 'Приход за период'), inV, inFx]),
-      el('div', { class: 'cash-sum-card out' }, [el('div', { class: 'cash-sum-l' }, 'Расход за период'), outV, outFx]),
+      el('div', { class: 'cash-sum-card in cash-sum-click', title: 'Показать все приходы', onclick: () => { cbState.type = 'in'; cbState.selected = {}; cbState.page = 1; renderCashbox(); } }, [el('div', { class: 'cash-sum-l' }, 'Приход за период'), inV, inFx]),
+      el('div', { class: 'cash-sum-card out cash-sum-click', title: 'Показать все расходы', onclick: () => { cbState.type = 'out'; cbState.selected = {}; cbState.page = 1; renderCashbox(); } }, [el('div', { class: 'cash-sum-l' }, 'Расход за период'), outV, outFx]),
     ];
     if (Number(sum.exchange_uzs)) {
       cards.push(el('div', { class: 'cash-sum-card ex' }, [
