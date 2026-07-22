@@ -130,6 +130,10 @@ async function ensureCashSchema() {
   // Перевод банк→касса, где ещё не подтверждена реальная сумма прихода (обналичивание с комиссией,
   // которая станет известна только когда бухгалтер физически пересчитает наличные).
   await q(`ALTER TABLE cash_transactions ADD COLUMN IF NOT EXISTS needs_cash_confirm BOOLEAN NOT NULL DEFAULT false`);
+  // Ссылка производной строки на родительский перевод-обнал (доллары/конверсия/комиссия при подтверждении).
+  // Нужна, чтобы в «Наличной кассе» свернуть обнал в один «факт»-ряд (реестр не меняем).
+  await q(`ALTER TABLE cash_transactions ADD COLUMN IF NOT EXISTS parent_tx_id INT`);
+  await q(`CREATE INDEX IF NOT EXISTS idx_cash_tx_parent ON cash_transactions (parent_tx_id)`);
   // Связка двух «ног» перевода банк↔банк (у обоих счетов своя выписка): out в банке-А и in в банке-Б —
   // это один перевод. Обе ноги двигают только свой кошелёк и исключены из прихода/расхода отчёта.
   await q(`ALTER TABLE cash_transactions ADD COLUMN IF NOT EXISTS transfer_group_id INT`);
@@ -1136,7 +1140,18 @@ router.get('/api/transactions', async (req, res) => {
   if (classified === 'no') w.push(`(t.tx_type <> 'transfer' AND t.is_classified = false)`);
   else if (classified === 'yes') w.push(`t.is_classified = true`);
   if (q) { p.push('%' + String(q).trim() + '%'); w.push(`(t.purpose ILIKE $${p.length} OR t.payer_name ILIKE $${p.length})`); }
+  // Режим «Наличной кассы»: сворачиваем обнал. Прячем внутренние строки конверсии/доллара (ст. 102 с parent_tx_id)
+  // — их сумма попадёт в «факт»-ряд родителя. Комиссия (ст. 64) остаётся видимой в расходах.
+  const cashboxView = req.query.cashbox === '1';
+  if (cashboxView) {
+    w.push(`NOT (t.parent_tx_id IS NOT NULL AND t.category_id IN (SELECT id FROM cash_categories WHERE code='102'))`);
+  }
   const where = w.length ? 'WHERE ' + w.join(' AND ') : '';
+  // Доп. столбцы для «факт»-ряда обнала (только в режиме кассы): доллары, сумовая конверсия, комиссия по детям.
+  const obnalCols = cashboxView ? `,
+    (SELECT COALESCE(SUM(c.fx_amount),0) FROM cash_transactions c WHERE c.parent_tx_id = t.id AND c.tx_type='in' AND c.currency='USD') AS obnal_usd,
+    (SELECT COALESCE(SUM(c.amount),0) FROM cash_transactions c WHERE c.parent_tx_id = t.id AND c.tx_type='out' AND c.category_id IN (SELECT id FROM cash_categories WHERE code='102')) AS obnal_conv_uzs,
+    (SELECT COALESCE(SUM(c.amount),0) FROM cash_transactions c WHERE c.parent_tx_id = t.id AND c.category_id IN (SELECT id FROM cash_categories WHERE code='64')) AS obnal_fee` : '';
   // Итоги и общее число — по всей выборке (не по странице).
   const agg = (await db.pool.query(
     `SELECT COALESCE(SUM(amount) FILTER (WHERE tx_type='in'),0) AS tin,
@@ -1150,7 +1165,7 @@ router.get('/api/transactions', async (req, res) => {
   const pageP = p.slice(); pageP.push(pageSize, offset);
   const rows = (await db.pool.query(
     `SELECT t.*, w.name AS wallet_name, w.color AS wallet_color, w2.name AS wallet_to_name,
-            cp.name AS cp_name, cat.code AS cat_code, cat.name AS cat_name
+            cp.name AS cp_name, cat.code AS cat_code, cat.name AS cat_name${obnalCols}
      FROM cash_transactions t
      LEFT JOIN cash_wallets w ON w.id = t.wallet_id
      LEFT JOIN cash_wallets w2 ON w2.id = t.wallet_to_id
@@ -1300,20 +1315,20 @@ router.post('/api/tx/:id(\\d+)/confirm-cash', J, async (req, res) => {
       const cid = conv ? conv.id : null;
       const p = 'Долларовая часть (наличные с банка)' + (t.purpose ? ' — ' + t.purpose : '');
       await client.query(
-        `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, category_id, purpose, source, is_classified, currency, created_by)
-         VALUES ($1,$2,'out',$3,$4,$5,'manual',true,'UZS',$6)`, [t.tx_date, usdEquiv, wid, cid, p, req.user.id]);
+        `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, category_id, purpose, source, is_classified, currency, parent_tx_id, created_by)
+         VALUES ($1,$2,'out',$3,$4,$5,'manual',true,'UZS',$6,$7)`, [t.tx_date, usdEquiv, wid, cid, p, req.params.id, req.user.id]);
       await client.query(
-        `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, category_id, purpose, source, is_classified, currency, fx_rate, fx_amount, created_by)
-         VALUES ($1,$2,'in',$3,$4,$5,'manual',true,'USD',$6,$7,$8)`, [t.tx_date, usdEquiv, wid, cid, p, rate, factUsd, req.user.id]);
+        `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, category_id, purpose, source, is_classified, currency, fx_rate, fx_amount, parent_tx_id, created_by)
+         VALUES ($1,$2,'in',$3,$4,$5,'manual',true,'USD',$6,$7,$8,$9)`, [t.tx_date, usdEquiv, wid, cid, p, rate, factUsd, req.params.id, req.user.id]);
     }
     // Комиссия обнала (статья 64) — разница между снятым и фактически полученным.
     if (diff > 0.5) {
       const feeCat = (await client.query("SELECT id FROM cash_categories WHERE code='64' LIMIT 1")).rows[0];
       const pct = (diff / Number(t.amount) * 100).toFixed(2);
       await client.query(
-        `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, category_id, purpose, source, is_classified, created_by)
-         VALUES ($1,$2,'out',$3,$4,$5,'manual',$6,$7)`,
-        [t.tx_date, diff, wid, feeCat ? feeCat.id : null, `Комиссия при получении наличных (${pct}%)` + (t.purpose ? ' — ' + t.purpose : ''), !!feeCat, req.user.id]);
+        `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, category_id, purpose, source, is_classified, parent_tx_id, created_by)
+         VALUES ($1,$2,'out',$3,$4,$5,'manual',$6,$7,$8)`,
+        [t.tx_date, diff, wid, feeCat ? feeCat.id : null, `Комиссия при получении наличных (${pct}%)` + (t.purpose ? ' — ' + t.purpose : ''), !!feeCat, req.params.id, req.user.id]);
     }
     await client.query('UPDATE cash_transactions SET needs_cash_confirm=false WHERE id=$1', [req.params.id]);
     await client.query('COMMIT');

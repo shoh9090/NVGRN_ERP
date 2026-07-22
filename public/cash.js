@@ -1231,7 +1231,7 @@
     try {
       const sp = new URLSearchParams(); if (cbState.from) sp.set('from', cbState.from); if (cbState.to) sp.set('to', cbState.to); sp.set('wallet', cbState.wallet); if (cbState.category) sp.set('category', cbState.category); if (cbState.classified) sp.set('classified', cbState.classified); if (cbState.q) sp.set('q', cbState.q);
       sum = await api('/summary?' + sp.toString());
-      const tp = new URLSearchParams(); tp.set('wallet', cbState.wallet); tp.set('type', cbState.type); tp.set('pageSize', String(cbState.pageSize || 50)); tp.set('page', String(cbState.page || 1));
+      const tp = new URLSearchParams(); tp.set('wallet', cbState.wallet); tp.set('type', cbState.type); tp.set('pageSize', String(cbState.pageSize || 50)); tp.set('page', String(cbState.page || 1)); tp.set('cashbox', '1');
       if (cbState.q) tp.set('q', cbState.q);
       if (cbState.category) tp.set('category', cbState.category);
       if (cbState.classified) tp.set('classified', cbState.classified);
@@ -1382,10 +1382,31 @@
       if (isTransfer) {
         const actions = [trash];
         if (isPending) actions.unshift(el('span', { class: 'cb-confirm', onclick: () => openConfirmCash(x) }, '⏳ Подтвердить'));
+        // Подтверждённый обнал (есть производные строки) — сворачиваем в один «факт»-ряд.
+        const hasObnal = !isPending && (Number(x.obnal_conv_uzs) > 0 || Number(x.obnal_usd) > 0 || Number(x.obnal_fee) > 0);
+        if (hasObnal) {
+          const conv = Number(x.obnal_conv_uzs) || 0, factUsd = Number(x.obnal_usd) || 0, fee = Number(x.obnal_fee) || 0;
+          const factUzs = Math.round(Number(x.amount) - conv);
+          const detail = el('div', { class: 'cb-obnal-detail', style: 'display:none;grid-column:1/-1;padding:3px 12px 7px;font-size:12px;color:var(--muted)' },
+            'Снято с банка: ' + money(x.amount) + ' сум' + (factUsd > 0 ? ' · доллары: $' + money(factUsd) + ' (' + money(conv) + ' сум)' : '') + (fee > 0 ? ' · комиссия: ' + money(fee) + ' сум (в расходах)' : ''));
+          const label = el('span', { class: 'cash-purpose', style: 'cursor:pointer', title: 'Показать снятую сумму и детали', onclick: () => { detail.style.display = detail.style.display === 'none' ? 'block' : 'none'; } },
+            '💵 Наличные с банка (факт) ▸');
+          return el('div', { class: 'cash-row cash-cb cb-obnal' }, [
+            el('span', {}, ''),
+            el('span', {}, ruDate(x.tx_date)),
+            label,
+            el('span', {}, '—'),
+            el('span', {}, factUsd > 0 ? ('$ ' + money(factUsd)) : 'сум'),
+            el('span', {}, '—'),
+            el('span', { style: 'text-align:right' }, money(factUzs)),
+            el('span', { class: 'cb-actions' }, actions),
+            detail,
+          ]);
+        }
         return el('div', { class: 'cash-row cash-cb' + (isPending ? ' cb-pending' : '') }, [
           el('span', {}, ''),
           el('span', {}, ruDate(x.tx_date)),
-          el('span', { class: 'cash-purpose' }, '⏳ Перевод от ' + (x.wallet_name || '—')),
+          el('span', { class: 'cash-purpose' }, (isPending ? '⏳ Перевод от ' : 'Перевод от ') + (x.wallet_name || '—')),
           el('span', {}, x.cat_code ? (x.cat_code + ' ' + (x.cat_name || '')) : '—'),
           el('span', {}, fxNote),
           el('span', {}, x.currency === 'USD' ? money(x.fx_rate) : '—'),
