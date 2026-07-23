@@ -1744,7 +1744,9 @@ router.post('/api/transactions/relink', J, async (req, res) => {
 // (банк может провести на следующий день), которые ещё не переводы, и предлагаем на подтверждение.
 router.get('/api/transactions/match-candidates', async (req, res) => {
   try {
-    const days = 3; // допуск по дате между списанием и зачислением
+    const days = 1; // допуск по дате между списанием и зачислением (было 3 — давало много ложных пар)
+    // Признак реального перевода между своими счетами (защита от совпадения сумм у обычных операций).
+    const transferRe = '(перевод|пополнени|между[[:space:]]+сч[её]т|на[[:space:]]+карт|корпоративн|перечисл|со[[:space:]]+сч[её]т|на[[:space:]]+сч[её]т|a2a)';
     const rows = (await db.pool.query(
       `SELECT o.id AS out_id, o.tx_date AS out_date, o.wallet_id AS out_wallet, wo.name AS out_wallet_name,
               o.purpose AS out_purpose, o.payer_name AS out_payer,
@@ -1760,8 +1762,15 @@ router.get('/api/transactions/match-candidates', async (req, res) => {
        JOIN cash_wallets wo ON wo.id = o.wallet_id
        JOIN cash_wallets wi ON wi.id = i.wallet_id
        WHERE o.source <> 'opening' AND i.source <> 'opening'
+         -- Наличную кассу не склеиваем автоматически (обнал/внесение налички ведём вручную).
+         AND wo.kind <> 'cash' AND wi.kind <> 'cash'
+         -- У перевода между своими счетами нет внешнего контрагента.
+         AND o.counterparty_id IS NULL AND i.counterparty_id IS NULL
+         -- Хотя бы одна из строк должна выглядеть как перевод (иначе это просто совпадение суммы).
+         AND (COALESCE(o.purpose,'') ~* $2 OR COALESCE(i.purpose,'') ~* $2
+              OR COALESCE(o.payer_name,'') ~* $2 OR COALESCE(i.payer_name,'') ~* $2)
        ORDER BY gap_days, o.tx_date DESC
-       LIMIT 200`, [days])).rows;
+       LIMIT 200`, [days, transferRe])).rows;
     // Каждую запись — только в одну пару (жадно, от самой близкой даты).
     const usedOut = new Set(), usedIn = new Set(), pairs = [];
     for (const r of rows) {
