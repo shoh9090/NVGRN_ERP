@@ -1230,7 +1230,7 @@
     let sum, list;
     try {
       const sp = new URLSearchParams(); if (cbState.from) sp.set('from', cbState.from); if (cbState.to) sp.set('to', cbState.to); sp.set('wallet', cbState.wallet); if (cbState.category) sp.set('category', cbState.category); if (cbState.classified) sp.set('classified', cbState.classified); if (cbState.q) sp.set('q', cbState.q);
-      sum = await api('/summary?' + sp.toString());
+      sum = await api('/cashbox-summary?' + sp.toString());
       const tp = new URLSearchParams(); tp.set('wallet', cbState.wallet); tp.set('type', cbState.type); tp.set('pageSize', String(cbState.pageSize || 50)); tp.set('page', String(cbState.page || 1)); tp.set('cashbox', '1');
       if (cbState.q) tp.set('q', cbState.q);
       if (cbState.category) tp.set('category', cbState.category);
@@ -1239,49 +1239,32 @@
       list = await api('/transactions?' + tp.toString());
     } catch (e) { toast(e.message, true); return; }
 
-    // Единый ряд: Сальдо на начало · Приход · Расход · Сальдо на конец.
-    // У балансов (начало/конец) показываем состав: сумы + доллары, а крупным — общий сум-эквивалент.
-    // Крупно — сумы (сумовая часть), отдельной строкой — доллары. Без смешанного сум-эквивалента.
-    const usdHtml = (usd) => '<span class="cb-fx-usd' + (Number(usd) < 0 ? ' cb-fx-neg' : '') + '">$ ' + money(usd) + '</span>';
-    const openV = el('div', { class: 'cash-sum-v' }, money(sum.opening_uzs || 0) + ' сум');
-    const openFx = el('div', { class: 'cash-sum-fx cb-fx-line' }, '');
-    const inV = el('div', { class: 'cash-sum-v' }, money(sum.inflow_uzs || 0) + ' сум');
-    const inFx = el('div', { class: 'cash-sum-fx cb-fx-line' }, '');
-    const outV = el('div', { class: 'cash-sum-v' }, money(sum.outflow_uzs || 0) + ' сум');
-    const outFx = el('div', { class: 'cash-sum-fx cb-fx-line' }, '');
-    const closeV = el('div', { class: 'cash-sum-v' }, money(sum.closing_uzs || 0) + ' сум');
-    const closeFx = el('div', { class: 'cash-sum-fx cb-fx-line' }, '');
-    // Обмен замыкает сумовую колонку: конец = начало + приход − расход + обмен.
-    const exV = el('div', { class: 'cash-sum-v' }, money(sum.exchange_uzs || 0) + ' сум');
-    const cards = [
-      el('div', { class: 'cash-sum-card neutral' }, [el('div', { class: 'cash-sum-l' }, 'Сальдо на начало'), openV, openFx]),
-      el('div', { class: 'cash-sum-card in cash-sum-click', title: 'Показать все приходы', onclick: () => { cbState.type = 'in'; cbState.selected = {}; cbState.page = 1; renderCashbox(); } }, [el('div', { class: 'cash-sum-l' }, 'Приход за период'), inV, inFx]),
-      el('div', { class: 'cash-sum-card out cash-sum-click', title: 'Показать все расходы', onclick: () => { cbState.type = 'out'; cbState.selected = {}; cbState.page = 1; renderCashbox(); } }, [el('div', { class: 'cash-sum-l' }, 'Расход за период'), outV, outFx]),
+    // 4 карточки, каждая в разрезе: Сумы · Доллары · Итого (в сумах по курсу ЦБ). Без «Обмена».
+    const razrez = (o) => el('div', { class: 'cb-razrez' }, [
+      el('div', { class: 'cb-rz-line' }, [el('span', { class: 'cb-rz-k' }, 'Сумы'), el('span', { class: 'cb-rz-v' }, money(o.uzs || 0))]),
+      el('div', { class: 'cb-rz-line' }, [el('span', { class: 'cb-rz-k' }, 'Доллары'), el('span', { class: 'cb-rz-v' }, '$ ' + money(o.usd || 0))]),
+      el('div', { class: 'cb-rz-line cb-rz-total' }, [el('span', { class: 'cb-rz-k' }, 'Итого'), el('span', { class: 'cb-rz-v' }, money(Math.round(o.total || 0)) + ' сум')]),
+    ]);
+    const card3 = (title, o, cls, clickType) => el('div', {
+      class: 'cash-sum-card' + (cls ? ' ' + cls : '') + (clickType ? ' cash-sum-click' : ''),
+      title: clickType ? ('Показать все ' + (clickType === 'in' ? 'приходы' : 'расходы')) : null,
+      onclick: clickType ? () => { cbState.type = clickType; cbState.selected = {}; cbState.page = 1; renderCashbox(); } : null,
+    }, [el('div', { class: 'cash-sum-l' }, title), razrez(o)]);
+    const buildCards = (s) => [
+      card3('Сальдо на начало', s.opening || {}, 'neutral'),
+      card3('Приход за период', s.inflow || {}, 'in', 'in'),
+      card3('Расход за период', s.outflow || {}, 'out', 'out'),
+      card3('Сальдо на конец', s.closing || {}, 'end'),
     ];
-    if (Number(sum.exchange_uzs)) {
-      cards.push(el('div', { class: 'cash-sum-card ex' }, [
-        el('div', { class: 'cash-sum-l' }, 'Обмен за период'), exV,
-        el('div', { class: 'cash-sum-fx cb-fx-line' }, 'сумы ↔ доллары'),
-      ]));
-    }
-    cards.push(el('div', { class: 'cash-sum-card end' }, [el('div', { class: 'cash-sum-l' }, 'Сальдо на конец'), closeV, closeFx]));
-    wrap.appendChild(el('div', { class: 'cash-summary', style: 'margin-bottom:10px' }, cards));
-    openFx.innerHTML = usdHtml(sum.opening_usd || 0);
-    inFx.innerHTML = usdHtml(sum.inflow_usd || 0);
-    outFx.innerHTML = usdHtml(sum.outflow_usd || 0);
-    closeFx.innerHTML = usdHtml(sum.closing_usd || 0);
-    // Тихое обновление сводки после инлайн-правки (без перерисовки строк — фокус не теряется).
+    const summaryEl = el('div', { id: 'cb-summary', class: 'cash-summary', style: 'margin-bottom:10px' }, buildCards(sum));
+    wrap.appendChild(summaryEl);
+    // Тихое обновление сводки после инлайн-правки (перерисовываем только блок карточек — фокус в списке не теряется).
     async function cbUpdateSummary() {
       try {
         const sp = new URLSearchParams(); if (cbState.from) sp.set('from', cbState.from); if (cbState.to) sp.set('to', cbState.to); sp.set('wallet', cbState.wallet); if (cbState.category) sp.set('category', cbState.category); if (cbState.classified) sp.set('classified', cbState.classified); if (cbState.q) sp.set('q', cbState.q);
-        const s = await api('/summary?' + sp.toString());
-        openV.textContent = money(s.opening_uzs || 0) + ' сум'; inV.textContent = money(s.inflow_uzs || 0) + ' сум';
-        outV.textContent = money(s.outflow_uzs || 0) + ' сум'; closeV.textContent = money(s.closing_uzs || 0) + ' сум';
-        exV.textContent = money(s.exchange_uzs || 0) + ' сум';
-        openFx.innerHTML = usdHtml(s.opening_usd || 0);
-        inFx.innerHTML = usdHtml(s.inflow_usd || 0);
-        outFx.innerHTML = usdHtml(s.outflow_usd || 0);
-        closeFx.innerHTML = usdHtml(s.closing_usd || 0);
+        const s = await api('/cashbox-summary?' + sp.toString());
+        const cont = $('#cb-summary'); if (!cont) return;
+        cont.innerHTML = ''; buildCards(s).forEach((cd) => cont.appendChild(cd));
       } catch (e) { /* не критично */ }
     }
 

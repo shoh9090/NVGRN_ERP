@@ -1880,6 +1880,88 @@ router.get('/api/cash-fx-balance', async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
+// ---------- Сводка «Наличной кассы» — чистая двухвалютная модель (сумы/доллары раздельно) ----------
+// Без «Обмена»: каждая операция считается в своей валюте. Обнал: сумовая часть → сумы,
+// долларовая → доллары, комиссия → расход. Конверсия (сумы↔доллары) — в свою валюту.
+// Приход по сумам показываем ЧИСТЫМ: сумовую строку конверсии обнала (ст.102 с parent_tx_id)
+// НЕ показываем расходом, а вычитаем из прихода (сворачиваем обнал). Баланс не меняется.
+router.get('/api/cashbox-summary', async (req, res) => {
+  try {
+    const wid = intOrNull(req.query.wallet);
+    if (!wid) return res.status(400).json({ error: 'Не указан кошелёк' });
+    const from = req.query.from || null;
+    const to = req.query.to || null;
+    // Фильтры списка (статья/разобрано/поиск) — те же, что в журнале, чтобы карточки совпадали с таблицей.
+    const catId = intOrNull(req.query.category);
+    const classified = req.query.classified === 'yes' ? 'yes' : (req.query.classified === 'no' ? 'no' : null);
+    const q = (req.query.q || '').trim();
+    const filt = (p) => {
+      let s = '';
+      if (catId) s += ` AND t.category_id = ${catId}`;
+      if (classified === 'no') s += ` AND t.is_classified = false`;
+      else if (classified === 'yes') s += ` AND t.is_classified = true`;
+      if (q) { p.push('%' + q + '%'); s += ` AND (t.purpose ILIKE $${p.length} OR t.payer_name ILIKE $${p.length})`; }
+      return s;
+    };
+    const IS102 = `t.category_id IN (SELECT id FROM cash_categories WHERE code='102')`;
+    // Остаток на дату (простой знаковый суммарный баланс, сумы и доллары раздельно; фолд НЕ нужен — итог не меняется).
+    const balSel = `
+      COALESCE(SUM(CASE
+        WHEN t.currency='UZS' AND t.tx_type='in' AND t.wallet_id=$1 THEN t.amount
+        WHEN t.currency='UZS' AND t.tx_type='out' AND t.wallet_id=$1 THEN -t.amount
+        WHEN t.currency='UZS' AND t.tx_type='transfer' AND t.wallet_to_id=$1 AND NOT t.needs_cash_confirm THEN t.amount
+        WHEN t.currency='UZS' AND t.tx_type='transfer' AND t.wallet_id=$1 THEN -t.amount
+        ELSE 0 END),0) AS uzs,
+      COALESCE(SUM(CASE
+        WHEN t.currency='USD' AND t.tx_type='in' AND t.wallet_id=$1 THEN t.fx_amount
+        WHEN t.currency='USD' AND t.tx_type='out' AND t.wallet_id=$1 THEN -t.fx_amount
+        ELSE 0 END),0) AS usd`;
+    // Сальдо на начало = движения строго ДО from + начальные остатки (opening) на дату from включительно.
+    let opening = { uzs: 0, usd: 0 };
+    { const p = [wid]; let where;
+      if (from) { p.push(from); where = `((t.source='opening' AND t.tx_date <= $${p.length}) OR (t.source<>'opening' AND t.tx_date < $${p.length}))`; }
+      else { where = `t.source='opening'`; }
+      const r = (await db.pool.query(`SELECT ${balSel} FROM cash_transactions t WHERE ${where}${filt(p)}`, p)).rows[0];
+      opening = { uzs: Number(r.uzs), usd: Number(r.usd) };
+    }
+    // Сальдо на конец = всё до to включительно.
+    let closing = { uzs: 0, usd: 0 };
+    { const p = [wid]; p.push(to || '2999-12-31');
+      const r = (await db.pool.query(`SELECT ${balSel} FROM cash_transactions t WHERE t.tx_date <= $${p.length}${filt(p)}`, p)).rows[0];
+      closing = { uzs: Number(r.uzs), usd: Number(r.usd) };
+    }
+    // Приход/Расход за период (без начальных остатков). Обнал сворачиваем: сумовую конверсию (ст.102 с parent) вычитаем из прихода.
+    const p2 = [wid]; p2.push(from || '1900-01-01', to || '2999-12-31');
+    const r2 = (await db.pool.query(
+      `SELECT
+        COALESCE(SUM(CASE
+          WHEN t.currency='UZS' AND t.tx_type='in' AND t.wallet_id=$1 THEN t.amount
+          WHEN t.currency='UZS' AND t.tx_type='transfer' AND t.wallet_to_id=$1 AND NOT t.needs_cash_confirm THEN t.amount
+          WHEN t.currency='UZS' AND t.tx_type='out' AND t.wallet_id=$1 AND t.parent_tx_id IS NOT NULL AND ${IS102} THEN -t.amount
+          ELSE 0 END),0) AS in_uzs,
+        COALESCE(SUM(CASE
+          WHEN t.currency='UZS' AND t.tx_type='out' AND t.wallet_id=$1 AND NOT (t.parent_tx_id IS NOT NULL AND ${IS102}) THEN t.amount
+          WHEN t.currency='UZS' AND t.tx_type='transfer' AND t.wallet_id=$1 THEN t.amount
+          ELSE 0 END),0) AS out_uzs,
+        COALESCE(SUM(CASE WHEN t.currency='USD' AND t.tx_type='in' AND t.wallet_id=$1 THEN t.fx_amount ELSE 0 END),0) AS in_usd,
+        COALESCE(SUM(CASE WHEN t.currency='USD' AND t.tx_type='out' AND t.wallet_id=$1 THEN t.fx_amount ELSE 0 END),0) AS out_usd
+       FROM cash_transactions t
+       WHERE t.source <> 'opening' AND t.tx_date BETWEEN $${p2.length - 1} AND $${p2.length}${filt(p2)}`, p2)).rows[0];
+    const inflow = { uzs: Number(r2.in_uzs), usd: Number(r2.in_usd) };
+    const outflow = { uzs: Number(r2.out_uzs), usd: Number(r2.out_usd) };
+    let rate = null;
+    try { rate = await getCbuUsdRate(to || new Date().toISOString().slice(0, 10)); } catch (e) { rate = null; }
+    const tot = (b) => b.uzs + (rate ? b.usd * rate : 0);
+    res.json({
+      rate,
+      opening: { ...opening, total: tot(opening) },
+      inflow: { ...inflow, total: tot(inflow) },
+      outflow: { ...outflow, total: tot(outflow) },
+      closing: { ...closing, total: tot(closing) },
+    });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 // ============ ОБЯЗАТЕЛЬСТВА (Этап 1: фундамент + поставщики) ============
 // Кому, сколько и когда Novagreen должна заплатить. Задолженность поставщикам — read-only
 // зеркало Закупа (общий сервис purchase-finance, без дублирования логики и без своих таблиц).
