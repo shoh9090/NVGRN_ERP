@@ -1213,7 +1213,8 @@
       [{ v: '', t: 'Все' }, { v: 'no', t: 'Не разобрано' }, { v: 'yes', t: 'Разобрано' }].map((o) => el('option', { value: o.v, selected: o.v === cbState.classified || null }, o.t)));
     c.appendChild(el('div', { class: 'cash-filters', style: 'margin-bottom:6px' }, [
       typeBtn('in', '➕ Приход'), typeBtn('out', '➖ Расход'),
-      el('span', { class: 'cash-flab' }, 'Касса'), walletSel,
+      // Выбор кассы показываем только если наличных кошельков больше одного (иначе выбирать нечего).
+      ...(cashWallets.length > 1 ? [el('span', { class: 'cash-flab' }, 'Касса'), walletSel] : []),
     ]));
     c.appendChild(el('div', { class: 'cash-filters', style: 'margin-bottom:0' }, [
       el('span', { class: 'cash-flab' }, 'C'), fromInp, el('span', { class: 'cash-flab' }, 'по'), toInp,
