@@ -256,6 +256,9 @@ select.obl-f { cursor: pointer; }
 .cash-drill-op:last-child { border-bottom: none; }
 .cash-drill-op span:nth-child(3) { white-space: normal; }
 .cash-drill-head { font-weight: 700; background: #f2f5f1; color: var(--muted); }
+.cash-internal-click { cursor: pointer; }
+.cash-internal-click:hover { background: #eef4e9; border-radius: 6px; }
+.cash-legend-click { cursor: pointer; }
 .cash-sum-card.in .cb-rz-total .cb-rz-v { color: #2e7d32; }
 .cash-sum-card.out .cb-rz-total .cb-rz-v { color: #c0392b; }
 .cash-sum-card.end .cb-rz-total .cb-rz-v { color: var(--forest); }

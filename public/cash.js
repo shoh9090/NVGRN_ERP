@@ -300,7 +300,7 @@
   }
 
   const CHART_COLORS = ['#163a28', '#8cc63f', '#2e7d32', '#b25b00', '#5b3da8', '#c0392b', '#0d7d8c', '#c77800', '#7c8579', '#3f6a16'];
-  function donutChart(items, capTitle) {
+  function donutChart(items, capTitle, onClick) {
     const total = items.reduce((s, i) => s + i.value, 0);
     if (!total) return el('div', { class: 'cash-sub' }, 'Нет данных за период.');
     const size = 200, r = size / 2 - 18, cx = size / 2, cy = size / 2, C = 2 * Math.PI * r;
@@ -314,7 +314,7 @@
     }).join('');
     const svg = `<svg viewBox="0 0 ${size} ${size}" class="cash-donut"><g>${segs}</g><text x="${cx}" y="${cy - 2}" text-anchor="middle" class="cash-donut-cap">${capTitle || 'Итого'}</text><text x="${cx}" y="${cy + 18}" text-anchor="middle" class="cash-donut-val">${money(total)}</text></svg>`;
     const chart = el('div', { class: 'cash-donut-wrap' }); chart.innerHTML = svg;
-    const legend = el('div', { class: 'cash-legend' }, items.map((it) => el('div', { class: 'cash-legend-row cash-legend-click', title: 'Открыть транзакции: ' + it.label, onclick: () => drillToGroup(it.label) }, [
+    const legend = el('div', { class: 'cash-legend' }, items.map((it) => el('div', { class: 'cash-legend-row cash-legend-click', title: 'Открыть разбивку: ' + it.label, onclick: () => (onClick ? onClick(it.label) : drillToGroup(it.label)) }, [
       el('span', { class: 'cash-legend-dot', style: 'background:' + it.color }),
       el('span', { class: 'cash-legend-l' }, it.label + ' →'),
       el('span', { class: 'cash-legend-v' }, money(it.value) + ' · ' + Math.round(it.value / total * 100) + '%'),
@@ -357,6 +357,22 @@
       el('span', { class: 'cash-amt-out' }, r.exp ? '−' + money(r.exp) : ''),
     ]);
     return el('div', {}, [head, ops]);
+  }
+  // Окно-разбивка по группе (клик по диаграмме «Куда ушли деньги»): статьи группы → операции.
+  function openGroupBreakdown(g, rows) {
+    const list = rows.filter((r) => (r.group_name || (r.cat_id ? 'Прочее' : 'Не разобрано')) === g && (r.inc || r.exp)).sort((a, b) => (b.exp - a.exp) || (b.inc - a.inc));
+    const gi = list.reduce((s, r) => s + r.inc, 0), ge = list.reduce((s, r) => s + r.exp, 0);
+    const body = el('div', {}, [
+      el('div', { class: 'cash-sub', style: 'margin-bottom:8px' }, 'Статьи группы за период. Клик по статье — конкретные операции (все кошельки).' + (ge ? ' Расход: −' + money(ge) : '') + (gi ? ' · Приход: +' + money(gi) : '')),
+      list.length ? el('div', { class: 'cash-list' }, list.map(statyaRow)) : el('div', { class: 'cash-empty' }, 'Нет статей за период'),
+    ]);
+    modal('💸 ' + g, body, [el('button', { class: 'btn-primary', onclick: closeModal }, 'Закрыть')], { wide: true });
+  }
+  // Окно операций одной статьи (для «Внутренних перемещений» и других одиночных статей).
+  function openCatOps(catId, title) {
+    const wrap = el('div', {}); wrap.innerHTML = '<div class="cash-loading">Загружаю…</div>';
+    modal(title, wrap, [el('button', { class: 'btn-primary', onclick: closeModal }, 'Закрыть')], { wide: true });
+    loadCatOps(catId, wrap);
   }
 
   function renderCashflow(c, rows, groupsOrder, a2a, internal, obnal) {
@@ -401,10 +417,13 @@
       im.appendChild(el('div', { class: 'cash-h3' }, 'Внутренние перемещения'));
       im.appendChild(el('div', { class: 'cash-sub' }, 'Перемещения между своими счетами. В доходы/расходы не входят — по всем кошелькам в сумме гасятся. Реальный расход при получении наличных — только комиссия.'));
       if (internal && internal.length) {
-        im.appendChild(el('div', { class: 'cash-internal-rows' }, internal.map((x) => el('div', { class: 'cash-internal-row' }, [
-          el('span', { class: 'cash-internal-name' }, (x.code ? x.code + ' ' : '') + x.name),
-          el('span', { class: 'cash-internal-val' }, money(x.moved)),
-        ]))));
+        im.appendChild(el('div', { class: 'cash-internal-rows' }, internal.map((x) => {
+          const cat = (DICTS.categories || []).find((c) => String(c.code) === String(x.code));
+          return el('div', { class: 'cash-internal-row' + (cat ? ' cash-internal-click' : ''), title: cat ? 'Показать операции' : null, onclick: cat ? () => openCatOps(cat.id, (x.code ? x.code + ' · ' : '') + x.name) : null }, [
+            el('span', { class: 'cash-internal-name' }, (x.code ? x.code + ' ' : '') + x.name + (cat ? ' →' : '')),
+            el('span', { class: 'cash-internal-val' }, money(x.moved)),
+          ]);
+        })));
       }
       if (obnal.sent) {
         im.appendChild(el('div', { class: 'cash-obnal' }, [
@@ -425,7 +444,7 @@
     const donutItems = Object.entries(expByGroup).map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value).map((it, i) => ({ ...it, color: CHART_COLORS[i % CHART_COLORS.length] }));
     if (donutItems.length) {
       c.appendChild(el('div', { class: 'cash-h2', style: 'font-size:18px;margin-top:18px' }, 'Куда ушли деньги'));
-      c.appendChild(donutChart(donutItems, 'Расходы'));
+      c.appendChild(donutChart(donutItems, 'Расходы', (label) => openGroupBreakdown(label, rows)));
     }
 
     // Таблица по группам
@@ -436,14 +455,12 @@
     present.forEach((g) => {
       const list = byGroup[g].filter((r) => r.inc || r.exp);
       const gi = list.reduce((s, r) => s + r.inc, 0), ge = list.reduce((s, r) => s + r.exp, 0);
-      // Уровень 1: группа. Клик раскрывает статьи (уровень 2), каждая — операции (уровень 3).
-      const statyiWrap = el('div', { class: 'cash-list', style: 'display:none' });
-      let built = false;
-      const arrow = el('span', { class: 'cash-grp-arrow' }, '▸');
+      // Статьи группы видны сразу (можно свернуть кликом по заголовку). Клик по статье → операции.
+      const statyiWrap = el('div', { class: 'cash-list' }, list.map(statyaRow));
+      const arrow = el('span', { class: 'cash-grp-arrow' }, '▾');
       const gh = el('div', { class: 'cash-grp-h cash-grp-click', onclick: () => {
-        const open = statyiWrap.style.display === 'none';
-        statyiWrap.style.display = open ? 'block' : 'none'; arrow.textContent = open ? '▾' : '▸';
-        if (open && !built) { built = true; list.forEach((r) => statyiWrap.appendChild(statyaRow(r))); }
+        const open = statyiWrap.style.display !== 'none';
+        statyiWrap.style.display = open ? 'none' : 'block'; arrow.textContent = open ? '▸' : '▾';
       } }, [el('span', {}, [arrow, ' ', g]), el('span', { class: 'cash-grp-sum' }, (gi ? ' +' + money(gi) : '') + (ge ? '  −' + money(ge) : ''))]);
       c.appendChild(el('div', { class: 'cash-grp' }, [gh, statyiWrap]));
     });
