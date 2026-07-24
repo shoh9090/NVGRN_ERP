@@ -1915,20 +1915,26 @@ router.get('/api/cashbox-summary', async (req, res) => {
       COALESCE(SUM(CASE
         WHEN t.currency='USD' AND t.tx_type='in' AND t.wallet_id=$1 THEN t.fx_amount
         WHEN t.currency='USD' AND t.tx_type='out' AND t.wallet_id=$1 THEN -t.fx_amount
-        ELSE 0 END),0) AS usd`;
+        ELSE 0 END),0) AS usd,
+      COALESCE(SUM(CASE
+        WHEN t.tx_type='in' AND t.wallet_id=$1 THEN t.amount
+        WHEN t.tx_type='out' AND t.wallet_id=$1 THEN -t.amount
+        WHEN t.tx_type='transfer' AND t.wallet_to_id=$1 AND NOT t.needs_cash_confirm THEN t.amount
+        WHEN t.tx_type='transfer' AND t.wallet_id=$1 THEN -t.amount
+        ELSE 0 END),0) AS total_amt`;
     // Сальдо на начало = движения строго ДО from + начальные остатки (opening) на дату from включительно.
     let opening = { uzs: 0, usd: 0 };
     { const p = [wid]; let where;
       if (from) { p.push(from); where = `((t.source='opening' AND t.tx_date <= $${p.length}) OR (t.source<>'opening' AND t.tx_date < $${p.length}))`; }
       else { where = `t.source='opening'`; }
       const r = (await db.pool.query(`SELECT ${balSel} FROM cash_transactions t WHERE ${where}${filt(p)}`, p)).rows[0];
-      opening = { uzs: Number(r.uzs), usd: Number(r.usd) };
+      opening = { uzs: Number(r.uzs), usd: Number(r.usd), total: Number(r.total_amt) };
     }
     // Сальдо на конец = всё до to включительно.
     let closing = { uzs: 0, usd: 0 };
     { const p = [wid]; p.push(to || '2999-12-31');
       const r = (await db.pool.query(`SELECT ${balSel} FROM cash_transactions t WHERE t.tx_date <= $${p.length}${filt(p)}`, p)).rows[0];
-      closing = { uzs: Number(r.uzs), usd: Number(r.usd) };
+      closing = { uzs: Number(r.uzs), usd: Number(r.usd), total: Number(r.total_amt) };
     }
     // Приход/Расход за период (без начальных остатков). Обнал сворачиваем: сумовую конверсию (ст.102 с parent) вычитаем из прихода.
     const p2 = [wid]; p2.push(from || '1900-01-01', to || '2999-12-31');
@@ -1944,21 +1950,24 @@ router.get('/api/cashbox-summary', async (req, res) => {
           WHEN t.currency='UZS' AND t.tx_type='transfer' AND t.wallet_id=$1 THEN t.amount
           ELSE 0 END),0) AS out_uzs,
         COALESCE(SUM(CASE WHEN t.currency='USD' AND t.tx_type='in' AND t.wallet_id=$1 THEN t.fx_amount ELSE 0 END),0) AS in_usd,
-        COALESCE(SUM(CASE WHEN t.currency='USD' AND t.tx_type='out' AND t.wallet_id=$1 THEN t.fx_amount ELSE 0 END),0) AS out_usd
+        COALESCE(SUM(CASE WHEN t.currency='USD' AND t.tx_type='out' AND t.wallet_id=$1 THEN t.fx_amount ELSE 0 END),0) AS out_usd,
+        COALESCE(SUM(CASE
+          WHEN t.tx_type='in' AND t.wallet_id=$1 THEN t.amount
+          WHEN t.tx_type='transfer' AND t.wallet_to_id=$1 AND NOT t.needs_cash_confirm THEN t.amount
+          WHEN t.tx_type='out' AND t.wallet_id=$1 AND t.parent_tx_id IS NOT NULL AND ${IS102} THEN -t.amount
+          ELSE 0 END),0) AS in_total,
+        COALESCE(SUM(CASE
+          WHEN t.tx_type='out' AND t.wallet_id=$1 AND NOT (t.parent_tx_id IS NOT NULL AND ${IS102}) THEN t.amount
+          WHEN t.tx_type='transfer' AND t.wallet_id=$1 THEN t.amount
+          ELSE 0 END),0) AS out_total
        FROM cash_transactions t
        WHERE t.source <> 'opening' AND t.tx_date BETWEEN $${p2.length - 1} AND $${p2.length}${filt(p2)}`, p2)).rows[0];
-    const inflow = { uzs: Number(r2.in_uzs), usd: Number(r2.in_usd) };
-    const outflow = { uzs: Number(r2.out_uzs), usd: Number(r2.out_usd) };
+    // «Итого» = сум-эквивалент по курсу НА ДАТУ операции (поле amount), а не по текущему курсу.
+    const inflow = { uzs: Number(r2.in_uzs), usd: Number(r2.in_usd), total: Number(r2.in_total) };
+    const outflow = { uzs: Number(r2.out_uzs), usd: Number(r2.out_usd), total: Number(r2.out_total) };
     let rate = null;
     try { rate = await getCbuUsdRate(to || new Date().toISOString().slice(0, 10)); } catch (e) { rate = null; }
-    const tot = (b) => b.uzs + (rate ? b.usd * rate : 0);
-    res.json({
-      rate,
-      opening: { ...opening, total: tot(opening) },
-      inflow: { ...inflow, total: tot(inflow) },
-      outflow: { ...outflow, total: tot(outflow) },
-      closing: { ...closing, total: tot(closing) },
-    });
+    res.json({ rate, opening, inflow, outflow, closing });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
