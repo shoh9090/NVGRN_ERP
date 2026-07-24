@@ -323,23 +323,34 @@
   }
 
   // Драйл-даун из кэш-флоу: конкретные операции статьи (все кошельки, за период, приход+расход, по дате).
-  async function loadCatOps(catId, wrap) {
+  async function loadCatOps(catId, wrap, opts) {
+    opts = opts || {};
     const sp = new URLSearchParams();
     sp.set('from', repState.from || monthStartStr()); sp.set('to', repState.to || todayStr());
     if (repState.wallet) sp.set('wallet', repState.wallet);
     if (catId) sp.set('category', String(catId)); else sp.set('classified', 'no');
-    sp.set('pageSize', '500'); sp.set('page', '1');
+    sp.set('pageSize', '1000'); sp.set('page', '1');
     let d; try { d = await api('/transactions?' + sp.toString()); } catch (e) { wrap.innerHTML = ''; wrap.appendChild(el('div', { class: 'cash-empty', style: 'padding:6px 12px' }, e.message)); return; }
-    const items = (d.items || []).slice().sort((a, b) => String(a.tx_date).localeCompare(String(b.tx_date)));
+    const all = (d.items || []).slice().sort((a, b) => String(a.tx_date).localeCompare(String(b.tx_date)));
+    const visible = all.filter((x) => !x.hidden), hidden = all.filter((x) => x.hidden);
     wrap.innerHTML = '';
-    if (!items.length) { wrap.appendChild(el('div', { class: 'cash-empty', style: 'padding:6px 12px' }, 'Нет операций за период')); return; }
-    const head = el('div', { class: 'cash-drill-op cash-drill-head' }, [el('span', {}, 'Дата'), el('span', {}, 'Кошелёк'), el('span', {}, 'От кого / назначение'), el('span', { style: 'text-align:right' }, 'Сумма')]);
-    const rowsEl = items.map((x) => el('div', { class: 'cash-drill-op' }, [
+    const rerender = () => loadCatOps(catId, wrap, { showHidden: opts.showHidden });
+    const rowEl = (x, isH) => el('div', { class: 'cash-drill-op' + (isH ? ' cash-drill-hidden' : '') }, [
       el('span', {}, ruDate(x.tx_date)),
       el('span', { class: 'muted' }, x.tx_type === 'transfer' ? ((x.wallet_name || '') + ' → ' + (x.wallet_to_name || '')) : (x.wallet_name || '')),
       el('span', {}, x.purpose || x.cp_name || x.payer_name || '—'),
       el('span', { style: 'text-align:right', class: x.tx_type === 'in' ? 'cash-amt-in' : 'cash-amt-out' }, (x.tx_type === 'in' ? '+' : '−') + money(x.amount)),
-    ]));
+      el('span', { class: 'cash-drill-hide', title: isH ? 'Вернуть в список' : 'Скрыть из списка', onclick: async () => { try { await post('/tx/hide', { ids: [x.id], hidden: !isH }); rerender(); } catch (e) { toast(e.message, true); } } }, isH ? '👁' : '🚫'),
+    ]);
+    // Панель: «скрыть все показанные» + переключатель скрытых.
+    const bar = el('div', { class: 'cash-drill-bar' });
+    if (visible.length) bar.appendChild(el('button', { class: 'btn-ghost', style: 'font-size:12px;padding:3px 9px', onclick: async () => { if (!confirm('Скрыть все показанные операции (' + visible.length + ')? Суммы отчёта и касса не изменятся.')) return; try { await post('/tx/hide', { ids: visible.map((x) => x.id), hidden: true }); rerender(); } catch (e) { toast(e.message, true); } } }, '🚫 Скрыть все показанные'));
+    if (hidden.length) bar.appendChild(el('a', { href: 'javascript:void(0)', class: 'muted', style: 'font-size:12px', onclick: () => loadCatOps(catId, wrap, { showHidden: !opts.showHidden }) }, (opts.showHidden ? '▾ Скрыть скрытые' : '▸ Показать скрытые') + ' (' + hidden.length + ')'));
+    if (bar.childNodes.length) wrap.appendChild(bar);
+    if (!visible.length && !opts.showHidden) { wrap.appendChild(el('div', { class: 'cash-empty', style: 'padding:6px 12px' }, hidden.length ? 'Все операции скрыты' : 'Нет операций за период')); return; }
+    const head = el('div', { class: 'cash-drill-op cash-drill-head' }, [el('span', {}, 'Дата'), el('span', {}, 'Кошелёк'), el('span', {}, 'От кого / назначение'), el('span', { style: 'text-align:right' }, 'Сумма'), el('span', {}, '')]);
+    const rowsEl = visible.map((x) => rowEl(x, false));
+    if (opts.showHidden) hidden.forEach((x) => rowsEl.push(rowEl(x, true)));
     wrap.appendChild(el('div', { class: 'cash-drill-ops' }, [head, ...rowsEl]));
   }
   // Строка статьи, раскрывающаяся в операции (уровень 2 → 3).

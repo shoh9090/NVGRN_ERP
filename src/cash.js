@@ -134,6 +134,8 @@ async function ensureCashSchema() {
   // Нужна, чтобы в «Наличной кассе» свернуть обнал в один «факт»-ряд (реестр не меняем).
   await q(`ALTER TABLE cash_transactions ADD COLUMN IF NOT EXISTS parent_tx_id INT`);
   await q(`CREATE INDEX IF NOT EXISTS idx_cash_tx_parent ON cash_transactions (parent_tx_id)`);
+  // Флаг «скрыто из выпадашек отчёта» (только визуально; суммы отчёта и баланс не меняются).
+  await q(`ALTER TABLE cash_transactions ADD COLUMN IF NOT EXISTS report_hidden BOOLEAN NOT NULL DEFAULT false`);
   // Связка двух «ног» перевода банк↔банк (у обоих счетов своя выписка): out в банке-А и in в банке-Б —
   // это один перевод. Обе ноги двигают только свой кошелёк и исключены из прихода/расхода отчёта.
   await q(`ALTER TABLE cash_transactions ADD COLUMN IF NOT EXISTS transfer_group_id INT`);
@@ -1167,7 +1169,7 @@ router.get('/api/transactions', async (req, res) => {
   const offset = (page - 1) * pageSize;
   const pageP = p.slice(); pageP.push(pageSize, offset);
   const rows = (await db.pool.query(
-    `SELECT t.*, w.name AS wallet_name, w.color AS wallet_color, w2.name AS wallet_to_name,
+    `SELECT t.*, COALESCE(t.report_hidden,false) AS hidden, w.name AS wallet_name, w.color AS wallet_color, w2.name AS wallet_to_name,
             cp.name AS cp_name, cat.code AS cat_code, cat.name AS cat_name${obnalCols}
      FROM cash_transactions t
      LEFT JOIN cash_wallets w ON w.id = t.wallet_id
@@ -1351,6 +1353,15 @@ router.post('/api/tx/bulk-delete', J, async (req, res) => {
   await db.pool.query('DELETE FROM cash_transactions WHERE id = ANY($1)', [ids]);
   await db.log(req.user.id, 'cash_tx_bulk_delete', ids.length + ' шт');
   res.json({ ok: true, deleted: ids.length });
+});
+// Скрыть/вернуть строки в выпадашках отчёта (вариант А: только визуально, суммы/баланс не меняются).
+router.post('/api/tx/hide', J, async (req, res) => {
+  const ids = (req.body && Array.isArray(req.body.ids) ? req.body.ids : []).map((x) => parseInt(x, 10)).filter(Boolean);
+  if (!ids.length) return res.status(400).json({ error: 'Ничего не выбрано' });
+  const hidden = !!(req.body && req.body.hidden);
+  await db.pool.query('UPDATE cash_transactions SET report_hidden=$1 WHERE id = ANY($2)', [hidden, ids]);
+  await db.log(req.user.id, hidden ? 'cash_tx_hide' : 'cash_tx_unhide', ids.length + ' шт');
+  res.json({ ok: true, count: ids.length, hidden });
 });
 // Массовое присвоение статьи выбранным строкам (из вкладки «Транзакции»).
 router.post('/api/tx/bulk-classify', J, async (req, res) => {
