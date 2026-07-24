@@ -347,7 +347,10 @@ router.get('/', async (req, res) => {
 // ---------- Справочники (для SPA) ----------
 router.get('/api/dicts', async (req, res) => {
   const wallets = (await db.pool.query("SELECT * FROM cash_wallets WHERE status='active' ORDER BY sort_order, id")).rows;
-  const categories = (await db.pool.query("SELECT * FROM cash_categories WHERE status='active' ORDER BY sort_order, id")).rows;
+  // Порядок статей ДДС — всегда по коду (стабильный, стандартный), не зависит от sort_order
+  // (который у части статей сбит: у засеянных инкремент, у отредактированных = код).
+  const categories = (await db.pool.query(
+    "SELECT * FROM cash_categories WHERE status='active' ORDER BY (CASE WHEN code ~ '^[0-9]+$' THEN code::int ELSE 999999 END), code, id")).rows;
   const groups = (await db.pool.query("SELECT * FROM cash_groups WHERE status='active' ORDER BY sort_order, id")).rows;
   const counterparties = (await db.pool.query(
     `SELECT c.*, cat.code AS cat_code, cat.name AS cat_name
