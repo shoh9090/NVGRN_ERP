@@ -2327,6 +2327,60 @@ router.post('/api/obligations/payment-links/:id(\\d+)/reverse', J, async (req, r
   res.json({ ok: true });
 });
 
+// Правка строки графика вручную (дата/тело/проценты/комиссия) — чтобы внести корректные данные.
+router.post('/api/obligations/schedule/:id(\\d+)/update', J, async (req, res) => {
+  if (!canFin(req)) return res.status(403).json({ error: 'Только администратор/финансы' });
+  const b = req.body || {};
+  const s = (await db.pool.query('SELECT * FROM finance_obligation_schedule WHERE id=$1', [req.params.id])).rows[0];
+  if (!s) return res.status(404).json({ error: 'Строка графика не найдена' });
+  const pd = numOrNull(b.principal_due) != null ? numOrNull(b.principal_due) : Number(s.principal_due);
+  const idu = numOrNull(b.interest_due) != null ? numOrNull(b.interest_due) : Number(s.interest_due);
+  const fd = numOrNull(b.fee_due) != null ? numOrNull(b.fee_due) : Number(s.fee_due);
+  const op = numOrNull(b.opening_principal) != null ? numOrNull(b.opening_principal) : Number(s.opening_principal);
+  const total = round2(pd + idu + fd);
+  await db.pool.query(
+    'UPDATE finance_obligation_schedule SET due_date=$1, opening_principal=$2, principal_due=$3, interest_due=$4, fee_due=$5, total_due=$6 WHERE id=$7',
+    [b.due_date || s.due_date, op, pd, idu, fd, total, req.params.id]);
+  await db.log(req.user.id, 'obl_schedule_edit', `#${req.params.id}`);
+  res.json({ ok: true });
+});
+
+// Удаление строки графика (с отменой связанных оплат и их расходов в Кассе).
+router.post('/api/obligations/schedule/:id(\\d+)/delete', async (req, res) => {
+  if (!canFin(req)) return res.status(403).json({ error: 'Только администратор/финансы' });
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    const links = (await client.query('SELECT cash_transaction_id FROM finance_obligation_payment_links WHERE schedule_id=$1 AND reversed_at IS NULL', [req.params.id])).rows;
+    for (const l of links) { if (l.cash_transaction_id) await client.query("DELETE FROM cash_transactions WHERE id=$1 AND source='obligation'", [l.cash_transaction_id]); }
+    await client.query('DELETE FROM finance_obligation_payment_links WHERE schedule_id=$1', [req.params.id]);
+    await client.query('DELETE FROM finance_obligation_schedule WHERE id=$1', [req.params.id]);
+    await client.query('COMMIT');
+    await db.log(req.user.id, 'obl_schedule_delete', `#${req.params.id}`);
+    res.json({ ok: true });
+  } catch (e) { await client.query('ROLLBACK').catch(() => {}); res.status(400).json({ error: e.message }); }
+  finally { client.release(); }
+});
+
+// Отмена оплаты строки (сторно всех непогашенных привязок) — строка возвращается в «Запланировано».
+router.post('/api/obligations/schedule/:id(\\d+)/unpay', J, async (req, res) => {
+  if (!canFin(req)) return res.status(403).json({ error: 'Только администратор/финансы' });
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    const links = (await client.query('SELECT id, cash_transaction_id FROM finance_obligation_payment_links WHERE schedule_id=$1 AND reversed_at IS NULL', [req.params.id])).rows;
+    for (const l of links) {
+      if (l.cash_transaction_id) await client.query("DELETE FROM cash_transactions WHERE id=$1 AND source='obligation'", [l.cash_transaction_id]);
+      await client.query("UPDATE finance_obligation_payment_links SET reversed_at=now(), reversed_by=$1, reversal_reason='отмена оплаты' WHERE id=$2", [req.user.id, l.id]);
+    }
+    await client.query("UPDATE finance_obligation_schedule SET status='planned' WHERE id=$1", [req.params.id]);
+    await client.query('COMMIT');
+    await db.log(req.user.id, 'obl_schedule_unpay', `#${req.params.id}: сторно ${links.length}`);
+    res.json({ ok: true, reversed: links.length });
+  } catch (e) { await client.query('ROLLBACK').catch(() => {}); res.status(400).json({ error: e.message }); }
+  finally { client.release(); }
+});
+
 router.post('/api/obligations/loans/:id(\\d+)', J, async (req, res) => {
   if (!canFin(req)) return res.status(403).json({ error: 'Только администратор/финансы' });
   const b = req.body || {};

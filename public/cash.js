@@ -664,6 +664,25 @@
     modal('✓ Отметить оплаченными до даты', body, [save]);
   }
 
+  // Правка строки графика вручную (дата/тело/проценты/комиссия). «Всего» пересчитается само.
+  function oblScheduleEditForm(s, o, group) {
+    const date = finp(String(s.due_date).slice(0, 10), { type: 'date' });
+    const p = fmoney(s.principal_due, { placeholder: 'тело' });
+    const i = fmoney(s.interest_due, { placeholder: 'проценты' });
+    const f = fmoney(s.fee_due, { placeholder: 'комиссия' });
+    const body = el('div', { class: 'cashf' }, [
+      frow('Дата платежа', date), frow('Тело', p), frow('Проценты', i), frow('Комиссия', f),
+      el('div', { class: 'muted', style: 'font-size:12px' }, '«Всего» = тело + проценты + комиссия (пересчитается автоматически).'),
+    ]);
+    const save = el('button', { class: 'btn-primary', onclick: async () => {
+      try {
+        await post('/obligations/schedule/' + s.id + '/update', { due_date: date.value, principal_due: moneyVal(p), interest_due: moneyVal(i), fee_due: moneyVal(f) });
+        toast('Сохранено'); oblLoanCard(o.id, group);
+      } catch (e) { toast(e.message, true); }
+    } }, 'Сохранить');
+    modal('✎ Изменить платёж №' + s.installment_no, body, [save]);
+  }
+
   async function oblLoanCard(id, group) {
     let d; try { d = await api('/obligations/loans/' + id); } catch (e) { return toast(e.message, true); }
     const o = d.loan;
@@ -722,7 +741,15 @@
           el('td', { style: 'text-align:right;padding:5px 9px;font-weight:700' }, curFmt(s.total_due, o.currency)),
           el('td', { style: 'padding:5px 9px;font-weight:700;color:' + st[1] }, st[0] + (Number(s.paid) > 0.01 && s.status !== 'paid' ? ' (' + curFmt(s.paid, o.currency) + ')' : '')),
         ];
-        if (admin) cells.push(el('td', { style: 'padding:5px 9px' }, s.status === 'paid' ? '' : el('button', { class: 'btn-ghost cash-add', style: 'padding:4px 9px;font-size:12px', onclick: () => oblPayForm(s, o, group) }, '💵 Оплатить')));
+        if (admin) {
+          const btn = (cls, title, label, fn) => el('button', { class: 'btn-ghost ' + cls, style: 'padding:4px 8px;font-size:12px', title, onclick: fn }, label);
+          const rowActs = [];
+          if (s.status !== 'paid') rowActs.push(btn('cash-add', 'Оплатить', '💵', () => oblPayForm(s, o, group)));
+          if (Number(s.paid) > 0.01) rowActs.push(btn('cash-add', 'Отменить оплату (сторно)', '↩', async () => { if (!confirm('Отменить оплату платежа №' + s.installment_no + '? Связанный расход в Кассе тоже удалится.')) return; try { await post('/obligations/schedule/' + s.id + '/unpay', {}); toast('Оплата отменена'); oblLoanCard(o.id, group); } catch (e) { toast(e.message, true); } }));
+          rowActs.push(btn('cash-add', 'Изменить платёж', '✎', () => oblScheduleEditForm(s, o, group)));
+          rowActs.push(btn('cashf-del', 'Удалить платёж', '🗑', async () => { if (!confirm('Удалить платёж №' + s.installment_no + ' из графика? Если по нему была оплата — она отменится.')) return; try { await post('/obligations/schedule/' + s.id + '/delete', {}); toast('Удалено'); oblLoanCard(o.id, group); } catch (e) { toast(e.message, true); } }));
+          cells.push(el('td', { style: 'padding:5px 9px;white-space:nowrap' }, el('div', { style: 'display:flex;gap:4px' }, rowActs)));
+        }
         return el('tr', {}, cells);
       }));
       const foot = el('tr', { style: 'background:#f2f5f1;font-weight:800' }, [
