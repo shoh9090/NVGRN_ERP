@@ -266,8 +266,12 @@ function csMatchEmp(purpose, emps) {
   const top = scored.filter((x) => x.matched === max);
   return top.length === 1 ? top[0].e : null;
 }
+// Зарплату из кассы ведём начиная с этого периода. Выплаты за более ранние месяцы (напр. «за май»)
+// в блок «Зарплата» НЕ попадают — остаются только в кассе как расход. (Начали вести с июня 2026.)
+const CS_START_PERIOD = '2026-06';
 async function computeCashSalary(period) {
   const byEmp = {}, unmatched = [];
+  if (period < CS_START_PERIOD) return { byEmp, unmatched };
   const cats = (await db.pool.query("SELECT id FROM cash_categories WHERE code IN ('20','40')")).rows.map((r) => r.id);
   if (!cats.length) return { byEmp, unmatched };
   const emps = (await db.pool.query("SELECT id, full_name FROM hr_employees WHERE status <> 'archived'")).rows;
