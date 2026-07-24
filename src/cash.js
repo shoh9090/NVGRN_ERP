@@ -1931,13 +1931,13 @@ router.get('/api/cashbox-summary', async (req, res) => {
       if (from) { p.push(from); where = `((t.source='opening' AND t.tx_date <= $${p.length}) OR (t.source<>'opening' AND t.tx_date < $${p.length}))`; }
       else { where = `t.source='opening'`; }
       const r = (await db.pool.query(`SELECT ${balSel} FROM cash_transactions t WHERE ${where}${filt(p)}`, p)).rows[0];
-      opening = { uzs: Number(r.uzs), usd: Number(r.usd), total: Number(r.total_amt) };
+      opening = { uzs: Number(r.uzs), usd: Number(r.usd) };
     }
     // Сальдо на конец = всё до to включительно.
     let closing = { uzs: 0, usd: 0 };
     { const p = [wid]; p.push(to || '2999-12-31');
       const r = (await db.pool.query(`SELECT ${balSel} FROM cash_transactions t WHERE t.tx_date <= $${p.length}${filt(p)}`, p)).rows[0];
-      closing = { uzs: Number(r.uzs), usd: Number(r.usd), total: Number(r.total_amt) };
+      closing = { uzs: Number(r.uzs), usd: Number(r.usd) };
     }
     // Приход/Расход за период (без начальных остатков). Обнал сворачиваем: сумовую конверсию (ст.102 с parent) вычитаем из прихода.
     const p2 = [wid]; p2.push(from || '1900-01-01', to || '2999-12-31');
@@ -1970,6 +1970,10 @@ router.get('/api/cashbox-summary', async (req, res) => {
     const outflow = { uzs: Number(r2.out_uzs), usd: Number(r2.out_usd), total: Number(r2.out_total) };
     let rate = null;
     try { rate = await getCbuUsdRate(to || new Date().toISOString().slice(0, 10)); } catch (e) { rate = null; }
+    // Баланс (начало/конец): «Итого» = сумы + доллары×текущий курс. Если долларов $0 — «Итого» = чистые сумы
+    // (без накопленной курсовой разницы прошлых операций). Приход/Расход — по курсу дня (in_total/out_total).
+    opening.total = opening.uzs + (rate ? opening.usd * rate : 0);
+    closing.total = closing.uzs + (rate ? closing.usd * rate : 0);
     res.json({ rate, opening, inflow, outflow, closing });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
