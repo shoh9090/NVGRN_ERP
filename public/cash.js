@@ -240,7 +240,7 @@
   // Панель периода для отчётов (месяц по умолчанию — текущий).
   function repPeriodBar() {
     const dinp = (k) => el('input', { type: 'date', class: 'cashf-inp cash-filt', value: repState[k], onchange: (e) => { repState[k] = e.target.value; render(); } });
-    const preset = (label, from, to) => el('button', { class: 'cash-preset', onclick: () => { repState.from = from; repState.to = to; render(); } }, label);
+    const preset = (label, from, to) => el('button', { class: 'cash-preset' + (repState.from === from && repState.to === to ? ' cash-preset-on' : ''), onclick: () => { repState.from = from; repState.to = to; render(); } }, label);
     const now = new Date();
     const ym = (y, m) => new Date(Date.UTC(y, m, 1)).toISOString().slice(0, 10);
     const mEnd = (y, m) => new Date(Date.UTC(y, m + 1, 0)).toISOString().slice(0, 10);

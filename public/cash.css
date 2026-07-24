@@ -140,6 +140,7 @@ select.obl-f { cursor: pointer; }
 /* Пресеты периода — заметные */
 .cash-preset { background: #eef4e9; border: 1px solid var(--forest); color: var(--forest); border-radius: 8px; padding: 7px 12px; font-size: 13px; font-weight: 700; cursor: pointer; white-space: nowrap; }
 .cash-preset:hover { background: var(--forest); color: #fff; }
+.cash-preset-on { background: var(--forest); color: #fff; box-shadow: 0 0 0 2px rgba(22, 58, 40, .25); }
 @media (max-width: 760px) { .cash-flow-cards, .cash-flow-cards-4 { grid-template-columns: 1fr 1fr; } }
 .cash-grp-sum { font-weight: 700; color: var(--muted); font-size: 12px; margin-left: 8px; }
 
