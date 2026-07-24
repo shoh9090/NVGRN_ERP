@@ -2057,6 +2057,16 @@ router.get('/api/obligations/summary', async (req, res) => {
       rows.push({ kind: g + (c === 'USD' ? ' ($)' : ''), currency: c, total: v, due_period: sc.duem || 0, overdue: sc.ovd || 0, nearest_date: sc.nxt || null, source: g.includes('кредит') ? 'Кредиты' : 'Займы' });
     }
 
+    // Возмещение затрат подотчётным лицам (не возмещённые) — по валютам, без графика/просрочки.
+    const reimb = (await db.pool.query(
+      "SELECT currency, COALESCE(SUM(amount),0) AS s FROM finance_reimbursements WHERE status <> 'reimbursed' GROUP BY currency")).rows;
+    for (const rr of reimb) {
+      const c = cur1(rr.currency); const v = Number(rr.s) || 0;
+      if (v <= 0.01) continue;
+      byCur[c] = (byCur[c] || 0) + v;
+      rows.push({ kind: 'Возмещение затрат' + (c === 'USD' ? ' ($)' : ''), currency: c, total: v, due_period: 0, overdue: 0, nearest_date: null, source: 'Возмещение' });
+    }
+
     // Ближайший платёж — учитываем и графики кредитов/займов/лизинга, а не только поставщиков
     // (раньше nearest брался лишь из заявок Закупа — платежи по обязательствам не показывались).
     const nl = (await db.pool.query(
@@ -2733,9 +2743,9 @@ router.post('/api/reimbursements', J, async (req, res) => {
   const cur = b.currency === 'USD' ? 'USD' : 'UZS';
   const status = b.status === 'reimbursed' ? 'reimbursed' : 'pending';
   const r = await db.pool.query(
-    `INSERT INTO finance_reimbursements (reim_date, person, amount, currency, purpose, comment, status, reimbursed_date, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
-    [b.reim_date || null, String(b.person).trim(), numOrNull(b.amount) || 0, cur, b.purpose || null, b.comment || null, status, status === 'reimbursed' ? (b.reimbursed_date || null) : null, req.user.id]);
+    `INSERT INTO finance_reimbursements (reim_date, person, amount, currency, fx_rate, purpose, comment, status, reimbursed_date, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+    [b.reim_date || null, String(b.person).trim(), numOrNull(b.amount) || 0, cur, cur === 'USD' ? numOrNull(b.fx_rate) : null, b.purpose || null, b.comment || null, status, status === 'reimbursed' ? (b.reimbursed_date || null) : null, req.user.id]);
   await db.log(req.user.id, 'reimb_create', String(b.person));
   res.json({ ok: true, id: r.rows[0].id });
 });
@@ -2745,8 +2755,8 @@ router.post('/api/reimbursements/:id(\\d+)', J, async (req, res) => {
   const cur = b.currency === 'USD' ? 'USD' : 'UZS';
   const status = b.status === 'reimbursed' ? 'reimbursed' : 'pending';
   await db.pool.query(
-    `UPDATE finance_reimbursements SET reim_date=$1, person=$2, amount=$3, currency=$4, purpose=$5, comment=$6, status=$7, reimbursed_date=$8, updated_at=now() WHERE id=$9`,
-    [b.reim_date || null, String(b.person || '').trim(), numOrNull(b.amount) || 0, cur, b.purpose || null, b.comment || null, status, status === 'reimbursed' ? (b.reimbursed_date || null) : null, req.params.id]);
+    `UPDATE finance_reimbursements SET reim_date=$1, person=$2, amount=$3, currency=$4, fx_rate=$5, purpose=$6, comment=$7, status=$8, reimbursed_date=$9, updated_at=now() WHERE id=$10`,
+    [b.reim_date || null, String(b.person || '').trim(), numOrNull(b.amount) || 0, cur, cur === 'USD' ? numOrNull(b.fx_rate) : null, b.purpose || null, b.comment || null, status, status === 'reimbursed' ? (b.reimbursed_date || null) : null, req.params.id]);
   await db.log(req.user.id, 'reimb_update', '#' + req.params.id);
   res.json({ ok: true });
 });

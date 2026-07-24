@@ -402,10 +402,12 @@ async function migrate() {
     currency TEXT NOT NULL DEFAULT 'UZS',                -- UZS | USD
     purpose TEXT,                                        -- назначение расхода (на что/кому потрачено)
     comment TEXT,
+    fx_rate NUMERIC,                                    -- курс сум/$ на момент траты (для USD): база в долларах, но знаем сумму в сумах
     status TEXT NOT NULL DEFAULT 'pending',              -- pending (не возмещено) | reimbursed (возмещено)
     reimbursed_date DATE,
     created_by INTEGER, created_at TIMESTAMPTZ DEFAULT now(), updated_at TIMESTAMPTZ DEFAULT now()
   )`).catch((e) => console.error('fin_reimb:', e.message));
+  await pool.query('ALTER TABLE finance_reimbursements ADD COLUMN IF NOT EXISTS fx_rate NUMERIC').catch(() => {});
   // Разовая загрузка обязательств (Хикматов/Хабибуллаев/прочие) — идемпотентно, потом можно удалить.
   await require('./seed-obligations')(pool).catch((e) => console.error('[seed-obligations]', e.message));
   // Подотчёт закупщика (общий котёл): in = выдано под отчёт, out = потрачено наличными по заявкам.

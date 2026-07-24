@@ -505,6 +505,7 @@
   }
 
   // ---------- Возмещение затрат подотчётным лицам ----------
+  let reimbRate = 0;
   async function oblReimbursements(box) {
     box.innerHTML = '';
     box.appendChild(el('div', { style: 'display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px' }, [
@@ -513,12 +514,14 @@
     ]));
     let d; try { d = await api('/reimbursements'); } catch (e) { box.appendChild(el('div', { class: 'cash-empty' }, 'Ошибка: ' + e.message)); return; }
     const items = d.items || [];
+    const rate = d.rate || 0; reimbRate = rate;
     if (!items.length) { box.appendChild(el('div', { class: 'cash-empty' }, 'Пока нет записей.' + (isAdmin() ? ' Нажмите «+ Возмещение».' : ''))); return; }
     const pend = items.filter((x) => x.status !== 'reimbursed');
     const uzs = pend.filter((x) => x.currency !== 'USD').reduce((s, x) => s + Number(x.amount || 0), 0);
     const usd = pend.filter((x) => x.currency === 'USD').reduce((s, x) => s + Number(x.amount || 0), 0);
-    const rate = d.rate || 0;
-    box.appendChild(el('div', { class: 'cash-note-info', style: 'margin-bottom:8px' }, 'К возмещению (не выплачено): ' + money(uzs) + ' сум' + (usd ? ' · $' + money(usd) : '') + (usd && rate ? ' · итого ≈ ' + money(Math.round(uzs + usd * rate)) + ' сум' : '')));
+    // Сум-эквивалент долларов — по курсу каждой записи (если задан), иначе по текущему курсу ЦБ.
+    const usdUzs = pend.filter((x) => x.currency === 'USD').reduce((s, x) => s + Number(x.amount || 0) * (Number(x.fx_rate) || rate || 0), 0);
+    box.appendChild(el('div', { class: 'cash-note-info', style: 'margin-bottom:8px' }, 'К возмещению (не выплачено): ' + money(uzs) + ' сум' + (usd ? ' · $' + money(usd) : '') + ((usd && (usdUzs > 0)) ? ' · итого ≈ ' + money(Math.round(uzs + usdUzs)) + ' сум' : '')));
     const cols = ['Дата', 'Подотчётное лицо', 'Сумма', 'Вал.', 'Назначение расхода', 'Примечание', 'Статус'].concat(isAdmin() ? [''] : []);
     const thead = el('thead', {}, el('tr', {}, cols.map((h, i) => el('th', { style: 'padding:6px 9px;background:#f2f5f1;text-align:' + (i === 2 ? 'right' : 'left') + ';white-space:nowrap' }, h))));
     const tb = el('tbody', {}, items.map((x) => {
@@ -526,7 +529,9 @@
       const cells = [
         el('td', { style: 'padding:5px 9px;white-space:nowrap' }, x.reim_date ? ruDate(x.reim_date) : '—'),
         el('td', { style: 'padding:5px 9px;font-weight:600' }, x.person),
-        el('td', { style: 'padding:5px 9px;text-align:right;white-space:nowrap' }, curFmt(x.amount, x.currency)),
+        el('td', { style: 'padding:5px 9px;text-align:right;white-space:nowrap' }, x.currency === 'USD'
+          ? el('div', {}, [el('div', {}, '$' + curFmt(x.amount, 'USD')), (Number(x.fx_rate) > 0 ? el('div', { class: 'cash-sub', style: 'font-size:11px' }, '≈ ' + money(Math.round(Number(x.amount) * Number(x.fx_rate))) + ' сум') : null)])
+          : curFmt(x.amount, 'UZS')),
         el('td', { style: 'padding:5px 9px' }, x.currency === 'USD' ? '$' : 'сум'),
         el('td', { style: 'padding:5px 9px' }, x.purpose || ''),
         el('td', { style: 'padding:5px 9px;color:var(--muted)' }, x.comment || ''),
@@ -546,6 +551,21 @@
     const person = finp(x.person, { placeholder: 'Кто потратил свои деньги' });
     const amount = fmoney(x.amount, { placeholder: 'сумма' });
     const cur = fsel([{ v: 'UZS', t: 'сум (UZS)' }, { v: 'USD', t: 'доллары (USD)' }], x.currency || 'UZS');
+    // Курс сум/$ — только для долларов: база в долларах, но фиксируем сумму в сумах.
+    const rateInp = fmoney(x.fx_rate || '', { placeholder: 'курс сум/$' });
+    const sumEq = el('div', { class: 'cash-sub', style: 'margin-top:3px' }, '');
+    const updEq = () => {
+      const a = Number(moneyVal(amount)) || 0, rt = Number(moneyVal(rateInp)) || 0;
+      sumEq.textContent = (cur.value === 'USD' && a && rt) ? ('≈ ' + money(Math.round(a * rt)) + ' сум') : '';
+    };
+    const rateRow = frow('Курс, сум/$', el('div', {}, [rateInp, sumEq]));
+    const applyCur = () => {
+      const isUsd = cur.value === 'USD';
+      rateRow.style.display = isUsd ? '' : 'none';
+      if (isUsd && !moneyVal(rateInp) && reimbRate) rateInp.value = reimbRate;
+      updEq();
+    };
+    cur.onchange = applyCur; amount.oninput = updEq; rateInp.oninput = updEq;
     const purpose = finp(x.purpose, { placeholder: 'На что / кому потрачено' });
     const comment = finp(x.comment, { placeholder: 'Примечание' });
     const status = fsel([{ v: 'pending', t: 'Не возмещено' }, { v: 'reimbursed', t: 'Возмещено' }], x.status || 'pending');
@@ -553,16 +573,17 @@
     const rdateRow = frow('Дата возмещения', rdate);
     rdateRow.style.display = status.value === 'reimbursed' ? '' : 'none';
     status.onchange = () => { rdateRow.style.display = status.value === 'reimbursed' ? '' : 'none'; };
-    const rows = [frow('Дата', date), frow('Подотчётное лицо', person), frow('Сумма', amount), frow('Валюта', cur), frow('Назначение расхода', purpose), frow('Примечание', comment), frow('Статус', status), rdateRow];
+    const rows = [frow('Дата', date), frow('Подотчётное лицо', person), frow('Сумма', amount), frow('Валюта', cur), rateRow, frow('Назначение расхода', purpose), frow('Примечание', comment), frow('Статус', status), rdateRow];
     const save = el('button', { class: 'btn-primary', onclick: async () => {
       if (!person.value.trim()) return toast('Укажите подотчётное лицо', true);
-      const payload = { reim_date: date.value || null, person: person.value, amount: moneyVal(amount), currency: cur.value, purpose: purpose.value, comment: comment.value, status: status.value, reimbursed_date: rdate.value || null };
+      const payload = { reim_date: date.value || null, person: person.value, amount: moneyVal(amount), currency: cur.value, fx_rate: cur.value === 'USD' ? moneyVal(rateInp) : null, purpose: purpose.value, comment: comment.value, status: status.value, reimbursed_date: rdate.value || null };
       try {
         if (x.id) await post('/reimbursements/' + x.id, payload); else await post('/reimbursements', payload);
         toast('Сохранено'); closeModal(); renderObligations();
       } catch (e) { toast(e.message, true); }
     } }, x.id ? 'Сохранить' : 'Создать');
     modal(x.id ? 'Изменить возмещение' : 'Возмещение затрат', el('div', { class: 'cashf' }, rows), [save]);
+    applyCur();
   }
 
   const SCHEMES = [['annuity', 'Аннуитет'], ['differentiated', 'Дифференцированный'], ['equal_principal', 'Равными частями (тело)'], ['bullet', 'Тело в конце'], ['interest_only', 'Только проценты'], ['custom', 'Свой график']];
@@ -932,7 +953,7 @@
     const head = el('div', { class: 'cash-row head cash-obl' }, ['Вид обязательства', 'Остаток, $', 'Остаток, сум', 'К оплате (сум)', 'Просрочено (сум)', 'Ближайшая дата', 'Источник'].map((h) => el('span', {}, h)));
     const usd = (v) => (v > 0.01 ? '$' + curFmt(v, 'USD') : '—');
     const uzs = (v) => (v > 0.01 ? money(v) : '—');
-    const rowGo = (r) => { oblSub = r.source === 'Закуп' ? 'suppliers' : r.source === 'Кредиты' ? 'loans' : 'concept'; renderObligations(); };
+    const rowGo = (r) => { oblSub = r.source === 'Закуп' ? 'suppliers' : r.source === 'Кредиты' ? 'loans' : r.source === 'Возмещение' ? 'reimb' : 'concept'; renderObligations(); };
     const t = d.totals || {};
     box.appendChild(el('div', { class: 'cash-list' }, [head, ...d.rows.map((r) => el('div', { class: 'cash-row cash-obl', style: 'cursor:pointer', title: 'Открыть раздел', onclick: () => rowGo(r) }, [
       el('span', { style: 'font-weight:700' }, r.kind),
