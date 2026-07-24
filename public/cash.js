@@ -322,6 +322,43 @@
     return el('div', { class: 'cash-chart-card' }, [chart, legend]);
   }
 
+  // Драйл-даун из кэш-флоу: конкретные операции статьи (все кошельки, за период, приход+расход, по дате).
+  async function loadCatOps(catId, wrap) {
+    const sp = new URLSearchParams();
+    sp.set('from', repState.from || monthStartStr()); sp.set('to', repState.to || todayStr());
+    if (repState.wallet) sp.set('wallet', repState.wallet);
+    if (catId) sp.set('category', String(catId)); else sp.set('classified', 'no');
+    sp.set('pageSize', '500'); sp.set('page', '1');
+    let d; try { d = await api('/transactions?' + sp.toString()); } catch (e) { wrap.innerHTML = ''; wrap.appendChild(el('div', { class: 'cash-empty', style: 'padding:6px 12px' }, e.message)); return; }
+    const items = (d.items || []).slice().sort((a, b) => String(a.tx_date).localeCompare(String(b.tx_date)));
+    wrap.innerHTML = '';
+    if (!items.length) { wrap.appendChild(el('div', { class: 'cash-empty', style: 'padding:6px 12px' }, 'Нет операций за период')); return; }
+    const head = el('div', { class: 'cash-drill-op cash-drill-head' }, [el('span', {}, 'Дата'), el('span', {}, 'Кошелёк'), el('span', {}, 'От кого / назначение'), el('span', { style: 'text-align:right' }, 'Сумма')]);
+    const rowsEl = items.map((x) => el('div', { class: 'cash-drill-op' }, [
+      el('span', {}, ruDate(x.tx_date)),
+      el('span', { class: 'muted' }, x.tx_type === 'transfer' ? ((x.wallet_name || '') + ' → ' + (x.wallet_to_name || '')) : (x.wallet_name || '')),
+      el('span', {}, x.purpose || x.cp_name || x.payer_name || '—'),
+      el('span', { style: 'text-align:right', class: x.tx_type === 'in' ? 'cash-amt-in' : 'cash-amt-out' }, (x.tx_type === 'in' ? '+' : '−') + money(x.amount)),
+    ]));
+    wrap.appendChild(el('div', { class: 'cash-drill-ops' }, [head, ...rowsEl]));
+  }
+  // Строка статьи, раскрывающаяся в операции (уровень 2 → 3).
+  function statyaRow(r) {
+    const ops = el('div', { style: 'display:none' });
+    let loaded = false;
+    const arrow = el('span', { class: 'cash-rep-arrow' }, '▸');
+    const head = el('div', { class: 'cash-row cash-rep cash-rep-click' + (!r.cat_id ? ' unclass' : ''), title: 'Показать операции', onclick: async () => {
+      const open = ops.style.display === 'none';
+      ops.style.display = open ? 'block' : 'none'; arrow.textContent = open ? '▾' : '▸';
+      if (open && !loaded) { loaded = true; ops.innerHTML = '<div class="cash-loading" style="padding:6px 12px">Загружаю…</div>'; await loadCatOps(r.cat_id, ops); }
+    } }, [
+      el('span', {}, [arrow, ' ', (r.code ? (r.code + ' · ' + r.name) : 'без статьи')]),
+      el('span', { class: 'cash-amt-in' }, r.inc ? '+' + money(r.inc) : ''),
+      el('span', { class: 'cash-amt-out' }, r.exp ? '−' + money(r.exp) : ''),
+    ]);
+    return el('div', {}, [head, ops]);
+  }
+
   function renderCashflow(c, rows, groupsOrder, a2a, internal, obnal) {
     a2a = a2a || { inc: 0, exp: 0 };
     internal = internal || []; obnal = obnal || { received: 0, commission: 0, sent: 0 };
@@ -338,15 +375,25 @@
     const flows = { operating: 0, investing: 0, financing: 0 };
     rows.forEach((r) => { if (flows[r.flow_type] != null) flows[r.flow_type] += r.inc - r.exp; });
     const FLOW_HINT = { operating: 'Основная деятельность: продажи, сырьё, зарплаты, аренда', investing: 'Капвложения: оборудование, стройка', financing: 'Кредиты, проценты, налоги, взносы учредителей' };
-    const flowCard = (l, hint, val) => el('div', { class: 'cash-flow-card', title: hint }, [el('div', { class: 'cash-flow-card-l' }, l), el('div', { class: 'cash-flow-card-hint' }, hint), el('div', { class: 'cash-flow-card-v ' + (val >= 0 ? 'cash-tot-in' : 'cash-tot-out') }, money(val))]);
+    // Клик по карточке потока → под блоком раскрываются статьи этого потока (каждая → операции).
+    const flowDetail = el('div', { class: 'cash-flow-detail', style: 'display:none' });
+    let flowOpen = null;
+    const flowCard = (l, hint, val, fk) => el('div', { class: 'cash-flow-card' + (fk ? ' cash-flow-card-click' : ''), title: fk ? 'Показать статьи потока' : hint, onclick: fk ? () => {
+      if (flowOpen === fk) { flowDetail.style.display = 'none'; flowOpen = null; return; }
+      flowOpen = fk; flowDetail.style.display = 'block'; flowDetail.innerHTML = '';
+      flowDetail.appendChild(el('div', { class: 'cash-h3', style: 'margin:4px 0 6px' }, l + ' — статьи'));
+      const list = rows.filter((r) => r.flow_type === fk && (r.inc || r.exp)).sort((a, b) => (b.exp - a.exp) || (b.inc - a.inc));
+      flowDetail.appendChild(list.length ? el('div', { class: 'cash-list' }, list.map(statyaRow)) : el('div', { class: 'cash-empty' }, 'Нет статей за период'));
+    } : null }, [el('div', { class: 'cash-flow-card-l' }, l), el('div', { class: 'cash-flow-card-hint' }, hint), el('div', { class: 'cash-flow-card-v ' + (val >= 0 ? 'cash-tot-in' : 'cash-tot-out') }, money(val))]);
     const obnalCell = (l, val, cls) => el('div', { class: 'cash-obnal-cell' }, [el('div', { class: 'cash-obnal-cell-l' }, l), el('div', { class: 'cash-obnal-cell-v ' + (cls || '') }, money(val))]);
     const a2aNet = (a2a.inc || 0) - (a2a.exp || 0);
     c.appendChild(el('div', { class: 'cash-flow-cards cash-flow-cards-4' }, [
-      flowCard('Операционный', FLOW_HINT.operating, flows.operating),
-      flowCard('Инвестиции', FLOW_HINT.investing, flows.investing),
-      flowCard('Финансы', FLOW_HINT.financing, flows.financing),
+      flowCard('Операционный', FLOW_HINT.operating, flows.operating, 'operating'),
+      flowCard('Инвестиции', FLOW_HINT.investing, flows.investing, 'investing'),
+      flowCard('Финансы', FLOW_HINT.financing, flows.financing, 'financing'),
       flowCard('Внутренние переводы', 'Перемещения между своими счетами/картами/кассой — не доход и не расход', a2aNet),
     ]));
+    c.appendChild(flowDetail);
 
     // Внутренние перемещения: разбивка по под-категориям (межбанк / обнал / пополнение карты) + детализация обнала.
     if ((internal && internal.length) || obnal.sent) {
@@ -387,16 +434,18 @@
     const order = [...groupsOrder, '— прочее —', '⚠ Не разобрано'].filter((g, i, a) => a.indexOf(g) === i);
     const present = Object.keys(byGroup).sort((a, b) => order.indexOf(a) - order.indexOf(b));
     present.forEach((g) => {
-      const list = byGroup[g];
+      const list = byGroup[g].filter((r) => r.inc || r.exp);
       const gi = list.reduce((s, r) => s + r.inc, 0), ge = list.reduce((s, r) => s + r.exp, 0);
-      const block = el('div', { class: 'cash-grp' });
-      block.appendChild(el('div', { class: 'cash-grp-h' }, [g, el('span', { class: 'cash-grp-sum' }, (gi ? ' +' + money(gi) : '') + (ge ? '  −' + money(ge) : ''))]));
-      block.appendChild(el('div', { class: 'cash-list' }, list.filter((r) => r.inc || r.exp).map((r) => el('div', { class: 'cash-row cash-rep cash-rep-click' + (!r.cat_id ? ' unclass' : ''), title: 'Открыть транзакции этой статьи', onclick: () => drillToTx(r) }, [
-        el('span', {}, (r.code ? (r.code + ' · ' + r.name) : 'без статьи') + ' →'),
-        el('span', { class: 'cash-amt-in' }, r.inc ? '+' + money(r.inc) : ''),
-        el('span', { class: 'cash-amt-out' }, r.exp ? '−' + money(r.exp) : ''),
-      ]))));
-      c.appendChild(block);
+      // Уровень 1: группа. Клик раскрывает статьи (уровень 2), каждая — операции (уровень 3).
+      const statyiWrap = el('div', { class: 'cash-list', style: 'display:none' });
+      let built = false;
+      const arrow = el('span', { class: 'cash-grp-arrow' }, '▸');
+      const gh = el('div', { class: 'cash-grp-h cash-grp-click', onclick: () => {
+        const open = statyiWrap.style.display === 'none';
+        statyiWrap.style.display = open ? 'block' : 'none'; arrow.textContent = open ? '▾' : '▸';
+        if (open && !built) { built = true; list.forEach((r) => statyiWrap.appendChild(statyaRow(r))); }
+      } }, [el('span', {}, [arrow, ' ', g]), el('span', { class: 'cash-grp-sum' }, (gi ? ' +' + money(gi) : '') + (ge ? '  −' + money(ge) : ''))]);
+      c.appendChild(el('div', { class: 'cash-grp' }, [gh, statyiWrap]));
     });
     if (!rows.length) c.appendChild(el('div', { class: 'cash-empty' }, 'За период нет операций.'));
   }
@@ -1042,6 +1091,10 @@
     try {
       const sp = new URLSearchParams();
       ['from', 'to', 'wallet'].forEach((k) => { if (txState[k]) sp.set(k, txState[k]); });
+      // Сводка учитывает те же фильтры, что и список: статья ДДС, «разобрано», поиск.
+      if (txState.category) sp.set('category', txState.category);
+      if (txState.classified) sp.set('classified', txState.classified);
+      if (txState.q) sp.set('q', txState.q);
       sum = await api('/summary?' + sp.toString());
     } catch (e) { /* сводка не критична для журнала */ }
     wrap.innerHTML = '';

@@ -1162,7 +1162,7 @@ router.get('/api/transactions', async (req, res) => {
             COUNT(*) FILTER (WHERE tx_type <> 'transfer' AND is_classified = false) AS unclass,
             COUNT(*) AS total
      FROM cash_transactions t ${where}`, p)).rows[0];
-  const pageSize = [10, 20, 50, 100, 200].includes(parseInt(req.query.pageSize)) ? parseInt(req.query.pageSize) : 50;
+  const pageSize = [10, 20, 50, 100, 200, 500, 1000].includes(parseInt(req.query.pageSize)) ? parseInt(req.query.pageSize) : 50;
   const page = Math.max(1, parseInt(req.query.page) || 1);
   const offset = (page - 1) * pageSize;
   const pageP = p.slice(); pageP.push(pageSize, offset);
