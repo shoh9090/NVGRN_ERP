@@ -279,10 +279,11 @@ async function computeCashSalary(period) {
     const amt = Math.round(Number(t.amount) || 0);
     const emp = csMatchEmp(t.purpose, emps);
     if (emp) {
-      const b = byEmp[emp.id] || (byEmp[emp.id] = { advance: 0, paid: 0, pay_date: null });
+      const b = byEmp[emp.id] || (byEmp[emp.id] = { advance: 0, paid: 0, pay_date: null, txs: [] });
       if (kind === 'advance') b.advance += amt; else b.paid += amt;
       // Дата выплаты — из кассы: берём последнюю (зарплата приоритетнее аванса).
       if (kind !== 'advance' && (!b.pay_date || t.d > b.pay_date)) b.pay_date = t.d;
+      b.txs.push({ tx_id: t.id, date: t.d, amount: amt, kind, purpose: t.purpose || '' });
     }
     else unmatched.push({ tx_id: t.id, date: t.d, amount: amt, kind, purpose: t.purpose || '', hidden: !!t.hidden });
   }
@@ -315,6 +316,7 @@ router.get('/api/payroll', async (req, res) => {
     items.forEach((r) => {
       const b = cs.byEmp[r.emp_id];
       r.cash_advance = b ? b.advance : 0; r.cash_paid = b ? b.paid : 0;
+      r.cash_txs = b ? (b.txs || []) : [];
       // Дата выплаты наличными тянется из кассы; своя (ручная/по карте) — в приоритете, если стоит.
       r.cash_pay_date = b && b.pay_date ? b.pay_date : null;
       if (!r.pay_date && r.cash_pay_date) r.pay_date = r.cash_pay_date;

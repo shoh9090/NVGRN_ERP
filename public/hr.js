@@ -51,6 +51,19 @@
   }
   const closeModal = () => { const r = $('#hr-modal-root'); if (r.lastChild && r.lastChild._close) r.lastChild._close(); };
 
+  // Окно наличных выплат сотрудника (клик по «💵 касса») — с переходом в саму транзакцию (Касса).
+  function openCashTxs(txs, title) {
+    const list = (txs || []).slice().sort((a, b) => String(a.date).localeCompare(String(b.date)));
+    const body = el('div', {}, list.length ? list.map((t) => el('div', { style: 'display:flex;gap:12px;font-size:13px;padding:5px 0;border-bottom:1px solid #eee;align-items:center' }, [
+      el('span', { style: 'min-width:88px' }, String(t.date)),
+      el('span', { style: 'min-width:70px' }, t.kind === 'advance' ? 'аванс' : 'зарплата'),
+      el('span', { class: 'tnum', style: 'min-width:110px;font-weight:700' }, money(t.amount)),
+      el('span', { class: 'muted', style: 'flex:1' }, t.purpose || ''),
+      el('a', { href: '/cash#tx=' + t.tx_id, target: '_blank', style: 'font-size:12px;white-space:nowrap;color:var(--forest);font-weight:700' }, 'в Кассе →'),
+    ])) : [el('div', { class: 'hr-empty' }, 'Нет наличных выплат за период')]);
+    modal(title, body, [el('button', { class: 'btn-primary', onclick: closeModal }, 'Закрыть')]);
+  }
+
   const frow = (label, ctrl) => el('label', { class: 'hrf-row' }, [el('span', {}, label), ctrl]);
   const finp = (val, attrs) => el('input', Object.assign({ class: 'hrf-inp', value: val == null ? '' : String(val) }, attrs || {}));
   const fsel = (opts, val) => el('select', { class: 'hrf-inp' }, opts.map((o) => el('option', { value: o.v, selected: String(o.v) === String(val) || null }, o.t)));
@@ -589,8 +602,8 @@
           extraCell(r, 'Доп. начисления', EXTRA_ACCR),
           el('span', { class: 'tnum' }, money(r.deducted)),
           extraCell(r, 'Доп. удержания', EXTRA_DED),
-          el('span', { class: 'tnum' }, [money((Number(r.ded_advance_card) || 0) + (Number(r.ded_advance_cash) || 0)), (Number(r.cash_advance) > 0 ? el('div', { style: 'font-size:11px;font-weight:700;color:#2e7d32;margin-top:2px' }, '💵 касса ' + money(r.cash_advance)) : null)]),
-          el('span', { class: 'tnum' }, [money(r.paid), (Number(r.cash_paid) > 0 ? el('div', { style: 'font-size:11px;font-weight:700;color:#2e7d32;margin-top:2px' }, '💵 касса ' + money(r.cash_paid)) : null)]),
+          el('span', { class: 'tnum' }, [money((Number(r.ded_advance_card) || 0) + (Number(r.ded_advance_cash) || 0)), (Number(r.cash_advance) > 0 ? el('div', { style: 'font-size:11px;font-weight:700;color:#2e7d32;margin-top:2px;cursor:pointer;text-decoration:underline', title: 'Показать транзакции', onclick: (ev) => { ev.stopPropagation(); openCashTxs((r.cash_txs || []).filter((t) => t.kind === 'advance'), '💵 Авансы наличными — ' + (r.full_name || '')); } }, '💵 касса ' + money(r.cash_advance)) : null)]),
+          el('span', { class: 'tnum' }, [money(r.paid), (Number(r.cash_paid) > 0 ? el('div', { style: 'font-size:11px;font-weight:700;color:#2e7d32;margin-top:2px;cursor:pointer;text-decoration:underline', title: 'Показать транзакции', onclick: (ev) => { ev.stopPropagation(); openCashTxs((r.cash_txs || []).filter((t) => t.kind !== 'advance'), '💵 Зарплата наличными — ' + (r.full_name || '')); } }, '💵 касса ' + money(r.cash_paid)) : null)]),
           el('span', { class: 'tnum', style: 'font-weight:800;color:#2e7d32' }, money(r.to_pay)),
           el('span', {}, el('span', { class: 'hr-st hr-pr-' + (r.id ? (r.status || 'draft') : 'none') }, r.id ? PR_STATUS[r.status || 'draft'] : 'нет')),
         ]);
