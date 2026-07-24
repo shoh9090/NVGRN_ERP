@@ -270,7 +270,7 @@ async function computeCashSalary(period) {
   if (!cats.length) return { byEmp, unmatched };
   const emps = (await db.pool.query("SELECT id, full_name FROM hr_employees WHERE status <> 'archived'")).rows;
   const txs = (await db.pool.query(
-    `SELECT t.id, to_char(t.tx_date,'YYYY-MM-DD') d, t.tx_date, t.amount, t.purpose
+    `SELECT t.id, to_char(t.tx_date,'YYYY-MM-DD') d, t.tx_date, t.amount, t.purpose, COALESCE(t.report_hidden,false) AS hidden
      FROM cash_transactions t JOIN cash_wallets w ON w.id = t.wallet_id AND w.kind = 'cash'
      WHERE t.tx_type = 'out' AND t.category_id = ANY($1)`, [cats])).rows;
   for (const t of txs) {
@@ -284,7 +284,7 @@ async function computeCashSalary(period) {
       // Дата выплаты — из кассы: берём последнюю (зарплата приоритетнее аванса).
       if (kind !== 'advance' && (!b.pay_date || t.d > b.pay_date)) b.pay_date = t.d;
     }
-    else unmatched.push({ tx_id: t.id, date: t.d, amount: amt, kind, purpose: t.purpose || '' });
+    else unmatched.push({ tx_id: t.id, date: t.d, amount: amt, kind, purpose: t.purpose || '', hidden: !!t.hidden });
   }
   return { byEmp, unmatched };
 }
@@ -503,6 +503,16 @@ router.post('/api/payroll/bulk-delete', J, async (req, res) => {
   const r = await db.pool.query('DELETE FROM hr_payroll WHERE id = ANY($1)', [ids]);
   await db.log(req.user.id, 'hr_payroll_bulk_delete', String(ids.length));
   res.json({ ok: true, affected: r.rowCount });
+});
+
+// Скрыть/вернуть строки «Выплаты из кассы без сотрудника» (только визуально — касса и суммы не меняются).
+router.post('/api/salary/cash-hide', J, async (req, res) => {
+  const ids = (Array.isArray(req.body.ids) ? req.body.ids : []).map((x) => parseInt(x)).filter(Boolean);
+  if (!ids.length) return res.status(400).json({ error: 'Ничего не выбрано' });
+  const hidden = !!req.body.hidden;
+  await db.pool.query('UPDATE cash_transactions SET report_hidden=$1 WHERE id = ANY($2)', [hidden, ids]);
+  await db.log(req.user.id, hidden ? 'hr_cash_hide' : 'hr_cash_unhide', String(ids.length));
+  res.json({ ok: true, count: ids.length, hidden });
 });
 
 // ---------- Массовые операции ----------

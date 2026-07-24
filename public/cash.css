@@ -252,15 +252,11 @@ select.obl-f { cursor: pointer; }
 .cash-grp-arrow, .cash-rep-arrow { color: var(--muted); font-size: 11px; }
 .cash-flow-detail { margin: 4px 0 12px; }
 .cash-drill-ops { background: #fbfaf5; border: 1px solid var(--line); border-radius: 8px; margin: 2px 0 8px 14px; }
-.cash-drill-op { display: grid; grid-template-columns: 84px 170px 1fr 130px 30px; gap: 12px; padding: 6px 10px; font-size: 12.5px; border-bottom: 1px solid #eee; align-items: start; }
+.cash-drill-op { display: grid; grid-template-columns: 84px 170px 1fr 130px; gap: 12px; padding: 6px 10px; font-size: 12.5px; border-bottom: 1px solid #eee; align-items: start; }
 .cash-drill-op > span { min-width: 0; overflow-wrap: anywhere; line-height: 1.35; }
-.cash-drill-op > span:first-child, .cash-drill-op > span:nth-child(4) { white-space: nowrap; }
+.cash-drill-op > span:first-child, .cash-drill-op > span:last-child { white-space: nowrap; }
 .cash-drill-op:last-child { border-bottom: none; }
 .cash-drill-head { font-weight: 700; background: #f2f5f1; color: var(--muted); position: sticky; top: 0; }
-.cash-drill-hidden { opacity: .5; }
-.cash-drill-hide { cursor: pointer; text-align: center; opacity: .55; }
-.cash-drill-hide:hover { opacity: 1; }
-.cash-drill-bar { display: flex; gap: 14px; align-items: center; padding: 6px 10px; }
 .cash-internal-click { cursor: pointer; }
 .cash-internal-click:hover { background: #eef4e9; border-radius: 6px; }
 .cash-legend-click { cursor: pointer; }
