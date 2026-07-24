@@ -269,9 +269,11 @@ function csMatchEmp(purpose, emps) {
 // Зарплату из кассы ведём начиная с этого периода. Выплаты за более ранние месяцы (напр. «за май»)
 // в блок «Зарплата» НЕ попадают — остаются только в кассе как расход. (Начали вести с июня 2026.)
 const CS_START_PERIOD = '2026-06';
+// Периоды, где наличные из кассы НЕ тянем в зарплату (июнь заводим импортом из файла — иначе двойной счёт).
+const CS_CASH_OFF = new Set(['2026-06']);
 async function computeCashSalary(period) {
   const byEmp = {}, unmatched = [];
-  if (period < CS_START_PERIOD) return { byEmp, unmatched };
+  if (period < CS_START_PERIOD || CS_CASH_OFF.has(period)) return { byEmp, unmatched };
   const cats = (await db.pool.query("SELECT id FROM cash_categories WHERE code IN ('20','40')")).rows.map((r) => r.id);
   if (!cats.length) return { byEmp, unmatched };
   const emps = (await db.pool.query("SELECT id, full_name FROM hr_employees WHERE status <> 'archived'")).rows;
@@ -783,6 +785,96 @@ router.post('/api/timesheet/import', upload.single('file'), async (req, res) => 
     finally { client.release(); }
     await db.log(req.user.id, 'hr_timesheet_import', `${period}: ${updated}`);
     res.json({ ok: true, updated, notFound: notFound.slice(0, 30), notFoundCount: notFound.length });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// ---------- Импорт зарплаты из Excel (все листы книги: АУП / произ / смена) ----------
+// Раскладка столбцов по названиям; парные столбцы (аванс на карту, выплата на карту) суммируются.
+// Начислено=Фактич зпл табель; удержания=штраф+удержание+авансы; выплаты=нал+карта. Перезапись по (сотрудник,период).
+function classifyPayCol(h) {
+  h = String(h == null ? '' : h).toLowerCase().replace(/ё/g, 'е').trim();
+  if (!h) return null;
+  if (/аванс/.test(h) && /карт/.test(h)) return 'ded_advance_card';
+  if (/аванс/.test(h) && /нал/.test(h)) return 'ded_advance_cash';
+  if (/выплач|выплат/.test(h) && /карт/.test(h)) return 'paid_card';
+  if (/выплач|выплат/.test(h) && /нал/.test(h)) return 'paid_cash';
+  if (/фактич/.test(h) && /табел/.test(h)) return 'accr_fact';
+  if (/бонус/.test(h)) return 'accr_bonus';
+  if (/преми/.test(h)) return 'accr_premium';
+  if (/гсм/.test(h)) return 'accr_gsm';
+  if (/долг/.test(h) && /компан/.test(h)) return 'accr_company_debt';
+  if (/штраф/.test(h)) return 'ded_fine';
+  if (/^удержание/.test(h)) return 'ded_hold';
+  if (/факт/.test(h) && /дн/.test(h)) return 'fact_days';
+  if (/кол-во/.test(h) && /дн/.test(h)) return 'plan_days';
+  if (/отраб/.test(h) && /час/.test(h)) return 'fact_hours';
+  return null;
+}
+const PAY_FIELDS = ['plan_days', 'fact_days', 'fact_hours', 'accr_fact', 'accr_bonus', 'accr_premium', 'accr_gsm', 'accr_company_debt', 'ded_fine', 'ded_hold', 'ded_advance_card', 'ded_advance_cash', 'paid_cash', 'paid_card'];
+router.post('/api/payroll/import', upload.single('file'), async (req, res) => {
+  try {
+    const period = /^\d{4}-\d{2}$/.test(req.body.period) ? req.body.period : null;
+    if (!period) return res.status(400).json({ error: 'Нет периода' });
+    if (!req.file) return res.status(400).json({ error: 'Файл не выбран' });
+    const clearFirst = String(req.body.clearFirst) === 'true' || req.body.clearFirst === true;
+    const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
+    // raw:true → числа приходят числами; строки-числа (напр. " 5,000,000 ") чистим до цифр/точки/минуса.
+    const num = (v) => { if (typeof v === 'number') return isFinite(v) ? v : 0; const n = Number(String(v == null ? '' : v).replace(/[^\d.-]/g, '')); return isFinite(n) ? n : 0; };
+    const emps = (await db.pool.query("SELECT id, full_name FROM hr_employees WHERE status <> 'archived'")).rows;
+    const parsed = []; const notFound = []; const sheetsInfo = [];
+    for (const sname of wb.SheetNames) {
+      const rows = XLSX.utils.sheet_to_json(wb.Sheets[sname], { header: 1, raw: true, defval: '' });
+      let hi = rows.findIndex((r) => r.some((c) => /должност/i.test(String(c))));
+      if (hi < 0) { sheetsInfo.push({ sheet: sname, rows: 0, note: 'нет заголовка' }); continue; }
+      const head = rows[hi].map((c) => String(c));
+      const iPos = head.findIndex((h) => /должност/i.test(h));
+      const iName = iPos > 0 ? iPos - 1 : 1;
+      const fmap = {}; head.forEach((h, ci) => { const f = classifyPayCol(h); if (f) (fmap[f] = fmap[f] || []).push(ci); });
+      const getF = (row, f) => (fmap[f] || []).reduce((s, ci) => s + num(row[ci]), 0);
+      let cnt = 0;
+      for (let i = hi + 1; i < rows.length; i++) {
+        const name = String(rows[i][iName] || '').trim();
+        if (!name || /итого|^отдел|склад под|руководств|^пример/i.test(name)) continue;
+        const hasData = PAY_FIELDS.some((f) => getF(rows[i], f) !== 0);
+        if (!hasData) continue;
+        const emp = csMatchEmp(name, emps);
+        const vals = {}; PAY_FIELDS.forEach((f) => { vals[f] = getF(rows[i], f); });
+        if (!emp) { notFound.push({ sheet: sname, name, accr: vals.accr_fact }); continue; }
+        parsed.push({ emp_id: emp.id, vals }); cnt++;
+      }
+      sheetsInfo.push({ sheet: sname, imported: cnt });
+    }
+    const client = await db.pool.connect();
+    let created = 0;
+    try {
+      await client.query('BEGIN');
+      if (clearFirst) await client.query('DELETE FROM hr_payroll WHERE period=$1', [period]);
+      for (const row of parsed) {
+        const v = row.vals;
+        await client.query(
+          `INSERT INTO hr_payroll (employee_id, period, plan_days, fact_days, fact_hours, accr_fact, accr_bonus, accr_premium, accr_gsm, accr_company_debt, ded_fine, ded_hold, ded_advance_card, ded_advance_cash, paid_cash, paid_card, created_by)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+           ON CONFLICT (employee_id, period) DO UPDATE SET plan_days=EXCLUDED.plan_days, fact_days=EXCLUDED.fact_days, fact_hours=EXCLUDED.fact_hours,
+             accr_fact=EXCLUDED.accr_fact, accr_bonus=EXCLUDED.accr_bonus, accr_premium=EXCLUDED.accr_premium, accr_gsm=EXCLUDED.accr_gsm, accr_company_debt=EXCLUDED.accr_company_debt,
+             ded_fine=EXCLUDED.ded_fine, ded_hold=EXCLUDED.ded_hold, ded_advance_card=EXCLUDED.ded_advance_card, ded_advance_cash=EXCLUDED.ded_advance_cash,
+             paid_cash=EXCLUDED.paid_cash, paid_card=EXCLUDED.paid_card, updated_at=now()`,
+          [row.emp_id, period, v.plan_days || null, v.fact_days || null, v.fact_hours || null, v.accr_fact, v.accr_bonus, v.accr_premium, v.accr_gsm, v.accr_company_debt, v.ded_fine, v.ded_hold, v.ded_advance_card, v.ded_advance_cash, v.paid_cash, v.paid_card, req.user.id]);
+        created++;
+      }
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); return res.status(400).json({ error: e.message }); }
+    finally { client.release(); }
+    // Итоги для сверки с файлом.
+    const tot = parsed.reduce((a, r) => {
+      const v = r.vals;
+      a.accr += v.accr_fact + v.accr_bonus + v.accr_premium + v.accr_gsm + v.accr_company_debt;
+      a.ded += v.ded_fine + v.ded_hold + v.ded_advance_card + v.ded_advance_cash;
+      a.paid += v.paid_cash + v.paid_card;
+      return a;
+    }, { accr: 0, ded: 0, paid: 0 });
+    tot.to_pay = tot.accr - tot.ded - tot.paid;
+    await db.log(req.user.id, 'hr_payroll_import', `${period}: ${created}, не найдено ${notFound.length}`);
+    res.json({ ok: true, period, imported: created, sheets: sheetsInfo, notFound: notFound.slice(0, 60), notFoundCount: notFound.length, totals: tot });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 

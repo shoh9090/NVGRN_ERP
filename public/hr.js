@@ -438,6 +438,46 @@
   const curMonth = () => new Date().toISOString().slice(0, 7);
   const monthLabel = (ym) => { const [y, m] = ym.split('-'); return ['', 'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'][Number(m)] + ' ' + y; };
 
+  // Импорт зарплаты из Excel (все листы книги) — перезапись периода, с итогами для сверки.
+  function openPayrollImport(period) {
+    period = period || curMonth();
+    const file = el('input', { type: 'file', accept: '.xlsx,.xls', class: 'hrf-inp' });
+    const clear = el('input', { type: 'checkbox' });
+    const out = el('div', { style: 'margin-top:10px' });
+    const body = el('div', {}, [
+      el('div', { class: 'hr-sub', style: 'margin-bottom:8px' }, 'Все листы книги (АУП / произ / смена). Начислено = «Фактич зпл табель»; удержания = штраф + удержание + авансы; выплаты = наличные + карта (парные столбцы суммируются). Строки перезаписываются по сотруднику за ' + monthLabel(period) + '.'),
+      el('label', { class: 'hrf-row' }, [el('span', {}, 'Файл'), file]),
+      el('label', { style: 'display:flex;gap:8px;align-items:center;margin:8px 0;cursor:pointer;font-size:13px' }, [clear, el('span', {}, 'Очистить ' + monthLabel(period) + ' перед импортом (период = файл 1-в-1)')]),
+      out,
+    ]);
+    const load = el('button', { class: 'btn-primary', onclick: async () => {
+      if (!file.files[0]) return toast('Выберите файл', true);
+      out.innerHTML = '<div class="hr-sub">Загружаю…</div>';
+      const fd = new FormData(); fd.append('period', period); fd.append('file', file.files[0]); fd.append('clearFirst', clear.checked ? 'true' : 'false');
+      try {
+        const res = await fetch('/hr/api/payroll/import', { method: 'POST', body: fd });
+        const d = await res.json(); if (!res.ok) throw new Error(d.error || 'Ошибка');
+        const t = d.totals || {};
+        out.innerHTML = '';
+        out.appendChild(el('div', { style: 'font-weight:700;color:#2e7d32;margin-bottom:6px' }, '✓ Загружено строк: ' + d.imported + (d.notFoundCount ? (' · не найдено по ФИО: ' + d.notFoundCount) : '')));
+        out.appendChild(el('div', { style: 'font-size:13px;line-height:1.7' }, [
+          el('div', {}, 'Начислено: ' + money(t.accr)),
+          el('div', {}, 'Удержано: ' + money(t.ded)),
+          el('div', {}, 'Выплачено: ' + money(t.paid)),
+          el('div', { style: 'font-weight:700' }, 'К выплате: ' + money(t.to_pay)),
+        ]));
+        out.appendChild(el('div', { class: 'hr-sub', style: 'margin-top:6px' }, 'Сверь эти итоги с файлом. Если сходится — закрой окно, таблица обновится.'));
+        if (d.notFound && d.notFound.length) {
+          out.appendChild(el('div', { style: 'margin-top:8px;font-weight:700;color:#b25b00' }, '⚠ Не нашёл по ФИО (' + d.notFoundCount + ') — заведи сотрудника или поправь имя:'));
+          out.appendChild(el('div', { style: 'font-size:12.5px;max-height:180px;overflow:auto;margin-top:4px' }, d.notFound.map((n) => el('div', {}, '• ' + n.name + ' — ' + (n.sheet || '') + (n.accr ? (', начислено ' + money(n.accr)) : '')))));
+        }
+        load.textContent = 'Загрузить ещё';
+        renderSalary();
+      } catch (e) { out.innerHTML = ''; out.appendChild(el('div', { class: 'hr-empty' }, e.message)); }
+    } }, 'Загрузить');
+    modal('📊 Импорт зарплаты — ' + monthLabel(period), body, [load]);
+  }
+
   async function renderSalary() {
     const c = $('#hr-content');
     if (!salState.period) salState.period = curMonth();
@@ -492,6 +532,7 @@
         el('button', { class: 'btn-primary', onclick: openFillNorms }, '📋 Заполнить нормы'),
         el('button', { class: 'btn-ghost', onclick: openTimesheetImport }, '📥 Импорт табеля'),
         el('button', { class: 'btn-ghost', onclick: () => openCardImport() }, '💳 Карты (Excel)'),
+        el('button', { class: 'btn-ghost', onclick: () => openPayrollImport(salState.period) }, '📊 Импорт зарплаты'),
       ]),
     ]));
     const mInp = el('input', { type: 'month', class: 'hrf-inp hr-filt', value: salState.period, onchange: (e) => { salState.period = e.target.value || curMonth(); load(); } });
