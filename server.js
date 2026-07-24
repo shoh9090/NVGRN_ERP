@@ -132,7 +132,7 @@ app.get('/', requireAuth, async (req, res) => {
   if (req.user.isAdmin) {
     tiles = await db.pool.query('SELECT * FROM tiles WHERE is_visible = TRUE ORDER BY sort_order, id');
   } else {
-    tiles = await db.pool.query(
+    const q = await db.pool.query(
       `SELECT DISTINCT t.* FROM tiles t
        JOIN role_tiles rt ON rt.tile_id = t.id
        JOIN user_roles ur ON ur.role_id = rt.role_id
@@ -140,6 +140,13 @@ app.get('/', requireAuth, async (req, res) => {
        ORDER BY t.sort_order, t.id`,
       [req.user.id]
     );
+    let rows = q.rows;
+    // Роль «Финансы/Бухгалтерия» всегда видит плитку «Касса» (она ведёт Кассу/Обязательства).
+    if (req.user.isFinance && !rows.some((t) => t.url === '/cash')) {
+      const ct = await db.pool.query("SELECT * FROM tiles WHERE url = '/cash' AND is_visible = TRUE LIMIT 1");
+      if (ct.rows.length) { rows = rows.concat(ct.rows[0]); rows.sort((a, b) => (a.sort_order - b.sort_order) || (a.id - b.id)); }
+    }
+    tiles = { rows };
   }
   res.render('launcher', { settings, user: req.user, tiles: tiles.rows, groups: groupTiles(tiles.rows) });
 });
@@ -624,7 +631,8 @@ app.use('/complaints', requireComplaintsAccess, complaintsRouter);
 // Блок «Касса» — единый журнал транзакций, ДДС/P&L, остатки кошельков
 async function requireCashAccess(req, res, next) {
   if (!req.user) return res.redirect('/login');
-  if (req.user.isAdmin) return next();
+  // Админ и роль «Финансы/Бухгалтерия» имеют доступ к Кассе (и Обязательствам) без отдельной плитки.
+  if (req.user.isAdmin || req.user.isFinance) return next();
   const r = await db.pool.query(
     `SELECT 1 FROM tiles t
      JOIN role_tiles rt ON rt.tile_id = t.id
