@@ -2717,4 +2717,44 @@ router.get('/api/obligations/schedule-template.xlsx', async (req, res) => {
   res.send(buf);
 });
 
+// ---------- Возмещение затрат подотчётным лицам (простой список, не займы/кредиты) ----------
+router.get('/api/reimbursements', async (req, res) => {
+  try {
+    const rows = (await db.pool.query(
+      "SELECT * FROM finance_reimbursements ORDER BY (status='reimbursed'), reim_date DESC NULLS LAST, id DESC")).rows;
+    let rate = null; try { rate = await getCbuUsdRate(new Date().toISOString().slice(0, 10)); } catch (e) { rate = null; }
+    res.json({ items: rows, rate });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+router.post('/api/reimbursements', J, async (req, res) => {
+  if (!canFin(req)) return res.status(403).json({ error: 'Только администратор/финансы' });
+  const b = req.body || {};
+  if (!b.person || !String(b.person).trim()) return res.status(400).json({ error: 'Укажите подотчётное лицо' });
+  const cur = b.currency === 'USD' ? 'USD' : 'UZS';
+  const status = b.status === 'reimbursed' ? 'reimbursed' : 'pending';
+  const r = await db.pool.query(
+    `INSERT INTO finance_reimbursements (reim_date, person, amount, currency, purpose, comment, status, reimbursed_date, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+    [b.reim_date || null, String(b.person).trim(), numOrNull(b.amount) || 0, cur, b.purpose || null, b.comment || null, status, status === 'reimbursed' ? (b.reimbursed_date || null) : null, req.user.id]);
+  await db.log(req.user.id, 'reimb_create', String(b.person));
+  res.json({ ok: true, id: r.rows[0].id });
+});
+router.post('/api/reimbursements/:id(\\d+)', J, async (req, res) => {
+  if (!canFin(req)) return res.status(403).json({ error: 'Только администратор/финансы' });
+  const b = req.body || {};
+  const cur = b.currency === 'USD' ? 'USD' : 'UZS';
+  const status = b.status === 'reimbursed' ? 'reimbursed' : 'pending';
+  await db.pool.query(
+    `UPDATE finance_reimbursements SET reim_date=$1, person=$2, amount=$3, currency=$4, purpose=$5, comment=$6, status=$7, reimbursed_date=$8, updated_at=now() WHERE id=$9`,
+    [b.reim_date || null, String(b.person || '').trim(), numOrNull(b.amount) || 0, cur, b.purpose || null, b.comment || null, status, status === 'reimbursed' ? (b.reimbursed_date || null) : null, req.params.id]);
+  await db.log(req.user.id, 'reimb_update', '#' + req.params.id);
+  res.json({ ok: true });
+});
+router.post('/api/reimbursements/:id(\\d+)/delete', async (req, res) => {
+  if (!canFin(req)) return res.status(403).json({ error: 'Только администратор/финансы' });
+  await db.pool.query('DELETE FROM finance_reimbursements WHERE id=$1', [req.params.id]);
+  await db.log(req.user.id, 'reimb_delete', '#' + req.params.id);
+  res.json({ ok: true });
+});
+
 module.exports = router;

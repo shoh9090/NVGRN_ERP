@@ -493,13 +493,76 @@
     c.appendChild(el('div', { class: 'cash-subtabs' }, [
       sub('summary', 'Сводка'), sub('suppliers', 'Поставщики'),
       sub('loans', 'Банковские кредиты'), sub('concept', 'Займы'),
+      sub('reimb', 'Возмещение затрат'),
     ]));
     const box = el('div', { id: 'obl-box' }); c.appendChild(box);
     box.appendChild(el('div', { class: 'cash-loading' }, 'Загрузка…'));
     if (oblSub === 'summary') return oblSummary(box);
     if (oblSub === 'suppliers') return oblSuppliers(box);
     if (oblSub === 'loans') return oblLoans(box, 'bank');
+    if (oblSub === 'reimb') return oblReimbursements(box);
     return oblLoans(box, 'other');
+  }
+
+  // ---------- Возмещение затрат подотчётным лицам ----------
+  async function oblReimbursements(box) {
+    box.innerHTML = '';
+    box.appendChild(el('div', { style: 'display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px' }, [
+      el('div', { class: 'cash-sub' }, 'Возмещение затрат подотчётным лицам: кому вернуть за траты из своего кармана.'),
+      isAdmin() ? el('button', { class: 'btn-ghost cash-add', onclick: () => oblReimbForm(null) }, '+ Возмещение') : null,
+    ]));
+    let d; try { d = await api('/reimbursements'); } catch (e) { box.appendChild(el('div', { class: 'cash-empty' }, 'Ошибка: ' + e.message)); return; }
+    const items = d.items || [];
+    if (!items.length) { box.appendChild(el('div', { class: 'cash-empty' }, 'Пока нет записей.' + (isAdmin() ? ' Нажмите «+ Возмещение».' : ''))); return; }
+    const pend = items.filter((x) => x.status !== 'reimbursed');
+    const uzs = pend.filter((x) => x.currency !== 'USD').reduce((s, x) => s + Number(x.amount || 0), 0);
+    const usd = pend.filter((x) => x.currency === 'USD').reduce((s, x) => s + Number(x.amount || 0), 0);
+    const rate = d.rate || 0;
+    box.appendChild(el('div', { class: 'cash-note-info', style: 'margin-bottom:8px' }, 'К возмещению (не выплачено): ' + money(uzs) + ' сум' + (usd ? ' · $' + money(usd) : '') + (usd && rate ? ' · итого ≈ ' + money(Math.round(uzs + usd * rate)) + ' сум' : '')));
+    const cols = ['Дата', 'Подотчётное лицо', 'Сумма', 'Вал.', 'Назначение расхода', 'Примечание', 'Статус'].concat(isAdmin() ? [''] : []);
+    const thead = el('thead', {}, el('tr', {}, cols.map((h, i) => el('th', { style: 'padding:6px 9px;background:#f2f5f1;text-align:' + (i === 2 ? 'right' : 'left') + ';white-space:nowrap' }, h))));
+    const tb = el('tbody', {}, items.map((x) => {
+      const paid = x.status === 'reimbursed';
+      const cells = [
+        el('td', { style: 'padding:5px 9px;white-space:nowrap' }, x.reim_date ? ruDate(x.reim_date) : '—'),
+        el('td', { style: 'padding:5px 9px;font-weight:600' }, x.person),
+        el('td', { style: 'padding:5px 9px;text-align:right;white-space:nowrap' }, curFmt(x.amount, x.currency)),
+        el('td', { style: 'padding:5px 9px' }, x.currency === 'USD' ? '$' : 'сум'),
+        el('td', { style: 'padding:5px 9px' }, x.purpose || ''),
+        el('td', { style: 'padding:5px 9px;color:var(--muted)' }, x.comment || ''),
+        el('td', { style: 'padding:5px 9px;font-weight:700;white-space:nowrap;color:' + (paid ? '#2e7d32' : '#b25b00') }, paid ? ('Возмещено' + (x.reimbursed_date ? ' ' + ruDate(x.reimbursed_date) : '')) : 'Не возмещено'),
+      ];
+      if (isAdmin()) cells.push(el('td', { style: 'padding:5px 9px;white-space:nowrap' }, el('div', { style: 'display:flex;gap:6px' }, [
+        el('button', { class: 'btn-ghost cash-add', style: 'padding:4px 8px;font-size:12px', title: 'Изменить', onclick: () => oblReimbForm(x) }, '✎'),
+        el('button', { class: 'btn-ghost cashf-del', style: 'padding:4px 8px;font-size:12px', title: 'Удалить', onclick: async () => { if (!confirm('Удалить возмещение «' + x.person + '»?')) return; try { await post('/reimbursements/' + x.id + '/delete', {}); toast('Удалено'); oblReimbursements(box); } catch (e) { toast(e.message, true); } } }, '🗑'),
+      ])));
+      return el('tr', {}, cells);
+    }));
+    box.appendChild(el('div', { style: 'overflow-x:auto;border:1px solid var(--line);border-radius:10px' }, el('table', { style: 'border-collapse:collapse;width:100%;font-size:13px' }, [thead, tb])));
+  }
+  function oblReimbForm(x) {
+    x = x || {};
+    const date = finp(x.reim_date ? String(x.reim_date).slice(0, 10) : todayStr(), { type: 'date' });
+    const person = finp(x.person, { placeholder: 'Кто потратил свои деньги' });
+    const amount = fmoney(x.amount, { placeholder: 'сумма' });
+    const cur = fsel([{ v: 'UZS', t: 'сум (UZS)' }, { v: 'USD', t: 'доллары (USD)' }], x.currency || 'UZS');
+    const purpose = finp(x.purpose, { placeholder: 'На что / кому потрачено' });
+    const comment = finp(x.comment, { placeholder: 'Примечание' });
+    const status = fsel([{ v: 'pending', t: 'Не возмещено' }, { v: 'reimbursed', t: 'Возмещено' }], x.status || 'pending');
+    const rdate = finp(x.reimbursed_date ? String(x.reimbursed_date).slice(0, 10) : '', { type: 'date' });
+    const rdateRow = frow('Дата возмещения', rdate);
+    rdateRow.style.display = status.value === 'reimbursed' ? '' : 'none';
+    status.onchange = () => { rdateRow.style.display = status.value === 'reimbursed' ? '' : 'none'; };
+    const rows = [frow('Дата', date), frow('Подотчётное лицо', person), frow('Сумма', amount), frow('Валюта', cur), frow('Назначение расхода', purpose), frow('Примечание', comment), frow('Статус', status), rdateRow];
+    const save = el('button', { class: 'btn-primary', onclick: async () => {
+      if (!person.value.trim()) return toast('Укажите подотчётное лицо', true);
+      const payload = { reim_date: date.value || null, person: person.value, amount: moneyVal(amount), currency: cur.value, purpose: purpose.value, comment: comment.value, status: status.value, reimbursed_date: rdate.value || null };
+      try {
+        if (x.id) await post('/reimbursements/' + x.id, payload); else await post('/reimbursements', payload);
+        toast('Сохранено'); closeModal(); renderObligations();
+      } catch (e) { toast(e.message, true); }
+    } }, x.id ? 'Сохранить' : 'Создать');
+    modal(x.id ? 'Изменить возмещение' : 'Возмещение затрат', el('div', { class: 'cashf' }, rows), [save]);
   }
 
   const SCHEMES = [['annuity', 'Аннуитет'], ['differentiated', 'Дифференцированный'], ['equal_principal', 'Равными частями (тело)'], ['bullet', 'Тело в конце'], ['interest_only', 'Только проценты'], ['custom', 'Свой график']];

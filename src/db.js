@@ -393,6 +393,19 @@ async function migrate() {
     imported_by INTEGER, imported_at TIMESTAMPTZ DEFAULT now(),
     confirmed_by INTEGER, confirmed_at TIMESTAMPTZ
   )`).catch(()=>{});
+  // Возмещение затрат подотчётным лицам (не займы/кредиты) — простой список: кому вернуть за траты из кармана.
+  await pool.query(`CREATE TABLE IF NOT EXISTS finance_reimbursements (
+    id SERIAL PRIMARY KEY,
+    reim_date DATE,
+    person TEXT NOT NULL,                                -- подотчётное лицо (кто потратил свои деньги)
+    amount NUMERIC DEFAULT 0,
+    currency TEXT NOT NULL DEFAULT 'UZS',                -- UZS | USD
+    purpose TEXT,                                        -- назначение расхода (на что/кому потрачено)
+    comment TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',              -- pending (не возмещено) | reimbursed (возмещено)
+    reimbursed_date DATE,
+    created_by INTEGER, created_at TIMESTAMPTZ DEFAULT now(), updated_at TIMESTAMPTZ DEFAULT now()
+  )`).catch((e) => console.error('fin_reimb:', e.message));
   // Разовая загрузка обязательств (Хикматов/Хабибуллаев/прочие) — идемпотентно, потом можно удалить.
   await require('./seed-obligations')(pool).catch((e) => console.error('[seed-obligations]', e.message));
   // Подотчёт закупщика (общий котёл): in = выдано под отчёт, out = потрачено наличными по заявкам.
