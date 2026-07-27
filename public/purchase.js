@@ -752,6 +752,8 @@
       el('div', { class: 'pur-toolbar-right' }, [
         el('button', { class: 'pur-tbtn', onclick: openColsMenu, title: 'Показать/скрыть столбцы' }, '⚙ Столбцы'),
         el('a', { class: 'pur-tbtn', href: '#', onclick: (e) => { e.preventDefault(); exportSettlements(); } }, '⬇ Excel'),
+        (window.HUB_USER && window.HUB_USER.isAdmin) ? el('a', { class: 'pur-tbtn', href: '/purchase/api/opening-debt-template.xlsx', title: 'Шаблон для загрузки стартовых долгов поставщиков' }, '⬇ Шаблон долгов') : null,
+        (window.HUB_USER && window.HUB_USER.isAdmin) ? (() => { const f = el('input', { type: 'file', accept: '.xlsx,.xls', style: 'display:none', onchange: (e) => { if (e.target.files[0]) importOpeningDebt(e.target.files[0]); e.target.value = ''; } }); const b = el('button', { class: 'pur-tbtn', onclick: () => f.click(), title: 'Загрузить стартовые долги из Excel' }, '⬆ Импорт долгов'); return el('span', {}, [f, b]); })() : null,
         el('button', { class: 'btn-primary', onclick: () => openPayment(null) }, '+ Оплата'),
       ]),
     ]));
@@ -818,6 +820,51 @@
     for (const [k, v] of [['q', setState.q], ['parent_category_id', setState.pc], ['status', setState.status], ['from', setState.from], ['to', setState.to]]) if (v) p.set(k, v);
     p.set('cols', cols.join(','));
     window.location = '/purchase/api/settlements-export.xlsx?' + p.toString();
+  }
+
+  // Импорт стартовых долгов поставщиков: предпросмотр (dry) → применить.
+  async function importOpeningDebt(file) {
+    const send = async (dry, createMissing) => {
+      const fd = new FormData(); fd.append('file', file);
+      const qs = '?dry=' + (dry ? '1' : '0') + (createMissing ? '&create_missing=1' : '');
+      const res = await fetch('/purchase/api/opening-debt/import' + qs, { method: 'POST', body: fd });
+      const r = await res.json();
+      if (!res.ok) throw new Error(r.error || 'Ошибка импорта');
+      return r;
+    };
+    let pv;
+    try { pv = await send(true, false); } catch (e) { return toast(e.message, true); }
+    const createCb = el('input', { type: 'checkbox' });
+    const line = (label, arr, cls) => el('p', { class: cls || '' }, [el('b', {}, label + ': '), String(arr.length)]);
+    const listRows = (arr) => el('tbody', {}, arr.slice(0, 200).map((x) => el('tr', {}, [
+      el('td', {}, x.name), el('td', { class: 'muted' }, x.inn || '—'),
+      el('td', { class: 'tnum', style: 'text-align:right;font-weight:700;color:' + (Number(x.debt) < 0 ? '#3f6a16' : 'var(--red)') }, fmtMoney(Number(x.debt) || 0)),
+    ])));
+    const tbl = (arr) => el('div', { class: 'oe-table-wrap', style: 'max-height:32vh' }, el('table', { class: 'dict-table' }, [
+      el('thead', {}, el('tr', {}, ['Поставщик', 'ИНН', 'Долг на 17.07.2026'].map((h) => el('th', {}, h)))), listRows(arr),
+    ]));
+    const body = el('div', {}, [
+      el('p', {}, 'Файл прочитан. Будет установлен «Стартовый долг» по каждому поставщику из файла.'),
+      line('Совпало с поставщиками ЕРП', pv.updated),
+      pv.unmatched.length ? line('Не найдено в ЕРП', pv.unmatched, 'imp-err') : null,
+      pv.skipped ? el('p', { class: 'muted' }, 'Строк пропущено (пустой долг): ' + pv.skipped) : null,
+      pv.updated.length ? el('details', { open: true }, [el('summary', {}, 'Что обновится (' + pv.updated.length + ')'), tbl(pv.updated)]) : null,
+      pv.unmatched.length ? el('details', {}, [el('summary', {}, 'Не найдены — создать новыми?'), el('label', { class: 'check', style: 'margin:6px 0' }, [createCb, ' Создать этих поставщиков в ЕРП при загрузке']), tbl(pv.unmatched)]) : null,
+    ]);
+    const m = modal('⬆ Импорт стартовых долгов', body, [
+      el('button', { onclick: () => m.close() }, 'Отмена'),
+      el('button', {
+        class: 'btn-primary',
+        onclick: async (ev) => {
+          ev.target.disabled = true; ev.target.textContent = 'Загружаю…';
+          try {
+            const r = await send(false, createCb.checked);
+            toast('Готово: обновлено ' + r.updated.length + (r.created.length ? ', создано ' + r.created.length : ''));
+            m.close(); loadSettlements();
+          } catch (e) { toast(e.message, true); ev.target.disabled = false; ev.target.textContent = 'Применить'; }
+        },
+      }, 'Применить'),
+    ]);
   }
 
   // карточка-выписка поставщика

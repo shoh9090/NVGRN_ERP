@@ -364,6 +364,116 @@ function requireAdmin(req, res, next) {
   if (!req.user || !req.user.isAdmin) return res.status(403).json({ error: 'Доступно только администратору' });
   next();
 }
+const canFinP = (req) => !!(req.user && (req.user.isAdmin || req.user.isFinance));
+
+// --- Стартовые долги поставщиков: шаблон Excel + импорт ---
+const oNorm = (s) => String(s == null ? '' : s).trim().toLowerCase().replace(/\s+/g, ' ');
+const oNum = (v) => {
+  if (v === '' || v == null) return null;
+  if (typeof v === 'number') return v;
+  const n = Number(String(v).replace(/\s/g, '').replace(/[^0-9.\-]/g, ''));
+  return isNaN(n) ? null : n;
+};
+// Шаблон: список текущих активных поставщиков ЕРП + пустой столбец для нового долга.
+router.get('/api/opening-debt-template.xlsx', async (req, res) => {
+  try {
+    const XLSX = require('xlsx');
+    const sup = (await db.pool.query(
+      `SELECT c.name, c.inn, COALESCE(c.opening_balance,0) AS ob, pc.name AS cat
+       FROM ref_counterparties c LEFT JOIN ref_parent_categories pc ON pc.id = c.parent_category_id
+       WHERE c.role_supplier = TRUE AND c.status = 'active' ORDER BY c.name`)).rows;
+    const header = ['№', 'Поставщик', 'ИНН', 'Категория', 'Текущий стартовый долг, сум', 'Долг на утро 17.07.2026, сум', 'Комментарий'];
+    const rows = sup.map((s, i) => ({
+      '№': i + 1, 'Поставщик': s.name, 'ИНН': s.inn || '', 'Категория': s.cat || '',
+      'Текущий стартовый долг, сум': Math.round(Number(s.ob) || 0),
+      'Долг на утро 17.07.2026, сум': '', 'Комментарий': '',
+    }));
+    if (!rows.length) rows.push({ '№': 1, 'Поставщик': '', 'ИНН': '', 'Категория': '', 'Текущий стартовый долг, сум': '', 'Долг на утро 17.07.2026, сум': '', 'Комментарий': '' });
+    const ws = XLSX.utils.json_to_sheet(rows, { header });
+    ws['!cols'] = [{ wch: 5 }, { wch: 26 }, { wch: 14 }, { wch: 18 }, { wch: 24 }, { wch: 26 }, { wch: 28 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Стартовые долги');
+    const help = [
+      ['Как заполнять'], [''],
+      ['1. Список — текущие поставщики из ЕРП. Можно добавлять новые строки (тогда отметьте «создавать новых» при загрузке).'],
+      ['2. Заполните столбец «Долг на утро 17.07.2026, сум» — сколько МЫ должны поставщику на это утро:'],
+      ['   • положительное число — мы должны поставщику;'],
+      ['   • отрицательное (со знаком «-») — аванс/переплата, поставщик должен нам;'],
+      ['   • 0 — долга нет; ПУСТО — строку пропустим (долг не изменится).'],
+      ['3. Сопоставление с ЕРП: сначала по ИНН, затем по названию. Заполните ИНН, если он есть.'],
+      ['4. Суммы в сумах, без пробелов и букв.'], [''],
+      ['После загрузки указанное значение станет «Стартовым долгом» поставщика (opening_balance),'],
+      ['а сальдо в Взаиморасчётах = стартовый долг + принятые заявки − оплаты внутри ЕРП.'],
+    ];
+    const wsH = XLSX.utils.aoa_to_sheet(help); wsH['!cols'] = [{ wch: 96 }];
+    XLSX.utils.book_append_sheet(wb, wsH, 'Как заполнять');
+    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    res.setHeader('Content-Disposition', 'attachment; filename="opening-debt-template.xlsx"');
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.send(buf);
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+// Импорт: ставит opening_balance по каждому поставщику (match ИНН → название). dry=1 — предпросмотр.
+router.post('/api/opening-debt/import', upload.single('file'), async (req, res) => {
+  if (!canFinP(req)) return res.status(403).json({ error: 'Доступно администратору/финансам' });
+  if (!req.file) return res.status(400).json({ error: 'Файл не получен' });
+  const dry = String(req.query.dry || req.body.dry || '') === '1';
+  const createMissing = String(req.query.create_missing || req.body.create_missing || '') === '1';
+  try {
+    const XLSX = require('xlsx');
+    const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const grid = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
+    // Заголовок — первая строка, где есть столбец с «долг».
+    let hr = -1, cName = -1, cInn = -1, cDebt = -1;
+    for (let i = 0; i < Math.min(8, grid.length); i++) {
+      const row = (grid[i] || []).map((x) => oNorm(x));
+      let dName = -1, dInn = -1, dDebt = -1;
+      row.forEach((c, j) => {
+        if (dInn < 0 && /инн/.test(c)) dInn = j;
+        if (/поставщик|^имя|контрагент/.test(c)) dName = j;
+        if (/долг/.test(c) && /(17|утро|2026)/.test(c)) dDebt = j;
+      });
+      if (dDebt < 0) row.forEach((c, j) => { if (dDebt < 0 && /долг|сальдо/.test(c) && !/текущ|стартов/.test(c)) dDebt = j; });
+      if (dName < 0) row.forEach((c, j) => { if (dName < 0 && /наименование/.test(c)) dName = j; });
+      if (dDebt >= 0) { hr = i; cName = dName; cInn = dInn; cDebt = dDebt; break; }
+    }
+    if (hr < 0 || cDebt < 0) return res.status(400).json({ error: 'Не нашёл столбец «Долг на утро 17.07.2026». Используйте шаблон.' });
+    if (cName < 0) cName = 1;
+    // Текущие поставщики для сопоставления.
+    const sup = (await db.pool.query(
+      "SELECT id, name, inn FROM ref_counterparties WHERE role_supplier = TRUE")).rows;
+    const byInn = {}, byName = {};
+    for (const s of sup) { if (s.inn) byInn[oNorm(s.inn)] = s; byName[oNorm(s.name)] = s; }
+    const updated = [], created = [], unmatched = [];
+    let skipped = 0;
+    for (let i = hr + 1; i < grid.length; i++) {
+      const r = grid[i] || [];
+      const name = String(r[cName] == null ? '' : r[cName]).trim();
+      const inn = cInn >= 0 ? String(r[cInn] == null ? '' : r[cInn]).trim() : '';
+      const debt = oNum(r[cDebt]);
+      if (!name && !inn) continue;
+      if (debt == null) { skipped++; continue; } // пусто — не трогаем
+      let s = (inn && byInn[oNorm(inn)]) || byName[oNorm(name)] || null;
+      if (s) {
+        if (!dry) await db.pool.query('UPDATE ref_counterparties SET opening_balance = $1, updated_at = now() WHERE id = $2', [debt, s.id]);
+        updated.push({ name: s.name, inn: s.inn || '', debt });
+      } else if (createMissing && name) {
+        if (!dry) {
+          const ins = await db.pool.query(
+            "INSERT INTO ref_counterparties (name, inn, opening_balance, role_supplier, status) VALUES ($1,$2,$3,TRUE,'active') RETURNING id",
+            [name, inn || null, debt]);
+          byName[oNorm(name)] = { id: ins.rows[0].id, name, inn };
+        }
+        created.push({ name, inn, debt });
+      } else {
+        unmatched.push({ name, inn, debt });
+      }
+    }
+    if (!dry) await db.log(req.user.id, 'opening_debt_import', `обновлено ${updated.length}, создано ${created.length}`);
+    res.json({ ok: true, dry, updated, created, unmatched, skipped });
+  } catch (e) { res.status(400).json({ error: 'Не удалось прочитать файл: ' + e.message }); }
+});
 
 // --- Импорт истории закупочных цен (вариант А: артикул + дата + цена, без поставщика) ---
 // Парсер дат из заголовков: понимает «цены\nна 19.08.2023», «март 2026», Excel-серийное число, ISO/datetime
