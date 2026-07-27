@@ -237,7 +237,32 @@
       })]));
     }
   }
-  function kpi(label, val, cls) { return el('div', { class: 'hr-kpi' }, [el('div', { class: 'hr-kpi-l' }, label), el('div', { class: 'hr-kpi-v hr-kpi-' + cls }, String(val))]); }
+  function kpi(label, val, cls, onClick) { return el('div', { class: 'hr-kpi' + (onClick ? ' hr-kpi-click' : ''), onclick: onClick || null, title: onClick ? 'Клик — в разрезе по сотрудникам' : null }, [el('div', { class: 'hr-kpi-l' }, label), el('div', { class: 'hr-kpi-v hr-kpi-' + cls }, String(val))]); }
+  // Разрез KPI по сотрудникам: список ФИО + сумма (по убыванию) + итог.
+  function openBreakdown(title, items, fn) {
+    const list = (items || []).map((r) => ({ name: r.full_name, val: Number(fn(r)) || 0 })).filter((x) => x.val).sort((a, b) => b.val - a.val);
+    const total = list.reduce((s, x) => s + x.val, 0);
+    const body = el('div', {}, [
+      el('div', { class: 'hr-note' }, title + ' · ' + monthLabel(salState.period) + ' · ' + list.length + ' чел.'),
+      list.length ? el('div', { class: 'oe-table-wrap', style: 'max-height:56vh;margin-top:8px' }, el('table', { class: 'dict-table' }, [
+        el('thead', {}, el('tr', {}, [el('th', {}, '#'), el('th', {}, 'ФИО'), el('th', { style: 'text-align:right' }, 'Сумма')])),
+        el('tbody', {}, [...list.map((x, i) => el('tr', {}, [el('td', { class: 'muted' }, String(i + 1)), el('td', {}, x.name), el('td', { class: 'tnum', style: 'text-align:right;font-weight:700' }, money(x.val))])),
+          el('tr', { style: 'background:#f2f5f1;font-weight:800' }, [el('td', {}, ''), el('td', {}, 'ИТОГО'), el('td', { class: 'tnum', style: 'text-align:right' }, money(total))])]),
+      ])) : el('div', { class: 'hr-empty' }, 'Нет данных за период.'),
+    ]);
+    modal(title + ' — в разрезе', body, [el('button', { class: 'btn-primary', onclick: closeModal }, 'Закрыть')]);
+  }
+  // Выгрузка ведомости на карту для банка (ФИО · карта · сумма); выбор Выплата / Аванс.
+  function openCardPaysheetExport(period) {
+    let mode = 'payout';
+    const radio = (val, label) => { const r = el('input', { type: 'radio', name: 'psmode', value: val }); if (val === mode) r.checked = true; r.onchange = () => { mode = val; }; return el('label', { style: 'display:inline-flex;gap:6px;align-items:center;margin-right:16px;cursor:pointer' }, [r, label]); };
+    const body = el('div', { class: 'hrf' }, [
+      el('div', { class: 'hr-sub' }, 'Ведомость на карту за ' + monthLabel(period) + ' (ФИО · номер карты · сумма) — для отправки в банк. Только сотрудники с проставленным номером карты.'),
+      el('div', {}, [radio('payout', 'Выплата (сумма = К выплате)'), radio('advance', 'Аванс (сумма из «Аванс на карту»)')]),
+    ]);
+    const dl = el('button', { class: 'btn-primary', onclick: () => { window.location = '/hr/api/cards/paysheet.xlsx?period=' + period + '&mode=' + mode; closeModal(); } }, '⬇ Скачать');
+    modal('⬇ Ведомость на карту — ' + monthLabel(period), body, [dl]);
+  }
 
   function openEmpImport() {
     const file = el('input', { type: 'file', accept: '.xls,.xlsx', class: 'hrf-inp' });
@@ -586,8 +611,8 @@
       el('div', { style: 'display:flex;gap:8px;align-self:flex-start' }, [
         el('button', { class: 'btn-primary', onclick: openFillNorms }, '📋 Заполнить нормы'),
         el('button', { class: 'btn-ghost', onclick: openTimesheetImport }, '📥 Импорт табеля'),
-        el('button', { class: 'btn-ghost', onclick: () => openCardImport() }, '💳 Карты (Excel)'),
-        el('button', { class: 'btn-ghost', onclick: () => openCardStatementImport(salState.period) }, '🏦 Ведомость на карту'),
+        el('button', { class: 'btn-ghost', onclick: () => openCardPaysheetExport(salState.period) }, '⬇ Ведомость (выгрузка)'),
+        el('button', { class: 'btn-ghost', onclick: () => openCardStatementImport(salState.period) }, '🏦 Ведомость (загрузка)'),
         el('button', { class: 'btn-ghost', onclick: () => openPayrollImport(salState.period) }, '📊 Импорт зарплаты'),
       ]),
     ]));
@@ -607,9 +632,14 @@
       let d; try { d = await api('/payroll?' + p.toString()); } catch (e) { box.innerHTML = ''; box.appendChild(el('div', { class: 'hr-empty' }, 'Ошибка: ' + e.message)); return; }
       box.innerHTML = '';
       const s = d.summary;
+      const bd = (title, fn) => () => openBreakdown(title, d.items, fn);
       box.appendChild(el('div', { class: 'hr-kpis hr-kpis-6' }, [
-        kpi('ФОТ (начислено)', moneyShort(s.accrued), 'green'), kpi('Бонусы/KPI', moneyShort(s.bonus), 'ink'), kpi('Удержания', moneyShort(s.deducted), 'muted'),
-        kpi('Авансы', moneyShort(s.advances), 'muted'), kpi('Выплачено', moneyShort(s.paid), 'ink'), kpi('К выплате', moneyShort(s.to_pay), 'green'),
+        kpi('ФОТ (начислено)', moneyShort(s.accrued), 'green', bd('ФОТ (начислено)', (r) => r.accrued)),
+        kpi('Бонусы/KPI', moneyShort(s.bonus), 'ink', bd('Бонусы/KPI', (r) => r.accr_bonus)),
+        kpi('Удержания', moneyShort(s.deducted), 'muted', bd('Удержания', (r) => r.deducted)),
+        kpi('Авансы', moneyShort(s.advances), 'muted', bd('Авансы', (r) => (Number(r.ded_advance_card) || 0) + (Number(r.ded_advance_cash) || 0))),
+        kpi('Выплачено', moneyShort(s.paid), 'ink', bd('Выплачено', (r) => r.paid)),
+        kpi('К выплате', moneyShort(s.to_pay), 'green', bd('К выплате', (r) => r.to_pay)),
       ]));
       box.appendChild(el('div', { class: 'hr-kpis hr-kpis-2', style: 'margin-bottom:14px' }, [kpi('Сотрудников', s.count, 'ink')]));
       // Выплаты из кассы без сотрудника — по умолчанию свёрнуто; можно скрывать строки (навсегда, только визуально).

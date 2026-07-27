@@ -792,6 +792,34 @@ router.post('/api/cards/statement-import', upload.single('file'), async (req, re
   } catch (e) { res.status(400).json({ error: 'Не удалось прочитать файл: ' + e.message }); }
 });
 
+// Выгрузка ведомости на карту (для банка): ФИО · номер карты · сумма. Выплата → К выплате, Аванс → «Аванс на карту».
+router.get('/api/cards/paysheet.xlsx', async (req, res) => {
+  try {
+    const period = /^\d{4}-\d{2}$/.test(req.query.period) ? req.query.period : new Date().toISOString().slice(0, 7);
+    const mode = req.query.mode === 'advance' ? 'advance' : 'payout';
+    const rows = (await db.pool.query(
+      `SELECT e.full_name, e.card_number, pr.* FROM hr_employees e
+       LEFT JOIN hr_payroll pr ON pr.employee_id = e.id AND pr.period = $1
+       WHERE e.status <> 'archived' AND COALESCE(e.card_number,'') <> '' ORDER BY e.full_name`, [period])).rows.map(withTotals);
+    const data = []; let total = 0;
+    for (const r of rows) {
+      const amt = mode === 'advance' ? Math.round(Number(r.ded_advance_card) || 0) : Math.round(Number(r.to_pay) || 0);
+      if (mode === 'payout' && amt <= 0) continue;      // выплата: только тем, кому есть что перечислять
+      total += amt;
+      data.push({ 'ФИО': r.full_name, 'Номер карты': String(r.card_number || ''), 'Сумма': amt || '' });
+    }
+    data.push({ 'ФИО': 'ИТОГО', 'Номер карты': '', 'Сумма': total });
+    const ws = XLSX.utils.json_to_sheet(data, { header: ['ФИО', 'Номер карты', 'Сумма'] });
+    ws['!cols'] = [{ wch: 34 }, { wch: 22 }, { wch: 16 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, mode === 'advance' ? 'Аванс на карту' : 'Выплата на карту');
+    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="paysheet_${period}_${mode}.xlsx"`);
+    res.send(buf);
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 // Шаблон Excel табеля за период — со списком сотрудников и текущими план/факт.
 router.get('/api/timesheet/template.xlsx', async (req, res) => {
   const period = /^\d{4}-\d{2}$/.test(req.query.period) ? req.query.period : new Date().toISOString().slice(0, 7);
