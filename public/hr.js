@@ -145,10 +145,16 @@
     let d; try { d = await api('/dashboard?period=' + dashState.period); } catch (e) { box.innerHTML = ''; box.appendChild(el('div', { class: 'hr-empty' }, 'Ошибка: ' + e.message)); return; }
     box.innerHTML = '';
     const t = d.totals;
+    // Понятная формула: Начислено − Удержания − Выплачено (с авансами) = К выплате.
+    const uderzh = (Number(t.deducted) || 0) - (Number(t.advances) || 0);   // удержания без авансов
+    const vyplacheno = (Number(t.paid) || 0) + (Number(t.advances) || 0);    // выплачено вместе с авансами
     box.appendChild(el('div', { class: 'hr-kpis hr-kpis-4' }, [
-      kpi('ФОТ (начислено)', moneyShort(t.accrued), 'green'), kpi('К выплате', moneyShort(t.to_pay), 'green'),
-      kpi('Выплачено', moneyShort(t.paid), 'ink'), kpi('Сотрудников', t.count, 'ink'),
+      kpi('Начислено (ФОТ)', moneyShort(t.accrued), 'green'),
+      kpi('− Удержания', moneyShort(uderzh), 'muted'),
+      kpi('− Выплачено', moneyShort(vyplacheno), 'ink', null, t.advances ? 'в т.ч. аванс ' + moneyShort(t.advances) : ''),
+      kpi('= К выплате', moneyShort(t.to_pay), 'green'),
     ]));
+    box.appendChild(el('div', { class: 'hr-sub', style: 'margin:2px 0 6px' }, 'Начислено − Удержания − Выплачено (с авансами) = К выплате.  ·  Сотрудников: ' + t.count));
     if (!d.byDept.length) { box.appendChild(el('div', { class: 'hr-empty' }, 'Нет данных за месяц.')); return; }
     const items = d.byDept.filter((x) => x.accrued > 0).map((x, i) => ({ label: x.name, value: x.accrued, color: HR_COLORS[i % HR_COLORS.length] }));
     box.appendChild(el('div', { class: 'hr-h2', style: 'font-size:18px;margin:16px 0 4px' }, 'ФОТ по отделам'));
@@ -237,7 +243,7 @@
       })]));
     }
   }
-  function kpi(label, val, cls, onClick) { return el('div', { class: 'hr-kpi' + (onClick ? ' hr-kpi-click' : ''), onclick: onClick || null, title: onClick ? 'Клик — в разрезе по сотрудникам' : null }, [el('div', { class: 'hr-kpi-l' }, label), el('div', { class: 'hr-kpi-v hr-kpi-' + cls }, String(val))]); }
+  function kpi(label, val, cls, onClick, sub) { return el('div', { class: 'hr-kpi' + (onClick ? ' hr-kpi-click' : ''), onclick: onClick || null, title: onClick ? 'Клик — в разрезе по сотрудникам' : null }, [el('div', { class: 'hr-kpi-l' }, label), el('div', { class: 'hr-kpi-v hr-kpi-' + cls }, String(val)), sub ? el('div', { class: 'hr-kpi-sub' }, sub) : null]); }
   // Разрез KPI по сотрудникам: список ФИО + сумма (по убыванию) + итог.
   function openBreakdown(title, items, fn) {
     const list = (items || []).map((r) => ({ name: r.full_name, val: Number(fn(r)) || 0 })).filter((x) => x.val).sort((a, b) => b.val - a.val);
@@ -611,8 +617,7 @@
       el('div', { style: 'display:flex;gap:8px;align-self:flex-start' }, [
         el('button', { class: 'btn-primary', onclick: openFillNorms }, '📋 Заполнить нормы'),
         el('button', { class: 'btn-ghost', onclick: openTimesheetImport }, '📥 Импорт табеля'),
-        el('button', { class: 'btn-ghost', onclick: () => openCardPaysheetExport(salState.period) }, '⬇ Ведомость (выгрузка)'),
-        el('button', { class: 'btn-ghost', onclick: () => openCardStatementImport(salState.period) }, '🏦 Ведомость (загрузка)'),
+        el('button', { class: 'btn-ghost', onclick: () => openCardStatementImport(salState.period) }, '🏦 Ведомость на карту'),
         el('button', { class: 'btn-ghost', onclick: () => openPayrollImport(salState.period) }, '📊 Импорт зарплаты'),
       ]),
     ]));
@@ -633,12 +638,16 @@
       box.innerHTML = '';
       const s = d.summary;
       const bd = (title, fn) => () => openBreakdown(title, d.items, fn);
-      box.appendChild(el('div', { class: 'hr-kpis hr-kpis-6' }, [
-        kpi('ФОТ (начислено)', moneyShort(s.accrued), 'green', bd('ФОТ (начислено)', (r) => r.accrued)),
+      // Авансы плюсуем к «Выплачено»; «Удержания» показываем без авансов — чтобы формула читалась.
+      const advOf = (r) => (Number(r.ded_advance_card) || 0) + (Number(r.ded_advance_cash) || 0) + (Number(r.cash_advance) || 0);
+      const sAdv = (Number(s.advances) || 0) + (Number(s.cash_advance) || 0);
+      const uderzh = (Number(s.deducted) || 0) - sAdv;
+      const vyplacheno = (Number(s.paid) || 0) + sAdv;
+      box.appendChild(el('div', { class: 'hr-kpis hr-kpis-5' }, [
+        kpi('Начислено (ФОТ)', moneyShort(s.accrued), 'green', bd('Начислено', (r) => r.accrued)),
         kpi('Бонусы/KPI', moneyShort(s.bonus), 'ink', bd('Бонусы/KPI', (r) => r.accr_bonus)),
-        kpi('Удержания', moneyShort(s.deducted), 'muted', bd('Удержания', (r) => r.deducted)),
-        kpi('Авансы', moneyShort(s.advances), 'muted', bd('Авансы', (r) => (Number(r.ded_advance_card) || 0) + (Number(r.ded_advance_cash) || 0))),
-        kpi('Выплачено', moneyShort(s.paid), 'ink', bd('Выплачено', (r) => r.paid)),
+        kpi('Удержания', moneyShort(uderzh), 'muted', bd('Удержания', (r) => (Number(r.deducted) || 0) - advOf(r))),
+        kpi('Выплачено', moneyShort(vyplacheno), 'ink', bd('Выплачено (с авансами)', (r) => (Number(r.paid) || 0) + advOf(r)), sAdv ? 'в т.ч. аванс ' + moneyShort(sAdv) : ''),
         kpi('К выплате', moneyShort(s.to_pay), 'green', bd('К выплате', (r) => r.to_pay)),
       ]));
       box.appendChild(el('div', { class: 'hr-kpis hr-kpis-2', style: 'margin-bottom:14px' }, [kpi('Сотрудников', s.count, 'ink')]));

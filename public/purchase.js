@@ -387,13 +387,17 @@
   async function openOrderCard(id) {
     const d = await api('/orders/' + id);
     const o = d.order;
-    const sum = d.items.reduce((s, i) => s + Number(i.fact_qty ?? i.qty) * Number(i.fact_price ?? i.price), 0);
+    // Принято → количество из факт-приёмки (0 если не принято), цена всегда из заявки. Черновик/заказ → план.
+    const rcvd = o.status === 'received';
+    const qtyOf = (i) => (rcvd ? (Number(i.fact_qty) || 0) : Number(i.qty));
+    const priceOf = (i) => Number(i.price);
+    const sum = d.items.reduce((s, i) => s + qtyOf(i) * priceOf(i), 0);
 
     const table = el('table', { class: 'dict-table' }, [
       el('thead', {}, el('tr', {}, ['Артикул', 'Наименование', 'Кол-во', 'Цена', 'Сумма'].map((h) => el('th', {}, h)))),
       el('tbody', {}, d.items.map((i) => {
-        const q = Number(i.fact_qty ?? i.qty);
-        const p = Number(i.fact_price ?? i.price);
+        const q = qtyOf(i);
+        const p = priceOf(i);
         return el('tr', {}, [
           el('td', { class: 'tnum' }, i.item_code || ''),
           el('td', {}, i.item_name + (i.item_kind === 'packaging' ? ' 📦' : '')),

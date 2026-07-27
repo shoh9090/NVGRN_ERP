@@ -575,17 +575,21 @@ router.get('/api/dashboard', async (req, res) => {
     const cs = await computeCashSalary(period);
     rows.forEach((r) => {
       const b = cs.byEmp[r.emp_id];
+      r.cash_advance = b ? b.advance : 0;
       r.paid = (Number(r.paid) || 0) + (b ? b.paid : 0);
       r.deducted = (Number(r.deducted) || 0) + (b ? b.advance : 0);
       r.to_pay = (Number(r.accrued) || 0) - r.deducted - r.paid;
     });
   } catch (e) { console.error('cash salary (dashboard):', e.message); }
+  // Авансы (карта + наличные + касса) — выделяем, чтобы на дашборде плюсовать к «Выплачено».
+  const advOf = (r) => (Number(r.ded_advance_card) || 0) + (Number(r.ded_advance_cash) || 0) + (Number(r.cash_advance) || 0);
   const byDept = {};
   rows.forEach((r) => { const d = r.dept || 'Без отдела'; const o = byDept[d] = byDept[d] || { name: d, count: 0, accrued: 0, to_pay: 0, paid: 0 }; o.count++; o.accrued += r.accrued; o.to_pay += r.to_pay; o.paid += r.paid; });
   const deptArr = Object.values(byDept).sort((a, b) => b.accrued - a.accrued);
   const totals = {
     accrued: rows.reduce((s, r) => s + r.accrued, 0), to_pay: rows.reduce((s, r) => s + r.to_pay, 0),
-    paid: rows.reduce((s, r) => s + r.paid, 0), deducted: rows.reduce((s, r) => s + r.deducted, 0), count: rows.length,
+    paid: rows.reduce((s, r) => s + r.paid, 0), deducted: rows.reduce((s, r) => s + r.deducted, 0),
+    advances: rows.reduce((s, r) => s + advOf(r), 0), count: rows.length,
   };
   res.json({ period, byDept: deptArr, totals });
 });

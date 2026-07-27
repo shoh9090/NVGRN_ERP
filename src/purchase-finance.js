@@ -7,12 +7,12 @@ const db = require('./db');
 function enrichOrderFinance(o) {
   const received = o.status === 'received';
   const factTotal = Number(o.fact_total) || 0;
-  const planTotal = Number(o.total) || 0;
+  const total = Number(o.total) || 0;
   const paid = Number(o.paid) || 0;
-  // Долг по заявке = стоимость фактически принятого. Берём total = COALESCE(факт, план) по кол-ву И цене —
-  // ровно та же формула, что во Взаиморасчётах. Строгий fact_total не годится: приёмка сырья пишет
-  // только fact_qty, а fact_price остаётся пустым → fact_total=0, и заявка ошибочно показывалась «Оплачено».
-  const base = received ? (planTotal || factTotal) : 0;
+  // Долг = стоимость фактически принятого: КОЛИЧЕСТВО из приёмки зав. склада × ЦЕНА из заявки.
+  // Цена факта (fact_price) не используется — зав. склад цену не задаёт. Пустой факт у принятой = 0, не план.
+  // Запросы отдают o.total уже по этому правилу (для принятых — факт×цена_заявки, иначе план×цена).
+  const base = received ? total : 0;
   const remainder = base - paid;
   const cond = o.pay_condition || 'on_fact';
   // received_at приходит из pg как Date, delivery_date — как строка 'YYYY-MM-DD'.
@@ -61,7 +61,7 @@ async function supplierBalances(opts = {}) {
      FROM ref_counterparties c
      LEFT JOIN ref_parent_categories pc ON pc.id = c.parent_category_id
      LEFT JOIN (
-       SELECT po.supplier_id, SUM(COALESCE(i.fact_qty, i.qty) * COALESCE(i.fact_price, i.price)) AS delivered
+       SELECT po.supplier_id, SUM(COALESCE(i.fact_qty, 0) * i.price) AS delivered
        FROM purchase_orders po JOIN purchase_order_items i ON i.order_id = po.id
        WHERE po.status = 'received' GROUP BY po.supplier_id
      ) d ON d.supplier_id = c.id
@@ -85,7 +85,7 @@ async function supplierBalances(opts = {}) {
     const dAgg = (await db.pool.query(
       `WITH ord AS (
          SELECT po.supplier_id, COALESCE(po.received_at::date, po.delivery_date) d,
-                SUM(COALESCE(i.fact_qty, i.qty) * COALESCE(i.fact_price, i.price)) val
+                SUM(COALESCE(i.fact_qty, 0) * i.price) val
          FROM purchase_orders po JOIN purchase_order_items i ON i.order_id = po.id
          WHERE po.status = 'received' GROUP BY po.id)
        SELECT supplier_id,
@@ -130,8 +130,7 @@ async function openSupplierObligations() {
   const r = await db.pool.query(
     `SELECT po.id, po.number, po.status, po.pay_condition, po.defer_days,
             po.delivery_date, po.received_at, po.supplier_id, c.name AS supplier_name,
-            COALESCE(SUM(COALESCE(i.fact_qty, i.qty) * COALESCE(i.fact_price, i.price)), 0) AS total,
-            COALESCE(SUM(i.fact_qty * i.fact_price), 0) AS fact_total,
+            COALESCE(SUM(COALESCE(i.fact_qty, 0) * i.price), 0) AS total,
             COALESCE((SELECT SUM(amount) FROM supplier_payments sp WHERE sp.order_id = po.id), 0) AS paid
      FROM purchase_orders po
      JOIN ref_counterparties c ON c.id = po.supplier_id

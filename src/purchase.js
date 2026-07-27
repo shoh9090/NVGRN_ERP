@@ -45,7 +45,7 @@ router.get('/api/suppliers', async (req, res) => {
      LEFT JOIN ref_parent_categories pc ON pc.id = c.parent_category_id
      LEFT JOIN cash_categories cc ON cc.id = c.cash_category_id
      LEFT JOIN (
-       SELECT po.supplier_id, SUM(COALESCE(i.fact_qty, i.qty) * COALESCE(i.fact_price, i.price)) AS delivered
+       SELECT po.supplier_id, SUM(COALESCE(i.fact_qty, 0) * i.price) AS delivered
        FROM purchase_orders po
        JOIN purchase_order_items i ON i.order_id = po.id
        WHERE po.status = 'received'
@@ -134,8 +134,7 @@ router.get('/api/suppliers/:id(\\d+)/statement', async (req, res) => {
   const ordersRaw = await db.pool.query(
     `SELECT po.id, po.number, po.status, po.received_at, po.payment_type, po.pay_condition, po.defer_days,
             po.delivery_date, po.comment,
-            SUM(COALESCE(i.fact_qty, i.qty) * COALESCE(i.fact_price, i.price)) AS total,
-            COALESCE(SUM(i.fact_qty * i.fact_price), 0) AS fact_total,
+            SUM(COALESCE(i.fact_qty, 0) * i.price) AS total,
             COALESCE((SELECT SUM(amount) FROM supplier_payments sp WHERE sp.order_id = po.id), 0) AS paid
      FROM purchase_orders po
      JOIN purchase_order_items i ON i.order_id = po.id
@@ -145,7 +144,7 @@ router.get('/api/suppliers/:id(\\d+)/statement', async (req, res) => {
   );
   const orders = { rows: ordersRaw.rows.map(enrichOrderFinance) };
   const items = await db.pool.query(
-    `SELECT i.order_id, i.item_kind, i.item_id, COALESCE(i.fact_qty, i.qty) AS qty, COALESCE(i.fact_price, i.price) AS price,
+    `SELECT i.order_id, i.item_kind, i.item_id, COALESCE(i.fact_qty, 0) AS qty, i.price AS price,
             COALESCE(rm.name, pk.name) AS item_name, COALESCE(rm.code, pk.code) AS item_code,
             COALESCE(u1.short_name, u2.short_name) AS unit
      FROM purchase_order_items i
@@ -169,7 +168,7 @@ router.get('/api/suppliers/:id(\\d+)/statement', async (req, res) => {
 async function supplierOpenOrders(supplierId) {
   const r = await db.pool.query(
     `SELECT po.id, po.number, po.status, po.pay_condition, po.defer_days, po.delivery_date, po.received_at,
-            COALESCE(SUM(i.fact_qty * i.fact_price), 0) AS fact_total,
+            COALESCE(SUM(COALESCE(i.fact_qty, 0) * i.price), 0) AS total,
             COALESCE((SELECT SUM(amount) FROM supplier_payments sp WHERE sp.order_id = po.id), 0) AS paid
      FROM purchase_orders po LEFT JOIN purchase_order_items i ON i.order_id = po.id
      WHERE po.supplier_id = $1 AND po.status = 'received'
@@ -788,7 +787,7 @@ router.get('/api/orders', async (req, res) => {
     `SELECT po.id, po.number, po.status, po.payment_type, po.pay_condition, po.defer_days,
             po.delivery_date, po.delivery_window, po.created_at, po.received_at, po.comment,
             c.name AS supplier_name, pc.name AS parent_category_name, pc.color AS parent_category_color,
-            COALESCE(SUM(COALESCE(i.fact_qty, i.qty) * COALESCE(i.fact_price, i.price)), 0) AS total,
+            COALESCE(SUM((CASE WHEN po.status = 'received' THEN COALESCE(i.fact_qty, 0) ELSE i.qty END) * i.price), 0) AS total,
             COALESCE(SUM(i.fact_qty * i.fact_price), 0) AS fact_total,
             COALESCE((SELECT SUM(amount) FROM supplier_payments sp WHERE sp.order_id = po.id), 0) AS paid,
             COUNT(i.id)::int AS positions
