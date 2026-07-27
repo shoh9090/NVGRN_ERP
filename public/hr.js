@@ -251,12 +251,12 @@
         rows.push(frow('Способ', el('div', {}, [radio('cash', 'Наличные'), radio('card', 'Карта')])));
         rows.push(frow('Дата', dateInp));
         rows.push(frow('Комментарий', commentInp));
-        rows.push(el('div', { class: 'hr-sub' }, single ? 'Можно указать сумму меньше остатка — будет частичная выплата.' : 'Каждому проведём его остаток. Общий расход в Кассе — следующим шагом.'));
+        rows.push(el('div', { class: 'hr-sub' }, (single ? 'Можно указать сумму меньше остатка — будет частичная выплата. ' : 'Каждому проведём его остаток. ') + 'Наличные — расход автоматически сядет в Кассу (АУП/Бухгалтерия/Продажи → «Зарплата офиса», остальные → «ЗП производство»).'));
         const save = el('button', { class: 'btn-primary', onclick: async () => {
           save.disabled = true; save.textContent = 'Провожу…';
           const payload = { period: payState.period, employee_ids: list.map((x) => x.emp_id), method, pay_date: dateInp.value || null, comment: commentInp.value || null };
           if (single && amountInp) payload.amount = mval(amountInp);
-          try { const rr = await post('/payouts/pay', payload); toast('Выплачено: ' + rr.count + ' на ' + money(rr.total)); closeModal(); load(); }
+          try { const rr = await post('/payouts/pay', payload); toast('Выплачено: ' + rr.count + ' на ' + money(rr.total)); if (rr.cashNote) toast(rr.cashNote, true); closeModal(); load(); }
           catch (e) { toast(e.message, true); save.disabled = false; save.textContent = 'Выплатить'; }
         } }, 'Выплатить');
         modal(single ? 'Выплата — ' + list[0].full_name : 'Массовая выплата (' + list.length + ')', el('div', { class: 'hrf' }, rows), [save]);

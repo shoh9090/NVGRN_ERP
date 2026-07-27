@@ -296,7 +296,7 @@ async function computeCashSalary(period) {
   const txs = (await db.pool.query(
     `SELECT t.id, to_char(t.tx_date,'YYYY-MM-DD') d, t.tx_date, t.amount, t.purpose, COALESCE(t.report_hidden,false) AS hidden
      FROM cash_transactions t JOIN cash_wallets w ON w.id = t.wallet_id AND w.kind = 'cash'
-     WHERE t.tx_type = 'out' AND t.category_id = ANY($1)`, [cats])).rows;
+     WHERE t.tx_type = 'out' AND t.category_id = ANY($1) AND COALESCE(t.source,'') <> 'hr_payout'`, [cats])).rows;
   for (const t of txs) {
     if (csPeriod(t.purpose, t.tx_date) !== period) continue;
     const kind = /аванс/i.test(t.purpose || '') ? 'advance' : 'salary';
@@ -626,27 +626,46 @@ router.post('/api/payouts/pay', J, async (req, res) => {
   if (!ids.length) return res.status(400).json({ error: 'Не выбраны сотрудники' });
   const fixed = (b.amount != null && b.amount !== '') ? Number(b.amount) : null;
   const rows = await computePayouts(period);
-  const remBy = {}; rows.forEach((r) => { remBy[r.emp_id] = r.remainder; });
+  const remBy = {}, deptBy = {}; rows.forEach((r) => { remBy[r.emp_id] = r.remainder; deptBy[r.emp_id] = r.department_name || ''; });
   const col = method === 'card' ? 'paid_card' : 'paid_cash';
+  // Группа для статьи Кассы: АУП/Бухгалтерия/Продажи → «Зарплата офиса» (код 40), остальные → «ЗП производство» (код 20).
+  const groupOf = (name) => (/ауп|бухгалт|продаж/i.test(name || '') ? 'office' : 'prod');
   const client = await db.pool.connect();
-  let done = 0, total = 0;
+  let done = 0, total = 0, cashNote = null;
   try {
     await client.query('BEGIN');
+    const groups = { office: { code: '40', label: 'Зарплата офис', ids: [], total: 0 }, prod: { code: '20', label: 'Зарплата производство', ids: [], total: 0 } };
     for (const id of ids) {
       const rem = remBy[id] || 0;
       let amt = (fixed != null && ids.length === 1) ? fixed : rem;
       if (amt > rem + 0.5) amt = rem;             // не платим сверх остатка
       if (!(amt > 0)) continue;
-      await client.query('INSERT INTO hr_payouts (employee_id, period, amount, method, pay_date, comment, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7)', [id, period, amt, method, payDate, comment, req.user.id]);
+      const po = await client.query('INSERT INTO hr_payouts (employee_id, period, amount, method, pay_date, comment, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id', [id, period, amt, method, payDate, comment, req.user.id]);
       await client.query(`INSERT INTO hr_payroll (employee_id, period, ${col}, created_by) VALUES ($1,$2,$3,$4)
         ON CONFLICT (employee_id, period) DO UPDATE SET ${col} = COALESCE(hr_payroll.${col},0) + $3, updated_at = now()`, [id, period, amt, req.user.id]);
+      if (method === 'cash') { const g = groups[groupOf(deptBy[id])]; g.ids.push(po.rows[0].id); g.total += amt; }
       done++; total += amt;
+    }
+    // Наличные → авто-расход в Кассе: отдельно офис (ст. 40) и производство (ст. 20), со связью на выплаты.
+    if (method === 'cash' && done) {
+      const w = (await client.query("SELECT id FROM cash_wallets WHERE kind='cash' AND status='active' ORDER BY sort_order, id LIMIT 1")).rows[0];
+      if (!w) cashNote = 'Наличная касса не найдена — расход в Кассе не создан, выплаты записаны.';
+      else for (const key of ['office', 'prod']) {
+        const g = groups[key];
+        if (!(g.total > 0)) continue;
+        const cat = (await client.query('SELECT id FROM cash_categories WHERE code=$1 LIMIT 1', [g.code])).rows[0];
+        const tx = await client.query(
+          `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, category_id, purpose, source, is_classified, created_by)
+           VALUES ($1,$2,'out',$3,$4,$5,'hr_payout',$6,$7) RETURNING id`,
+          [payDate, Math.round(g.total), w.id, cat ? cat.id : null, `${g.label} за ${period} (${g.ids.length} чел.)`, !!cat, req.user.id]);
+        await client.query('UPDATE hr_payouts SET cash_tx_id=$1 WHERE id = ANY($2)', [tx.rows[0].id, g.ids]);
+      }
     }
     await client.query('COMMIT');
   } catch (e) { await client.query('ROLLBACK').catch(() => {}); return res.status(400).json({ error: e.message }); }
   finally { client.release(); }
   await db.log(req.user.id, 'hr_payout', `${period} ${method}: ${done} на ${Math.round(total)}`);
-  res.json({ ok: true, count: done, total });
+  res.json({ ok: true, count: done, total, cashNote });
 });
 
 router.get('/api/dashboard', async (req, res) => {
