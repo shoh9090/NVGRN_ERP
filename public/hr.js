@@ -599,7 +599,20 @@
       const withId = d.items.filter((x) => x.id);
       const selAll = el('input', { type: 'checkbox', class: 'hr-chk' });
       selAll.onclick = (ev) => { const on = ev.target.checked; salSel = new Set(on ? withId.map((x) => x.id) : []); box.querySelectorAll('.hr-salchk').forEach((cc) => { cc.checked = on; }); updBulk(); };
-      const head = el('div', { class: 'hr-row head hr-sal' }, [selAll, el('span', {}, '#'), ...['ФИО', 'Отдел', 'Дн. п/ф', 'Часы п/ф', 'Начислено', 'Доп. нач.', 'Удержано', 'Доп. удерж.', 'Аванс', 'Выплачено', 'К выплате', 'Статус'].map((h) => el('span', {}, h))]);
+      const HEADS = [
+        ['ФИО'], ['Отдел'],
+        ['Дн. п/ф', 'Плановые / фактические дни'],
+        ['Часы п/ф', 'Плановые / фактические часы'],
+        ['Начислено', 'Оклад по табелю + основные начисления'],
+        ['Доп. нач.', 'Бонусы, премия, ГСМ, долг компании — клик по сумме, чтобы изменить'],
+        ['Удержано', 'Штрафы и удержания'],
+        ['Доп. удерж.', 'Прочие удержания — клик по сумме, чтобы изменить'],
+        ['Аванс', 'Выданные авансы: карта + наличные'],
+        ['Выплачено', 'Выплаченная зарплата'],
+        ['К выплате', 'Итог к выдаче на руки: начислено − удержано − аванс − выплачено'],
+        ['Статус'],
+      ];
+      const head = el('div', { class: 'hr-row head hr-sal' }, [selAll, el('span', { class: 'hr-idx' }, '#'), ...HEADS.map(([h, t]) => el('span', t ? { title: t } : {}, h))]);
       // Доп. начисления/удержания: колонка — сумма, клик — компактное окно с полями (правится там).
       const EXTRA_ACCR = ACCR_FIELDS.filter(([k]) => k !== 'accr_fact');
       const EXTRA_DED = DED_FIELDS.filter(([k]) => k !== 'ded_advance_card' && k !== 'ded_advance_cash');
@@ -630,7 +643,7 @@
         return inp;
       };
       const pf = (r, a, b2) => el('span', { class: 'hr-pf' }, [cellNum(r, a), el('span', { class: 'hr-pf-sep' }, '/'), cellNum(r, b2)]);
-      box.appendChild(el('div', { class: 'hr-list' }, [head, ...d.items.map((r, i) => {
+      box.appendChild(el('div', { class: 'hr-scroll-x' }, el('div', { class: 'hr-list' }, [head, ...d.items.map((r, i) => {
         const chk = r.id ? el('input', { type: 'checkbox', class: 'hr-chk hr-salchk', onclick: (ev) => { ev.stopPropagation(); if (ev.target.checked) salSel.add(r.id); else salSel.delete(r.id); updBulk(); } }) : el('span', {});
         return el('div', { class: 'hr-row hr-sal', onclick: () => openPayroll(r) }, [
           chk,
@@ -648,7 +661,7 @@
           el('span', { class: 'tnum', style: 'font-weight:800;color:#2e7d32' }, money(r.to_pay)),
           el('span', {}, el('span', { class: 'hr-st hr-pr-' + (r.id ? (r.status || 'draft') : 'none') }, r.id ? PR_STATUS[r.status || 'draft'] : 'нет')),
         ]);
-      })]));
+      })])));
     }
   }
 

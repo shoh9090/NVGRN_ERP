@@ -76,7 +76,20 @@
 .hr-kpis-6 { grid-template-columns: repeat(6, 1fr); }
 .hr-kpis-2 { grid-template-columns: 1fr 1fr; max-width: 420px; }
 .hr-flab { font-size: 13px; color: var(--muted); font-weight: 700; align-self: center; }
-.hr-sal { grid-template-columns: 26px 28px 1.1fr 0.72fr 0.66fr 0.66fr 0.9fr 0.8fr 0.85fr 0.8fr 0.8fr 0.9fr 0.9fr 0.72fr; font-size: 12.5px; }
+.hr-sal { grid-template-columns: 26px 30px 190px 118px 92px 100px 120px 104px 120px 108px 138px 138px 124px 96px; font-size: 12.5px; }
+/* Горизонтальная прокрутка: колонки получают реальную ширину, шапка и строки выровнены. */
+.hr-scroll-x { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; }
+.hr-scroll-x .hr-list { border: none; border-radius: 0; min-width: max-content; }
+/* Заголовки числовых колонок — вправо (встают над цифрами), дни/часы — по центру. */
+.hr-sal.head > *:nth-child(5), .hr-sal.head > *:nth-child(6) { text-align: center; }
+.hr-sal.head > *:nth-child(7), .hr-sal.head > *:nth-child(8), .hr-sal.head > *:nth-child(9),
+.hr-sal.head > *:nth-child(10), .hr-sal.head > *:nth-child(11), .hr-sal.head > *:nth-child(12),
+.hr-sal.head > *:nth-child(13) { text-align: right; }
+/* Лёгкие разделители групп: перед «Начислено», «Удержано», «Аванс», «Выплачено», «К выплате». */
+.hr-sal > *:nth-child(7), .hr-sal > *:nth-child(9), .hr-sal > *:nth-child(11),
+.hr-sal > *:nth-child(12), .hr-sal > *:nth-child(13) { border-left: 1px solid #ecefe9; padding-left: 9px; }
+/* «К выплате» — выделяем, это итог. */
+.hr-sal > *:nth-child(13) { background: #f3f9ef; }
 /* Доп. начисления/удержания — колонка-сумма, кликабельна */
 .hr-extra { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
 .hr-extra:hover { color: var(--forest); font-weight: 700; }
@@ -101,6 +114,7 @@
 
 @media (max-width: 900px) {
   .hr-kpis-6 { grid-template-columns: 1fr 1fr 1fr; }
+  .hr-scroll-x .hr-list { min-width: 0; }
   .hr-sal { grid-template-columns: 34px 1.3fr 1fr 1fr 0.9fr; }
   .hr-sal > *:nth-child(1), .hr-sal > *:nth-child(4), .hr-sal > *:nth-child(5), .hr-sal > *:nth-child(7), .hr-sal > *:nth-child(8), .hr-sal > *:nth-child(9) { display: none; }
 }
