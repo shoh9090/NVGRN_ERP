@@ -1136,6 +1136,7 @@
       el('div', { class: 'cash-wallet-nm' }, x.name),
       el('div', { class: 'cash-wallet-kind' }, KIND[x.kind] || x.kind),
       el('div', { class: 'cash-wallet-bal' }, money(x.balance) + ' сум'),
+      (Number(x.usd) ? el('div', { style: 'font-size:11px;color:var(--muted);margin-top:-4px' }, 'в т.ч. $' + money(x.usd) + (x.rate ? ' по ' + money(x.rate) : '')) : null),
       el('a', { class: 'cash-wallet-exp', href: '/cash/api/wallet-export?wallet_id=' + x.id, title: 'Выгрузить операции в Excel (с остатком по строкам)', onclick: (e) => e.stopPropagation() }, '⬇ Excel'),
     ]))));
     const total = w.reduce((s, x) => s + Number(x.balance || 0), 0);

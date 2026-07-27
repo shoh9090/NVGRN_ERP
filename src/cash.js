@@ -560,19 +560,28 @@ router.post('/api/contract', J, async (req, res) => {
 
 // ---------- Остатки кошельков (считаются из журнала) ----------
 async function walletBalances() {
+  // Остаток кошелька = сумы + доллары × текущий курс (та же двухвалютная модель, что и вкладка «Касса»).
+  // Долларовые строки НЕ считаем по их сумовому `amount` — берём штуки валюты (fx_amount) и переоцениваем по курсу.
+  let rate = 0; try { rate = Number(await getCbuUsdRate(new Date().toISOString().slice(0, 10))) || 0; } catch (e) { rate = 0; }
   const r = await db.pool.query(`
     SELECT w.id, w.name, w.kind, w.color, w.account_no, w.sort_order,
-      COALESCE(SUM(CASE
+      COALESCE(SUM(CASE WHEN t.currency <> 'USD' THEN (CASE
         WHEN t.tx_type='in' AND t.wallet_id=w.id THEN t.amount
         WHEN t.tx_type='transfer' AND t.wallet_to_id=w.id AND NOT t.needs_cash_confirm THEN t.amount
         WHEN t.tx_type='out' AND t.wallet_id=w.id THEN -t.amount
         WHEN t.tx_type='transfer' AND t.wallet_id=w.id THEN -t.amount
-        ELSE 0 END), 0) AS balance
+        ELSE 0 END) ELSE 0 END), 0) AS uzs,
+      COALESCE(SUM(CASE WHEN t.currency = 'USD' THEN (CASE
+        WHEN t.tx_type='in' AND t.wallet_id=w.id THEN COALESCE(t.fx_amount,0)
+        WHEN t.tx_type='transfer' AND t.wallet_to_id=w.id AND NOT t.needs_cash_confirm THEN COALESCE(t.fx_amount,0)
+        WHEN t.tx_type='out' AND t.wallet_id=w.id THEN -COALESCE(t.fx_amount,0)
+        WHEN t.tx_type='transfer' AND t.wallet_id=w.id THEN -COALESCE(t.fx_amount,0)
+        ELSE 0 END) ELSE 0 END), 0) AS usd
     FROM cash_wallets w
     LEFT JOIN cash_transactions t ON (t.wallet_id = w.id OR t.wallet_to_id = w.id)
     WHERE w.status='active'
     GROUP BY w.id ORDER BY w.sort_order, w.id`);
-  return r.rows;
+  return r.rows.map((x) => { const uzs = Number(x.uzs) || 0, usd = Number(x.usd) || 0; return { ...x, uzs, usd, rate, balance: uzs + usd * rate }; });
 }
 router.get('/api/wallets', async (req, res) => { res.json({ wallets: await walletBalances() }); });
 
