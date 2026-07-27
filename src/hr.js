@@ -657,7 +657,7 @@ router.post('/api/payouts/pay', J, async (req, res) => {
         const tx = await client.query(
           `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, category_id, purpose, source, is_classified, created_by)
            VALUES ($1,$2,'out',$3,$4,$5,'hr_payout',$6,$7) RETURNING id`,
-          [payDate, Math.round(g.total), w.id, cat ? cat.id : null, `${g.label} за ${period} (${g.ids.length} чел.)`, !!cat, req.user.id]);
+          [payDate, Number(g.total.toFixed(2)), w.id, cat ? cat.id : null, `${g.label} за ${period} (${g.ids.length} чел.)`, !!cat, req.user.id]);
         await client.query('UPDATE hr_payouts SET cash_tx_id=$1 WHERE id = ANY($2)', [tx.rows[0].id, g.ids]);
       }
     }

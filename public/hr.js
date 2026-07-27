@@ -17,6 +17,8 @@
     return n;
   }
   const money = (v) => (v == null || v === '' ? '—' : Math.round(Number(v) || 0).toLocaleString('ru-RU'));
+  // Точная сумма с копейками (для «Выплат» — без округления).
+  const money2 = (v) => (v == null || v === '' ? '—' : (Number(v) || 0).toLocaleString('ru-RU', { maximumFractionDigits: 2 }));
   // Компактно для сводок: 426.9 млн / 320 тыс — крупные суммы читаются легче.
   const moneyShort = (v) => {
     const n = Math.round(Number(v) || 0);
@@ -200,7 +202,7 @@
       const payable = d.items.filter((x) => x.remainder > 0.5);
       const bulk = el('div', { class: 'hr-bulkbar', style: 'display:none' });
       const bulkN = el('span', { class: 'hr-bulk-n' }, '');
-      const updBulk = () => { bulk.style.display = paySel.size ? 'flex' : 'none'; const sum = [...paySel].reduce((a, id) => a + ((d.items.find((x) => x.emp_id === id) || {}).remainder || 0), 0); bulkN.textContent = 'Выбрано ' + paySel.size + ' · остаток ' + money(sum); };
+      const updBulk = () => { bulk.style.display = paySel.size ? 'flex' : 'none'; const sum = [...paySel].reduce((a, id) => a + ((d.items.find((x) => x.emp_id === id) || {}).remainder || 0), 0); bulkN.textContent = 'Выбрано ' + paySel.size + ' · остаток ' + money2(sum); };
       bulk.appendChild(bulkN);
       bulk.appendChild(el('button', { class: 'btn-primary', onclick: () => openPay([...paySel].map((id) => d.items.find((x) => x.emp_id === id)).filter(Boolean)) }, '💵 Выплатить остаток'));
       bulk.appendChild(el('button', { class: 'btn-ghost', onclick: () => { paySel.clear(); load(); } }, 'Снять'));
@@ -216,9 +218,9 @@
           chk,
           el('span', { style: 'font-weight:700' }, r.full_name),
           el('span', { class: 'muted' }, r.department_name || '—'),
-          el('span', { class: 'tnum' }, money(r.net)),
-          el('span', { class: 'tnum' }, money(r.paid)),
-          el('span', { class: 'tnum', style: 'font-weight:800;color:' + (r.remainder > 0.5 ? '#b25b00' : '#2e7d32') }, money(r.remainder)),
+          el('span', { class: 'tnum' }, money2(r.net)),
+          el('span', { class: 'tnum' }, money2(r.paid)),
+          el('span', { class: 'tnum', style: 'font-weight:800;color:' + (r.remainder > 0.5 ? '#b25b00' : '#2e7d32') }, money2(r.remainder)),
           el('span', {}, el('span', { class: 'hr-st hr-payst-' + r.status }, PAYOUT_STATUS[r.status] || r.status)),
           el('span', {}, canPay ? el('button', { class: 'btn-ghost', style: 'padding:4px 10px;font-size:12px', onclick: (ev) => { ev.stopPropagation(); openPay([r]); } }, r.paid > 0.5 ? 'Доплатить' : 'Выплатить') : el('span', { class: 'muted', style: 'font-size:12px' }, '✓')),
         ]);
@@ -227,8 +229,8 @@
       function openHistory(r) {
         const body = el('div', {}, [
           el('div', { class: 'hr-note' }, r.full_name + ' · ' + monthLabel(payState.period)),
-          el('div', { style: 'display:flex;gap:16px;margin:8px 0;font-size:13px;flex-wrap:wrap' }, [el('span', {}, 'К выплате: ' + money(r.net)), el('span', {}, 'Выплачено: ' + money(r.paid)), el('span', { style: 'font-weight:700' }, 'Остаток: ' + money(r.remainder))]),
-          r.payouts.length ? el('table', { class: 'dict-table' }, [el('thead', {}, el('tr', {}, ['Дата', 'Способ', 'Сумма', 'Комментарий'].map((h) => el('th', {}, h)))), el('tbody', {}, r.payouts.map((x) => el('tr', {}, [el('td', {}, ruDate(x.pay_date)), el('td', {}, x.method === 'card' ? 'карта' : 'наличные'), el('td', { class: 'tnum', style: 'text-align:right;font-weight:700' }, money(x.amount)), el('td', { class: 'muted' }, x.comment || '')])))]) : el('div', { class: 'hr-empty' }, 'Выплат пока нет.'),
+          el('div', { style: 'display:flex;gap:16px;margin:8px 0;font-size:13px;flex-wrap:wrap' }, [el('span', {}, 'К выплате: ' + money2(r.net)), el('span', {}, 'Выплачено: ' + money2(r.paid)), el('span', { style: 'font-weight:700' }, 'Остаток: ' + money2(r.remainder))]),
+          r.payouts.length ? el('table', { class: 'dict-table' }, [el('thead', {}, el('tr', {}, ['Дата', 'Способ', 'Сумма', 'Комментарий'].map((h) => el('th', {}, h)))), el('tbody', {}, r.payouts.map((x) => el('tr', {}, [el('td', {}, ruDate(x.pay_date)), el('td', {}, x.method === 'card' ? 'карта' : 'наличные'), el('td', { class: 'tnum', style: 'text-align:right;font-weight:700' }, money2(x.amount)), el('td', { class: 'muted' }, x.comment || '')])))]) : el('div', { class: 'hr-empty' }, 'Выплат пока нет.'),
         ]);
         const acts = [el('button', { onclick: closeModal }, 'Закрыть')];
         if (r.remainder > 0.5) acts.push(el('button', { class: 'btn-primary', onclick: () => { closeModal(); openPay([r]); } }, r.paid > 0.5 ? 'Доплатить' : 'Выплатить'));
@@ -242,11 +244,11 @@
         const totalRem = list.reduce((a, x) => a + x.remainder, 0);
         let method = 'cash';
         const radio = (val, label) => { const rr = el('input', { type: 'radio', name: 'paymethod', value: val }); if (val === method) rr.checked = true; rr.onchange = () => { method = val; }; return el('label', { style: 'display:inline-flex;gap:6px;align-items:center;margin-right:16px;cursor:pointer' }, [rr, label]); };
-        const amountInp = single ? minp(Math.round(list[0].remainder), { placeholder: '0' }) : null;
+        const amountInp = single ? minp(Number(list[0].remainder.toFixed(2)), { placeholder: '0' }) : null;
         const dateInp = finp(new Date().toISOString().slice(0, 10), { type: 'date' });
         const commentInp = finp('', { placeholder: 'Комментарий (по желанию)' });
         const rows = [];
-        rows.push(frow(single ? 'Сотрудник' : 'Сотрудников', el('div', { class: 'hr-note' }, single ? list[0].full_name : (list.length + ' · остаток ' + money(totalRem)))));
+        rows.push(frow(single ? 'Сотрудник' : 'Сотрудников', el('div', { class: 'hr-note' }, single ? list[0].full_name : (list.length + ' · остаток ' + money2(totalRem)))));
         if (single) rows.push(frow('Сумма', amountInp));
         rows.push(frow('Способ', el('div', {}, [radio('cash', 'Наличные'), radio('card', 'Карта')])));
         rows.push(frow('Дата', dateInp));
@@ -256,7 +258,7 @@
           save.disabled = true; save.textContent = 'Провожу…';
           const payload = { period: payState.period, employee_ids: list.map((x) => x.emp_id), method, pay_date: dateInp.value || null, comment: commentInp.value || null };
           if (single && amountInp) payload.amount = mval(amountInp);
-          try { const rr = await post('/payouts/pay', payload); toast('Выплачено: ' + rr.count + ' на ' + money(rr.total)); if (rr.cashNote) toast(rr.cashNote, true); closeModal(); load(); }
+          try { const rr = await post('/payouts/pay', payload); toast('Выплачено: ' + rr.count + ' на ' + money2(rr.total)); if (rr.cashNote) toast(rr.cashNote, true); closeModal(); load(); }
           catch (e) { toast(e.message, true); save.disabled = false; save.textContent = 'Выплатить'; }
         } }, 'Выплатить');
         modal(single ? 'Выплата — ' + list[0].full_name : 'Массовая выплата (' + list.length + ')', el('div', { class: 'hrf' }, rows), [save]);
