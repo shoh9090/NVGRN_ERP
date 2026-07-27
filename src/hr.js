@@ -68,6 +68,19 @@ async function ensureSchema() {
     UNIQUE (employee_id, period)
   )`);
   await q(`CREATE INDEX IF NOT EXISTS idx_hr_payroll_period ON hr_payroll (period)`);
+  // Журнал выплат зарплаты (вкладка «Выплаты»): каждая выплата — отдельная запись, поддержка частичных.
+  await q(`CREATE TABLE IF NOT EXISTS hr_payouts (
+    id SERIAL PRIMARY KEY,
+    employee_id INT NOT NULL REFERENCES hr_employees(id) ON DELETE CASCADE,
+    period TEXT NOT NULL,                          -- YYYY-MM
+    amount NUMERIC NOT NULL DEFAULT 0,
+    method TEXT NOT NULL DEFAULT 'cash',           -- cash | card
+    pay_date DATE,
+    cash_tx_id INT,                                -- ссылка на транзакцию Кассы (шаг 2)
+    comment TEXT,
+    created_by INT, created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  await q(`CREATE INDEX IF NOT EXISTS idx_hr_payouts_emp_period ON hr_payouts (employee_id, period)`);
   // Доп. статьи начислений для массовых операций (больничные/отпускные/матпомощь/компенсация отпуска).
   for (const col of ['accr_sick', 'accr_vacation', 'accr_mataid', 'accr_comp_vac']) {
     await q(`ALTER TABLE hr_payroll ADD COLUMN IF NOT EXISTS ${col} NUMERIC`);
@@ -563,6 +576,79 @@ router.post('/api/mass-op', J, async (req, res) => {
 });
 
 // ---------- Дашборд ----------
+// ---------- Выплаты (реестр выдачи зарплаты) ----------
+// Срок выплаты за месяц — до 10 числа СЛЕДУЮЩЕГО месяца (после — «просрочено»).
+function payoutDue(period) { const [y, m] = period.split('-').map(Number); return new Date(Date.UTC(y, m, 10)).toISOString().slice(0, 10); }
+// Строки выплат за период: К выплате (net на руки) / Выплачено / Остаток / статус.
+async function computePayouts(period) {
+  const rows = (await db.pool.query(
+    `SELECT e.id AS emp_id, e.full_name, e.department_id, d.name AS department_name, pr.*
+     FROM hr_employees e LEFT JOIN hr_departments d ON d.id = e.department_id
+     LEFT JOIN hr_payroll pr ON pr.employee_id = e.id AND pr.period = $1
+     WHERE e.status <> 'archived' ORDER BY e.full_name`, [period])).rows.map(withTotals);
+  try {
+    const cs = await computeCashSalary(period);
+    rows.forEach((r) => { const b = cs.byEmp[r.emp_id]; r.paid = (Number(r.paid) || 0) + (b ? b.paid : 0); r.deducted = (Number(r.deducted) || 0) + (b ? b.advance : 0); });
+  } catch (e) { /* ignore */ }
+  const pos = (await db.pool.query(
+    "SELECT employee_id, id, amount, method, to_char(pay_date,'YYYY-MM-DD') pay_date, comment FROM hr_payouts WHERE period = $1 ORDER BY pay_date, id", [period])).rows;
+  const byEmp = {}; pos.forEach((x) => { (byEmp[x.employee_id] = byEmp[x.employee_id] || []).push(x); });
+  const overdue = new Date().toISOString().slice(0, 10) > payoutDue(period);
+  return rows.map((r) => {
+    const net = (Number(r.accrued) || 0) - (Number(r.deducted) || 0);   // на руки = начислено − удержания − авансы
+    const paid = Number(r.paid) || 0;
+    const remainder = Math.max(0, net - paid);
+    let status; if (remainder <= 0.5 && net > 0.5) status = 'paid'; else if (net <= 0.5) status = 'none'; else if (overdue) status = 'overdue'; else if (paid > 0.5) status = 'partial'; else status = 'pending';
+    return { emp_id: r.emp_id, full_name: r.full_name, department_id: r.department_id, department_name: r.department_name || null, net, paid, remainder, status, payouts: byEmp[r.emp_id] || [] };
+  });
+}
+router.get('/api/payouts', async (req, res) => {
+  try {
+    const period = /^\d{4}-\d{2}$/.test(req.query.period) ? req.query.period : new Date().toISOString().slice(0, 7);
+    let items = await computePayouts(period);
+    if (req.query.department === '__none__') items = items.filter((x) => !x.department_id);
+    else if (req.query.department) items = items.filter((x) => String(x.department_id) === String(req.query.department));
+    if (req.query.q) { const q = String(req.query.q).trim().toLowerCase(); items = items.filter((x) => (x.full_name || '').toLowerCase().includes(q)); }
+    const summary = items.reduce((s, x) => ({ net: s.net + x.net, paid: s.paid + x.paid, remainder: s.remainder + x.remainder, overdue: s.overdue + (x.status === 'overdue' ? x.remainder : 0) }), { net: 0, paid: 0, remainder: 0, overdue: 0 });
+    if (req.query.status) items = items.filter((x) => x.status === req.query.status);
+    res.json({ period, due: payoutDue(period), items, summary, count: items.length });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+// Провести выплату(ы): по каждому сотруднику — остаток (или заданная сумма для одного = частичная).
+router.post('/api/payouts/pay', J, async (req, res) => {
+  const b = req.body || {};
+  const period = /^\d{4}-\d{2}$/.test(b.period) ? b.period : null;
+  if (!period) return res.status(400).json({ error: 'Нет периода' });
+  const method = b.method === 'card' ? 'card' : 'cash';
+  const payDate = b.pay_date || new Date().toISOString().slice(0, 10);
+  const comment = b.comment || null;
+  const ids = Array.isArray(b.employee_ids) ? b.employee_ids.map((x) => parseInt(x)).filter(Boolean) : [];
+  if (!ids.length) return res.status(400).json({ error: 'Не выбраны сотрудники' });
+  const fixed = (b.amount != null && b.amount !== '') ? Number(b.amount) : null;
+  const rows = await computePayouts(period);
+  const remBy = {}; rows.forEach((r) => { remBy[r.emp_id] = r.remainder; });
+  const col = method === 'card' ? 'paid_card' : 'paid_cash';
+  const client = await db.pool.connect();
+  let done = 0, total = 0;
+  try {
+    await client.query('BEGIN');
+    for (const id of ids) {
+      const rem = remBy[id] || 0;
+      let amt = (fixed != null && ids.length === 1) ? fixed : rem;
+      if (amt > rem + 0.5) amt = rem;             // не платим сверх остатка
+      if (!(amt > 0)) continue;
+      await client.query('INSERT INTO hr_payouts (employee_id, period, amount, method, pay_date, comment, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7)', [id, period, amt, method, payDate, comment, req.user.id]);
+      await client.query(`INSERT INTO hr_payroll (employee_id, period, ${col}, created_by) VALUES ($1,$2,$3,$4)
+        ON CONFLICT (employee_id, period) DO UPDATE SET ${col} = COALESCE(hr_payroll.${col},0) + $3, updated_at = now()`, [id, period, amt, req.user.id]);
+      done++; total += amt;
+    }
+    await client.query('COMMIT');
+  } catch (e) { await client.query('ROLLBACK').catch(() => {}); return res.status(400).json({ error: e.message }); }
+  finally { client.release(); }
+  await db.log(req.user.id, 'hr_payout', `${period} ${method}: ${done} на ${Math.round(total)}`);
+  res.json({ ok: true, count: done, total });
+});
+
 router.get('/api/dashboard', async (req, res) => {
   const period = /^\d{4}-\d{2}$/.test(req.query.period) ? req.query.period : new Date().toISOString().slice(0, 7);
   const rows = (await db.pool.query(

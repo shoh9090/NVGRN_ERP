@@ -115,6 +115,7 @@
     if (TAB === 'dashboard') return renderDashboard();
     if (TAB === 'employees') return renderEmployees();
     if (TAB === 'salary') return renderSalary();
+    if (TAB === 'payouts') return renderPayouts();
     if (TAB === 'massops') return renderMassOps();
     if (TAB === 'timesheet') return renderTimesheet();
     if (TAB === 'departments') return renderDepartments();
@@ -171,6 +172,98 @@
       el('span', { class: 'tnum muted' }, money(x.paid)),
     ]))]));
   }
+  // ================= ВЫПЛАТЫ =================
+  async function renderPayouts() {
+    const c = $('#hr-content');
+    if (!payState.period) payState.period = curMonth();
+    c.appendChild(el('div', { class: 'hr-head' }, [el('div', {}, [el('div', { class: 'hr-h2' }, 'Выплаты — ' + monthLabel(payState.period)), el('div', { class: 'hr-sub' }, 'Выдача зарплаты: остаток, статусы, частичные и массовые выплаты. Срок — до 10 числа следующего месяца.')])]));
+    const mInp = el('input', { type: 'month', class: 'hrf-inp hr-filt', value: payState.period, onchange: (e) => { payState.period = e.target.value || curMonth(); load(); } });
+    const dSel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { payState.department = e.target.value; load(); } }, [el('option', { value: '' }, 'Все отделы'), ...DICTS.departments.map((d) => el('option', { value: d.id, selected: String(d.id) === payState.department || null }, d.name))]);
+    const stSel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { payState.status = e.target.value; load(); } }, [{ v: '', t: 'Все статусы' }, { v: 'pending', t: 'Ожидает' }, { v: 'partial', t: 'Частично' }, { v: 'overdue', t: 'Просрочено' }, { v: 'paid', t: 'Оплачено' }].map((o) => el('option', { value: o.v, selected: o.v === payState.status || null }, o.t)));
+    const q = el('input', { class: 'hrf-inp hr-filt hr-filt-q', placeholder: 'Поиск по ФИО', value: payState.q, oninput: (e) => { payState.q = e.target.value; clearTimeout(window.__hrP); window.__hrP = setTimeout(load, 300); } });
+    c.appendChild(el('div', { class: 'hr-filters' }, [el('span', { class: 'hr-flab' }, 'Месяц:'), mInp, dSel, stSel, q]));
+    const box = el('div', {}); c.appendChild(box);
+    load();
+
+    async function load() {
+      box.innerHTML = '<div class="hr-loading">Считаю…</div>';
+      paySel = new Set();
+      const p = new URLSearchParams({ period: payState.period });
+      ['department', 'status', 'q'].forEach((k) => { if (payState[k]) p.set(k, payState[k]); });
+      let d; try { d = await api('/payouts?' + p.toString()); } catch (e) { box.innerHTML = ''; box.appendChild(el('div', { class: 'hr-empty' }, 'Ошибка: ' + e.message)); return; }
+      box.innerHTML = '';
+      const s = d.summary;
+      box.appendChild(el('div', { class: 'hr-kpis hr-kpis-4', style: 'margin-bottom:12px' }, [
+        kpi('К выплате (всего)', moneyShort(s.net), 'green'), kpi('Выплачено', moneyShort(s.paid), 'ink'),
+        kpi('Остаток', moneyShort(s.remainder), 'green'), kpi('Просрочено', moneyShort(s.overdue), 'muted'),
+      ]));
+      const payable = d.items.filter((x) => x.remainder > 0.5);
+      const bulk = el('div', { class: 'hr-bulkbar', style: 'display:none' });
+      const bulkN = el('span', { class: 'hr-bulk-n' }, '');
+      const updBulk = () => { bulk.style.display = paySel.size ? 'flex' : 'none'; const sum = [...paySel].reduce((a, id) => a + ((d.items.find((x) => x.emp_id === id) || {}).remainder || 0), 0); bulkN.textContent = 'Выбрано ' + paySel.size + ' · остаток ' + money(sum); };
+      bulk.appendChild(bulkN);
+      bulk.appendChild(el('button', { class: 'btn-primary', onclick: () => openPay([...paySel].map((id) => d.items.find((x) => x.emp_id === id)).filter(Boolean)) }, '💵 Выплатить остаток'));
+      bulk.appendChild(el('button', { class: 'btn-ghost', onclick: () => { paySel.clear(); load(); } }, 'Снять'));
+      box.appendChild(bulk);
+      if (!d.items.length) { box.appendChild(el('div', { class: 'hr-empty' }, 'Нет сотрудников по фильтру.')); return; }
+      const selAll = el('input', { type: 'checkbox', class: 'hr-chk' });
+      selAll.onclick = (ev) => { const on = ev.target.checked; paySel = new Set(on ? payable.map((x) => x.emp_id) : []); box.querySelectorAll('.hr-paychk').forEach((cc) => { if (!cc.disabled) cc.checked = on; }); updBulk(); };
+      const head = el('div', { class: 'hr-row head hr-pay' }, [selAll, el('span', {}, 'ФИО'), el('span', {}, 'Отдел'), el('span', {}, 'К выплате'), el('span', {}, 'Выплачено'), el('span', {}, 'Остаток'), el('span', {}, 'Статус'), el('span', {}, '')]);
+      box.appendChild(el('div', { class: 'hr-list' }, [head, ...d.items.map((r) => {
+        const canPay = r.remainder > 0.5;
+        const chk = el('input', { type: 'checkbox', class: 'hr-chk hr-paychk', disabled: !canPay, onclick: (ev) => { ev.stopPropagation(); if (ev.target.checked) paySel.add(r.emp_id); else paySel.delete(r.emp_id); updBulk(); } });
+        return el('div', { class: 'hr-row hr-pay', onclick: () => openHistory(r) }, [
+          chk,
+          el('span', { style: 'font-weight:700' }, r.full_name),
+          el('span', { class: 'muted' }, r.department_name || '—'),
+          el('span', { class: 'tnum' }, money(r.net)),
+          el('span', { class: 'tnum' }, money(r.paid)),
+          el('span', { class: 'tnum', style: 'font-weight:800;color:' + (r.remainder > 0.5 ? '#b25b00' : '#2e7d32') }, money(r.remainder)),
+          el('span', {}, el('span', { class: 'hr-st hr-payst-' + r.status }, PAYOUT_STATUS[r.status] || r.status)),
+          el('span', {}, canPay ? el('button', { class: 'btn-ghost', style: 'padding:4px 10px;font-size:12px', onclick: (ev) => { ev.stopPropagation(); openPay([r]); } }, r.paid > 0.5 ? 'Доплатить' : 'Выплатить') : el('span', { class: 'muted', style: 'font-size:12px' }, '✓')),
+        ]);
+      })]));
+
+      function openHistory(r) {
+        const body = el('div', {}, [
+          el('div', { class: 'hr-note' }, r.full_name + ' · ' + monthLabel(payState.period)),
+          el('div', { style: 'display:flex;gap:16px;margin:8px 0;font-size:13px;flex-wrap:wrap' }, [el('span', {}, 'К выплате: ' + money(r.net)), el('span', {}, 'Выплачено: ' + money(r.paid)), el('span', { style: 'font-weight:700' }, 'Остаток: ' + money(r.remainder))]),
+          r.payouts.length ? el('table', { class: 'dict-table' }, [el('thead', {}, el('tr', {}, ['Дата', 'Способ', 'Сумма', 'Комментарий'].map((h) => el('th', {}, h)))), el('tbody', {}, r.payouts.map((x) => el('tr', {}, [el('td', {}, ruDate(x.pay_date)), el('td', {}, x.method === 'card' ? 'карта' : 'наличные'), el('td', { class: 'tnum', style: 'text-align:right;font-weight:700' }, money(x.amount)), el('td', { class: 'muted' }, x.comment || '')])))]) : el('div', { class: 'hr-empty' }, 'Выплат пока нет.'),
+        ]);
+        const acts = [el('button', { onclick: closeModal }, 'Закрыть')];
+        if (r.remainder > 0.5) acts.push(el('button', { class: 'btn-primary', onclick: () => { closeModal(); openPay([r]); } }, r.paid > 0.5 ? 'Доплатить' : 'Выплатить'));
+        modal('История выплат — ' + r.full_name, body, acts);
+      }
+
+      function openPay(list) {
+        list = list.filter((x) => x && x.remainder > 0.5);
+        if (!list.length) return toast('Нет остатка к выплате', true);
+        const single = list.length === 1;
+        const totalRem = list.reduce((a, x) => a + x.remainder, 0);
+        let method = 'cash';
+        const radio = (val, label) => { const rr = el('input', { type: 'radio', name: 'paymethod', value: val }); if (val === method) rr.checked = true; rr.onchange = () => { method = val; }; return el('label', { style: 'display:inline-flex;gap:6px;align-items:center;margin-right:16px;cursor:pointer' }, [rr, label]); };
+        const amountInp = single ? minp(Math.round(list[0].remainder), { placeholder: '0' }) : null;
+        const dateInp = finp(new Date().toISOString().slice(0, 10), { type: 'date' });
+        const commentInp = finp('', { placeholder: 'Комментарий (по желанию)' });
+        const rows = [];
+        rows.push(frow(single ? 'Сотрудник' : 'Сотрудников', el('div', { class: 'hr-note' }, single ? list[0].full_name : (list.length + ' · остаток ' + money(totalRem)))));
+        if (single) rows.push(frow('Сумма', amountInp));
+        rows.push(frow('Способ', el('div', {}, [radio('cash', 'Наличные'), radio('card', 'Карта')])));
+        rows.push(frow('Дата', dateInp));
+        rows.push(frow('Комментарий', commentInp));
+        rows.push(el('div', { class: 'hr-sub' }, single ? 'Можно указать сумму меньше остатка — будет частичная выплата.' : 'Каждому проведём его остаток. Общий расход в Кассе — следующим шагом.'));
+        const save = el('button', { class: 'btn-primary', onclick: async () => {
+          save.disabled = true; save.textContent = 'Провожу…';
+          const payload = { period: payState.period, employee_ids: list.map((x) => x.emp_id), method, pay_date: dateInp.value || null, comment: commentInp.value || null };
+          if (single && amountInp) payload.amount = mval(amountInp);
+          try { const rr = await post('/payouts/pay', payload); toast('Выплачено: ' + rr.count + ' на ' + money(rr.total)); closeModal(); load(); }
+          catch (e) { toast(e.message, true); save.disabled = false; save.textContent = 'Выплатить'; }
+        } }, 'Выплатить');
+        modal(single ? 'Выплата — ' + list[0].full_name : 'Массовая выплата (' + list.length + ')', el('div', { class: 'hrf' }, rows), [save]);
+      }
+    }
+  }
+
   function renderSoon() {
     $('#hr-content').appendChild(el('div', { class: 'hr-soon' }, [
       el('div', { style: 'font-size:40px' }, '🔜'),
@@ -521,6 +614,9 @@
   const PAID_FIELDS = [['paid_cash', 'Выплачено наличными'], ['paid_card', 'Выплачено на карту']];
   const salState = { period: '', department: '', schedule: '', status: '', q: '' };
   let salSel = new Set();
+  const payState = { period: '', department: '', status: '', q: '' };
+  let paySel = new Set();
+  const PAYOUT_STATUS = { pending: 'Ожидает', partial: 'Частично', paid: 'Оплачено', overdue: 'Просрочено', none: 'Нет начисления' };
   const curMonth = () => new Date().toISOString().slice(0, 7);
   const monthLabel = (ym) => { const [y, m] = ym.split('-'); return ['', 'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'][Number(m)] + ' ' + y; };
 
