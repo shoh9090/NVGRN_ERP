@@ -25,11 +25,24 @@
     return n.toLocaleString('ru-RU');
   };
   const ruDate = (d) => d ? String(d).slice(0, 10).split('-').reverse().join('.') : '';
-  // Денежное поле с разделителями разрядов прямо при вводе (15 000 000).
-  const fmtDigits = (s) => { const neg = /^-/.test(String(s).replace(/[^\d-]/g, '')); const d = String(s).replace(/[^\d]/g, ''); return d ? (neg ? '-' : '') + Number(d).toLocaleString('ru-RU') : ''; };
-  const mval = (i) => { const d = String(i.value || '').replace(/[^\d-]/g, ''); return d === '' || d === '-' ? '' : d; };
+  // Денежное поле: разряды пробелом при вводе (15 000 000) + запятая как десятичный разделитель (до 2 знаков).
+  // Пробелы и точки считаем разделителями тысяч и убираем; запятая — копейки. Раньше запятая стиралась и сумма росла в разы.
+  const fmtDigits = (s) => {
+    s = String(s == null ? '' : s).replace(/[\s.]/g, '');
+    const neg = s.startsWith('-');
+    s = s.replace(/[^\d,]/g, '');
+    const ci = s.indexOf(',');
+    const intRaw = (ci >= 0 ? s.slice(0, ci) : s).replace(/\D/g, '');
+    let out = intRaw ? Number(intRaw).toLocaleString('ru-RU') : (ci >= 0 ? '0' : '');
+    if (ci >= 0) out += ',' + s.slice(ci + 1).replace(/,/g, '').slice(0, 2);  // храним запятую и до 2 знаков (в т.ч. при наборе)
+    return out ? (neg ? '-' : '') + out : (neg ? '-' : '');
+  };
+  const mval = (i) => {
+    const s = String(i.value || '').replace(/[\s.]/g, '').replace(',', '.').replace(/[^\d.-]/g, '');
+    return (s === '' || s === '-' || s === '.') ? '' : s;
+  };
   function minp(val, attrs) {
-    const i = finp((val == null || val === '') ? '' : Number(val).toLocaleString('ru-RU'), Object.assign({ inputmode: 'numeric', placeholder: '0' }, attrs || {}));
+    const i = finp((val == null || val === '') ? '' : Number(val).toLocaleString('ru-RU', { maximumFractionDigits: 2 }), Object.assign({ inputmode: 'decimal', placeholder: '0' }, attrs || {}));
     i.addEventListener('input', () => { i.value = fmtDigits(i.value); });
     return i;
   }
