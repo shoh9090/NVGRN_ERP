@@ -671,7 +671,7 @@ router.post('/api/payouts/pay', J, async (req, res) => {
 router.get('/api/dashboard', async (req, res) => {
   const period = /^\d{4}-\d{2}$/.test(req.query.period) ? req.query.period : new Date().toISOString().slice(0, 7);
   const rows = (await db.pool.query(
-    `SELECT e.id AS emp_id, d.name AS dept, pr.*
+    `SELECT e.id AS emp_id, e.full_name, d.name AS dept, pr.*
      FROM hr_employees e LEFT JOIN hr_departments d ON d.id = e.department_id
      LEFT JOIN hr_payroll pr ON pr.employee_id = e.id AND pr.period = $1
      WHERE e.status <> 'archived'`, [period])).rows.map(withTotals);   // как в «Зарплате»: уволенные за месяц тоже в ФОТ
@@ -699,7 +699,9 @@ router.get('/api/dashboard', async (req, res) => {
     paid: rows.reduce((s, r) => s + r.paid, 0), deducted: rows.reduce((s, r) => s + r.deducted, 0),
     advances: rows.reduce((s, r) => s + advOf(r), 0), count: rows.length,
   };
-  res.json({ period, byDept: deptArr, totals });
+  // Кому переплачено (выплачено больше, чем к выплате) — для клика по «переплата» на дашборде.
+  const overpaid = rows.filter((r) => r.to_pay < -0.5).map((r) => ({ name: r.full_name, dept: r.dept || '—', amount: -r.to_pay })).sort((a, b) => b.amount - a.amount);
+  res.json({ period, byDept: deptArr, totals, overpaid });
 });
 
 // ---------- Отделы ----------

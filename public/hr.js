@@ -157,7 +157,7 @@
       kpi('Начислено (ФОТ)', moneyShort(t.accrued), 'green'),
       kpi('− Удержания', moneyShort(uderzh), 'muted'),
       kpi('− Выплачено', moneyShort(vyplacheno), 'ink', null, t.advances ? 'в т.ч. аванс ' + moneyShort(t.advances) : ''),
-      kpi('= К выплате', moneyShort(t.to_pay), 'green', null, t.overpay ? 'переплата ' + moneyShort(t.overpay) : ''),
+      kpi('= К выплате', moneyShort(t.to_pay), 'green', t.overpay ? () => openOverpaid(d.overpaid || []) : null, t.overpay ? 'переплата ' + moneyShort(t.overpay) + ' · клик' : ''),
     ]));
     box.appendChild(el('div', { class: 'hr-sub', style: 'margin:2px 0 6px' }, 'Начислено − Удержания − Выплачено (с авансами) = К выплате.' + (t.overpay ? ' Переплата ' + moneyShort(t.overpay) + ' (кому-то выдали больше — на общий остаток не влияет).' : '') + '  ·  Сотрудников: ' + t.count));
     if (!d.byDept.length) { box.appendChild(el('div', { class: 'hr-empty' }, 'Нет данных за месяц.')); return; }
@@ -354,6 +354,18 @@
       ])) : el('div', { class: 'hr-empty' }, 'Нет данных за период.'),
     ]);
     modal(title + ' — в разрезе', body, [el('button', { class: 'btn-primary', onclick: closeModal }, 'Закрыть')]);
+  }
+  // Кому переплачено (клик по «переплата» на дашборде).
+  function openOverpaid(list) {
+    const total = (list || []).reduce((s, x) => s + (Number(x.amount) || 0), 0);
+    const body = el('div', {}, [
+      el('div', { class: 'hr-note' }, 'Переплачено (выдали больше, чем к выплате) · итого ' + money(total)),
+      (list && list.length) ? el('table', { class: 'dict-table', style: 'margin-top:8px' }, [
+        el('thead', {}, el('tr', {}, ['ФИО', 'Отдел', 'Переплата'].map((h) => el('th', {}, h)))),
+        el('tbody', {}, list.map((x) => el('tr', {}, [el('td', {}, x.name), el('td', { class: 'muted' }, x.dept || '—'), el('td', { class: 'tnum', style: 'text-align:right;font-weight:700;color:#c0392b' }, money(x.amount))]))),
+      ]) : el('div', { class: 'hr-empty' }, 'Переплат нет.'),
+    ]);
+    modal('Кому переплачено', body, [el('button', { class: 'btn-primary', onclick: closeModal }, 'Закрыть')]);
   }
   // Выгрузка ведомости на карту для банка (ФИО · карта · сумма); выбор Выплата / Аванс.
   function openCardPaysheetExport(period) {
