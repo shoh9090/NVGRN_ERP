@@ -692,7 +692,10 @@ router.get('/api/dashboard', async (req, res) => {
   rows.forEach((r) => { const d = r.dept || 'Без отдела'; const o = byDept[d] = byDept[d] || { name: d, count: 0, accrued: 0, to_pay: 0, paid: 0 }; o.count++; o.accrued += r.accrued; o.to_pay += r.to_pay; o.paid += r.paid; });
   const deptArr = Object.values(byDept).sort((a, b) => b.accrued - a.accrued);
   const totals = {
-    accrued: rows.reduce((s, r) => s + r.accrued, 0), to_pay: rows.reduce((s, r) => s + r.to_pay, 0),
+    accrued: rows.reduce((s, r) => s + r.accrued, 0),
+    // Остаток к выплате — как во вкладке «Выплаты»: по человеку не уходит в минус (переплата не гасит чужой долг).
+    to_pay: rows.reduce((s, r) => s + Math.max(0, r.to_pay), 0),
+    overpay: rows.reduce((s, r) => s + Math.max(0, -r.to_pay), 0),
     paid: rows.reduce((s, r) => s + r.paid, 0), deducted: rows.reduce((s, r) => s + r.deducted, 0),
     advances: rows.reduce((s, r) => s + advOf(r), 0), count: rows.length,
   };

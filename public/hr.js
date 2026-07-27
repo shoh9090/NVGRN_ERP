@@ -16,9 +16,11 @@
     });
     return n;
   }
-  const money = (v) => (v == null || v === '' ? '—' : Math.round(Number(v) || 0).toLocaleString('ru-RU'));
-  // Точная сумма с копейками (для «Выплат» — без округления).
-  const money2 = (v) => (v == null || v === '' ? '—' : (Number(v) || 0).toLocaleString('ru-RU', { maximumFractionDigits: 2 }));
+  // Полная сумма с разделителями и копейками — везде, кроме дашборда (там компактно).
+  const money = (v) => (v == null || v === '' ? '—' : (Number(v) || 0).toLocaleString('ru-RU', { maximumFractionDigits: 2 }));
+  const money2 = money;
+  // Округлённая полная сумма — только для дашборда (без копеек).
+  const moneyR = (v) => (v == null || v === '' ? '—' : Math.round(Number(v) || 0).toLocaleString('ru-RU'));
   // Компактно для сводок: 426.9 млн / 320 тыс — крупные суммы читаются легче.
   const moneyShort = (v) => {
     const n = Math.round(Number(v) || 0);
@@ -155,9 +157,9 @@
       kpi('Начислено (ФОТ)', moneyShort(t.accrued), 'green'),
       kpi('− Удержания', moneyShort(uderzh), 'muted'),
       kpi('− Выплачено', moneyShort(vyplacheno), 'ink', null, t.advances ? 'в т.ч. аванс ' + moneyShort(t.advances) : ''),
-      kpi('= К выплате', moneyShort(t.to_pay), 'green'),
+      kpi('= К выплате', moneyShort(t.to_pay), 'green', null, t.overpay ? 'переплата ' + moneyShort(t.overpay) : ''),
     ]));
-    box.appendChild(el('div', { class: 'hr-sub', style: 'margin:2px 0 6px' }, 'Начислено − Удержания − Выплачено (с авансами) = К выплате.  ·  Сотрудников: ' + t.count));
+    box.appendChild(el('div', { class: 'hr-sub', style: 'margin:2px 0 6px' }, 'Начислено − Удержания − Выплачено (с авансами) = К выплате.' + (t.overpay ? ' Переплата ' + moneyShort(t.overpay) + ' (кому-то выдали больше — на общий остаток не влияет).' : '') + '  ·  Сотрудников: ' + t.count));
     if (!d.byDept.length) { box.appendChild(el('div', { class: 'hr-empty' }, 'Нет данных за месяц.')); return; }
     const items = d.byDept.filter((x) => x.accrued > 0).map((x, i) => ({ label: x.name, value: x.accrued, color: HR_COLORS[i % HR_COLORS.length] }));
     box.appendChild(el('div', { class: 'hr-h2', style: 'font-size:18px;margin:16px 0 4px' }, 'ФОТ по отделам'));
@@ -169,9 +171,9 @@
       el('span', { class: 'hr-idx' }, String(i + 1)),
       el('span', { style: 'font-weight:700' }, x.name + ' →'),
       el('span', { class: 'tnum' }, x.count),
-      el('span', { class: 'tnum' }, money(x.accrued)),
-      el('span', { class: 'tnum', style: 'color:#2e7d32;font-weight:700' }, money(x.to_pay)),
-      el('span', { class: 'tnum muted' }, money(x.paid)),
+      el('span', { class: 'tnum' }, moneyR(x.accrued)),
+      el('span', { class: 'tnum', style: 'color:#2e7d32;font-weight:700' }, moneyR(x.to_pay)),
+      el('span', { class: 'tnum muted' }, moneyR(x.paid)),
     ]))]));
   }
   // ================= ВЫПЛАТЫ =================
@@ -196,8 +198,8 @@
       box.innerHTML = '';
       const s = d.summary;
       box.appendChild(el('div', { class: 'hr-kpis hr-kpis-4', style: 'margin-bottom:12px' }, [
-        kpi('К выплате (всего)', moneyShort(s.net), 'green'), kpi('Выплачено', moneyShort(s.paid), 'ink'),
-        kpi('Остаток', moneyShort(s.remainder), 'green'), kpi('Просрочено', moneyShort(s.overdue), 'muted'),
+        kpi('К выплате (всего)', money(s.net), 'green'), kpi('Выплачено', money(s.paid), 'ink'),
+        kpi('Остаток', money(s.remainder), 'green'), kpi('Просрочено', money(s.overdue), 'muted'),
       ]));
       const payable = d.items.filter((x) => x.remainder > 0.5);
       const bulk = el('div', { class: 'hr-bulkbar', style: 'display:none' });
@@ -301,7 +303,7 @@
       // Сводки
       box.appendChild(el('div', { class: 'hr-kpis' }, [
         kpi('Показано', d.items.length, 'ink'),
-        kpi('ФОТ (оклады, актив.)', moneyShort(d.fot), 'green'),
+        kpi('ФОТ (оклады, актив.)', money(d.fot), 'green'),
         kpi('Активных', DICTS.counts.active || 0, 'ink'),
         kpi('Уволенных', DICTS.counts.fired || 0, 'muted'),
       ]));
@@ -742,11 +744,11 @@
       const uderzh = (Number(s.deducted) || 0) - sAdv;
       const vyplacheno = (Number(s.paid) || 0) + sAdv;
       box.appendChild(el('div', { class: 'hr-kpis hr-kpis-5' }, [
-        kpi('Начислено (ФОТ)', moneyShort(s.accrued), 'green', bd('Начислено', (r) => r.accrued)),
-        kpi('Бонусы/KPI', moneyShort(s.bonus), 'ink', bd('Бонусы/KPI', (r) => r.accr_bonus)),
-        kpi('Удержания', moneyShort(uderzh), 'muted', bd('Удержания', (r) => (Number(r.deducted) || 0) - advOf(r))),
-        kpi('Выплачено', moneyShort(vyplacheno), 'ink', bd('Выплачено (с авансами)', (r) => (Number(r.paid) || 0) + advOf(r)), sAdv ? 'в т.ч. аванс ' + moneyShort(sAdv) : ''),
-        kpi('К выплате', moneyShort(s.to_pay), 'green', bd('К выплате', (r) => r.to_pay)),
+        kpi('Начислено (ФОТ)', money(s.accrued), 'green', bd('Начислено', (r) => r.accrued)),
+        kpi('Бонусы/KPI', money(s.bonus), 'ink', bd('Бонусы/KPI', (r) => r.accr_bonus)),
+        kpi('Удержания', money(uderzh), 'muted', bd('Удержания', (r) => (Number(r.deducted) || 0) - advOf(r))),
+        kpi('Выплачено', money(vyplacheno), 'ink', bd('Выплачено (с авансами)', (r) => (Number(r.paid) || 0) + advOf(r)), sAdv ? 'в т.ч. аванс ' + money(sAdv) : ''),
+        kpi('К выплате', money(s.to_pay), 'green', bd('К выплате', (r) => r.to_pay)),
       ]));
       box.appendChild(el('div', { class: 'hr-kpis hr-kpis-2', style: 'margin-bottom:14px' }, [kpi('Сотрудников', s.count, 'ink')]));
       // Выплаты из кассы без сотрудника — по умолчанию свёрнуто; можно скрывать строки (навсегда, только визуально).
