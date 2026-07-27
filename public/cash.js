@@ -2130,6 +2130,17 @@
   (async function init() {
     $('#cash-main').innerHTML = '<div class="cash-loading">Загрузка…</div>';
     try { DICTS = await api('/dicts'); } catch (e) { $('#cash-main').innerHTML = '<div class="cash-empty">Не удалось загрузить: ' + e.message + '</div>'; return; }
+    // Переход по ссылке «в Кассе →» из Зарплаты: открываем сам платёж на вкладке «Операции».
+    const m = (location.hash || '').match(/tx=(\d+)/);
+    if (m) {
+      TAB = 'tx'; render();
+      try {
+        const it = (await api('/tx/' + m[1])).item;
+        if (it.tx_type === 'transfer') openTransferForm(it); else openTxForm(it.tx_type, it);
+        try { history.replaceState(null, '', location.pathname); } catch (e) { /* ignore */ }
+      } catch (e) { toast('Не нашёл эту транзакцию в Кассе', true); }
+      return;
+    }
     render();
   })();
 })();

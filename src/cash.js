@@ -1261,6 +1261,22 @@ router.post('/api/tx', J, async (req, res) => {
 // разбор импортированной банковской выписки, где обналичивание сначала видно как обычный расход) —
 // тогда это на самом деле перевод, и мы честно конвертируем tx_type в 'transfer', иначе кошелёк-
 // получатель никогда не будет реально зачислен (wallet_to_id без tx_type='transfer' балансом игнорируется).
+// Одна транзакция по id (для перехода из Зарплаты по ссылке «в Кассе →»).
+router.get('/api/tx/:id(\\d+)', async (req, res) => {
+  try {
+    const r = (await db.pool.query(
+      `SELECT t.*, COALESCE(t.report_hidden,false) AS hidden, w.name AS wallet_name, w.color AS wallet_color, w2.name AS wallet_to_name,
+              cp.name AS cp_name, cat.code AS cat_code, cat.name AS cat_name
+       FROM cash_transactions t
+       LEFT JOIN cash_wallets w ON w.id = t.wallet_id
+       LEFT JOIN cash_wallets w2 ON w2.id = t.wallet_to_id
+       LEFT JOIN cash_counterparties cp ON cp.id = t.counterparty_id
+       LEFT JOIN cash_categories cat ON cat.id = t.category_id
+       WHERE t.id = $1`, [req.params.id])).rows[0];
+    if (!r) return res.status(404).json({ error: 'Транзакция не найдена' });
+    res.json({ item: r });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
 router.post('/api/tx/:id(\\d+)', J, async (req, res) => {
   const b = req.body || {};
   const cat = intOrNull(b.category_id);
