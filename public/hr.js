@@ -286,6 +286,47 @@
     modal('Загрузка номеров карт', body, [load]);
   }
 
+  // Импорт банковской ведомости по карте (ASIA ALLIANCE и т.п.): суммы садятся в «Выплачено/Аванс на карту».
+  // Сопоставление по номеру карты — сначала загрузи номера карт сотрудников (кнопка «Карты (Excel)»).
+  function openCardStatementImport(period) {
+    let mode = 'payout';
+    const file = el('input', { type: 'file', accept: '.xls,.xlsx', class: 'hrf-inp' });
+    const radio = (val, label) => { const r = el('input', { type: 'radio', name: 'cardmode', value: val }); if (val === mode) r.checked = true; r.onchange = () => { mode = val; }; return el('label', { style: 'display:inline-flex;gap:6px;align-items:center;margin-right:16px;cursor:pointer' }, [r, label]); };
+    const result = el('div', {});
+    const send = async (dry) => {
+      if (!file.files[0]) { toast('Выберите файл', true); return null; }
+      const fd = new FormData(); fd.append('file', file.files[0]); fd.append('period', period); fd.append('mode', mode); fd.append('dry', dry ? 'true' : 'false');
+      const res = await fetch('/hr/api/cards/statement-import', { method: 'POST', body: fd });
+      const d = await res.json(); if (!res.ok) throw new Error(d.error || 'Ошибка');
+      return d;
+    };
+    const showPreview = (d) => {
+      result.innerHTML = '';
+      const rows = (arr, cls) => el('div', { class: 'oe-table-wrap', style: 'max-height:30vh;margin-top:4px' }, el('table', { class: 'dict-table' }, [
+        el('thead', {}, el('tr', {}, ['ФИО / карта', 'Сумма'].map((h) => el('th', {}, h)))),
+        el('tbody', {}, arr.map((x) => el('tr', { class: cls || '' }, [el('td', {}, (x.name || x.fio || '') + ' · ' + x.card), el('td', { class: 'tnum', style: 'text-align:right;font-weight:700' }, money(x.amount))]))),
+      ]));
+      result.appendChild(el('div', { class: 'hr-note', style: 'margin-top:8px' }, 'Найдено строк: ' + d.count + ' · совпало по карте: ' + d.matched.length + (d.unmatched.length ? ' · не найдено: ' + d.unmatched.length : '') + ' · сумма: ' + money(d.total)));
+      if (d.matched.length) result.appendChild(el('details', { open: true }, [el('summary', {}, 'Сядет в «' + (mode === 'advance' ? 'Аванс' : 'Выплачено') + ' на карту» (' + d.matched.length + ')'), rows(d.matched)]));
+      if (d.unmatched.length) result.appendChild(el('details', {}, [el('summary', {}, '⚠ Не нашли по номеру карты (' + d.unmatched.length + ') — проставь им карту в «Карты (Excel)»'), rows(d.unmatched, 'imp-err')]));
+    };
+    const preview = el('button', { class: 'btn-ghost', onclick: async () => { try { const d = await send(true); if (d) showPreview(d); } catch (e) { toast(e.message, true); } } }, 'Проверить');
+    const apply = el('button', { class: 'btn-primary', onclick: async () => {
+      apply.disabled = true; apply.textContent = 'Загружаю…';
+      try { const d = await send(false); if (d) { toast('Разнесено на карту: ' + d.matched.length + ' на ' + money(d.total)); closeModal(); load(); } }
+      catch (e) { toast(e.message, true); }
+      apply.disabled = false; apply.textContent = 'Применить';
+    } }, 'Применить');
+    const body = el('div', { class: 'hrf' }, [
+      el('div', { class: 'hr-sub' }, 'Загрузка банковской ведомости по карте за ' + monthLabel(period) + '. Сопоставляем по номеру карты (у сотрудников должны быть проставлены карты). Перезаписывает сумму за месяц.'),
+      el('div', {}, [radio('payout', 'Выплата на карту'), radio('advance', 'Аванс на карту')]),
+      frow('Файл', file),
+      el('div', { style: 'margin-top:4px' }, preview),
+      result,
+    ]);
+    modal('🏦 Импорт ведомости на карту — ' + monthLabel(period), body, [apply]);
+  }
+
   // Загрузка табеля из Excel за период (табель начальника производства).
   function openTimesheetImport(period) {
     const file = el('input', { type: 'file', accept: '.xls,.xlsx', class: 'hrf-inp' });
@@ -440,11 +481,12 @@
   // ================= ЗАРПЛАТА =================
   const PR_STATUS = { draft: 'Черновик', approved: 'Утверждено', paid: 'Выплачено', cancelled: 'Отменено' };
   // Фикса — справочно, НЕ входит в сумму «начислено». Счётные — ниже.
-  const ACCR_FIELDS = [['accr_fact', 'Факт по табелю'], ['accr_bonus', 'Бонусы KPI'], ['accr_premium', 'Премия'], ['accr_gsm', 'ГСМ / компенсации'], ['accr_sick', 'Больничные'], ['accr_vacation', 'Отпускные'], ['accr_mataid', 'Матпомощь'], ['accr_comp_vac', 'Компенсация отпуска'], ['accr_company_debt', 'Долг компании'], ['accr_other', 'Другое начисление']];
+  // «Долг компании» — удержание (уменьшает К выплате), поэтому он в DED_FIELDS, а не в начислениях.
+  const ACCR_FIELDS = [['accr_fact', 'Факт по табелю'], ['accr_bonus', 'Бонусы KPI'], ['accr_premium', 'Премия'], ['accr_gsm', 'ГСМ / компенсации'], ['accr_sick', 'Больничные'], ['accr_vacation', 'Отпускные'], ['accr_mataid', 'Матпомощь'], ['accr_comp_vac', 'Компенсация отпуска'], ['accr_other', 'Другое начисление']];
   // Операции для вкладки «Массовые операции» (поле payroll → подпись).
   const MASS_OPS = [['accr_bonus', 'Бонусы KPI'], ['accr_premium', 'Премия'], ['accr_gsm', 'ГСМ / компенсации'], ['accr_sick', 'Больничные'], ['accr_vacation', 'Отпускные'], ['accr_mataid', 'Матпомощь'], ['accr_comp_vac', 'Компенсация за неисп. отпуск'], ['accr_company_debt', 'Долг компании'], ['accr_other', 'Другое начисление'],
     ['ded_fine', 'Штрафы'], ['ded_hold', 'Удержания']];
-  const DED_FIELDS = [['ded_fine', 'Штраф за опоздание'], ['ded_advance_card', 'Аванс на карту'], ['ded_advance_cash', 'Аванс наличными'], ['ded_hold', 'Удержание'], ['ded_emp_debt', 'Долг сотрудника'], ['ded_other', 'Другое удержание']];
+  const DED_FIELDS = [['ded_fine', 'Штраф за опоздание'], ['ded_advance_card', 'Аванс на карту'], ['ded_advance_cash', 'Аванс наличными'], ['ded_hold', 'Удержание'], ['accr_company_debt', 'Долг компании'], ['ded_emp_debt', 'Долг сотрудника'], ['ded_other', 'Другое удержание']];
   const PAID_FIELDS = [['paid_cash', 'Выплачено наличными'], ['paid_card', 'Выплачено на карту']];
   const salState = { period: '', department: '', schedule: '', status: '', q: '' };
   let salSel = new Set();
@@ -545,6 +587,7 @@
         el('button', { class: 'btn-primary', onclick: openFillNorms }, '📋 Заполнить нормы'),
         el('button', { class: 'btn-ghost', onclick: openTimesheetImport }, '📥 Импорт табеля'),
         el('button', { class: 'btn-ghost', onclick: () => openCardImport() }, '💳 Карты (Excel)'),
+        el('button', { class: 'btn-ghost', onclick: () => openCardStatementImport(salState.period) }, '🏦 Ведомость на карту'),
         el('button', { class: 'btn-ghost', onclick: () => openPayrollImport(salState.period) }, '📊 Импорт зарплаты'),
       ]),
     ]));
@@ -613,16 +656,15 @@
       const selAll = el('input', { type: 'checkbox', class: 'hr-chk' });
       selAll.onclick = (ev) => { const on = ev.target.checked; salSel = new Set(on ? withId.map((x) => x.id) : []); box.querySelectorAll('.hr-salchk').forEach((cc) => { cc.checked = on; }); updBulk(); };
       const HEADS = [
-        ['ФИО'], ['Отдел'],
+        ['ФИО'],
         ['Дн. п/ф', 'Плановые / фактические дни'],
         ['Часы п/ф', 'Плановые / фактические часы'],
-        ['Начислено', 'Оклад по табелю + основные начисления'],
-        ['Доп. нач.', 'Бонусы, премия, ГСМ, долг компании — клик по сумме, чтобы изменить'],
-        ['Удержано', 'Штрафы и удержания'],
-        ['Доп. удерж.', 'Прочие удержания — клик по сумме, чтобы изменить'],
+        ['Начислено', 'Оклад по табелю (факт)'],
+        ['Доп. нач.', 'Бонусы KPI, премия, ГСМ, больничные, отпускные, матпомощь — клик по сумме, чтобы изменить'],
+        ['Удержания', 'Штрафы, удержание, долг компании — клик по сумме, чтобы изменить'],
         ['Аванс', 'Выданные авансы: карта + наличные'],
         ['Выплачено', 'Выплаченная зарплата'],
-        ['К выплате', 'Итог к выдаче на руки: начислено − удержано − аванс − выплачено'],
+        ['К выплате', 'Итог к выдаче: начислено + доп. − удержания − аванс − выплачено'],
         ['Статус'],
       ];
       const head = el('div', { class: 'hr-row head hr-sal' }, [selAll, el('span', { class: 'hr-idx' }, '#'), ...HEADS.map(([h, t]) => el('span', t ? { title: t } : {}, h))]);
@@ -656,25 +698,23 @@
         return inp;
       };
       const pf = (r, a, b2) => el('span', { class: 'hr-pf' }, [cellNum(r, a), el('span', { class: 'hr-pf-sep' }, '/'), cellNum(r, b2)]);
-      box.appendChild(el('div', { class: 'hr-scroll-x' }, el('div', { class: 'hr-list' }, [head, ...d.items.map((r, i) => {
+      box.appendChild(el('div', { class: 'hr-list' }, [head, ...d.items.map((r, i) => {
         const chk = r.id ? el('input', { type: 'checkbox', class: 'hr-chk hr-salchk', onclick: (ev) => { ev.stopPropagation(); if (ev.target.checked) salSel.add(r.id); else salSel.delete(r.id); updBulk(); } }) : el('span', {});
         return el('div', { class: 'hr-row hr-sal', onclick: () => openPayroll(r) }, [
           chk,
           el('span', { class: 'hr-idx' }, String(i + 1)),
           el('span', { style: 'font-weight:700' }, r.full_name),
-          el('span', { class: 'muted' }, r.department_name || '—'),
           pf(r, 'plan_days', 'fact_days'),
           pf(r, 'plan_hours', 'fact_hours'),
-          el('span', { class: 'tnum' }, money(r.accrued)),
+          el('span', { class: 'tnum' }, money(r.accr_fact)),
           extraCell(r, 'Доп. начисления', EXTRA_ACCR),
-          el('span', { class: 'tnum' }, money(r.deducted)),
-          extraCell(r, 'Доп. удержания', EXTRA_DED),
+          extraCell(r, 'Удержания', EXTRA_DED),
           el('span', { class: 'tnum' }, [money((Number(r.ded_advance_card) || 0) + (Number(r.ded_advance_cash) || 0)), (Number(r.cash_advance) > 0 ? el('div', { style: 'font-size:11px;font-weight:700;color:#2e7d32;margin-top:2px;cursor:pointer;text-decoration:underline', title: 'Показать транзакции', onclick: (ev) => { ev.stopPropagation(); openCashTxs((r.cash_txs || []).filter((t) => t.kind === 'advance'), '💵 Авансы наличными — ' + (r.full_name || '')); } }, '💵 касса ' + money(r.cash_advance)) : null)]),
           el('span', { class: 'tnum' }, [money(r.paid), (Number(r.cash_paid) > 0 ? el('div', { style: 'font-size:11px;font-weight:700;color:#2e7d32;margin-top:2px;cursor:pointer;text-decoration:underline', title: 'Показать транзакции', onclick: (ev) => { ev.stopPropagation(); openCashTxs((r.cash_txs || []).filter((t) => t.kind !== 'advance'), '💵 Зарплата наличными — ' + (r.full_name || '')); } }, '💵 касса ' + money(r.cash_paid)) : null)]),
           el('span', { class: 'tnum', style: 'font-weight:800;color:#2e7d32' }, money(r.to_pay)),
           el('span', {}, el('span', { class: 'hr-st hr-pr-' + (r.id ? (r.status || 'draft') : 'none') }, r.id ? PR_STATUS[r.status || 'draft'] : 'нет')),
         ]);
-      })])));
+      })]));
     }
   }
 

@@ -80,8 +80,11 @@ async function ensureSchema() {
 // ВАЖНО: accr_salary (Фикса) — базовая ставка, НЕ входит в сумму «начислено».
 const ACCR_EXTRA = ['accr_sick', 'accr_vacation', 'accr_mataid', 'accr_comp_vac']; // больничные/отпускные/матпомощь/компенсация
 const ACCR_ALL = ['accr_salary', 'accr_fact', 'accr_bonus', 'accr_premium', 'accr_gsm', 'accr_company_debt', 'accr_other', ...ACCR_EXTRA];
-const ACCR = ['accr_fact', 'accr_bonus', 'accr_premium', 'accr_gsm', 'accr_company_debt', 'accr_other', ...ACCR_EXTRA]; // счётные
+const ACCR = ['accr_fact', 'accr_bonus', 'accr_premium', 'accr_gsm', 'accr_other', ...ACCR_EXTRA]; // счётные начисления (без «долга компании» — он удержание)
 const DED = ['ded_fine', 'ded_advance_card', 'ded_advance_cash', 'ded_hold', 'ded_emp_debt', 'ded_other'];
+// «Долг компании» (accr_company_debt) в итоге считается удержанием и уменьшает «К выплате».
+// В список колонок вставки он идёт через ACCR_ALL, поэтому в DED его не кладём (иначе дубль колонки) — только в сумму.
+const DED_SUM = [...DED, 'accr_company_debt'];
 const PAID = ['paid_cash', 'paid_card'];
 const PAYROLL_NUM = [...ACCR_ALL, ...DED, ...PAID, 'plan_days', 'fact_days', 'plan_hours', 'fact_hours', 'amount_1c'];
 
@@ -224,7 +227,7 @@ router.post('/api/employee/:id(\\d+)/status', J, async (req, res) => {
 
 // ---------- Зарплата ----------
 function withTotals(row) {
-  const accrued = sumF(row, ACCR), deducted = sumF(row, DED), paid = sumF(row, PAID);
+  const accrued = sumF(row, ACCR), deducted = sumF(row, DED_SUM), paid = sumF(row, PAID);
   return Object.assign({}, row, { accrued, deducted, paid, to_pay: accrued - deducted - paid });
 }
 // ---------- Выплаты зарплаты из наличной кассы (производно — всегда в синхроне с кассой) ----------
@@ -432,7 +435,7 @@ router.post('/api/timesheet-import', upload.single('file'), async (req, res) => 
 // Обычный /api/payroll перезаписывает всю строку — для одной ячейки он не годится.
 // accr_fact сюда не входит: оклад считается автоматически по формуле.
 const CELL_FIELDS = new Set(['plan_days', 'fact_days', 'plan_hours', 'fact_hours', 'overtime_hours',
-  ...ACCR.filter((f) => f !== 'accr_fact'), ...DED, ...PAID]);
+  ...ACCR.filter((f) => f !== 'accr_fact'), 'accr_company_debt', ...DED, ...PAID]);
 const CELL_RECALC = ['plan_days', 'fact_days', 'plan_hours', 'fact_hours', 'overtime_hours'];
 router.post('/api/payroll/cell', J, async (req, res) => {
   try {
@@ -726,6 +729,67 @@ router.post('/api/cards/import', upload.single('file'), async (req, res) => {
     await db.log(req.user.id, 'hr_cards_import', `обновлено ${updated}`);
     res.json({ ok: true, updated, notFound: notFound.slice(0, 30), notFoundCount: notFound.length });
   } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Импорт банковской ведомости по карте: суммы садятся в paid_card (выплата) или ded_advance_card (аванс).
+// Сопоставление по номеру карты (16 цифр из назначения). ФИО в выписке — полные латиницей, по ним не матчим.
+router.post('/api/cards/statement-import', upload.single('file'), async (req, res) => {
+  try {
+    const period = /^\d{4}-\d{2}$/.test(req.body.period) ? req.body.period : null;
+    if (!period) return res.status(400).json({ error: 'Нет периода' });
+    if (!req.file) return res.status(400).json({ error: 'Файл не выбран' });
+    const mode = req.body.mode === 'advance' ? 'advance' : 'payout';
+    const field = mode === 'advance' ? 'ded_advance_card' : 'paid_card';
+    const dry = String(req.body.dry) === 'true' || req.query.dry === '1';
+    const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
+    // Денежная ячейка: «1 500 000.00» / «3 000 000» — с разрядами-пробелами (чтобы не спутать со счётом/№ документа).
+    const moneyOf = (s) => { const m = String(s == null ? '' : s).match(/\d{1,3}(?:\s\d{3})+(?:[.,]\d{1,2})?/); return m ? Number(m[0].replace(/\s/g, '').replace(',', '.')) : 0; };
+    const agg = {}; // card → { card, fio, amount }
+    for (const sn of wb.SheetNames) {
+      const grid = XLSX.utils.sheet_to_json(wb.Sheets[sn], { header: 1, raw: false, defval: '' });
+      for (const r of grid) {
+        const cells = (r || []).map((c) => String(c == null ? '' : c));
+        const cm = cells.join(' | ').match(/(?<!\d)(\d{16})(?!\d)/);   // карта = ровно 16 цифр (счёт — 20, № док короче)
+        if (!cm) continue;
+        const card = cm[1];
+        let fio = '';
+        for (const c of cells) { if (/\/\d*\/\s*[A-Za-z]/.test(c)) { const parts = c.split('/'); if (parts[2]) { fio = parts[2].split('(')[0].trim(); break; } } }
+        let amount = 0;
+        for (const c of cells) { const v = moneyOf(c); if (v > 0) amount = v; }   // последняя денежная ячейка строки = зачисление сотруднику
+        if (amount <= 0) continue;
+        if (!agg[card]) agg[card] = { card, fio, amount: 0 };
+        agg[card].amount += amount;
+      }
+    }
+    const list = Object.values(agg);
+    if (!list.length) return res.status(400).json({ error: 'Не нашёл строк с номером карты и суммой. Это точно выписка по картам?' });
+    const emps = (await db.pool.query(
+      "SELECT id, full_name, regexp_replace(COALESCE(card_number,''),'\\D','','g') AS card FROM hr_employees WHERE status<>'archived' AND COALESCE(card_number,'')<>''")).rows;
+    const byCard = {}; emps.forEach((e) => { if (e.card) byCard[e.card] = e; });
+    const matched = [], unmatched = []; let total = 0;
+    for (const it of list) {
+      total += it.amount;
+      const e = byCard[it.card];
+      if (e) matched.push({ emp_id: e.id, name: e.full_name, card: it.card, amount: it.amount });
+      else unmatched.push({ fio: it.fio, card: it.card, amount: it.amount });
+    }
+    if (!dry) {
+      const client = await db.pool.connect();
+      try {
+        await client.query('BEGIN');
+        for (const m of matched) {
+          await client.query(
+            `INSERT INTO hr_payroll (employee_id, period, ${field}, created_by) VALUES ($1,$2,$3,$4)
+             ON CONFLICT (employee_id, period) DO UPDATE SET ${field}=EXCLUDED.${field}, updated_at=now()`,
+            [m.emp_id, period, m.amount, req.user.id]);
+        }
+        await client.query('COMMIT');
+      } catch (e) { await client.query('ROLLBACK').catch(() => {}); return res.status(400).json({ error: e.message }); }
+      finally { client.release(); }
+      await db.log(req.user.id, 'hr_card_statement', `${period} ${mode}: ${matched.length} на ${Math.round(total)}`);
+    }
+    res.json({ ok: true, dry, mode, period, matched, unmatched, total, count: list.length });
+  } catch (e) { res.status(400).json({ error: 'Не удалось прочитать файл: ' + e.message }); }
 });
 
 // Шаблон Excel табеля за период — со списком сотрудников и текущими план/факт.
