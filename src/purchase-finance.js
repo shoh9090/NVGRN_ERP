@@ -7,8 +7,12 @@ const db = require('./db');
 function enrichOrderFinance(o) {
   const received = o.status === 'received';
   const factTotal = Number(o.fact_total) || 0;
+  const planTotal = Number(o.total) || 0;
   const paid = Number(o.paid) || 0;
-  const base = received ? factTotal : 0;          // долг по заявке = фактически принято
+  // Долг по заявке = стоимость фактически принятого. Берём total = COALESCE(факт, план) по кол-ву И цене —
+  // ровно та же формула, что во Взаиморасчётах. Строгий fact_total не годится: приёмка сырья пишет
+  // только fact_qty, а fact_price остаётся пустым → fact_total=0, и заявка ошибочно показывалась «Оплачено».
+  const base = received ? (planTotal || factTotal) : 0;
   const remainder = base - paid;
   const cond = o.pay_condition || 'on_fact';
   // received_at приходит из pg как Date, delivery_date — как строка 'YYYY-MM-DD'.
