@@ -701,7 +701,9 @@ router.get('/api/dashboard', async (req, res) => {
   };
   // Кому переплачено (выплачено больше, чем к выплате) — для клика по «переплата» на дашборде.
   const overpaid = rows.filter((r) => r.to_pay < -0.5).map((r) => ({ name: r.full_name, dept: r.dept || '—', amount: -r.to_pay })).sort((a, b) => b.amount - a.amount);
-  res.json({ period, byDept: deptArr, totals, overpaid });
+  // По сотрудникам — для разреза по клику на плитки дашборда.
+  const emps = rows.map((r) => ({ full_name: r.full_name, dept: r.dept || '—', accrued: r.accrued, deducted: r.deducted, paid: r.paid, to_pay: r.to_pay, advances: advOf(r) }));
+  res.json({ period, byDept: deptArr, totals, overpaid, emps });
 });
 
 // ---------- Отделы ----------

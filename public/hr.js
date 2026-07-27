@@ -154,10 +154,10 @@
     const uderzh = (Number(t.deducted) || 0) - (Number(t.advances) || 0);   // удержания без авансов
     const vyplacheno = (Number(t.paid) || 0) + (Number(t.advances) || 0);    // выплачено вместе с авансами
     box.appendChild(el('div', { class: 'hr-kpis hr-kpis-4' }, [
-      kpi('Начислено (ФОТ)', moneyShort(t.accrued), 'green'),
-      kpi('− Удержания', moneyShort(uderzh), 'muted'),
-      kpi('− Выплачено', moneyShort(vyplacheno), 'ink', null, t.advances ? 'в т.ч. аванс ' + moneyShort(t.advances) : ''),
-      kpi('= К выплате', moneyShort(t.to_pay), 'green', t.overpay ? () => openOverpaid(d.overpaid || []) : null, t.overpay ? 'переплата ' + moneyShort(t.overpay) + ' · клик' : ''),
+      kpi('Начислено (ФОТ)', moneyShort(t.accrued), 'green', () => openBreakdown('Начислено', d.emps || [], (r) => r.accrued, dashState.period)),
+      kpi('− Удержания', moneyShort(uderzh), 'muted', () => openBreakdown('Удержания', d.emps || [], (r) => (Number(r.deducted) || 0) - (Number(r.advances) || 0), dashState.period)),
+      kpi('− Выплачено', moneyShort(vyplacheno), 'ink', () => openBreakdown('Выплачено (с авансами)', d.emps || [], (r) => (Number(r.paid) || 0) + (Number(r.advances) || 0), dashState.period), t.advances ? 'в т.ч. аванс ' + moneyShort(t.advances) : ''),
+      kpi('= К выплате', moneyShort(t.to_pay), 'green', t.overpay ? () => openOverpaid(d.overpaid || []) : () => openBreakdown('К выплате (остаток)', d.emps || [], (r) => Math.max(0, r.to_pay), dashState.period), t.overpay ? 'переплата ' + moneyShort(t.overpay) + ' · клик' : 'клик'),
     ]));
     box.appendChild(el('div', { class: 'hr-sub', style: 'margin:2px 0 6px' }, 'Начислено − Удержания − Выплачено (с авансами) = К выплате.' + (t.overpay ? ' Переплата ' + moneyShort(t.overpay) + ' (кому-то выдали больше — на общий остаток не влияет).' : '') + '  ·  Сотрудников: ' + t.count));
     if (!d.byDept.length) { box.appendChild(el('div', { class: 'hr-empty' }, 'Нет данных за месяц.')); return; }
@@ -342,11 +342,11 @@
   }
   function kpi(label, val, cls, onClick, sub) { return el('div', { class: 'hr-kpi' + (onClick ? ' hr-kpi-click' : ''), onclick: onClick || null, title: onClick ? 'Клик — в разрезе по сотрудникам' : null }, [el('div', { class: 'hr-kpi-l' }, label), el('div', { class: 'hr-kpi-v hr-kpi-' + cls }, String(val)), sub ? el('div', { class: 'hr-kpi-sub' }, sub) : null]); }
   // Разрез KPI по сотрудникам: список ФИО + сумма (по убыванию) + итог.
-  function openBreakdown(title, items, fn) {
+  function openBreakdown(title, items, fn, period) {
     const list = (items || []).map((r) => ({ name: r.full_name, val: Number(fn(r)) || 0 })).filter((x) => x.val).sort((a, b) => b.val - a.val);
     const total = list.reduce((s, x) => s + x.val, 0);
     const body = el('div', {}, [
-      el('div', { class: 'hr-note' }, title + ' · ' + monthLabel(salState.period) + ' · ' + list.length + ' чел.'),
+      el('div', { class: 'hr-note' }, title + ' · ' + monthLabel(period || salState.period) + ' · ' + list.length + ' чел.'),
       list.length ? el('div', { class: 'oe-table-wrap', style: 'max-height:56vh;margin-top:8px' }, el('table', { class: 'dict-table' }, [
         el('thead', {}, el('tr', {}, [el('th', {}, '#'), el('th', {}, 'ФИО'), el('th', { style: 'text-align:right' }, 'Сумма')])),
         el('tbody', {}, [...list.map((x, i) => el('tr', {}, [el('td', { class: 'muted' }, String(i + 1)), el('td', {}, x.name), el('td', { class: 'tnum', style: 'text-align:right;font-weight:700' }, money(x.val))])),
