@@ -2377,6 +2377,83 @@ router.post('/api/obligations/schedule/:id(\\d+)/pay', J, async (req, res) => {
   res.json({ ok: true });
 });
 
+// Платежи по кредитам из выписки (статья 60 «Проценты» / 61 «Погашение кредита»), которые ещё
+// не привязаны ни к одному графику — «к разнесению». Их вручную разносят на конкретный кредит.
+router.get('/api/obligations/unassigned-payments', async (req, res) => {
+  try {
+    const rows = (await db.pool.query(
+      `SELECT t.id, to_char(t.tx_date,'YYYY-MM-DD') AS tx_date, t.amount, t.purpose,
+              c.code AS cat_code, c.name AS cat_name, w.name AS wallet_name, t.payer_name
+         FROM cash_transactions t
+         JOIN cash_categories c ON c.id = t.category_id AND c.code IN ('60','61')
+         LEFT JOIN cash_wallets w ON w.id = t.wallet_id
+        WHERE t.tx_type='out' AND COALESCE(t.source,'') <> 'obligation'
+          AND NOT EXISTS (SELECT 1 FROM finance_obligation_payment_links l
+                          WHERE l.cash_transaction_id = t.id AND l.reversed_at IS NULL)
+        ORDER BY t.tx_date DESC, t.id DESC`)).rows;
+    res.json({ items: rows });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Ближайший неоплаченный месяц графика кредита — для предложения разбивки тело/проценты при разносе.
+router.get('/api/obligations/loans/:id(\\d+)/next-installment', async (req, res) => {
+  try {
+    const ver = (await db.pool.query('SELECT COALESCE(MAX(version_no),0) v FROM finance_obligation_schedule WHERE obligation_id=$1', [req.params.id])).rows[0].v;
+    const s = (await db.pool.query(
+      `SELECT s.*,
+              COALESCE((SELECT SUM(principal_paid) FROM finance_obligation_payment_links l WHERE l.schedule_id=s.id AND l.reversed_at IS NULL),0) AS pr_paid,
+              COALESCE((SELECT SUM(interest_paid)  FROM finance_obligation_payment_links l WHERE l.schedule_id=s.id AND l.reversed_at IS NULL),0) AS ip_paid,
+              COALESCE((SELECT SUM(fee_paid)       FROM finance_obligation_payment_links l WHERE l.schedule_id=s.id AND l.reversed_at IS NULL),0) AS fe_paid
+         FROM finance_obligation_schedule s
+        WHERE s.obligation_id=$1 AND s.version_no=$2 AND s.status NOT IN ('paid','cancelled')
+        ORDER BY s.due_date, s.installment_no LIMIT 1`, [req.params.id, ver])).rows[0];
+    res.json({ installment: s || null });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Разнести существующий расход из Кассы на кредит: гасит выбранный (или ближайший) месяц графика.
+// Деньги уже в Кассе (из выписки) — новую транзакцию НЕ создаём, только связку (дедуп по cash_transaction_id).
+router.post('/api/obligations/assign-payment', J, async (req, res) => {
+  if (!canFin(req)) return res.status(403).json({ error: 'Разносить платежи может администратор/финансы' });
+  const b = req.body || {};
+  const txId = intOrNull(b.cash_transaction_id);
+  const oblId = intOrNull(b.obligation_id);
+  if (!txId || !oblId) return res.status(400).json({ error: 'Не указан платёж или кредит' });
+  const tx = (await db.pool.query("SELECT id, amount, to_char(tx_date,'YYYY-MM-DD') d FROM cash_transactions WHERE id=$1 AND tx_type='out'", [txId])).rows[0];
+  if (!tx) return res.status(404).json({ error: 'Платёж не найден' });
+  const dup = (await db.pool.query('SELECT 1 FROM finance_obligation_payment_links WHERE cash_transaction_id=$1 AND reversed_at IS NULL LIMIT 1', [txId])).rows[0];
+  if (dup) return res.status(400).json({ error: 'Этот платёж уже разнесён' });
+  const pr = Math.max(0, Number(b.principal_paid) || 0);
+  const ip = Math.max(0, Number(b.interest_paid) || 0);
+  const fe = Math.max(0, Number(b.fee_paid) || 0);
+  if (pr + ip + fe <= 0) return res.status(400).json({ error: 'Укажите разбивку платежа (тело/проценты)' });
+  let sid = intOrNull(b.schedule_id);
+  if (!sid) {
+    const ver = (await db.pool.query('SELECT COALESCE(MAX(version_no),0) v FROM finance_obligation_schedule WHERE obligation_id=$1', [oblId])).rows[0].v;
+    const s = (await db.pool.query(
+      `SELECT id FROM finance_obligation_schedule WHERE obligation_id=$1 AND version_no=$2 AND status NOT IN ('paid','cancelled') ORDER BY due_date, installment_no LIMIT 1`, [oblId, ver])).rows[0];
+    sid = s ? s.id : null;
+  }
+  if (!sid) return res.status(400).json({ error: 'У кредита нет неоплаченного месяца в графике — сначала построй график' });
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      `INSERT INTO finance_obligation_payment_links (schedule_id, obligation_id, cash_transaction_id, payment_date, principal_paid, interest_paid, fee_paid, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [sid, oblId, txId, tx.d, pr, ip, fe, req.user.id]);
+    const s = (await client.query('SELECT total_due FROM finance_obligation_schedule WHERE id=$1', [sid])).rows[0];
+    const paid = Number((await client.query('SELECT COALESCE(SUM(principal_paid+interest_paid+fee_paid),0) v FROM finance_obligation_payment_links WHERE schedule_id=$1 AND reversed_at IS NULL', [sid])).rows[0].v);
+    const st = paid >= Number(s.total_due) - 0.01 ? 'paid' : 'partial';
+    await client.query('UPDATE finance_obligation_schedule SET status=$1 WHERE id=$2', [st, sid]);
+    await client.query("UPDATE finance_obligations SET status='active', updated_at=now() WHERE id=$1 AND status='draft'", [oblId]);
+    await client.query('COMMIT');
+  } catch (e) { await client.query('ROLLBACK').catch(() => {}); return res.status(400).json({ error: e.message }); }
+  finally { client.release(); }
+  await db.log(req.user.id, 'obl_assign_payment', `tx#${txId} → кредит #${oblId}, строка #${sid}`);
+  res.json({ ok: true });
+});
+
 // Массовая историческая отметка: все строки графика со сроком ДО указанной даты (включительно)
 // помечаются полностью оплаченными БЕЗ движения денег в Кассе (для старых кредитов/аренды с 2024-25).
 router.post('/api/obligations/:id(\\d+)/mark-paid-until', J, async (req, res) => {

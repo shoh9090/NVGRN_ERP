@@ -603,6 +603,9 @@
         isAdmin() ? el('button', { class: 'btn-ghost cash-add', onclick: () => oblLoanForm(null, group) }, group === 'bank' ? '+ Кредит' : '+ Заём') : null,
       ]),
     ]));
+    if (group === 'bank') {
+      try { const u = await api('/obligations/unassigned-payments'); if (u.items && u.items.length) box.appendChild(renderUnassignedPanel(u.items)); } catch (e) { /* панель необязательна */ }
+    }
     let d; try { d = await api('/obligations/loans?group=' + group); } catch (e) { box.appendChild(el('div', { class: 'cash-empty' }, 'Ошибка: ' + e.message)); return; }
     if (!d.items.length) { box.appendChild(el('div', { class: 'cash-empty' }, 'Пока нет записей. ' + (isAdmin() ? 'Нажмите «+».' : ''))); return; }
     const cols = group === 'bank'
@@ -620,6 +623,76 @@
       el('td', { style: 'padding:7px 10px' }, el('span', { class: 'cash-flow', style: 'background:#eef1ec;color:var(--forest)' }, LOAN_STATUS[o.status] || o.status)),
     ])));
     box.appendChild(el('div', { style: 'overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:#fff' }, el('table', { style: 'border-collapse:collapse;width:100%;font-size:13px' }, [thead, tb])));
+  }
+
+  // Панель «Платежи по кредитам к разнесению»: оплаты из выписки (статья 60/61) без привязки к графику.
+  function renderUnassignedPanel(items) {
+    const total = items.reduce((s, x) => s + Number(x.amount || 0), 0);
+    const rows = items.map((x) => el('div', { class: 'cash-row', style: 'grid-template-columns:92px 1fr 130px 96px' }, [
+      el('span', {}, ruDate(x.tx_date)),
+      el('span', { class: 'cash-purpose', title: x.purpose || '' }, (x.cat_code === '60' ? 'Проценты' : 'Погашение') + ' · ' + (x.purpose || x.payer_name || x.wallet_name || '—')),
+      el('span', { style: 'text-align:right;font-weight:700' }, money(x.amount) + ' сум'),
+      el('span', { style: 'text-align:right' }, el('button', { class: 'btn-ghost cash-add', style: 'padding:4px 10px;font-size:12px', onclick: () => openAssignPayment(x) }, 'Разнести')),
+    ]));
+    return el('div', { class: 'cash-internal', style: 'border-color:#e6c98a;background:#fdf7ea' }, [
+      el('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:6px' }, [
+        el('div', { style: 'font-weight:800;color:#8a5a00' }, '⚠ Платежи по кредитам к разнесению (' + items.length + ')'),
+        el('div', { style: 'font-weight:700' }, money(total) + ' сум'),
+      ]),
+      el('div', { class: 'cash-sub', style: 'margin:0 0 8px' }, 'Оплаты со статьёй «Погашение кредита»/«Проценты» из выписки, ещё не привязанные к кредиту. Разнеси каждую на нужный кредит — погасит месяц графика.'),
+      el('div', { class: 'cash-list' }, rows),
+    ]);
+  }
+
+  async function openAssignPayment(tx) {
+    let loans = [];
+    try { const d = await api('/obligations/loans'); loans = d.items || []; } catch (e) { return toast(e.message, true); }
+    const active = loans.filter((o) => o.status !== 'closed' && o.status !== 'cancelled');
+    if (!active.length) return toast('Нет кредитов для привязки — сначала создай кредит', true);
+    const sel = fsel(active.map((o) => ({ v: o.id, t: o.creditor_name + (o.agreement_number ? ' · ' + o.agreement_number : '') })), active[0].id);
+    const info = el('div', { class: 'cash-note-info', style: 'margin:6px 0' }, '—');
+    const prInp = fmoney('', { placeholder: 'тело' });
+    const ipInp = fmoney('', { placeholder: 'проценты' });
+    const feInp = fmoney('', { placeholder: 'комиссия' });
+    const sumNote = el('div', { class: 'cash-sub', style: 'margin-top:4px' }, '');
+    const amount = Math.round(Number(tx.amount) || 0);
+    let schedId = null;
+    function refreshSum() {
+      const s = (Number(moneyVal(prInp)) || 0) + (Number(moneyVal(ipInp)) || 0) + (Number(moneyVal(feInp)) || 0);
+      const diff = amount - s;
+      sumNote.textContent = 'Разбивка: ' + money(s) + ' из ' + money(amount) + (Math.abs(diff) > 1 ? (' · осталось разложить ' + money(diff)) : ' ✓');
+    }
+    async function loadNext() {
+      info.textContent = 'Считаю…'; schedId = null;
+      try {
+        const r = await api('/obligations/loans/' + sel.value + '/next-installment');
+        const s = r.installment;
+        if (!s) { info.textContent = 'У кредита нет неоплаченного месяца — построй график в карточке кредита.'; prInp.value = ipInp.value = feInp.value = ''; refreshSum(); return; }
+        schedId = s.id;
+        const remInt = Math.max(0, (Number(s.interest_due) || 0) - (Number(s.ip_paid) || 0));
+        const remFee = Math.max(0, (Number(s.fee_due) || 0) - (Number(s.fe_paid) || 0));
+        const ip = Math.min(amount, remInt);
+        const fe = Math.min(amount - ip, remFee);
+        const pr = Math.max(0, amount - ip - fe);
+        ipInp.value = Math.round(ip); feInp.value = Math.round(fe); prInp.value = Math.round(pr);
+        info.textContent = 'Ближайший месяц: №' + s.installment_no + ' · срок ' + ruDate(s.due_date) + ' · тело ' + money(s.principal_due) + ' · % ' + money(s.interest_due);
+        refreshSum();
+      } catch (e) { info.textContent = e.message; }
+    }
+    sel.onchange = loadNext; [prInp, ipInp, feInp].forEach((i) => { i.oninput = refreshSum; });
+    const save = el('button', { class: 'btn-primary', onclick: async () => {
+      try {
+        await post('/obligations/assign-payment', { cash_transaction_id: tx.id, obligation_id: sel.value, schedule_id: schedId, principal_paid: moneyVal(prInp), interest_paid: moneyVal(ipInp), fee_paid: moneyVal(feInp) });
+        toast('Платёж разнесён на кредит'); closeModal(); renderObligations();
+      } catch (e) { toast(e.message, true); }
+    } }, 'Разнести');
+    const body = el('div', { class: 'cashf' }, [
+      el('div', { class: 'cash-note-info' }, 'Платёж из выписки: ' + ruDate(tx.tx_date) + ' · ' + money(tx.amount) + ' сум' + (tx.purpose ? ' · ' + tx.purpose : '')),
+      frow('Кредит', sel), info,
+      frow('Тело кредита', prInp), frow('Проценты', ipInp), frow('Комиссия', feInp), sumNote,
+    ]);
+    modal('Разнести платёж на кредит', body, [save]);
+    loadNext();
   }
 
   function oblLoanForm(loan, group) {
