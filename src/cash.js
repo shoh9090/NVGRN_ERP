@@ -32,6 +32,13 @@ async function guessCategoryByKeyword(text) {
   return null;
 }
 
+// Группа статей «Сырьё» — по ней наличный расход по умолчанию считается выдачей снабженцу под отчёт.
+const SIRYE_GROUP = '1. Сырьё и переменные затраты';
+async function siryeCatIdSet() {
+  const rows = (await db.pool.query("SELECT id FROM cash_categories WHERE group_name=$1", [SIRYE_GROUP])).rows;
+  return new Set(rows.map((r) => r.id));
+}
+
 // ---------- Схема и сидирование (идемпотентно) ----------
 let _ready = false;
 async function ensureCashSchema() {
@@ -140,6 +147,9 @@ async function ensureCashSchema() {
   // это один перевод. Обе ноги двигают только свой кошелёк и исключены из прихода/расхода отчёта.
   await q(`ALTER TABLE cash_transactions ADD COLUMN IF NOT EXISTS transfer_group_id INT`);
   await q(`CREATE INDEX IF NOT EXISTS idx_cash_tx_tgroup ON cash_transactions (transfer_group_id)`);
+  // Наличный расход «выдача снабженцу под отчёт» (галочка в Наличной кассе). По умолчанию включается
+  // при импорте/вводе для расходов группы «Сырьё». Остаток подотчёта = выдано − оплачено поставщикам налом.
+  await q(`ALTER TABLE cash_transactions ADD COLUMN IF NOT EXISTS is_supply_advance BOOLEAN NOT NULL DEFAULT false`);
   // Есть ли у кошелька своя выписка (банки — да, наличная касса — нет). Определяет форму разбора А2:
   // получатель с выпиской → пара ног; получатель без выписки (касса) → одиночный transfer.
   await q(`ALTER TABLE cash_wallets ADD COLUMN IF NOT EXISTS has_statement BOOLEAN NOT NULL DEFAULT true`);
@@ -976,6 +986,7 @@ router.post('/api/cashbox/import/commit', J, async (req, res) => {
     if (!wallet_id) return res.status(400).json({ error: 'Нет кассы' });
     const codeToCat = {};
     (await db.pool.query("SELECT id, code FROM cash_categories WHERE status='active'")).rows.forEach((c) => { codeToCat[String(c.code)] = c.id; });
+    const siryeSet = await siryeCatIdSet(); // расход «Сырьё» = по умолчанию выдача снабженцу под отчёт
     await client.query('BEGIN');
     // Начальный остаток (по желанию) — заменяем opening этой кассы.
     if (req.body.setOpening && data.opening && data.openingDate) {
@@ -997,10 +1008,11 @@ router.post('/api/cashbox/import/commit', J, async (req, res) => {
       const key = e.date + '|' + Number(e.amount) + '|' + e.tx_type + '|' + e.currency + '|' + (e.purpose || '');
       if (existing.has(key)) { skip++; continue; }
       const catId = e.code ? (codeToCat[e.code] || null) : null;
+      const supplyAdv = e.tx_type === 'out' && catId != null && siryeSet.has(catId);
       await client.query(
-        `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, category_id, purpose, source, import_batch_id, is_classified, currency, fx_rate, fx_amount, created_by)
-         VALUES ($1,$2,$3,$4,$5,$6,'import',$7,$8,$9,$10,$11,$12)`,
-        [e.date, e.amount, e.tx_type, wallet_id, catId, e.purpose || null, batch, !!catId, e.currency || 'UZS', e.fx_rate, e.fx_amount, req.user.id]);
+        `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, category_id, purpose, source, import_batch_id, is_classified, currency, fx_rate, fx_amount, is_supply_advance, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,'import',$7,$8,$9,$10,$11,$12,$13)`,
+        [e.date, e.amount, e.tx_type, wallet_id, catId, e.purpose || null, batch, !!catId, e.currency || 'UZS', e.fx_rate, e.fx_amount, supplyAdv, req.user.id]);
       ins++;
     }
     await client.query('UPDATE cash_import_batches SET count=$1 WHERE id=$2', [ins, batch]);
@@ -1179,7 +1191,7 @@ router.get('/api/transactions', async (req, res) => {
   const pageP = p.slice(); pageP.push(pageSize, offset);
   const rows = (await db.pool.query(
     `SELECT t.*, COALESCE(t.report_hidden,false) AS hidden, w.name AS wallet_name, w.color AS wallet_color, w2.name AS wallet_to_name,
-            cp.name AS cp_name, cat.code AS cat_code, cat.name AS cat_name${obnalCols}
+            cp.name AS cp_name, cat.code AS cat_code, cat.name AS cat_name, cat.group_name AS cat_group${obnalCols}
      FROM cash_transactions t
      LEFT JOIN cash_wallets w ON w.id = t.wallet_id
      LEFT JOIN cash_wallets w2 ON w2.id = t.wallet_to_id
@@ -1253,10 +1265,19 @@ router.post('/api/tx', J, async (req, res) => {
     // из пояснения, теми же словами, что уже используются в общем авто-разборе.
     if (!cat && b.purpose) cat = await guessCategoryByKeyword(b.purpose);
     const currency = b.currency === 'USD' ? 'USD' : 'UZS';
+    // Выдача снабженцу под отчёт: наличный расход (кошелёк kind='cash') со статьёй «Сырьё» — по умолчанию да.
+    let supplyAdv = false;
+    if (type === 'out') {
+      if (b.is_supply_advance !== undefined) supplyAdv = !!b.is_supply_advance;
+      else if (cat != null) {
+        const wk = (await db.pool.query('SELECT kind FROM cash_wallets WHERE id=$1', [wallet])).rows[0];
+        if (wk && wk.kind === 'cash') supplyAdv = (await siryeCatIdSet()).has(cat);
+      }
+    }
     const ins = await db.pool.query(
-      `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, wallet_to_id, counterparty_id, contract_id, category_id, purpose, source, is_classified, payer_name, currency, fx_rate, fx_amount, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'manual',$10,$11,$12,$13,$14,$15) RETURNING id`,
-      [date, amount, type, wallet, intOrNull(b.wallet_to_id), intOrNull(b.counterparty_id), intOrNull(b.contract_id), cat, b.purpose || null, !!cat, b.payer_name || null, currency, numOrNull(b.fx_rate), numOrNull(b.fx_amount), req.user.id]);
+      `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, wallet_to_id, counterparty_id, contract_id, category_id, purpose, source, is_classified, payer_name, currency, fx_rate, fx_amount, is_supply_advance, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'manual',$10,$11,$12,$13,$14,$15,$16) RETURNING id`,
+      [date, amount, type, wallet, intOrNull(b.wallet_to_id), intOrNull(b.counterparty_id), intOrNull(b.contract_id), cat, b.purpose || null, !!cat, b.payer_name || null, currency, numOrNull(b.fx_rate), numOrNull(b.fx_amount), supplyAdv, req.user.id]);
     await db.log(req.user.id, 'cash_tx_add', type + ' ' + amount);
     return res.json({ ok: true, id: ins.rows[0].id });
   }
@@ -1305,14 +1326,17 @@ router.post('/api/tx/:id(\\d+)', J, async (req, res) => {
     }
   }
   const currency = (b.currency === 'USD' || b.currency === 'UZS') ? b.currency : null;
+  // Галочка «выдача снабженцу» — меняем только если поле пришло явно (обычная правка ячеек её не трогает).
+  const supplyAdv = (b.is_supply_advance === undefined || b.is_supply_advance === null) ? null : !!b.is_supply_advance;
   await db.pool.query(
     `UPDATE cash_transactions SET tx_date=COALESCE($1,tx_date), amount=COALESCE($2,amount),
        counterparty_id=$3, contract_id=$4, category_id=$5, purpose=$6, is_classified=$7,
        payer_name=COALESCE($9,payer_name), wallet_to_id=$10,
        tx_type=COALESCE($11,tx_type), needs_cash_confirm=COALESCE($12,needs_cash_confirm),
-       currency=COALESCE($13,currency), fx_rate=COALESCE($14,fx_rate), fx_amount=COALESCE($15,fx_amount)
+       currency=COALESCE($13,currency), fx_rate=COALESCE($14,fx_rate), fx_amount=COALESCE($15,fx_amount),
+       is_supply_advance=COALESCE($16,is_supply_advance)
      WHERE id=$8`,
-    [b.tx_date || null, b.amount ? Number(b.amount) : null, intOrNull(b.counterparty_id), intOrNull(b.contract_id), cat, b.purpose || null, !!cat, req.params.id, b.payer_name != null ? b.payer_name : null, walletTo, newType, needsCashConfirm, currency, numOrNull(b.fx_rate), numOrNull(b.fx_amount)]);
+    [b.tx_date || null, b.amount ? Number(b.amount) : null, intOrNull(b.counterparty_id), intOrNull(b.contract_id), cat, b.purpose || null, !!cat, req.params.id, b.payer_name != null ? b.payer_name : null, walletTo, newType, needsCashConfirm, currency, numOrNull(b.fx_rate), numOrNull(b.fx_amount), supplyAdv]);
   await db.log(req.user.id, 'cash_tx_edit', '#' + req.params.id);
   res.json({ ok: true });
 });

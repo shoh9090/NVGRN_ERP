@@ -129,3 +129,15 @@
 .pur-orders{font-size:13px}
 .pur-orders th,.pur-orders td{white-space:nowrap;padding:8px 10px}
 .pur-orders td:nth-child(3){white-space:normal}   /* поставщик может переноситься */
+
+/* Панель «Подотчёт снабженца» во Взаиморасчётах */
+.pur-supply-advance{margin:10px 0 4px}
+.sa-title{font-weight:800;color:var(--forest,#163a28);margin-bottom:6px}
+.sa-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px}
+.sa-card{background:#fff;border:1px solid #e3e0d6;border-radius:12px;padding:10px 14px}
+.sa-label{font-size:12px;color:#6b7266;margin-bottom:4px}
+.sa-val{font-size:20px;font-weight:800;font-variant-numeric:tabular-nums}
+.sa-card.sa-bal{border-color:#e5b8b0;background:#fdf4f2}
+.sa-card.sa-bal .sa-val{color:var(--red,#b23b2e)}
+.sa-card.sa-ok{border-color:#c7dcb3;background:#f4f8ee}
+.sa-card.sa-ok .sa-val{color:#3f6a16}

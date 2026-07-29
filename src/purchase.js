@@ -186,6 +186,10 @@ const settlementsData = (query) => pfin.settlements(query);
 router.get('/api/settlements', async (req, res) => {
   try { res.json(await settlementsData(req.query)); } catch (e) { res.status(400).json({ error: e.message }); }
 });
+// Подотчёт снабженца (выдано налом из Кассы − оплачено поставщикам налом). Для панели во Взаиморасчётах.
+router.get('/api/supply-advance', async (req, res) => {
+  try { res.json(await pfin.supplyAdvance()); } catch (e) { res.status(400).json({ error: e.message }); }
+});
 // Экспорт Взаиморасчётов в Excel с учётом фильтров и выбранных столбцов.
 router.get('/api/settlements-export.xlsx', async (req, res) => {
   try {

@@ -1283,6 +1283,7 @@
 
   // ---------- Наличная касса: построчный Приход/Расход, доллар + курс ЦБ, сальдо на начало/конец ----------
   const cbState = { type: 'in', wallet: '', from: '', to: '', q: '', category: '', classified: '', page: 1, pageSize: 50, lastAddedId: null, selected: {} };
+  const SIRYE_GROUP = '1. Сырьё и переменные затраты'; // расход этой группы = по умолчанию выдача снабженцу
 
   // Импорт «Наличной кассы» из Excel: предпросмотр → запись.
   function openCashboxImport(walletId) {
@@ -1612,9 +1613,16 @@
           save({ amount: v });
         } });
       }
+      // Расход «Сырьё» (или уже отмеченный) — галочка «выдача снабженцу под отчёт».
+      const actions = [];
+      if (!isIn && (x.cat_group === SIRYE_GROUP || x.is_supply_advance)) {
+        const advCb = el('input', { type: 'checkbox', class: 'cb-adv', checked: x.is_supply_advance ? true : null, onchange: (e) => save({ is_supply_advance: e.target.checked }) });
+        actions.push(el('label', { class: 'cb-adv-wrap', title: 'Выдача снабженцу под отчёт (учесть в остатке снабженца)' }, [advCb, el('span', { class: 'cb-adv-ic' }, '🧾')]));
+      }
+      actions.push(trash);
       return el('div', { class: 'cash-row cash-cb' + (isNew ? ' cb-new' : '') }, [
         cb, dateI, purI, catI, valCell, rateCell, amtCell,
-        el('span', { class: 'cb-actions' }, [trash]),
+        el('span', { class: 'cb-actions' }, actions),
       ]);
     });
 

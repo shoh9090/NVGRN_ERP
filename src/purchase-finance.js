@@ -151,4 +151,19 @@ async function settlements(opts = {}) {
   return { items, period: !!(opts.from || opts.to), from: opts.from || null, to: opts.to || null };
 }
 
-module.exports = { enrichOrderFinance, supplierBalances, openSupplierObligations, supplierDueAgg, settlements };
+// Подотчёт снабженца: наличные, выданные ему под отчёт из Наличной кассы (расход с галочкой
+// is_supply_advance), минус его наличные оплаты поставщикам (в Закупе, тип «наличка»).
+// Остаток = сколько денег у снабженца на руках, ещё не отчитано закупками. Снабженец один.
+async function supplyAdvance() {
+  const issuedR = await db.pool.query(
+    `SELECT COALESCE(SUM(t.amount),0) AS issued
+       FROM cash_transactions t JOIN cash_wallets w ON w.id = t.wallet_id
+      WHERE t.tx_type='out' AND t.is_supply_advance=true AND w.kind='cash' AND t.source<>'opening'`);
+  const spentR = await db.pool.query(
+    "SELECT COALESCE(SUM(amount),0) AS spent FROM supplier_payments WHERE payment_type='наличка'");
+  const issued = Number(issuedR.rows[0].issued) || 0;
+  const spent = Number(spentR.rows[0].spent) || 0;
+  return { issued, spent, balance: issued - spent };
+}
+
+module.exports = { enrichOrderFinance, supplierBalances, openSupplierObligations, supplierDueAgg, settlements, supplyAdvance };

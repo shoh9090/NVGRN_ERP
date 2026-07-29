@@ -759,6 +759,7 @@
         el('button', { class: 'btn-primary', onclick: () => openPayment(null) }, '+ Оплата'),
       ]),
     ]));
+    main.appendChild(el('div', { id: 'supply-advance', class: 'pur-supply-advance' }));
     await ensureOpts();
     const pcSel = el('select', { onchange: (e) => { setState.pc = e.target.value; loadSettlements(); } }, [
       el('option', { value: '' }, 'Все категории'), ...FOPTS.parents.map((p) => el('option', { value: p.id, selected: setState.pc === String(p.id) || null }, p.name)),
@@ -778,6 +779,24 @@
     ]));
     main.appendChild(el('div', { id: 'set-list', class: 'pur-content', style: 'overflow-x:auto' }));
     await loadSettlements();
+    loadSupplyAdvance();
+  }
+
+  // Подотчёт снабженца: выдано налом из Кассы − оплачено поставщикам налом = остаток на руках.
+  async function loadSupplyAdvance() {
+    const box = $('#supply-advance'); if (!box) return;
+    let d; try { d = await api('/supply-advance'); } catch (e) { box.innerHTML = ''; return; }
+    box.innerHTML = '';
+    const card = (label, val, cls) => el('div', { class: 'sa-card' + (cls ? ' ' + cls : '') }, [
+      el('div', { class: 'sa-label' }, label),
+      el('div', { class: 'sa-val' }, fmtMoney(Number(val) || 0)),
+    ]);
+    box.appendChild(el('div', { class: 'sa-title' }, '🧾 Подотчёт снабженца (наличные)'));
+    box.appendChild(el('div', { class: 'sa-cards' }, [
+      card('Выдано из кассы', d.issued),
+      card('Оплачено поставщикам', d.spent),
+      card('Остаток на руках', d.balance, (Number(d.balance) || 0) > 0.5 ? 'sa-bal' : 'sa-ok'),
+    ]));
   }
 
   async function loadSettlements() {

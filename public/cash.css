@@ -310,6 +310,10 @@ select.obl-f { cursor: pointer; }
 .cb-trash { cursor: pointer; display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 8px; }
 .cb-trash svg { display: block; }
 .cb-trash:hover { background: #fdecea; }
+.cb-adv-wrap { display: inline-flex; align-items: center; gap: 3px; cursor: pointer; opacity: .85; }
+.cb-adv-wrap:hover { opacity: 1; }
+.cb-adv { cursor: pointer; }
+.cb-adv-ic { font-size: 14px; }
 /* Инлайн-редактирование строк наличной кассы (как в Excel) */
 .cash-cb .cb-cell { border: 1px solid transparent; background: transparent; padding: 5px 6px; border-radius: 6px; font: inherit; font-size: 13px; width: 100%; box-sizing: border-box; min-width: 0; color: var(--ink); }
 .cash-cb .cb-cell:hover { border-color: var(--line); background: #fff; }
