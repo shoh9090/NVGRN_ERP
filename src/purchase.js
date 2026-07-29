@@ -160,7 +160,12 @@ router.get('/api/suppliers/:id(\\d+)/statement', async (req, res) => {
     'SELECT id, amount, payment_type, paid_at, comment FROM supplier_payments WHERE supplier_id = $1 ORDER BY paid_at DESC, id DESC',
     [req.params.id]
   );
-  res.json({ supplier: sup.rows[0], orders: orders.rows, items: items.rows, payments: payments.rows });
+  // Перечисления из банковской выписки (Касса) по ИНН — read-only строки «из выписки» (Часть 2).
+  const sid = parseInt(req.params.id, 10);
+  const wire = (await pfin.wireSupplierPayments()).filter((w) => w.supplier_id === sid)
+    .map((w) => ({ id: 'wire-' + w.id, amount: w.amount, payment_type: 'перечисление', paid_at: w.paid_at, comment: (w.purpose || 'Перечисление') + ' · из выписки', from_statement: true }));
+  const allPayments = payments.rows.concat(wire).sort((a, b) => String(b.paid_at).localeCompare(String(a.paid_at)));
+  res.json({ supplier: sup.rows[0], orders: orders.rows, items: items.rows, payments: allPayments });
 });
 
 // Открытые (принятые, с остатком) заявки поставщика — для оплаты по заявке и FIFO.

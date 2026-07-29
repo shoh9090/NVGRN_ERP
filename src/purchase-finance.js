@@ -3,6 +3,39 @@
 // (read-only зеркало + агрегаты сводки). Бизнес-логику НЕ дублировать по модулям.
 const db = require('./db');
 
+const DAY_MS = 86400000;
+const daysBetween = (a, b) => Math.round((new Date(a) - new Date(b)) / DAY_MS);
+
+// Перечисления поставщикам из банковской выписки (Касса) — авто-оплаты во Взаиморасчётах (Часть 2).
+// Берём расходы (out) с банковских кошельков, у которых ИНН плательщика = ИНН поставщика из Закупа.
+// Дедуп: если та же оплата уже внесена вручную в Закуп (тот же поставщик, сумма, дата ±5 дней) —
+// НЕ считаем повторно (оплата вносится один раз, но видна и в Кассе, и во Взаиморасчётах).
+// Наличную кассу (kind='cash') и переводы между счетами сюда НЕ берём.
+async function wireSupplierPayments() {
+  const txs = (await db.pool.query(
+    `SELECT t.id, c.id AS supplier_id, to_char(t.tx_date,'YYYY-MM-DD') AS paid_at, t.amount, t.purpose
+       FROM cash_transactions t
+       JOIN cash_wallets w ON w.id = t.wallet_id AND w.kind = 'bank'
+       JOIN ref_counterparties c ON c.role_supplier = TRUE AND c.status = 'active'
+            AND NULLIF(TRIM(c.inn),'') = NULLIF(TRIM(t.payer_inn),'')
+      WHERE t.tx_type = 'out' AND t.source <> 'opening' AND COALESCE(TRIM(t.payer_inn),'') <> ''
+      ORDER BY t.tx_date, t.id`)).rows
+    .map((r) => ({ id: r.id, supplier_id: r.supplier_id, paid_at: r.paid_at, amount: Number(r.amount) || 0, purpose: r.purpose || '' }));
+  if (!txs.length) return [];
+  const manual = (await db.pool.query("SELECT supplier_id, to_char(paid_at,'YYYY-MM-DD') AS paid_at, amount FROM supplier_payments")).rows
+    .map((r) => ({ supplier_id: r.supplier_id, paid_at: r.paid_at, amount: Number(r.amount) || 0, used: false }));
+  const manBySup = {};
+  for (const m of manual) (manBySup[m.supplier_id] = manBySup[m.supplier_id] || []).push(m);
+  const out = [];
+  for (const t of txs) {
+    const cands = manBySup[t.supplier_id] || [];
+    const hit = cands.find((m) => !m.used && Math.abs(m.amount - t.amount) < 0.5 && Math.abs(daysBetween(m.paid_at, t.paid_at)) <= 5);
+    if (hit) { hit.used = true; continue; } // уже внесено вручную — не задваиваем
+    out.push(t);
+  }
+  return out;
+}
+
 // Расчёт срока и статуса оплаты по заявке (ТЗ Закупа разд. 7-8). Долг возникает по факту приёмки.
 function enrichOrderFinance(o) {
   const received = o.status === 'received';
@@ -79,8 +112,22 @@ async function supplierBalances(opts = {}) {
     balance: Number(x.balance) || 0,
   }));
 
-  // Период (SD-стиль): баланс на начало / оборот / баланс на конец.
   const from = opts.from || null, to = opts.to || null;
+
+  // Часть 2: перечисления из выписки (Касса) по ИНН добавляем в «оплачено» (дедуп внутри хелпера).
+  const wire = await wireSupplierPayments();
+  const wAll = {}, wBefore = {}, wPeriod = {};
+  for (const t of wire) {
+    wAll[t.supplier_id] = (wAll[t.supplier_id] || 0) + t.amount;
+    if (from && t.paid_at < from) wBefore[t.supplier_id] = (wBefore[t.supplier_id] || 0) + t.amount;
+    if ((!from || t.paid_at >= from) && (!to || t.paid_at <= to)) wPeriod[t.supplier_id] = (wPeriod[t.supplier_id] || 0) + t.amount;
+  }
+  for (const s of rows) {
+    const w = wAll[s.id] || 0;
+    s.paid += w; s.balance -= w;
+  }
+
+  // Период (SD-стиль): баланс на начало / оборот / баланс на конец.
   if (from || to) {
     const dAgg = (await db.pool.query(
       `WITH ord AS (
@@ -102,10 +149,10 @@ async function supplierBalances(opts = {}) {
     for (const s of rows) {
       const db4 = Number(dm[s.id]?.before_v) || 0, dp = Number(dm[s.id]?.period_v) || 0;
       const pb = Number(pm[s.id]?.before_v) || 0, pp = Number(pm[s.id]?.period_v) || 0;
-      s.balance_start = s.opening_balance + db4 - pb;
+      s.balance_start = s.opening_balance + db4 - pb - (wBefore[s.id] || 0);
       s.delivered_period = dp;
-      s.paid_period = pp;
-      s.balance_end = s.balance_start + dp - pp;
+      s.paid_period = pp + (wPeriod[s.id] || 0);
+      s.balance_end = s.balance_start + dp - s.paid_period;
     }
   }
   return rows;
@@ -144,7 +191,13 @@ async function openSupplierObligations() {
 async function settlements(opts = {}) {
   const balances = await supplierBalances({ q: opts.q, parent_category_id: opts.parent_category_id, from: opts.from || null, to: opts.to || null });
   const due = await supplierDueAgg();
-  let items = balances.map((s) => ({ ...s, overdue: due[s.id] ? due[s.id].overdue : 0, nearest_due: due[s.id] ? due[s.id].nearest_due : null }));
+  // Просрочка считается по заявкам (per-order), а перечисления из выписки гасят ОБЩИЙ долг,
+  // не привязываясь к заявке. Чтобы не было противоречия «оплачено, но просрочено» — ограничиваем
+  // просрочку текущим общим сальдо поставщика (не больше того, что реально осталось должны).
+  let items = balances.map((s) => {
+    const overdueRaw = due[s.id] ? due[s.id].overdue : 0;
+    return { ...s, overdue: Math.max(0, Math.min(overdueRaw, s.balance)), nearest_due: due[s.id] ? due[s.id].nearest_due : null };
+  });
   if (opts.status === 'debt') items = items.filter((s) => s.balance > 0.01);
   else if (opts.status === 'overdue') items = items.filter((s) => s.overdue > 0.01);
   else if (opts.status === 'advance') items = items.filter((s) => s.balance < -0.01);
@@ -166,4 +219,4 @@ async function supplyAdvance() {
   return { issued, spent, balance: issued - spent };
 }
 
-module.exports = { enrichOrderFinance, supplierBalances, openSupplierObligations, supplierDueAgg, settlements, supplyAdvance };
+module.exports = { enrichOrderFinance, supplierBalances, openSupplierObligations, supplierDueAgg, settlements, supplyAdvance, wireSupplierPayments };
