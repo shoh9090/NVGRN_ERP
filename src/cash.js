@@ -183,7 +183,7 @@ async function ensureCashSchema() {
 // Ставим только там, где ещё не заполнено — ручные правки Шоха не трогаем.
 async function seedCategoryKeywords() {
   const defs = {
-    '100': 'пополнение корпоративн, корпоративной пластиковой, пополнение пластиков, перевод между счет',
+    '100': 'пополнение корпоративн, корпоративной пластиковой, пополнение пластиков, перевод между счет, переброска, на основной расчётный счёт, между счетами',
     '62': 'начислен, % банка, комиссия банк, оп.обс',
     '60': 'проценты по кредит, процент за кредит',
     '61': 'погашение кредит, возврат кредит',
@@ -230,6 +230,20 @@ async function seedCashCounterparties() {
 }
 // ИНН собственных обслуживающих банков — их операции не классифицируем по контрагенту.
 const BANK_INNS = ['207018693', '310331793']; // Asia Alliance, Hayot
+
+// Переброска между своими счетами: если плательщик/получатель в выписке — собственное юрлицо
+// (по ИНН или по названию), либо назначение — «переброска / на основной расчётный счёт / между
+// счетами» — это НЕ выручка/расход, а перевод (статья 100 «Межбанк»). Классифицируем на входе,
+// чтобы Шоху не приходилось каждый раз вручную помечать переброску и указывать «Куда».
+const OWN_INNS = []; // ИНН собственных юрлиц — заполнить при необходимости (усилит распознавание)
+const OWN_NAME_RE = /novagreen|новагрин|нова\s*грин/i; // своё юрлицо в выписке
+// ВАЖНО: \w в JS не матчит кириллицу — используем явный кириллический класс [а-яё].
+const INTERNAL_XFER_RE = /переброск|между\s+сч[её]т|основн[а-яё]*\s+расч[её]т[а-яё]*\s+сч[её]т|\ba2a\b/i;
+function isOwnTransfer(purpose, payerName, inn) {
+  if (inn && OWN_INNS.includes(String(inn).trim())) return true;
+  if (payerName && OWN_NAME_RE.test(payerName)) return true;
+  return INTERNAL_XFER_RE.test(String(purpose || ''));
+}
 
 // Разовое заполнение статьи ДДС у поставщиков Закупа из справочника ИНН→код
 // (только там, где ещё не задано вручную — ручные значения не перетираем).
@@ -1588,6 +1602,7 @@ router.post('/api/import/preview', upload.single('file'), async (req, res) => {
     const catById = {}; cats.forEach((c) => { catById[c.id] = c; });
     const incomeCat = cats.find((c) => c.code === '200') || null;
     const topupCat = cats.find((c) => c.code === '111') || null;
+    const xferCat = cats.find((c) => c.code === '100') || null; // переброска между своими счетами
     const walletRow = (await db.pool.query("SELECT kind FROM cash_wallets WHERE id=$1", [wallet_id])).rows[0];
     const isCard = !!walletRow && walletRow.kind === 'card';
     const cpByInn = {};
@@ -1604,7 +1619,12 @@ router.post('/api/import/preview', upload.single('file'), async (req, res) => {
     for (const r of rows) {
       r.dup = existing.has(r.tx_date + '|' + Number(r.amount) + '|' + (r.doc_no || ''));
       if (r.dup) dup++;
-      if (r.tx_type === 'in') {
+      if (isOwnTransfer(r.purpose, r.payer, String(r.inn || '').trim())) {
+        // Переброска между своими счетами — статья 100 «Межбанк», без контрагента (см. import/run).
+        r.category_id = xferCat ? xferCat.id : null;
+        r.cat_label = xferCat ? (xferCat.code + ' ' + xferCat.name) : null;
+        r.is_classified = !!xferCat; r.flag = 'transfer'; r.inn = ''; r.payer = '';
+      } else if (r.tx_type === 'in') {
         // Приход на карту — пополнение (111), не выручка; контрагента не вешаем (см. import/run).
         const useCat = isCard ? topupCat : incomeCat;
         r.category_id = useCat ? useCat.id : null;
@@ -1692,7 +1712,11 @@ router.post('/api/import/run', upload.single('file'), async (req, res) => {
       if (existing.has(key)) { skip++; continue; }
       let category_id = null, counterparty_id = null, is_classified = false;
       const inn = String(r.inn || '').trim();
-      if (r.tx_type === 'in') {
+      if (isOwnTransfer(r.purpose, r.payer, inn)) {
+        // Переброска между своими счетами (плательщик/получатель — своё юрлицо, либо «переброска /
+        // на основной расчётный счёт»). Статья 100 «Межбанк», без контрагента — не выручка/не расход.
+        category_id = catByCode['100'] || null; is_classified = !!category_id; r.payer = null; r.inn = null;
+      } else if (r.tx_type === 'in') {
         if (isCard) {
           // Пополнение корпоративной карты с расчётного счёта — перевод между своими, а не выручка.
           // Статья 111, и НЕ привязываем контрагента/ИНН — иначе runRelink повесит контрагента и
@@ -1702,8 +1726,7 @@ router.post('/api/import/run', upload.single('file'), async (req, res) => {
           category_id = incomeCat ? incomeCat.id : null; is_classified = !!incomeCat;
           const cl = cpByInn[inn]; if (cl) counterparty_id = cl.id;
         }
-      }
-      else {
+      } else {
         const cp = cpByInn[inn];
         if (cp) { counterparty_id = cp.id; category_id = cp.default_category_id || null; }
         if (!category_id && refCatByInn[inn]) category_id = refCatByInn[inn]; // статья поставщика из Закупа
@@ -1829,7 +1852,7 @@ router.get('/api/transactions/match-candidates', async (req, res) => {
   try {
     const days = 1; // допуск по дате между списанием и зачислением (было 3 — давало много ложных пар)
     // Признак реального перевода между своими счетами (защита от совпадения сумм у обычных операций).
-    const transferRe = '(перевод|пополнени|между[[:space:]]+сч[её]т|на[[:space:]]+карт|корпоративн|перечисл|со[[:space:]]+сч[её]т|на[[:space:]]+сч[её]т|a2a)';
+    const transferRe = '(перевод|переброск|пополнени|между[[:space:]]+сч[её]т|на[[:space:]]+карт|корпоративн|перечисл|со[[:space:]]+сч[её]т|на[[:space:]]+сч[её]т|основн[[:alpha:]]*[[:space:]]+расч[её]т|novagreen|новагрин|a2a)';
     const rows = (await db.pool.query(
       `SELECT o.id AS out_id, o.tx_date AS out_date, o.wallet_id AS out_wallet, wo.name AS out_wallet_name,
               o.purpose AS out_purpose, o.payer_name AS out_payer,
