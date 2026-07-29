@@ -919,10 +919,6 @@
     const supSel = el('select', {}, suppliers.map((s) => el('option', { value: s.id }, s.name + ' (сальдо: ' + fmtMoney(s.balance) + ')')));
     if (presetSupplier) supSel.value = presetSupplier.id;
     const amount = el('input', { type: 'number', step: 'any', min: '0', placeholder: '0' });
-    const pay = el('select', {}, [
-      el('option', { value: 'перечисление' }, '🏦 Перечисление'),
-      el('option', { value: 'наличка' }, '💵 Наличка'),
-    ]);
     const date = el('input', { type: 'date', value: new Date().toISOString().slice(0, 10) });
     const comment = el('input', { placeholder: 'Комментарий (необязательно)' });
     // Режим разнесения оплаты: по заявке / общая по долгам (FIFO) / аванс.
@@ -933,26 +929,35 @@
     ]);
     const orderSel = el('select', {}, []);
     const orderRow = el('label', {}, ['Заявка', orderSel]);
+    let openOrders = [];
+    // Сумма к оплате по заявке = её остаток по факту (кол-во приёмки × цена заявки − уже оплачено).
+    function syncAmount() {
+      if (modeSel.value !== 'order') return;
+      const o = openOrders.find((x) => String(x.id) === String(orderSel.value));
+      if (o) amount.value = Math.max(0, Math.round(Number(o.remainder) || 0));
+    }
     async function loadOpenOrders() {
       orderSel.innerHTML = '';
-      if (!supSel.value) return;
+      if (!supSel.value) { openOrders = []; return; }
       const { items } = await api('/suppliers/' + supSel.value + '/open-orders');
-      if (!items.length) { orderSel.appendChild(el('option', { value: '' }, '— нет открытых заявок —')); return; }
-      items.forEach((o) => orderSel.appendChild(el('option', { value: o.id }, `${o.number} · остаток ${fmtMoney(o.remainder)} · срок ${o.due_date ? dt(o.due_date) : '—'} · ${o.pay_status}`)));
+      openOrders = items || [];
+      if (!openOrders.length) { orderSel.appendChild(el('option', { value: '' }, '— нет открытых заявок —')); return; }
+      openOrders.forEach((o) => orderSel.appendChild(el('option', { value: o.id }, `${o.number} · остаток ${fmtMoney(o.remainder)} · срок ${o.due_date ? dt(o.due_date) : '—'} · ${o.pay_status}`)));
       if (presetOrderId) orderSel.value = presetOrderId;
+      syncAmount();
     }
-    const toggleMode = () => { orderRow.style.display = modeSel.value === 'order' ? '' : 'none'; };
+    const toggleMode = () => { orderRow.style.display = modeSel.value === 'order' ? '' : 'none'; syncAmount(); };
     modeSel.addEventListener('change', toggleMode);
+    orderSel.addEventListener('change', syncAmount);
     supSel.addEventListener('change', loadOpenOrders);
     const body = el('div', { class: 'form-col', style: 'max-width:100%' }, [
       el('label', {}, ['Поставщик', supSel]),
       el('label', {}, ['Как разнести', modeSel]),
       orderRow,
       el('label', {}, ['Сумма, сум *', amount]),
-      el('label', {}, ['Тип платежа', pay]),
       el('label', {}, ['Дата', date]),
       el('label', {}, ['Комментарий', comment]),
-      el('div', { class: 'muted', style: 'font-size:12px' }, 'Оплата привязывается к заявке и уменьшает её остаток. Нераспределённый остаток при авторазносе становится авансом.'),
+      el('div', { class: 'muted', style: 'font-size:12px' }, 'Сумма подставляется по факту (кол-во приёмки × цена заявки − оплачено), можно изменить. Оплата — наличными; перечисления подтягиваются из выписки банка. Нераспределённый остаток при авторазносе становится авансом.'),
     ]);
     if (presetOrderId) modeSel.value = 'order';
     toggleMode();
@@ -965,7 +970,7 @@
           if (!(Number(amount.value) > 0)) return toast('Укажите сумму больше нуля', true);
           if (modeSel.value === 'order' && !orderSel.value) return toast('Выберите заявку (или смените режим на «общая»/«аванс»)', true);
           ev.target.disabled = true;
-          const payload = { supplier_id: supSel.value, amount: amount.value, payment_type: pay.value, paid_at: date.value, comment: comment.value };
+          const payload = { supplier_id: supSel.value, amount: amount.value, payment_type: 'наличка', paid_at: date.value, comment: comment.value };
           if (modeSel.value === 'order') payload.order_id = orderSel.value;
           else if (modeSel.value === 'fifo') payload.distribute = 'fifo';
           try {
