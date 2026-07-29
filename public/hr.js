@@ -71,11 +71,20 @@
   // Окно наличных выплат сотрудника (клик по «💵 касса») — с переходом в саму транзакцию (Касса).
   function openCashTxs(txs, title) {
     const list = (txs || []).slice().sort((a, b) => String(a.date).localeCompare(String(b.date)));
-    const body = el('div', {}, list.length ? list.map((t) => el('div', { style: 'display:flex;gap:12px;font-size:13px;padding:5px 0;border-bottom:1px solid #eee;align-items:center' }, [
+    // «Не учитывать» — исключить выплату из зарплаты (остаётся в Кассе). Напр. выплата за прошлый
+    // месяц, который уже внесён импортом. Обратимо кнопкой «Учитывать».
+    const toggleHide = async (t, hidden) => {
+      try { await post('/salary/cash-hide', { ids: [t.tx_id], hidden }); toast(hidden ? 'Исключено из зарплаты' : 'Снова учитывается'); closeModal(); renderSalary(); }
+      catch (e) { toast(e.message, true); }
+    };
+    const body = el('div', {}, list.length ? list.map((t) => el('div', { style: 'display:flex;gap:12px;font-size:13px;padding:6px 0;border-bottom:1px solid #eee;align-items:center' + (t.hidden ? ';opacity:.5' : '') }, [
       el('span', { style: 'min-width:88px' }, String(t.date)),
       el('span', { style: 'min-width:70px' }, t.kind === 'advance' ? 'аванс' : 'зарплата'),
-      el('span', { class: 'tnum', style: 'min-width:110px;font-weight:700' }, money(t.amount)),
-      el('span', { class: 'muted', style: 'flex:1' }, t.purpose || ''),
+      el('span', { class: 'tnum', style: 'min-width:110px;font-weight:700' + (t.hidden ? ';text-decoration:line-through' : '') }, money(t.amount)),
+      el('span', { class: 'muted', style: 'flex:1' }, (t.purpose || '') + (t.hidden ? ' · не учитывается' : '')),
+      t.hidden
+        ? el('button', { class: 'btn-ghost', style: 'font-size:12px;padding:3px 8px', onclick: () => toggleHide(t, false) }, 'Учитывать')
+        : el('button', { class: 'btn-ghost', style: 'font-size:12px;padding:3px 8px', title: 'Не учитывать в зарплате (останется в Кассе)', onclick: () => toggleHide(t, true) }, 'Не учитывать'),
       el('a', { href: '/cash#tx=' + t.tx_id, target: '_blank', style: 'font-size:12px;white-space:nowrap;color:var(--forest);font-weight:700' }, 'в Кассе →'),
     ])) : [el('div', { class: 'hr-empty' }, 'Нет наличных выплат за период')]);
     modal(title, body, [el('button', { class: 'btn-primary', onclick: closeModal }, 'Закрыть')]);
@@ -453,7 +462,7 @@
     const preview = el('button', { class: 'btn-ghost', onclick: async () => { try { const d = await send(true); if (d) showPreview(d); } catch (e) { toast(e.message, true); } } }, 'Проверить');
     const apply = el('button', { class: 'btn-primary', onclick: async () => {
       apply.disabled = true; apply.textContent = 'Загружаю…';
-      try { const d = await send(false); if (d) { toast('Разнесено на карту: ' + d.matched.length + ' на ' + money(d.total)); closeModal(); load(); } }
+      try { const d = await send(false); if (d) { toast('Разнесено на карту: ' + d.matched.length + ' на ' + money(d.total)); closeModal(); renderSalary(); } }
       catch (e) { toast(e.message, true); }
       apply.disabled = false; apply.textContent = 'Применить';
     } }, 'Применить');

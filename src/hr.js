@@ -304,10 +304,13 @@ async function computeCashSalary(period) {
     const emp = csMatchEmp(t.purpose, emps);
     if (emp) {
       const b = byEmp[emp.id] || (byEmp[emp.id] = { advance: 0, paid: 0, pay_date: null, txs: [] });
-      if (kind === 'advance') b.advance += amt; else b.paid += amt;
-      // Дата выплаты — из кассы: берём последнюю (зарплата приоритетнее аванса).
-      if (kind !== 'advance' && (!b.pay_date || t.d > b.pay_date)) b.pay_date = t.d;
-      b.txs.push({ tx_id: t.id, date: t.d, amount: amt, kind, purpose: t.purpose || '' });
+      // Скрытые («не учитывать») — остаются в списке, но не идут в суммы зарплаты (напр. выплата не за этот месяц).
+      if (!t.hidden) {
+        if (kind === 'advance') b.advance += amt; else b.paid += amt;
+        // Дата выплаты — из кассы: берём последнюю (зарплата приоритетнее аванса).
+        if (kind !== 'advance' && (!b.pay_date || t.d > b.pay_date)) b.pay_date = t.d;
+      }
+      b.txs.push({ tx_id: t.id, date: t.d, amount: amt, kind, purpose: t.purpose || '', hidden: !!t.hidden });
     }
     else unmatched.push({ tx_id: t.id, date: t.d, amount: amt, kind, purpose: t.purpose || '', hidden: !!t.hidden });
   }
