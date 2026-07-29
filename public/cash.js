@@ -541,9 +541,9 @@
         el('button', { class: 'btn-ghost cash-add', style: 'padding:4px 8px;font-size:12px', title: 'Изменить', onclick: () => oblReimbForm(x) }, '✎'),
         el('button', { class: 'btn-ghost cashf-del', style: 'padding:4px 8px;font-size:12px', title: 'Удалить', onclick: async () => { if (!confirm('Удалить возмещение «' + x.person + '»?')) return; try { await post('/reimbursements/' + x.id + '/delete', {}); toast('Удалено'); oblReimbursements(box); } catch (e) { toast(e.message, true); } } }, '🗑'),
       ])));
-      return el('tr', {}, cells);
+      return el('tr', { style: 'border-bottom:1px solid var(--line)' }, cells);
     }));
-    box.appendChild(el('div', { style: 'overflow-x:auto;border:1px solid var(--line);border-radius:10px' }, el('table', { style: 'border-collapse:collapse;width:100%;font-size:13px' }, [thead, tb])));
+    box.appendChild(el('div', { style: 'overflow-x:auto;border:1px solid var(--line);border-radius:10px' }, el('table', { class: 'cash-reimb-table', style: 'border-collapse:collapse;width:100%;font-size:13px' }, [thead, tb])));
   }
   function oblReimbForm(x) {
     x = x || {};
