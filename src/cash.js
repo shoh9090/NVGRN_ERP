@@ -1563,6 +1563,9 @@ router.post('/api/import/preview', upload.single('file'), async (req, res) => {
     const cats = (await db.pool.query("SELECT id, code, name FROM cash_categories WHERE status='active'")).rows;
     const catById = {}; cats.forEach((c) => { catById[c.id] = c; });
     const incomeCat = cats.find((c) => c.code === '200') || null;
+    const topupCat = cats.find((c) => c.code === '111') || null;
+    const walletRow = (await db.pool.query("SELECT kind FROM cash_wallets WHERE id=$1", [wallet_id])).rows[0];
+    const isCard = !!walletRow && walletRow.kind === 'card';
     const cpByInn = {};
     (await db.pool.query("SELECT id, inn, default_category_id, name FROM cash_counterparties WHERE status='active' AND inn IS NOT NULL AND inn<>''")).rows.forEach((c) => { cpByInn[String(c.inn).trim()] = c; });
     const refCatByInn = {};
@@ -1578,9 +1581,12 @@ router.post('/api/import/preview', upload.single('file'), async (req, res) => {
       r.dup = existing.has(r.tx_date + '|' + Number(r.amount) + '|' + (r.doc_no || ''));
       if (r.dup) dup++;
       if (r.tx_type === 'in') {
-        r.category_id = incomeCat ? incomeCat.id : null;
-        r.cat_label = incomeCat ? (incomeCat.code + ' ' + incomeCat.name) : null;
-        r.is_classified = !!incomeCat; r.flag = 'income';
+        // Приход на карту — пополнение (111), не выручка; контрагента не вешаем (см. import/run).
+        const useCat = isCard ? topupCat : incomeCat;
+        r.category_id = useCat ? useCat.id : null;
+        r.cat_label = useCat ? (useCat.code + ' ' + useCat.name) : null;
+        r.is_classified = !!useCat; r.flag = isCard ? 'topup' : 'income';
+        if (isCard) { r.inn = ''; r.payer = ''; }
       } else {
         const cp = cpByInn[String(r.inn || '').trim()];
         if (cp) {
@@ -1637,6 +1643,10 @@ router.post('/api/import/run', upload.single('file'), async (req, res) => {
     const cats = (await db.pool.query("SELECT id, code FROM cash_categories WHERE status='active'")).rows;
     const incomeCat = cats.find((c) => c.code === '200') || null;
     const catByCode = {}; cats.forEach((c) => { catByCode[String(c.code)] = c.id; });
+    // Кошелёк-карта: приход — это пополнение с расчётного счёта (перевод между своими), не выручка.
+    const wkindRow = (await db.pool.query("SELECT kind FROM cash_wallets WHERE id=$1", [wallet_id])).rows[0];
+    const isCard = !!wkindRow && wkindRow.kind === 'card';
+    const topupCatId = catByCode['111'] || null;
     const cpByInn = {};
     (await db.pool.query("SELECT id, inn, default_category_id FROM cash_counterparties WHERE status='active' AND inn IS NOT NULL AND inn<>''")).rows.forEach((c) => { cpByInn[String(c.inn).trim()] = c; });
     // запасная классификация расходов: статья ДДС поставщика из Закупа (по ИНН)
@@ -1658,7 +1668,17 @@ router.post('/api/import/run', upload.single('file'), async (req, res) => {
       if (existing.has(key)) { skip++; continue; }
       let category_id = null, counterparty_id = null, is_classified = false;
       const inn = String(r.inn || '').trim();
-      if (r.tx_type === 'in') { category_id = incomeCat ? incomeCat.id : null; is_classified = !!incomeCat; const cl = cpByInn[inn]; if (cl) counterparty_id = cl.id; }
+      if (r.tx_type === 'in') {
+        if (isCard) {
+          // Пополнение корпоративной карты с расчётного счёта — перевод между своими, а не выручка.
+          // Статья 111, и НЕ привязываем контрагента/ИНН — иначе runRelink повесит контрагента и
+          // «Найти переводы» (ищет приходы без контрагента) не сможет склеить пополнение с ногой банка.
+          category_id = topupCatId; is_classified = !!topupCatId; r.payer = null; r.inn = null;
+        } else {
+          category_id = incomeCat ? incomeCat.id : null; is_classified = !!incomeCat;
+          const cl = cpByInn[inn]; if (cl) counterparty_id = cl.id;
+        }
+      }
       else {
         const cp = cpByInn[inn];
         if (cp) { counterparty_id = cp.id; category_id = cp.default_category_id || null; }
