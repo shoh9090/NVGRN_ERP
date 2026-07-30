@@ -150,6 +150,19 @@ async function ensureCashSchema() {
   // Наличный расход «выдача снабженцу под отчёт» (галочка в Наличной кассе). По умолчанию включается
   // при импорте/вводе для расходов группы «Сырьё». Остаток подотчёта = выдано − оплачено поставщикам налом.
   await q(`ALTER TABLE cash_transactions ADD COLUMN IF NOT EXISTS is_supply_advance BOOLEAN NOT NULL DEFAULT false`);
+  // «К оплате»: наличные долги, которые надо выплатить. Хранятся ОТДЕЛЬНО и не влияют на остаток/ДДС,
+  // пока не выплачены. При выплате создаётся обычный расход в Кассе (paid_tx_id), долг закрывается.
+  await q(`CREATE TABLE IF NOT EXISTS cash_pending_payments (
+    id SERIAL PRIMARY KEY,
+    wallet_id INT REFERENCES cash_wallets(id),
+    amount NUMERIC NOT NULL,
+    category_id INT REFERENCES cash_categories(id),
+    purpose TEXT,
+    due_date DATE,
+    status TEXT NOT NULL DEFAULT 'pending',       -- pending | paid
+    paid_tx_id INT, paid_date DATE,
+    created_by INT, created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
   // Есть ли у кошелька своя выписка (банки — да, наличная касса — нет). Определяет форму разбора А2:
   // получатель с выпиской → пара ног; получатель без выписки (касса) → одиночный transfer.
   await q(`ALTER TABLE cash_wallets ADD COLUMN IF NOT EXISTS has_statement BOOLEAN NOT NULL DEFAULT true`);
@@ -1075,6 +1088,70 @@ router.post('/api/cashbox/convert', J, async (req, res) => {
     res.json({ ok: true, sumAmt, rate });
   } catch (e) { await client.query('ROLLBACK').catch(() => {}); res.status(400).json({ error: e.message }); }
   finally { client.release(); }
+});
+
+// ---------- «К оплате»: наличные долги (не трогают остаток/ДДС, пока не выплачены) ----------
+router.get('/api/pending', async (req, res) => {
+  try {
+    const p = []; let w = "p.status='pending'";
+    if (req.query.wallet) { p.push(parseInt(req.query.wallet)); w += ` AND p.wallet_id=$${p.length}`; }
+    const rows = (await db.pool.query(
+      `SELECT p.*, to_char(p.due_date,'YYYY-MM-DD') AS due, w.name AS wallet_name, c.code AS cat_code, c.name AS cat_name
+         FROM cash_pending_payments p
+         LEFT JOIN cash_wallets w ON w.id=p.wallet_id
+         LEFT JOIN cash_categories c ON c.id=p.category_id
+        WHERE ${w} ORDER BY p.due_date NULLS LAST, p.id`, p)).rows;
+    const today = new Date().toISOString().slice(0, 10);
+    const total = rows.reduce((s, x) => s + Number(x.amount || 0), 0);
+    const overdue = rows.filter((x) => x.due && x.due < today).reduce((s, x) => s + Number(x.amount || 0), 0);
+    res.json({ items: rows, total, overdue });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+router.post('/api/pending', J, async (req, res) => {
+  const b = req.body || {};
+  const wid = intOrNull(b.wallet_id);
+  const amt = numOrNull(b.amount);
+  if (!wid) return res.status(400).json({ error: 'Выберите наличную кассу' });
+  if (!(amt > 0)) return res.status(400).json({ error: 'Сумма должна быть больше 0' });
+  const r = await db.pool.query(
+    `INSERT INTO cash_pending_payments (wallet_id, amount, category_id, purpose, due_date, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+    [wid, amt, intOrNull(b.category_id), b.purpose || null, b.due_date || null, req.user.id]);
+  await db.log(req.user.id, 'cash_pending_add', String(amt));
+  res.json({ ok: true, id: r.rows[0].id });
+});
+router.post('/api/pending/:id(\\d+)', J, async (req, res) => {
+  const b = req.body || {};
+  await db.pool.query(
+    "UPDATE cash_pending_payments SET wallet_id=$1, amount=$2, category_id=$3, purpose=$4, due_date=$5 WHERE id=$6 AND status='pending'",
+    [intOrNull(b.wallet_id), numOrNull(b.amount) || 0, intOrNull(b.category_id), b.purpose || null, b.due_date || null, req.params.id]);
+  res.json({ ok: true });
+});
+// Выплатить долг: создаём обычный расход в Кассе и закрываем долг (деньги списываются только сейчас).
+router.post('/api/pending/:id(\\d+)/pay', J, async (req, res) => {
+  const b = req.body || {};
+  const pid = parseInt(req.params.id, 10);
+  const p = (await db.pool.query("SELECT * FROM cash_pending_payments WHERE id=$1 AND status='pending'", [pid])).rows[0];
+  if (!p) return res.status(404).json({ error: 'Долг не найден или уже выплачен' });
+  const payDate = b.pay_date || new Date().toISOString().slice(0, 10);
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    const tx = await client.query(
+      `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, category_id, purpose, source, is_classified, currency, created_by)
+       VALUES ($1,$2,'out',$3,$4,$5,'manual',$6,'UZS',$7) RETURNING id`,
+      [payDate, p.amount, p.wallet_id, p.category_id, p.purpose || 'Оплата долга', !!p.category_id, req.user.id]);
+    await client.query("UPDATE cash_pending_payments SET status='paid', paid_tx_id=$1, paid_date=$2 WHERE id=$3", [tx.rows[0].id, payDate, pid]);
+    await client.query('COMMIT');
+  } catch (e) { await client.query('ROLLBACK').catch(() => {}); return res.status(400).json({ error: e.message }); }
+  finally { client.release(); }
+  await db.log(req.user.id, 'cash_pending_pay', '#' + pid);
+  res.json({ ok: true });
+});
+router.post('/api/pending/:id(\\d+)/delete', async (req, res) => {
+  await db.pool.query("DELETE FROM cash_pending_payments WHERE id=$1 AND status='pending'", [req.params.id]);
+  await db.log(req.user.id, 'cash_pending_delete', '#' + req.params.id);
+  res.json({ ok: true });
 });
 
 // ---------- Сверка остатка ----------

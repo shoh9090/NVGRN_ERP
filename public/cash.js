@@ -1468,16 +1468,80 @@
     const classSel = el('select', { class: 'cashf-inp cash-filt', onchange: (e) => { cbState.classified = e.target.value; cbState.page = 1; loadCashbox(); } },
       [{ v: '', t: 'Все' }, { v: 'no', t: 'Не разобрано' }, { v: 'yes', t: 'Разобрано' }].map((o) => el('option', { value: o.v, selected: o.v === cbState.classified || null }, o.t)));
     c.appendChild(el('div', { class: 'cash-filters', style: 'margin-bottom:6px' }, [
-      typeBtn('in', '➕ Приход'), typeBtn('out', '➖ Расход'),
+      typeBtn('in', '➕ Приход'), typeBtn('out', '➖ Расход'), typeBtn('pending', '🧾 К оплате'),
       // Выбор кассы показываем только если наличных кошельков больше одного (иначе выбирать нечего).
       ...(cashWallets.length > 1 ? [el('span', { class: 'cash-flab' }, 'Касса'), walletSel] : []),
     ]));
+    // «К оплате» — отдельный вид (долги, ещё не выплаченные). Фильтры периода/статьи тут не нужны.
+    if (cbState.type === 'pending') {
+      const wrap = el('div', { id: 'cashbox-wrap' }); c.appendChild(wrap);
+      loadPending();
+      return;
+    }
     c.appendChild(el('div', { class: 'cash-filters', style: 'margin-bottom:0' }, [
       el('span', { class: 'cash-flab' }, 'C'), fromInp, el('span', { class: 'cash-flab' }, 'по'), toInp,
       catSel, classSel, search, sizeSel,
     ]));
     const wrap = el('div', { id: 'cashbox-wrap' }); c.appendChild(wrap);
     loadCashbox();
+  }
+
+  // ---------- «К оплате»: наличные долги (не в остатке, пока не выплачены) ----------
+  async function loadPending() {
+    const wrap = $('#cashbox-wrap'); if (!wrap) return; wrap.innerHTML = '';
+    wrap.appendChild(el('div', { class: 'cash-tx-btns', style: 'margin-bottom:8px' }, [
+      el('button', { class: 'btn-ghost cash-add', onclick: () => openPendingForm(null) }, '+ Долг к оплате'),
+    ]));
+    let d; try { d = await api('/pending?wallet=' + cbState.wallet); } catch (e) { wrap.appendChild(el('div', { class: 'cash-empty' }, 'Ошибка: ' + e.message)); return; }
+    wrap.appendChild(el('div', { class: 'cash-note-info', style: 'margin-bottom:8px' }, 'К оплате наличными: ' + money(d.total) + ' сум' + (d.overdue > 0 ? ' · просрочено ' + money(d.overdue) + ' сум' : '') + '. Пока долг здесь — он не уменьшает остаток кассы. «Выплатить» → станет обычным расходом.'));
+    const items = d.items || [];
+    if (!items.length) { wrap.appendChild(el('div', { class: 'cash-empty' }, 'Долгов к оплате нет. Нажмите «+ Долг к оплате».')); return; }
+    const today = todayStr();
+    const head = el('div', { class: 'cash-row head cash-pend' }, ['Срок', 'Кому / за что', 'Статья', 'Сумма', ''].map((h) => el('span', {}, h)));
+    const rows = items.map((x) => {
+      const overdue = x.due && x.due < today;
+      return el('div', { class: 'cash-row cash-pend' }, [
+        el('span', { style: overdue ? 'color:#c0392b;font-weight:700' : '' }, x.due ? ruDate(x.due) + (overdue ? ' · просроч.' : '') : '—'),
+        el('span', { class: 'cash-purpose', title: x.purpose || '' }, x.purpose || '—'),
+        el('span', {}, x.cat_code ? (x.cat_code + ' ' + (x.cat_name || '')) : '—'),
+        el('span', { style: 'text-align:right;font-weight:700' }, money(x.amount)),
+        el('span', { style: 'display:flex;gap:6px;justify-content:flex-end' }, [
+          el('button', { class: 'btn-primary', style: 'padding:4px 10px;font-size:12px', onclick: () => payPending(x) }, '✓ Выплатить'),
+          el('button', { class: 'btn-ghost cash-add', style: 'padding:4px 8px;font-size:12px', title: 'Изменить', onclick: () => openPendingForm(x) }, '✎'),
+          el('button', { class: 'btn-ghost cashf-del', style: 'padding:4px 8px;font-size:12px', title: 'Удалить', onclick: async () => { if (!confirm('Удалить долг «' + (x.purpose || '') + '»?')) return; try { await post('/pending/' + x.id + '/delete', {}); loadPending(); } catch (e) { toast(e.message, true); } } }, '🗑'),
+        ]),
+      ]);
+    });
+    wrap.appendChild(el('div', { class: 'cash-list' }, [head, ...rows]));
+  }
+  function openPendingForm(x) {
+    x = x || {};
+    const cashWallets = (DICTS.wallets || []).filter((w) => w.kind === 'cash');
+    const wSel = fsel(cashWallets.map((w) => ({ v: w.id, t: w.name })), x.wallet_id || cbState.wallet || (cashWallets[0] && cashWallets[0].id) || '');
+    const amount = fmoney(x.amount != null ? x.amount : '', { placeholder: 'сумма' });
+    const catSel = fsel([{ v: '', t: '— статья —' }].concat((DICTS.categories || []).map((cc) => ({ v: cc.id, t: cc.code + ' ' + cc.name }))), x.category_id || '');
+    const purpose = finp(x.purpose || '', { placeholder: 'Кому и за что' });
+    const due = finp(x.due ? String(x.due).slice(0, 10) : '', { type: 'date' });
+    const save = el('button', { class: 'btn-primary', onclick: async () => {
+      const payload = { wallet_id: wSel.value, amount: moneyVal(amount), category_id: catSel.value || null, purpose: purpose.value, due_date: due.value || null };
+      try { if (x.id) await post('/pending/' + x.id, payload); else await post('/pending', payload); toast('Сохранено'); closeModal(); loadPending(); }
+      catch (e) { toast(e.message, true); }
+    } }, 'Сохранить');
+    modal(x.id ? 'Изменить долг' : 'Долг к оплате', el('div', { class: 'cashf' }, [
+      el('div', { class: 'cash-note-info' }, 'Долг наличными. Пока не выплачен — не уменьшает остаток кассы и не идёт в ДДС.'),
+      frow('Касса', wSel), frow('Сумма', amount), frow('Статья', catSel), frow('Кому / за что', purpose), frow('Срок оплаты', due),
+    ]), [save]);
+  }
+  function payPending(x) {
+    const date = finp(todayStr(), { type: 'date' });
+    const save = el('button', { class: 'btn-primary', onclick: async () => {
+      try { await post('/pending/' + x.id + '/pay', { pay_date: date.value || todayStr() }); toast('Выплачено — расход внесён в Кассу'); closeModal(); loadPending(); }
+      catch (e) { toast(e.message, true); }
+    } }, 'Выплатить');
+    modal('Выплатить долг', el('div', { class: 'cashf' }, [
+      el('div', { class: 'cash-note-info' }, (x.purpose || 'Долг') + ' · ' + money(x.amount) + ' сум. Спишется из кассы как расход' + (x.cat_code ? ' (статья ' + x.cat_code + ')' : '') + '.'),
+      frow('Дата выплаты', date),
+    ]), [save]);
   }
 
   async function loadCashbox() {

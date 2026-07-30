@@ -340,3 +340,7 @@ select.cb-cell { cursor: pointer; }
 .cash-reimb-table td { vertical-align: top; border-bottom: 1px solid var(--line); }
 .cash-reimb-table tbody tr:last-child td { border-bottom: none; }
 .cash-reimb-table tbody tr:hover td { background: #faf9f4; }
+
+/* «К оплате» — строка долга в Наличной кассе */
+.cash-pend { grid-template-columns: 150px 1fr 150px 120px 190px; }
+@media (max-width: 760px) { .cash-pend { grid-template-columns: 90px 1fr 96px; } .cash-pend > *:nth-child(3), .cash-pend > *:nth-child(5) { display:none; } }
