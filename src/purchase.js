@@ -6,6 +6,7 @@ const { enrichOrderFinance } = pfin;
 const { notify } = require('./notifications');
 
 const router = express.Router();
+const intOrNull = (v) => (v === '' || v == null ? null : parseInt(v, 10));
 
 // Связка с Кассой: у поставщика — статья ДДС по умолчанию (для автоклассификации расходов по ИНН).
 let _ccCol = false;
@@ -251,26 +252,28 @@ router.post('/api/payments', express.json(), async (req, res) => {
     `INSERT INTO supplier_payments (supplier_id, order_id, amount, payment_type, paid_at, comment, created_by)
      VALUES ($1, $2, $3, $4, COALESCE($5::date, CURRENT_DATE), $6, $7)`,
     [supplierId, ordId, amt, ptype, paidAt, comment, req.user.id]);
-  let mode = 'advance';
-  if (orderId) {
-    const ok = await db.pool.query("SELECT 1 FROM purchase_orders WHERE id=$1 AND supplier_id=$2 AND status='received'", [orderId, supplierId]);
-    if (!ok.rows.length) return res.status(400).json({ error: 'Заявка не найдена или ещё не принята' });
-    await insertPay(amount, orderId); mode = 'order';
-  } else if (req.body.distribute === 'fifo') {
-    const open = await supplierOpenOrders(supplierId);
-    let rest = amount;
-    for (const o of open) {
-      if (rest <= 0.01) break;
-      const pay = Math.min(rest, o.remainder);
-      await insertPay(pay, o.id); rest -= pay;
+  try {
+    let mode = 'advance';
+    if (orderId) {
+      const ok = await db.pool.query("SELECT 1 FROM purchase_orders WHERE id=$1 AND supplier_id=$2 AND status='received'", [orderId, supplierId]);
+      if (!ok.rows.length) return res.status(400).json({ error: 'Заявка не найдена или ещё не принята' });
+      await insertPay(amount, orderId); mode = 'order';
+    } else if (req.body.distribute === 'fifo') {
+      const open = await supplierOpenOrders(supplierId);
+      let rest = amount;
+      for (const o of open) {
+        if (rest <= 0.01) break;
+        const pay = Math.min(rest, o.remainder);
+        await insertPay(pay, o.id); rest -= pay;
+      }
+      if (rest > 0.01) await insertPay(rest, null); // нераспределённый остаток — аванс
+      mode = 'fifo';
+    } else {
+      await insertPay(amount, null); // аванс поставщику
     }
-    if (rest > 0.01) await insertPay(rest, null); // нераспределённый остаток — аванс
-    mode = 'fifo';
-  } else {
-    await insertPay(amount, null); // аванс поставщику
-  }
-  await db.log(req.user.id, 'purchase_payment', `supplier=${supplierId} sum=${amount} (${ptype}, ${mode})`);
-  res.json({ ok: true, mode });
+    await db.log(req.user.id, 'purchase_payment', `supplier=${supplierId} sum=${amount} (${ptype}, ${mode})`);
+    res.json({ ok: true, mode });
+  } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 // Подотчёт закупщика удалён по решению (ломал бизнес-процесс: выдача денег жила не в Кассе).
