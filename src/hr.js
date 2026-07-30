@@ -86,8 +86,38 @@ async function ensureSchema() {
     await q(`ALTER TABLE hr_payroll ADD COLUMN IF NOT EXISTS ${col} NUMERIC`);
   }
   await q(`ALTER TABLE hr_payroll ADD COLUMN IF NOT EXISTS overtime_hours NUMERIC`); // переработка, часы (из табеля)
+  // Кадровая история: приём/увольнение/отпуск/больничный/перемещения/смена оклада-должности-графика.
+  await q(`CREATE TABLE IF NOT EXISTS hr_events (
+    id SERIAL PRIMARY KEY,
+    employee_id INT NOT NULL REFERENCES hr_employees(id) ON DELETE CASCADE,
+    event_type TEXT NOT NULL,                     -- hire|fire|vacation|sick|transfer|position|salary|schedule|other
+    event_date DATE NOT NULL,
+    date_to DATE,                                 -- для отпуска/больничного (период с — по)
+    from_text TEXT, to_text TEXT,                 -- старое → новое (отдел/оклад/должность/график)
+    comment TEXT,
+    created_by INT, created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  await q(`CREATE INDEX IF NOT EXISTS idx_hr_events_emp ON hr_events (employee_id)`);
+  await q(`CREATE INDEX IF NOT EXISTS idx_hr_events_date ON hr_events (event_date)`);
+  // Разовый бэкфилл приёма/увольнения из дат карточки (идемпотентно — если события ещё нет).
+  await q(`INSERT INTO hr_events (employee_id, event_type, event_date)
+           SELECT id, 'hire', hire_date FROM hr_employees e
+            WHERE hire_date IS NOT NULL AND NOT EXISTS (SELECT 1 FROM hr_events v WHERE v.employee_id=e.id AND v.event_type='hire')`).catch(() => {});
+  await q(`INSERT INTO hr_events (employee_id, event_type, event_date)
+           SELECT id, 'fire', fire_date FROM hr_employees e
+            WHERE fire_date IS NOT NULL AND status='fired' AND NOT EXISTS (SELECT 1 FROM hr_events v WHERE v.employee_id=e.id AND v.event_type='fire')`).catch(() => {});
   await seedDepartments();
   _ready = true;
+}
+const EVENT_TYPES = ['hire', 'fire', 'vacation', 'sick', 'transfer', 'position', 'salary', 'schedule', 'other'];
+const schedLabel = (code) => { const s = SCHEDULES.find((x) => x.code === code); return s ? s.name : (code || '—'); };
+const fmtSum = (v) => (v == null || v === '' ? '—' : Number(v).toLocaleString('ru-RU'));
+async function deptName(id) { if (!id) return '—'; const r = await db.pool.query('SELECT name FROM hr_departments WHERE id=$1', [id]); return r.rows[0] ? r.rows[0].name : '—'; }
+async function addEvent(empId, type, date, opts = {}) {
+  await db.pool.query(
+    `INSERT INTO hr_events (employee_id, event_type, event_date, date_to, from_text, to_text, comment, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+    [empId, type, date || new Date().toISOString().slice(0, 10), opts.date_to || null, opts.from_text || null, opts.to_text || null, opts.comment || null, opts.created_by || null]);
 }
 // Поля начислений/удержаний/выплат — для расчётов и сохранения.
 // ВАЖНО: accr_salary (Фикса) — базовая ставка, НЕ входит в сумму «начислено».
@@ -212,16 +242,32 @@ router.post('/api/employee', J, async (req, res) => {
   const args = [name, intOrNull(b.department_id), b.position || null, sched, b.hire_date || null, b.fire_date || null, status,
     numOrNull(b.base_salary), numOrNull(b.salary_official), numOrNull(b.salary_unofficial), b.phone || null, b.telegram_id || null, intOrNull(b.erp_user_id), b.comment || null,
     b.card_number || null];
+  const today = new Date().toISOString().slice(0, 10);
   try {
     if (b.id) {
+      const old = (await db.pool.query('SELECT department_id, position, schedule_type, base_salary, status FROM hr_employees WHERE id=$1', [b.id])).rows[0];
       await db.pool.query(
         `UPDATE hr_employees SET full_name=$1, department_id=$2, position=$3, schedule_type=$4, hire_date=$5, fire_date=$6, status=$7,
           base_salary=$8, salary_official=$9, salary_unofficial=$10, phone=$11, telegram_id=$12, erp_user_id=$13, comment=$14, card_number=$15, updated_at=now() WHERE id=$16`,
         [...args, b.id]);
+      // Авто-логирование изменений в кадровую историю.
+      if (old) {
+        const uid = req.user.id;
+        const newDept = intOrNull(b.department_id);
+        if (String(old.department_id || '') !== String(newDept || '')) await addEvent(b.id, 'transfer', today, { from_text: await deptName(old.department_id), to_text: await deptName(newDept), created_by: uid });
+        if ((old.position || '') !== (b.position || '')) await addEvent(b.id, 'position', today, { from_text: old.position || '—', to_text: b.position || '—', created_by: uid });
+        if ((old.schedule_type || '') !== (sched || '')) await addEvent(b.id, 'schedule', today, { from_text: schedLabel(old.schedule_type), to_text: schedLabel(sched), created_by: uid });
+        if (Number(old.base_salary || 0) !== Number(numOrNull(b.base_salary) || 0)) await addEvent(b.id, 'salary', today, { from_text: fmtSum(old.base_salary), to_text: fmtSum(numOrNull(b.base_salary)), created_by: uid });
+        if ((old.status || '') !== status) {
+          if (status === 'fired') await addEvent(b.id, 'fire', b.fire_date || today, { created_by: uid });
+          else if (old.status === 'fired' && status === 'active') await addEvent(b.id, 'hire', today, { comment: 'Восстановлен', created_by: uid });
+        }
+      }
     } else {
-      await db.pool.query(
+      const ins = await db.pool.query(
         `INSERT INTO hr_employees (full_name, department_id, position, schedule_type, hire_date, fire_date, status, base_salary, salary_official, salary_unofficial, phone, telegram_id, erp_user_id, comment, card_number)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`, args);
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`, args);
+      await addEvent(ins.rows[0].id, 'hire', b.hire_date || today, { created_by: req.user.id });
     }
     await db.log(req.user.id, 'hr_employee_save', name);
     res.json({ ok: true });
@@ -233,8 +279,48 @@ router.post('/api/employee/:id(\\d+)/status', J, async (req, res) => {
   const st = STATUSES.includes(req.body.status) ? req.body.status : null;
   if (!st) return res.status(400).json({ error: 'Неверный статус' });
   const fire = st === 'fired' ? (req.body.fire_date || new Date().toISOString().slice(0, 10)) : null;
+  const prev = (await db.pool.query('SELECT status FROM hr_employees WHERE id=$1', [req.params.id])).rows[0];
   await db.pool.query('UPDATE hr_employees SET status=$1, fire_date=COALESCE($2, fire_date), updated_at=now() WHERE id=$3', [st, fire, req.params.id]);
+  if (prev && prev.status !== st) {
+    if (st === 'fired') await addEvent(parseInt(req.params.id), 'fire', fire, { created_by: req.user.id });
+    else if (prev.status === 'fired' && st === 'active') await addEvent(parseInt(req.params.id), 'hire', new Date().toISOString().slice(0, 10), { comment: 'Восстановлен', created_by: req.user.id });
+  }
   await db.log(req.user.id, 'hr_employee_status', `#${req.params.id} → ${st}`);
+  res.json({ ok: true });
+});
+
+// ---------- Кадровая история ----------
+router.get('/api/events', async (req, res) => {
+  try {
+    const p = [], w = [];
+    if (req.query.employee_id) { p.push(parseInt(req.query.employee_id)); w.push(`v.employee_id=$${p.length}`); }
+    if (req.query.type && EVENT_TYPES.includes(req.query.type)) { p.push(req.query.type); w.push(`v.event_type=$${p.length}`); }
+    if (req.query.department) { p.push(parseInt(req.query.department)); w.push(`e.department_id=$${p.length}`); }
+    if (req.query.from) { p.push(req.query.from); w.push(`v.event_date >= $${p.length}`); }
+    if (req.query.to) { p.push(req.query.to); w.push(`v.event_date <= $${p.length}`); }
+    if (req.query.q) { p.push('%' + String(req.query.q).trim() + '%'); w.push(`e.full_name ILIKE $${p.length}`); }
+    const where = w.length ? 'WHERE ' + w.join(' AND ') : '';
+    const rows = (await db.pool.query(
+      `SELECT v.*, e.full_name, d.name AS dept_name FROM hr_events v
+         JOIN hr_employees e ON e.id=v.employee_id
+         LEFT JOIN hr_departments d ON d.id=e.department_id
+       ${where} ORDER BY v.event_date DESC, v.id DESC LIMIT 500`, p)).rows;
+    res.json({ items: rows });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+router.post('/api/events', J, async (req, res) => {
+  const b = req.body || {};
+  const empId = intOrNull(b.employee_id);
+  const type = EVENT_TYPES.includes(b.event_type) ? b.event_type : null;
+  if (!empId || !type) return res.status(400).json({ error: 'Укажите сотрудника и тип события' });
+  if (!b.event_date) return res.status(400).json({ error: 'Укажите дату' });
+  await addEvent(empId, type, b.event_date, { date_to: b.date_to || null, from_text: b.from_text || null, to_text: b.to_text || null, comment: b.comment || null, created_by: req.user.id });
+  await db.log(req.user.id, 'hr_event_add', `${type} emp#${empId}`);
+  res.json({ ok: true });
+});
+router.post('/api/events/:id(\\d+)/delete', async (req, res) => {
+  await db.pool.query('DELETE FROM hr_events WHERE id=$1', [req.params.id]);
+  await db.log(req.user.id, 'hr_event_delete', '#' + req.params.id);
   res.json({ ok: true });
 });
 

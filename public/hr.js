@@ -119,6 +119,7 @@
       tab('salary', '💵 Зарплата'),
       tab('massops', '⚡ Массовые операции'),
       tab('payouts', '💳 Выплаты'),
+      tab('events', '🗂 Кадровая история'),
       tab('departments', '🏢 Отделы'),
     ]));
     main.appendChild(el('div', { id: 'hr-content' }));
@@ -131,8 +132,82 @@
     if (TAB === 'payouts') return renderPayouts();
     if (TAB === 'massops') return renderMassOps();
     if (TAB === 'timesheet') return renderTimesheet();
+    if (TAB === 'events') return renderEvents();
     if (TAB === 'departments') return renderDepartments();
     return renderSoon();
+  }
+
+  // ================= КАДРОВАЯ ИСТОРИЯ =================
+  const EV = {
+    hire: { t: 'Приём', c: '#2e7d32' }, fire: { t: 'Увольнение', c: '#c0392b' },
+    vacation: { t: 'Отпуск', c: '#0d7d8c' }, sick: { t: 'Больничный', c: '#b25b00' },
+    transfer: { t: 'Перемещение', c: '#5b3da8' }, position: { t: 'Смена должности', c: '#163a28' },
+    salary: { t: 'Смена оклада', c: '#c77800' }, schedule: { t: 'Смена графика', c: '#3f6a16' }, other: { t: 'Прочее', c: '#7c8579' },
+  };
+  const evState = { employee: '', department: '', type: '', from: '', to: '', q: '' };
+  function evDetail(x) {
+    if (x.event_type === 'vacation' || x.event_type === 'sick') return ruDate(x.event_date) + (x.date_to ? ' — ' + ruDate(x.date_to) : '') + (x.comment ? ' · ' + x.comment : '');
+    if (x.from_text || x.to_text) return (x.from_text || '—') + ' → ' + (x.to_text || '—') + (x.comment ? ' · ' + x.comment : '');
+    return x.comment || '';
+  }
+  async function renderEvents() {
+    const c = $('#hr-content');
+    c.appendChild(el('div', { class: 'hr-head' }, [
+      el('div', {}, [el('div', { class: 'hr-h2' }, 'Кадровая история'), el('div', { class: 'hr-sub' }, 'Приём, увольнение, отпуск, больничный, перемещения, смена оклада/должности/графика. Изменения в карточке пишутся сюда сами.')]),
+      el('button', { class: 'btn-primary', style: 'align-self:flex-start', onclick: () => openEventForm() }, '+ Событие'),
+    ]));
+    const typeSel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { evState.type = e.target.value; loadEv(); } }, [{ v: '', t: 'Все события' }].concat(Object.keys(EV).map((k) => ({ v: k, t: EV[k].t }))).map((o) => el('option', { value: o.v, selected: o.v === evState.type || null }, o.t)));
+    const dSel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { evState.department = e.target.value; loadEv(); } }, [el('option', { value: '' }, 'Все отделы'), ...DICTS.departments.map((d) => el('option', { value: d.id, selected: String(d.id) === evState.department || null }, d.name))]);
+    const q = el('input', { class: 'hrf-inp hr-filt hr-filt-q', placeholder: 'Поиск по ФИО', value: evState.q, oninput: (e) => { evState.q = e.target.value; clearTimeout(window.__evS); window.__evS = setTimeout(loadEv, 300); } });
+    const fromInp = el('input', { type: 'date', class: 'hrf-inp hr-filt', value: evState.from, onchange: (e) => { evState.from = e.target.value; loadEv(); } });
+    const toInp = el('input', { type: 'date', class: 'hrf-inp hr-filt', value: evState.to, onchange: (e) => { evState.to = e.target.value; loadEv(); } });
+    c.appendChild(el('div', { class: 'hr-filters' }, [typeSel, dSel, el('span', { class: 'hr-flab' }, 'с'), fromInp, el('span', { class: 'hr-flab' }, 'по'), toInp, q]));
+    c.appendChild(el('div', { id: 'hr-ev-box' }));
+    loadEv();
+  }
+  async function loadEv() {
+    const box = $('#hr-ev-box'); if (!box) return;
+    const sp = new URLSearchParams();
+    if (evState.type) sp.set('type', evState.type);
+    if (evState.department) sp.set('department', evState.department);
+    if (evState.q) sp.set('q', evState.q);
+    if (evState.from) sp.set('from', evState.from);
+    if (evState.to) sp.set('to', evState.to);
+    let d; try { d = await api('/events?' + sp.toString()); } catch (e) { box.innerHTML = ''; box.appendChild(el('div', { class: 'hr-empty' }, 'Ошибка: ' + e.message)); return; }
+    box.innerHTML = '';
+    const items = d.items || [];
+    if (!items.length) { box.appendChild(el('div', { class: 'hr-empty' }, 'Событий нет.')); return; }
+    const head = el('tr', {}, ['Дата', 'Сотрудник', 'Отдел', 'Событие', 'Детали', ''].map((h) => el('th', { style: 'padding:8px 10px;background:#f2f5f1;text-align:left;white-space:nowrap' }, h)));
+    const tb = el('tbody', {}, items.map((x) => el('tr', { style: 'border-bottom:0.5px solid var(--line,#e3e0d4)' }, [
+      el('td', { style: 'padding:7px 10px;white-space:nowrap' }, ruDate(x.event_date)),
+      el('td', { style: 'padding:7px 10px;font-weight:700' }, x.full_name),
+      el('td', { style: 'padding:7px 10px;color:#7c8579' }, x.dept_name || '—'),
+      el('td', { style: 'padding:7px 10px;white-space:nowrap' }, el('span', { style: 'font-size:12px;font-weight:700;padding:3px 9px;border-radius:999px;color:#fff;background:' + ((EV[x.event_type] || EV.other).c) }, (EV[x.event_type] || EV.other).t)),
+      el('td', { style: 'padding:7px 10px' }, evDetail(x)),
+      el('td', { style: 'padding:7px 10px;text-align:right' }, el('button', { class: 'btn-ghost hr-del', style: 'padding:3px 8px;font-size:12px', title: 'Удалить', onclick: async () => { if (!confirm('Удалить это событие?')) return; try { await post('/events/' + x.id + '/delete', {}); loadEv(); } catch (e) { toast(e.message, true); } } }, '🗑')),
+    ])));
+    box.appendChild(el('div', { style: 'overflow-x:auto;border:0.5px solid var(--line,#e3e0d4);border-radius:12px;background:#fff' }, el('table', { style: 'border-collapse:collapse;width:100%;font-size:13px' }, [el('thead', {}, head), tb])));
+  }
+  async function openEventForm(presetEmpId) {
+    let emps = [];
+    try { emps = (await api('/employees?status=')).items || []; } catch (e) { return toast(e.message, true); }
+    const active = emps.filter((e) => e.status !== 'archived');
+    const empSel = fsel(active.map((e) => ({ v: e.id, t: e.full_name })), presetEmpId || (active[0] && active[0].id) || '');
+    const typeSel = fsel([['vacation', 'Отпуск'], ['sick', 'Больничный'], ['other', 'Прочее'], ['hire', 'Приём'], ['fire', 'Увольнение']].map(([v, t]) => ({ v, t })), 'vacation');
+    const dFrom = finp(new Date().toISOString().slice(0, 10), { type: 'date' });
+    const dTo = finp('', { type: 'date' });
+    const dToRow = frow('По (для отпуска/больничного)', dTo);
+    const comment = finp('', { placeholder: 'Комментарий' });
+    const applyType = () => { dToRow.style.display = (typeSel.value === 'vacation' || typeSel.value === 'sick') ? '' : 'none'; };
+    typeSel.onchange = applyType; applyType();
+    const save = el('button', { class: 'btn-primary', onclick: async () => {
+      if (!empSel.value) return toast('Выберите сотрудника', true);
+      try {
+        await post('/events', { employee_id: empSel.value, event_type: typeSel.value, event_date: dFrom.value, date_to: (dToRow.style.display !== 'none' ? dTo.value : null) || null, comment: comment.value });
+        toast('Событие добавлено'); closeModal(); if (TAB === 'events') loadEv();
+      } catch (e) { toast(e.message, true); }
+    } }, 'Добавить');
+    modal('Кадровое событие', el('div', { class: 'hrf' }, [frow('Сотрудник', empSel), frow('Тип', typeSel), frow('Дата (с)', dFrom), dToRow, frow('Комментарий', comment)]), [save]);
   }
 
   // ================= ДАШБОРД =================
