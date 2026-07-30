@@ -158,7 +158,7 @@ router.get('/api/suppliers/:id(\\d+)/statement', async (req, res) => {
     [req.params.id]
   );
   const payments = await db.pool.query(
-    'SELECT id, amount, payment_type, paid_at, comment FROM supplier_payments WHERE supplier_id = $1 ORDER BY paid_at DESC, id DESC',
+    'SELECT id, amount, payment_type, paid_at, comment, currency, fx_rate, fx_amount FROM supplier_payments WHERE supplier_id = $1 ORDER BY paid_at DESC, id DESC',
     [req.params.id]
   );
   // Перечисления из банковской выписки (Касса) по ИНН — read-only строки «из выписки» (Часть 2).
@@ -195,6 +195,12 @@ router.get('/api/settlements', async (req, res) => {
 // Подотчёт снабженца (выдано налом из Кассы − оплачено поставщикам налом). Для панели во Взаиморасчётах.
 router.get('/api/supply-advance', async (req, res) => {
   try { res.json(await pfin.supplyAdvance()); } catch (e) { res.status(400).json({ error: e.message }); }
+});
+// Курс ЦБ сум/$ из кэша Кассы (для оплаты поставщику в валюте). Нет в кэше — вернём null, курс вводят вручную.
+router.get('/api/fx-rate', async (req, res) => {
+  const date = req.query.date || new Date().toISOString().slice(0, 10);
+  try { const r = await db.pool.query('SELECT usd_rate FROM cash_fx_rates WHERE rate_date=$1', [date]); res.json({ date, rate: r.rows[0] ? Number(r.rows[0].usd_rate) : null }); }
+  catch (e) { res.json({ date, rate: null }); }
 });
 // Экспорт Взаиморасчётов в Excel с учётом фильтров и выбранных столбцов.
 router.get('/api/settlements-export.xlsx', async (req, res) => {
@@ -237,21 +243,26 @@ router.get('/api/settlements-export.xlsx', async (req, res) => {
 // Режимы: order_id — оплата конкретной заявки; distribute='fifo' — общая сумма разносится
 // по старым долгам (просрочка/старые сроки → новые), остаток = аванс; иначе — аванс поставщику.
 router.post('/api/payments', express.json(), async (req, res) => {
-  const amount = Number(req.body.amount);
   const supplierId = parseInt(req.body.supplier_id);
-  if (!supplierId || !amount || amount <= 0) return res.status(400).json({ error: 'Укажите поставщика и сумму больше нуля' });
   const ptype = req.body.payment_type === 'наличка' ? 'наличка' : 'перечисление';
   const paidAt = req.body.paid_at || null;
   const comment = req.body.comment || '';
   const orderId = intOrNull(req.body.order_id);
+  // Валюта: если USD — сумма к учёту = $ × курс (сум-эквивалент). Взаиморасчёты всегда в сумах.
+  const currency = req.body.currency === 'USD' ? 'USD' : 'UZS';
+  const fxRate = currency === 'USD' ? Number(req.body.fx_rate) : null;
+  const fxAmount = currency === 'USD' ? Number(req.body.fx_amount) : null;
+  if (currency === 'USD' && (!(fxAmount > 0) || !(fxRate > 0))) return res.status(400).json({ error: 'Для оплаты в долларах укажите сумму в $ и курс больше нуля' });
+  const amount = currency === 'USD' ? Math.round(fxAmount * fxRate) : Number(req.body.amount);
+  if (!supplierId || !amount || amount <= 0) return res.status(400).json({ error: 'Укажите поставщика и сумму больше нуля' });
   // ТЗ 11.5: закупщик (не админ) может платить только по конкретной заявке — без свободных оплат.
   if (!(req.user && req.user.isAdmin) && !orderId) {
     return res.status(403).json({ error: 'Оплата разрешена только по конкретной заявке. Общий авторазнос и аванс — для админа/финансов.' });
   }
   const insertPay = (amt, ordId) => db.pool.query(
-    `INSERT INTO supplier_payments (supplier_id, order_id, amount, payment_type, paid_at, comment, created_by)
-     VALUES ($1, $2, $3, $4, COALESCE($5::date, CURRENT_DATE), $6, $7)`,
-    [supplierId, ordId, amt, ptype, paidAt, comment, req.user.id]);
+    `INSERT INTO supplier_payments (supplier_id, order_id, amount, payment_type, paid_at, comment, currency, fx_rate, fx_amount, created_by)
+     VALUES ($1, $2, $3, $4, COALESCE($5::date, CURRENT_DATE), $6, $7, $8, $9, $10)`,
+    [supplierId, ordId, amt, ptype, paidAt, comment, currency, fxRate, currency === 'USD' ? fxAmount : null, req.user.id]);
   try {
     let mode = 'advance';
     if (orderId) {

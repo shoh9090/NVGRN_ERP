@@ -313,6 +313,11 @@ async function migrate() {
   await pool.query("ALTER TABLE supplier_payments ADD COLUMN IF NOT EXISTS order_id INTEGER").catch(()=>{});
   // Связь оплаты поставщику с денежной операцией Кассы (Обязательства, Этап 3) — против двойного учёта.
   await pool.query("ALTER TABLE supplier_payments ADD COLUMN IF NOT EXISTS cash_transaction_id INTEGER").catch(()=>{});
+  // Оплата в валюте: amount всегда хранит сум-эквивалент (взаиморасчёты в сумах), а currency/fx_rate/fx_amount —
+  // для отображения (в чём и по какому курсу платили). По умолчанию сумы.
+  await pool.query("ALTER TABLE supplier_payments ADD COLUMN IF NOT EXISTS currency TEXT NOT NULL DEFAULT 'UZS'").catch(()=>{});
+  await pool.query("ALTER TABLE supplier_payments ADD COLUMN IF NOT EXISTS fx_rate NUMERIC").catch(()=>{});
+  await pool.query("ALTER TABLE supplier_payments ADD COLUMN IF NOT EXISTS fx_amount NUMERIC").catch(()=>{});
 
   // ===== Обязательства: банковские кредиты и займы (Касса → Обязательства, Этап 2) =====
   await pool.query(`CREATE TABLE IF NOT EXISTS finance_obligations (

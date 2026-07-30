@@ -886,7 +886,7 @@
           el('tr', {}, [
             el('td', {}, dt(p.paid_at)),
             el('td', {}, payIcon(p.payment_type)),
-            el('td', { class: 'muted' }, p.comment || ''),
+            el('td', { class: 'muted' }, (p.comment || '') + (p.currency === 'USD' && Number(p.fx_amount) > 0 ? ' · $' + fmtMoney(p.fx_amount) + ' @ ' + fmtMoney(p.fx_rate) : '')),
             el('td', { class: 'tnum', style: 'text-align:right;font-weight:700;color:#3f6a16' }, fmtMoney(p.amount)),
           ])
         )),
@@ -930,12 +930,33 @@
     const orderSel = el('select', {}, []);
     const orderRow = el('label', {}, ['Заявка', orderSel]);
     let openOrders = [];
-    // Сумма к оплате по заявке = её остаток по факту (кол-во приёмки × цена заявки − уже оплачено).
+    // Валюта оплаты: сум (по умолчанию) или доллары. При USD сумма в сумах = $ × курс (ЦБ или вручную).
+    const curSel = el('select', {}, [el('option', { value: 'UZS' }, 'сум'), el('option', { value: 'USD' }, 'доллары ($)')]);
+    const usdInp = el('input', { type: 'number', step: 'any', min: '0', placeholder: 'сумма в $' });
+    const rateInp = el('input', { type: 'number', step: 'any', min: '0', placeholder: 'курс сум/$' });
+    const usdRow = el('label', {}, ['Сумма, $', usdInp]);
+    const rateRow = el('label', {}, ['Курс сум/$', rateInp]);
+    const eqNote = el('div', { class: 'muted', style: 'font-size:12px' }, '');
+    const isUsd = () => curSel.value === 'USD';
+    function recalcUsd() {
+      const u = Number(usdInp.value) || 0, r = Number(rateInp.value) || 0;
+      eqNote.textContent = (u > 0 && r > 0) ? ('= ' + fmtMoney(Math.round(u * r)) + ' сум по курсу ' + r) : '';
+      if (u > 0 && r > 0) amount.value = Math.round(u * r);
+    }
+    async function applyCur() {
+      const usd = isUsd();
+      usdRow.style.display = rateRow.style.display = eqNote.style.display = usd ? '' : 'none';
+      amount.readOnly = usd;
+      if (usd) { if (!rateInp.value) { try { const fr = await api('/fx-rate'); if (fr && fr.rate) rateInp.value = fr.rate; } catch (e) { /* курс введут вручную */ } } recalcUsd(); }
+      else syncAmount();
+    }
+    // Сумма к оплате по заявке = её остаток по факту (кол-во приёмки × цена заявки − уже оплачено). Только для сум.
     function syncAmount() {
-      if (modeSel.value !== 'order') return;
+      if (isUsd() || modeSel.value !== 'order') return;
       const o = openOrders.find((x) => String(x.id) === String(orderSel.value));
       if (o) amount.value = Math.max(0, Math.round(Number(o.remainder) || 0));
     }
+    curSel.onchange = applyCur; usdInp.oninput = recalcUsd; rateInp.oninput = recalcUsd;
     async function loadOpenOrders() {
       orderSel.innerHTML = '';
       if (!supSel.value) { openOrders = []; return; }
@@ -954,23 +975,28 @@
       el('label', {}, ['Поставщик', supSel]),
       el('label', {}, ['Как разнести', modeSel]),
       orderRow,
+      el('label', {}, ['Валюта', curSel]),
+      usdRow, rateRow,
       el('label', {}, ['Сумма, сум *', amount]),
+      eqNote,
       el('label', {}, ['Дата', date]),
       el('label', {}, ['Комментарий', comment]),
-      el('div', { class: 'muted', style: 'font-size:12px' }, 'Сумма подставляется по факту (кол-во приёмки × цена заявки − оплачено), можно изменить. Оплата — наличными; перечисления подтягиваются из выписки банка. Нераспределённый остаток при авторазносе становится авансом.'),
+      el('div', { class: 'muted', style: 'font-size:12px' }, 'Сумма подставляется по факту (кол-во приёмки × цена заявки − оплачено), можно изменить. Валюта: сум или $ (по курсу — сам подставит ЦБ, можно ввести вручную). Оплата — наличными; перечисления подтягиваются из выписки банка.'),
     ]);
     if (presetOrderId) modeSel.value = 'order';
     toggleMode();
     await loadOpenOrders();
+    applyCur();
     const m = modal('💳 Внести оплату поставщику', body, [
       el('button', { onclick: () => m.close() }, 'Отмена'),
       el('button', {
         class: 'btn-primary',
         onclick: async (ev) => {
+          if (isUsd() && !(Number(usdInp.value) > 0 && Number(rateInp.value) > 0)) return toast('Укажите сумму в $ и курс', true);
           if (!(Number(amount.value) > 0)) return toast('Укажите сумму больше нуля', true);
           if (modeSel.value === 'order' && !orderSel.value) return toast('Выберите заявку (или смените режим на «общая»/«аванс»)', true);
           ev.target.disabled = true;
-          const payload = { supplier_id: supSel.value, amount: amount.value, payment_type: 'наличка', paid_at: date.value, comment: comment.value };
+          const payload = { supplier_id: supSel.value, amount: amount.value, payment_type: 'наличка', paid_at: date.value, comment: comment.value, currency: curSel.value, fx_rate: isUsd() ? rateInp.value : '', fx_amount: isUsd() ? usdInp.value : '' };
           if (modeSel.value === 'order') payload.order_id = orderSel.value;
           else if (modeSel.value === 'fifo') payload.distribute = 'fifo';
           try {
