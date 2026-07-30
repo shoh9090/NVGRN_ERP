@@ -1923,10 +1923,19 @@
     const fromW = (DICTS.wallets || []).find((x) => String(x.id) === String(tx.wallet_id));
     const a2aRow = el('div', {}, [frow('Откуда', el('div', { class: 'cash-note-info' }, (fromW && fromW.name) || tx.wallet_name || '—')), frow('Куда (кошелёк)', walletTo)]);
     const toggleA2A = () => { a2aRow.style.display = isTransferCat() ? '' : 'none'; };
-    cat.onchange = toggleA2A;
+    // Авто-«Куда» по статье: 110 «Перевод в наличную кассу» → касса; 111 «Пополнение карты» → карта.
+    const catCode = (id) => { const c = (DICTS.categories || []).find((x) => String(x.id) === String(id)); return c ? String(c.code) : ''; };
+    const walletByKind = (kind) => (DICTS.wallets || []).find((w) => w.kind === kind);
+    const autoWalletTo = () => {
+      const code = catCode(cat.value);
+      const w = code === '110' ? walletByKind('cash') : code === '111' ? walletByKind('card') : null;
+      if (w) walletTo.value = String(w.id);
+    };
+    cat.onchange = () => { toggleA2A(); autoWalletTo(); };
     rows.push(a2aRow);
     const body = el('div', { class: 'cashf' }, rows);
     toggleA2A();
+    if (!tx.wallet_to_id) autoWalletTo(); // при открытии подставим кошелёк, если статья уже 110/111
     const save = el('button', { class: 'btn-primary', onclick: async () => {
       try {
         const isA2A = isTransferCat();
