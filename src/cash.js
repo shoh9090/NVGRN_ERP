@@ -191,6 +191,22 @@ async function ensureCashSchema() {
   await seedSupplierCashCats();
   await seedCashCounterparties();
   await seedCategoryKeywords();
+  // Разовый бэкфилл: наличные расходы «Сырьё» с даты запуска учёта (17.07.2026) — отметить выдачей
+  // снабженцу (is_supply_advance). Один раз (через настройку), чтобы не перетирать ручные снятия галочки.
+  try {
+    const st = await db.getSettings();
+    if (!st.supply_advance_backfill_v1) {
+      const siryeIds = [...(await siryeCatIdSet())];
+      if (siryeIds.length) {
+        await db.pool.query(
+          `UPDATE cash_transactions t SET is_supply_advance=true FROM cash_wallets w
+             WHERE t.wallet_id=w.id AND w.kind='cash' AND t.tx_type='out'
+               AND t.category_id = ANY($1) AND t.tx_date >= '2026-07-17'
+               AND COALESCE(t.is_supply_advance,false)=false`, [siryeIds]);
+      }
+      await db.setSetting('supply_advance_backfill_v1', 'done');
+    }
+  } catch (e) { /* бэкфилл необязателен */ }
   _ready = true;
 }
 

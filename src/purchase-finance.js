@@ -6,6 +6,11 @@ const db = require('./db');
 const DAY_MS = 86400000;
 const daysBetween = (a, b) => Math.round((new Date(a) - new Date(b)) / DAY_MS);
 
+// Старт учёта долгов/оплат. Всё ДО этой даты в системе не считаем — оно уже зашито в «начальный
+// остаток» поставщика (opening_balance). Так начальные остатки имеют смысл, а не задваиваются со
+// старыми документами. Дата запуска учёта — 17.07.2026.
+const SETTLE_START = '2026-07-17';
+
 // Перечисления поставщикам из банковской выписки (Касса) — авто-оплаты во Взаиморасчётах (Часть 2).
 // Берём расходы (out) с банковских кошельков, у которых ИНН плательщика = ИНН поставщика из Закупа.
 // Дедуп: если та же оплата уже внесена вручную в Закуп (тот же поставщик, сумма, дата ±5 дней) —
@@ -19,6 +24,7 @@ async function wireSupplierPayments() {
        JOIN ref_counterparties c ON c.role_supplier = TRUE AND c.status = 'active'
             AND NULLIF(TRIM(c.inn),'') = NULLIF(TRIM(t.payer_inn),'')
       WHERE t.tx_type = 'out' AND t.source <> 'opening' AND COALESCE(TRIM(t.payer_inn),'') <> ''
+        AND t.tx_date >= '${SETTLE_START}'
       ORDER BY t.tx_date, t.id`)).rows
     .map((r) => ({ id: r.id, supplier_id: r.supplier_id, paid_at: r.paid_at, amount: Number(r.amount) || 0, purpose: r.purpose || '' }));
   if (!txs.length) return [];
@@ -96,10 +102,10 @@ async function supplierBalances(opts = {}) {
      LEFT JOIN (
        SELECT po.supplier_id, SUM(COALESCE(i.fact_qty, 0) * i.price) AS delivered
        FROM purchase_orders po JOIN purchase_order_items i ON i.order_id = po.id
-       WHERE po.status = 'received' GROUP BY po.supplier_id
+       WHERE po.status = 'received' AND COALESCE(po.received_at::date, po.delivery_date) >= '${SETTLE_START}' GROUP BY po.supplier_id
      ) d ON d.supplier_id = c.id
      LEFT JOIN (
-       SELECT supplier_id, SUM(amount) AS paid FROM supplier_payments GROUP BY supplier_id
+       SELECT supplier_id, SUM(amount) AS paid FROM supplier_payments WHERE paid_at >= '${SETTLE_START}' GROUP BY supplier_id
      ) p ON p.supplier_id = c.id
      WHERE c.role_supplier = TRUE AND c.status = 'active'${qSQL}${pcSQL}
      ORDER BY c.name`, params);
@@ -134,7 +140,7 @@ async function supplierBalances(opts = {}) {
          SELECT po.supplier_id, COALESCE(po.received_at::date, po.delivery_date) d,
                 SUM(COALESCE(i.fact_qty, 0) * i.price) val
          FROM purchase_orders po JOIN purchase_order_items i ON i.order_id = po.id
-         WHERE po.status = 'received' GROUP BY po.id)
+         WHERE po.status = 'received' AND COALESCE(po.received_at::date, po.delivery_date) >= '${SETTLE_START}' GROUP BY po.id)
        SELECT supplier_id,
          COALESCE(SUM(val) FILTER (WHERE $1::date IS NULL OR d < $1),0) AS before_v,
          COALESCE(SUM(val) FILTER (WHERE ($1::date IS NULL OR d >= $1) AND ($2::date IS NULL OR d <= $2)),0) AS period_v
@@ -143,7 +149,7 @@ async function supplierBalances(opts = {}) {
       `SELECT supplier_id,
          COALESCE(SUM(amount) FILTER (WHERE $1::date IS NULL OR paid_at < $1),0) AS before_v,
          COALESCE(SUM(amount) FILTER (WHERE ($1::date IS NULL OR paid_at >= $1) AND ($2::date IS NULL OR paid_at <= $2)),0) AS period_v
-       FROM supplier_payments GROUP BY supplier_id`, [from, to])).rows;
+       FROM supplier_payments WHERE paid_at >= '${SETTLE_START}' GROUP BY supplier_id`, [from, to])).rows;
     const dm = {}; dAgg.forEach((x) => { dm[x.supplier_id] = x; });
     const pm = {}; pAgg.forEach((x) => { pm[x.supplier_id] = x; });
     for (const s of rows) {
@@ -182,7 +188,7 @@ async function openSupplierObligations() {
      FROM purchase_orders po
      JOIN ref_counterparties c ON c.id = po.supplier_id
      LEFT JOIN purchase_order_items i ON i.order_id = po.id
-     WHERE po.status = 'received'
+     WHERE po.status = 'received' AND COALESCE(po.received_at::date, po.delivery_date) >= '${SETTLE_START}'
      GROUP BY po.id, c.name`);
   return r.rows.map(enrichOrderFinance).filter((o) => o.remainder > 0.01);
 }
@@ -211,9 +217,9 @@ async function supplyAdvance() {
   const issuedR = await db.pool.query(
     `SELECT COALESCE(SUM(t.amount),0) AS issued
        FROM cash_transactions t JOIN cash_wallets w ON w.id = t.wallet_id
-      WHERE t.tx_type='out' AND t.is_supply_advance=true AND w.kind='cash' AND t.source<>'opening'`);
+      WHERE t.tx_type='out' AND t.is_supply_advance=true AND w.kind='cash' AND t.source<>'opening' AND t.tx_date >= '${SETTLE_START}'`);
   const spentR = await db.pool.query(
-    "SELECT COALESCE(SUM(amount),0) AS spent FROM supplier_payments WHERE payment_type='наличка'");
+    "SELECT COALESCE(SUM(amount),0) AS spent FROM supplier_payments WHERE payment_type='наличка' AND paid_at >= '" + SETTLE_START + "'");
   const issued = Number(issuedR.rows[0].issued) || 0;
   const spent = Number(spentR.rows[0].spent) || 0;
   return { issued, spent, balance: issued - spent };
