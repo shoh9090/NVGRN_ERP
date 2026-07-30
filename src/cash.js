@@ -150,6 +150,8 @@ async function ensureCashSchema() {
   // Наличный расход «выдача снабженцу под отчёт» (галочка в Наличной кассе). По умолчанию включается
   // при импорте/вводе для расходов группы «Сырьё». Остаток подотчёта = выдано − оплачено поставщикам налом.
   await q(`ALTER TABLE cash_transactions ADD COLUMN IF NOT EXISTS is_supply_advance BOOLEAN NOT NULL DEFAULT false`);
+  // Платёж по кредиту скрыт из «к разнесению» (уже разнесён/отмечен оплаченным исторически).
+  await q(`ALTER TABLE cash_transactions ADD COLUMN IF NOT EXISTS obl_dismissed BOOLEAN NOT NULL DEFAULT false`);
   // «К оплате»: наличные долги, которые надо выплатить. Хранятся ОТДЕЛЬНО и не влияют на остаток/ДДС,
   // пока не выплачены. При выплате создаётся обычный расход в Кассе (paid_tx_id), долг закрывается.
   await q(`CREATE TABLE IF NOT EXISTS cash_pending_payments (
@@ -2464,12 +2466,23 @@ router.get('/api/obligations/unassigned-payments', async (req, res) => {
          FROM cash_transactions t
          JOIN cash_categories c ON c.id = t.category_id AND c.code IN ('60','61')
          LEFT JOIN cash_wallets w ON w.id = t.wallet_id
-        WHERE t.tx_type='out' AND COALESCE(t.source,'') <> 'obligation'
+        WHERE t.tx_type='out' AND COALESCE(t.source,'') <> 'obligation' AND NOT COALESCE(t.obl_dismissed,false)
           AND NOT EXISTS (SELECT 1 FROM finance_obligation_payment_links l
                           WHERE l.cash_transaction_id = t.id AND l.reversed_at IS NULL)
         ORDER BY t.tx_date DESC, t.id DESC`)).rows;
     res.json({ items: rows });
   } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Скрыть/вернуть платежи из «к разнесению» (уже оплачены/отмечены исторически — не разносим).
+router.post('/api/obligations/dismiss-payments', J, async (req, res) => {
+  if (!canFin(req)) return res.status(403).json({ error: 'Только администратор/финансы' });
+  const ids = (Array.isArray(req.body.ids) ? req.body.ids : []).map((x) => parseInt(x, 10)).filter(Boolean);
+  if (!ids.length) return res.status(400).json({ error: 'Нечего скрывать' });
+  const dismissed = req.body.dismissed === false ? false : true;
+  await db.pool.query('UPDATE cash_transactions SET obl_dismissed=$1 WHERE id = ANY($2)', [dismissed, ids]);
+  await db.log(req.user.id, 'obl_dismiss_payments', ids.length + '');
+  res.json({ ok: true, count: ids.length });
 });
 
 // Ближайший неоплаченный месяц графика кредита — для предложения разбивки тело/проценты при разносе.

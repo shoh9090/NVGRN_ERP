@@ -628,18 +628,25 @@
   // Панель «Платежи по кредитам к разнесению»: оплаты из выписки (статья 60/61) без привязки к графику.
   function renderUnassignedPanel(items) {
     const total = items.reduce((s, x) => s + Number(x.amount || 0), 0);
-    const rows = items.map((x) => el('div', { class: 'cash-row', style: 'grid-template-columns:92px 1fr 130px 96px' }, [
+    const dismiss = async (ids) => { try { await post('/obligations/dismiss-payments', { ids }); toast('Скрыто из «к разнесению»'); renderObligations(); } catch (e) { toast(e.message, true); } };
+    const rows = items.map((x) => el('div', { class: 'cash-row', style: 'grid-template-columns:92px 1fr 130px 150px' }, [
       el('span', {}, ruDate(x.tx_date)),
       el('span', { class: 'cash-purpose', title: x.purpose || '' }, (x.cat_code === '60' ? 'Проценты' : 'Погашение') + ' · ' + (x.purpose || x.payer_name || x.wallet_name || '—')),
       el('span', { style: 'text-align:right;font-weight:700' }, money(x.amount) + ' сум'),
-      el('span', { style: 'text-align:right' }, el('button', { class: 'btn-ghost cash-add', style: 'padding:4px 10px;font-size:12px', onclick: () => openAssignPayment(x) }, 'Разнести')),
+      el('span', { style: 'display:flex;gap:6px;justify-content:flex-end' }, [
+        el('button', { class: 'btn-ghost cash-add', style: 'padding:4px 10px;font-size:12px', onclick: () => openAssignPayment(x) }, 'Разнести'),
+        el('button', { class: 'btn-ghost cash-add', style: 'padding:4px 8px;font-size:12px', title: 'Скрыть (уже оплачено — не разносить)', onclick: () => { if (confirm('Скрыть этот платёж из «к разнесению»? (он уже оплачен/учтён)')) dismiss([x.id]); } }, '✕'),
+      ]),
     ]));
     return el('div', { class: 'cash-internal', style: 'border-color:#e6c98a;background:#fdf7ea' }, [
       el('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:6px' }, [
         el('div', { style: 'font-weight:800;color:#8a5a00' }, '⚠ Платежи по кредитам к разнесению (' + items.length + ')'),
-        el('div', { style: 'font-weight:700' }, money(total) + ' сум'),
+        el('div', { style: 'display:flex;gap:10px;align-items:center' }, [
+          el('div', { style: 'font-weight:700' }, money(total) + ' сум'),
+          el('button', { class: 'btn-ghost cash-add', style: 'padding:4px 10px;font-size:12px', title: 'Скрыть все показанные — если они уже оплачены/отмечены', onclick: () => { if (confirm('Скрыть все ' + items.length + ' платежей из «к разнесению»? Используй, если они уже оплачены/учтены (напр. за июнь).')) dismiss(items.map((x) => x.id)); } }, '✕ Скрыть все (уже оплачены)'),
+        ]),
       ]),
-      el('div', { class: 'cash-sub', style: 'margin:0 0 8px' }, 'Оплаты со статьёй «Погашение кредита»/«Проценты» из выписки, ещё не привязанные к кредиту. Разнеси каждую на нужный кредит — погасит месяц графика.'),
+      el('div', { class: 'cash-sub', style: 'margin:0 0 8px' }, 'Оплаты со статьёй «Погашение кредита»/«Проценты» из выписки, ещё не привязанные к кредиту. Разнеси на нужный кредит — погасит месяц графика. Если платёж уже оплачен/учтён — «✕» скрывает его.'),
       el('div', { class: 'cash-list' }, rows),
     ]);
   }
