@@ -384,6 +384,11 @@ async function migrate() {
     created_by INTEGER, created_at TIMESTAMPTZ DEFAULT now(),
     reversed_at TIMESTAMPTZ, reversed_by INTEGER, reversal_reason TEXT
   )`).catch(()=>{});
+  // Валютные обязательства (лизинг в $): базовый курс оприходования долга (для курсовой разницы),
+  // и по каждому платежу — сколько сум реально ушло из выписки и по какому курсу.
+  await pool.query("ALTER TABLE finance_obligations ADD COLUMN IF NOT EXISTS base_fx_rate NUMERIC").catch(()=>{});
+  await pool.query("ALTER TABLE finance_obligation_payment_links ADD COLUMN IF NOT EXISTS amount_uzs NUMERIC").catch(()=>{});
+  await pool.query("ALTER TABLE finance_obligation_payment_links ADD COLUMN IF NOT EXISTS fx_rate NUMERIC").catch(()=>{});
   await pool.query(`CREATE TABLE IF NOT EXISTS finance_obligation_schedule_imports (
     id SERIAL PRIMARY KEY,
     obligation_id INTEGER,

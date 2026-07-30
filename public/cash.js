@@ -641,8 +641,9 @@
     return el('div', { class: 'cash-internal', style: 'border-color:#e6c98a;background:#fdf7ea' }, [
       el('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:6px' }, [
         el('div', { style: 'font-weight:800;color:#8a5a00' }, '⚠ Платежи по кредитам к разнесению (' + items.length + ')'),
-        el('div', { style: 'display:flex;gap:10px;align-items:center' }, [
+        el('div', { style: 'display:flex;gap:10px;align-items:center;flex-wrap:wrap' }, [
           el('div', { style: 'font-weight:700' }, money(total) + ' сум'),
+          el('button', { class: 'btn-ghost cash-add', style: 'padding:4px 10px;font-size:12px', title: 'Привязать по № договора: сумовые — сами, валютные — вручную (нужен курс)', onclick: async () => { try { const r = await post('/obligations/auto-assign', {}); toast('Разнесено по договорам: ' + r.linked + (r.needRate ? ' · валютных к ручному вводу курса: ' + r.needRate : '')); renderObligations(); } catch (e) { toast(e.message, true); } } }, '⚡ По договорам'),
           el('button', { class: 'btn-ghost cash-add', style: 'padding:4px 10px;font-size:12px', title: 'Скрыть все показанные — если они уже оплачены/отмечены', onclick: () => { if (confirm('Скрыть все ' + items.length + ' платежей из «к разнесению»? Используй, если они уже оплачены/учтены (напр. за июнь).')) dismiss(items.map((x) => x.id)); } }, '✕ Скрыть все (уже оплачены)'),
         ]),
       ]),
@@ -656,46 +657,60 @@
     try { const d = await api('/obligations/loans'); loans = d.items || []; } catch (e) { return toast(e.message, true); }
     const active = loans.filter((o) => o.status !== 'closed' && o.status !== 'cancelled');
     if (!active.length) return toast('Нет кредитов для привязки — сначала создай кредит', true);
-    const sel = fsel(active.map((o) => ({ v: o.id, t: o.creditor_name + (o.agreement_number ? ' · ' + o.agreement_number : '') })), active[0].id);
+    const sel = fsel(active.map((o) => ({ v: o.id, t: o.creditor_name + (o.agreement_number ? ' · ' + o.agreement_number : '') + (o.currency === 'USD' ? ' ($)' : '') })), active[0].id);
+    const curLoan = () => active.find((o) => String(o.id) === String(sel.value)) || {};
+    const isUsd = () => curLoan().currency === 'USD';
     const info = el('div', { class: 'cash-note-info', style: 'margin:6px 0' }, '—');
+    const rateInp = fmoney('', { placeholder: 'курс сум/$' });
+    const rateRow = frow('Курс сум/$', rateInp);
     const prInp = fmoney('', { placeholder: 'тело' });
     const ipInp = fmoney('', { placeholder: 'проценты' });
     const feInp = fmoney('', { placeholder: 'комиссия' });
     const sumNote = el('div', { class: 'cash-sub', style: 'margin-top:4px' }, '');
-    const amount = Math.round(Number(tx.amount) || 0);
+    const amountUzs = Math.round(Number(tx.amount) || 0);
     let schedId = null;
+    const unit = () => (isUsd() ? '$' : 'сум');
+    const usdAvail = () => { const r = Number(moneyVal(rateInp)) || 0; return r > 0 ? Math.round((amountUzs / r) * 100) / 100 : 0; };
+    const target = () => (isUsd() ? usdAvail() : amountUzs);
     function refreshSum() {
       const s = (Number(moneyVal(prInp)) || 0) + (Number(moneyVal(ipInp)) || 0) + (Number(moneyVal(feInp)) || 0);
-      const diff = amount - s;
-      sumNote.textContent = 'Разбивка: ' + money(s) + ' из ' + money(amount) + (Math.abs(diff) > 1 ? (' · осталось разложить ' + money(diff)) : ' ✓');
+      const t = target();
+      const diff = Math.round((t - s) * 100) / 100;
+      sumNote.textContent = 'Разбивка: ' + money(s) + ' из ' + money(t) + ' ' + unit() + (Math.abs(diff) > (isUsd() ? 0.5 : 1) ? (' · осталось разложить ' + money(diff)) : ' ✓');
     }
     async function loadNext() {
       info.textContent = 'Считаю…'; schedId = null;
+      const usd = isUsd();
+      rateRow.style.display = usd ? '' : 'none';
+      if (usd && !rateInp.value) { try { const fr = await api('/fx-rate'); if (fr && fr.rate) rateInp.value = fr.rate; } catch (e) { /* курс вручную */ } }
       try {
         const r = await api('/obligations/loans/' + sel.value + '/next-installment');
         const s = r.installment;
         if (!s) { info.textContent = 'У кредита нет неоплаченного месяца — построй график в карточке кредита.'; prInp.value = ipInp.value = feInp.value = ''; refreshSum(); return; }
         schedId = s.id;
+        const t = target();
         const remInt = Math.max(0, (Number(s.interest_due) || 0) - (Number(s.ip_paid) || 0));
         const remFee = Math.max(0, (Number(s.fee_due) || 0) - (Number(s.fe_paid) || 0));
-        const ip = Math.min(amount, remInt);
-        const fe = Math.min(amount - ip, remFee);
-        const pr = Math.max(0, amount - ip - fe);
-        ipInp.value = Math.round(ip); feInp.value = Math.round(fe); prInp.value = Math.round(pr);
-        info.textContent = 'Ближайший месяц: №' + s.installment_no + ' · срок ' + ruDate(s.due_date) + ' · тело ' + money(s.principal_due) + ' · % ' + money(s.interest_due);
+        const ip = Math.min(t, remInt), fe = Math.min(t - ip, remFee), pr = Math.max(0, t - ip - fe);
+        const rnd = usd ? (x) => Math.round(x * 100) / 100 : (x) => Math.round(x);
+        ipInp.value = rnd(ip); feInp.value = rnd(fe); prInp.value = rnd(pr);
+        info.textContent = 'Ближайший месяц №' + s.installment_no + ' · срок ' + ruDate(s.due_date) + ' · тело ' + money(s.principal_due) + ' · % ' + money(s.interest_due) + ' ' + unit() + (usd ? ' · ' + money(amountUzs) + ' сум ÷ курс = ' + money(t) + ' $' : '');
         refreshSum();
       } catch (e) { info.textContent = e.message; }
     }
-    sel.onchange = loadNext; [prInp, ipInp, feInp].forEach((i) => { i.oninput = refreshSum; });
+    sel.onchange = loadNext;
+    rateInp.oninput = () => { if (isUsd()) loadNext(); };
+    [prInp, ipInp, feInp].forEach((i) => { i.oninput = refreshSum; });
     const save = el('button', { class: 'btn-primary', onclick: async () => {
+      if (isUsd() && !(Number(moneyVal(rateInp)) > 0)) return toast('Укажите курс сум/$', true);
       try {
-        await post('/obligations/assign-payment', { cash_transaction_id: tx.id, obligation_id: sel.value, schedule_id: schedId, principal_paid: moneyVal(prInp), interest_paid: moneyVal(ipInp), fee_paid: moneyVal(feInp) });
+        await post('/obligations/assign-payment', { cash_transaction_id: tx.id, obligation_id: sel.value, schedule_id: schedId, principal_paid: moneyVal(prInp), interest_paid: moneyVal(ipInp), fee_paid: moneyVal(feInp), amount_uzs: amountUzs, fx_rate: isUsd() ? moneyVal(rateInp) : '' });
         toast('Платёж разнесён на кредит'); closeModal(); renderObligations();
       } catch (e) { toast(e.message, true); }
     } }, 'Разнести');
     const body = el('div', { class: 'cashf' }, [
       el('div', { class: 'cash-note-info' }, 'Платёж из выписки: ' + ruDate(tx.tx_date) + ' · ' + money(tx.amount) + ' сум' + (tx.purpose ? ' · ' + tx.purpose : '')),
-      frow('Кредит', sel), info,
+      frow('Кредит', sel), info, rateRow,
       frow('Тело кредита', prInp), frow('Проценты', ipInp), frow('Комиссия', feInp), sumNote,
     ]);
     modal('Разнести платёж на кредит', body, [save]);
@@ -713,6 +728,11 @@
     const agree = finp(loan.agreement_number, { placeholder: '№ договора/соглашения' });
     const agreeDate = finp(loan.agreement_date ? String(loan.agreement_date).slice(0, 10) : '', { type: 'date' });
     const curSel = fsel([{ v: 'UZS', t: 'сум (UZS)' }, { v: 'USD', t: 'доллары (USD)' }], loan.currency || 'UZS');
+    // Курс оприходования (базовый) — только для валютного долга: по нему считается курсовая разница.
+    const baseFx = fmoney(loan.base_fx_rate, { placeholder: 'курс сум/$ при получении долга' });
+    const baseFxRow = frow('Курс оприходования (сум/$)', baseFx);
+    const applyCurRow = () => { baseFxRow.style.display = curSel.value === 'USD' ? '' : 'none'; };
+    curSel.onchange = applyCurRow;
     const limit = fmoney(loan.principal_limit, { placeholder: 'Сумма по договору' });
     const received = fmoney(loan.principal_received, { placeholder: 'Фактически получено' });
     const rate = fmoney(loan.annual_rate, { placeholder: '% годовых (0 если беспроцентный)' });
@@ -726,7 +746,7 @@
       frow('Тип обязательства', typeSel),
       frow('Кредитор', creditor),
       frow('Договор №', agree), frow('Дата договора', agreeDate),
-      frow('Валюта', curSel),
+      frow('Валюта', curSel), baseFxRow,
       frow('Сумма по договору', limit), frow('Получено фактически', received),
       frow('Ставка, % годовых', rate),
       frow('Схема погашения', scheme),
@@ -740,7 +760,8 @@
       const payload = {
         obligation_type: typeSel.value,
         creditor_name: creditor.value, agreement_number: agree.value, agreement_date: agreeDate.value || null,
-        currency: curSel.value, principal_limit: moneyVal(limit), principal_received: moneyVal(received),
+        currency: curSel.value, base_fx_rate: curSel.value === 'USD' ? moneyVal(baseFx) : '',
+        principal_limit: moneyVal(limit), principal_received: moneyVal(received),
         annual_rate: moneyVal(rate), repayment_scheme: scheme.value, date_start: dStart.value || null,
         date_end: dEnd.value || null, first_payment_date: firstPay.value || null, wallet_id: wallet.value || '', comment: comment.value,
       };
@@ -749,6 +770,7 @@
         else { const r = await post('/obligations/loans', payload); toast('Создано'); closeModal(); renderObligations(); if (r.id) oblLoanCard(r.id, group); }
       } catch (e) { toast(e.message, true); }
     } }, loan.id ? 'Сохранить' : 'Создать');
+    applyCurRow();
     modal((loan.id ? 'Изменить' : (isBank ? 'Новый кредит' : 'Новый заём')), el('div', { class: 'cashf' }, rows), [save]);
   }
 
@@ -930,6 +952,14 @@
     ]);
     const subline = el('div', { class: 'cash-sub', style: 'margin-bottom:10px' },
       'Ставка ' + (Number(o.annual_rate) || 0) + '% годовых · схема ' + (SCHEMES.find((s) => s[0] === o.repayment_scheme) || [, '—'])[1] + ' · статус ' + (LOAN_STATUS[o.status] || o.status) + ' · валюта ' + cur);
+    // Валютная сводка (лизинг в $): оплачено $ / потрачено сум / курсовая разница относительно курса оприходования.
+    if (d.fx) {
+      const diff = d.fx.fx_diff;
+      const diffTxt = diff == null ? 'укажите «курс оприходования» в карточке, чтобы увидеть разницу'
+        : (diff > 0 ? 'переплата из-за курса ' + money(diff) + ' сум' : diff < 0 ? 'экономия из-за курса ' + money(-diff) + ' сум' : 'курсовой разницы нет');
+      head.appendChild(el('div', { class: 'cash-note-info', style: 'grid-column:1/-1;margin-top:4px' },
+        'Оплачено $' + money(d.fx.paid_usd) + ' · потрачено ' + money(d.fx.paid_uzs) + ' сум' + (d.fx.base_fx_rate ? ' · курс оприходования ' + money(d.fx.base_fx_rate) : '') + ' · ' + diffTxt));
+    }
     // Генерация графика (админ). Если график уже есть — прячем за кнопкой (чтобы случайно не перезаписать).
     const nInp = finp('', { type: 'number', min: '1', placeholder: 'число платежей', style: 'width:120px' });
     const fpInp = finp(o.first_payment_date ? String(o.first_payment_date).slice(0, 10) : '', { type: 'date' });

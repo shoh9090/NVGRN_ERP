@@ -2372,7 +2372,7 @@ function genSchedule(loan, opts = {}) {
 }
 
 const OBL_FIELDS = ['obligation_type', 'creditor_name', 'agreement_number', 'agreement_date', 'date_start', 'date_end',
-  'currency', 'principal_limit', 'principal_received', 'annual_rate', 'repayment_scheme', 'first_payment_date',
+  'currency', 'base_fx_rate', 'principal_limit', 'principal_received', 'annual_rate', 'repayment_scheme', 'first_payment_date',
   'payment_day', 'grace_period_months', 'wallet_id', 'status', 'comment', 'counterparty_id'];
 
 router.get('/api/obligations/loans', async (req, res) => {
@@ -2394,11 +2394,11 @@ router.post('/api/obligations/loans', J, async (req, res) => {
   const type = OBL_TYPES.includes(b.obligation_type) ? b.obligation_type : 'bank_loan';
   const r = await db.pool.query(
     `INSERT INTO finance_obligations (obligation_type, creditor_name, agreement_number, agreement_date, date_start, date_end,
-       currency, principal_limit, principal_received, annual_rate, repayment_scheme, first_payment_date, payment_day,
+       currency, base_fx_rate, principal_limit, principal_received, annual_rate, repayment_scheme, first_payment_date, payment_day,
        grace_period_months, wallet_id, status, comment, counterparty_id, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'draft',$16,$17,$18) RETURNING id`,
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'draft',$17,$18,$19) RETURNING id`,
     [type, (b.creditor_name || 'Кредитор').trim(), b.agreement_number || '', b.agreement_date || null, b.date_start || null, b.date_end || null,
-      b.currency === 'USD' ? 'USD' : 'UZS', numOrNull(b.principal_limit), numOrNull(b.principal_received), numOrNull(b.annual_rate),
+      b.currency === 'USD' ? 'USD' : 'UZS', b.currency === 'USD' ? numOrNull(b.base_fx_rate) : null, numOrNull(b.principal_limit), numOrNull(b.principal_received), numOrNull(b.annual_rate),
       b.repayment_scheme || 'annuity', b.first_payment_date || null, intOrNull(b.payment_day), intOrNull(b.grace_period_months),
       intOrNull(b.wallet_id), b.comment || '', intOrNull(b.counterparty_id), req.user.id]);
   await db.log(req.user.id, 'obl_loan_create', `${type} ${b.creditor_name || ''}`);
@@ -2413,7 +2413,22 @@ router.get('/api/obligations/loans/:id(\\d+)', async (req, res) => {
   const schedule = (await db.pool.query(
     `SELECT s.*, COALESCE((SELECT SUM(principal_paid+interest_paid+fee_paid) FROM finance_obligation_payment_links l WHERE l.schedule_id=s.id AND l.reversed_at IS NULL),0) AS paid
      FROM finance_obligation_schedule s WHERE s.obligation_id=$1 AND s.version_no=$2 ORDER BY s.installment_no`, [req.params.id, ver])).rows;
-  res.json({ loan: o, tranches, schedule, version: ver });
+  // Валютная сводка: сколько оплачено в $ и в сумах, и курсовая разница относительно курса оприходования.
+  let fx = null;
+  if (o.currency === 'USD') {
+    const links = (await db.pool.query(
+      'SELECT principal_paid, interest_paid, fee_paid, amount_uzs, fx_rate FROM finance_obligation_payment_links WHERE obligation_id=$1 AND reversed_at IS NULL', [req.params.id])).rows;
+    const base = Number(o.base_fx_rate) || 0;
+    let paidUsd = 0, paidUzs = 0, diff = 0;
+    for (const l of links) {
+      const usd = (Number(l.principal_paid) || 0) + (Number(l.interest_paid) || 0) + (Number(l.fee_paid) || 0);
+      const uzs = Number(l.amount_uzs) || 0;
+      paidUsd += usd; paidUzs += uzs;
+      if (base > 0 && Number(l.fx_rate) > 0) diff += usd * (Number(l.fx_rate) - base);
+    }
+    fx = { base_fx_rate: base || null, paid_usd: paidUsd, paid_uzs: paidUzs, fx_diff: base > 0 ? Math.round(diff) : null };
+  }
+  res.json({ loan: o, tranches, schedule, version: ver, fx });
 });
 
 // Хелпер: id статьи ДДС по коду.
@@ -2541,13 +2556,17 @@ router.post('/api/obligations/assign-payment', J, async (req, res) => {
     sid = s ? s.id : null;
   }
   if (!sid) return res.status(400).json({ error: 'У кредита нет неоплаченного месяца в графике — сначала построй график' });
+  // Валюта: для валютного обязательства principal/interest/fee — в валюте ($), а amount_uzs/fx_rate —
+  // сколько сум реально ушло из выписки и по какому курсу (для стыковки и курсовой разницы).
+  const amountUzs = numOrNull(b.amount_uzs) != null ? Number(b.amount_uzs) : Number(tx.amount);
+  const fxRate = numOrNull(b.fx_rate);
   const client = await db.pool.connect();
   try {
     await client.query('BEGIN');
     await client.query(
-      `INSERT INTO finance_obligation_payment_links (schedule_id, obligation_id, cash_transaction_id, payment_date, principal_paid, interest_paid, fee_paid, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [sid, oblId, txId, tx.d, pr, ip, fe, req.user.id]);
+      `INSERT INTO finance_obligation_payment_links (schedule_id, obligation_id, cash_transaction_id, payment_date, principal_paid, interest_paid, fee_paid, amount_uzs, fx_rate, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      [sid, oblId, txId, tx.d, pr, ip, fe, amountUzs, fxRate, req.user.id]);
     const s = (await client.query('SELECT total_due FROM finance_obligation_schedule WHERE id=$1', [sid])).rows[0];
     const paid = Number((await client.query('SELECT COALESCE(SUM(principal_paid+interest_paid+fee_paid),0) v FROM finance_obligation_payment_links WHERE schedule_id=$1 AND reversed_at IS NULL', [sid])).rows[0].v);
     const st = paid >= Number(s.total_due) - 0.01 ? 'paid' : 'partial';
@@ -2558,6 +2577,53 @@ router.post('/api/obligations/assign-payment', J, async (req, res) => {
   finally { client.release(); }
   await db.log(req.user.id, 'obl_assign_payment', `tx#${txId} → кредит #${oblId}, строка #${sid}`);
   res.json({ ok: true });
+});
+
+// Авто-разнос по № договора: платёж (60/61) с номером договора кредита в назначении привязываем сами.
+// Сумовые кредиты — автоматически (ближайший месяц). Валютные пропускаем — по ним нужен курс (вручную).
+router.post('/api/obligations/auto-assign', J, async (req, res) => {
+  if (!canFin(req)) return res.status(403).json({ error: 'Только администратор/финансы' });
+  try {
+    const txs = (await db.pool.query(
+      `SELECT t.id, t.amount, to_char(t.tx_date,'YYYY-MM-DD') d, t.purpose,
+              (SELECT code FROM cash_categories c WHERE c.id=t.category_id) cat_code
+         FROM cash_transactions t
+        WHERE t.tx_type='out' AND COALESCE(t.source,'')<>'obligation' AND NOT COALESCE(t.obl_dismissed,false)
+          AND t.category_id IN (SELECT id FROM cash_categories WHERE code IN ('60','61'))
+          AND NOT EXISTS (SELECT 1 FROM finance_obligation_payment_links l WHERE l.cash_transaction_id=t.id AND l.reversed_at IS NULL)`)).rows;
+    const loans = (await db.pool.query(
+      "SELECT id, agreement_number, currency FROM finance_obligations WHERE COALESCE(agreement_number,'')<>'' AND status NOT IN ('closed','cancelled')")).rows
+      .map((o) => ({ id: o.id, currency: o.currency, norm: String(o.agreement_number).toLowerCase().replace(/\s+/g, '') }));
+    let linked = 0, needRate = 0;
+    for (const t of txs) {
+      const p = String(t.purpose || '').toLowerCase().replace(/\s+/g, '');
+      const m = loans.filter((o) => o.norm.length >= 2 && p.includes(o.norm));
+      if (m.length !== 1) continue;                 // не нашли/неоднозначно — вручную
+      const o = m[0];
+      if (o.currency === 'USD') { needRate++; continue; } // валюта — нужен курс, вручную
+      const ver = (await db.pool.query('SELECT COALESCE(MAX(version_no),0) v FROM finance_obligation_schedule WHERE obligation_id=$1', [o.id])).rows[0].v;
+      const s = (await db.pool.query(
+        `SELECT s.*, COALESCE((SELECT SUM(interest_paid) FROM finance_obligation_payment_links l WHERE l.schedule_id=s.id AND l.reversed_at IS NULL),0) ip_paid
+           FROM finance_obligation_schedule s WHERE s.obligation_id=$1 AND s.version_no=$2 AND s.status NOT IN ('paid','cancelled') ORDER BY due_date, installment_no LIMIT 1`, [o.id, ver])).rows[0];
+      if (!s) continue;
+      const amt = Number(t.amount) || 0;
+      const remInt = Math.max(0, (Number(s.interest_due) || 0) - (Number(s.ip_paid) || 0));
+      const ip = t.cat_code === '60' ? amt : Math.min(amt, remInt);
+      const pr = t.cat_code === '60' ? 0 : Math.max(0, amt - ip);
+      const client = await db.pool.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query(`INSERT INTO finance_obligation_payment_links (schedule_id, obligation_id, cash_transaction_id, payment_date, principal_paid, interest_paid, fee_paid, amount_uzs, created_by) VALUES ($1,$2,$3,$4,$5,$6,0,$7,$8)`,
+          [s.id, o.id, t.id, t.d, pr, ip, amt, req.user.id]);
+        const paid = Number((await client.query('SELECT COALESCE(SUM(principal_paid+interest_paid+fee_paid),0) v FROM finance_obligation_payment_links WHERE schedule_id=$1 AND reversed_at IS NULL', [s.id])).rows[0].v);
+        await client.query('UPDATE finance_obligation_schedule SET status=$1 WHERE id=$2', [paid >= Number(s.total_due) - 0.01 ? 'paid' : 'partial', s.id]);
+        await client.query("UPDATE finance_obligations SET status='active', updated_at=now() WHERE id=$1 AND status='draft'", [o.id]);
+        await client.query('COMMIT'); linked++;
+      } catch (e) { await client.query('ROLLBACK').catch(() => {}); } finally { client.release(); }
+    }
+    await db.log(req.user.id, 'obl_auto_assign', `linked=${linked}, needRate=${needRate}`);
+    res.json({ ok: true, linked, needRate });
+  } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 // Массовая историческая отметка: все строки графика со сроком ДО указанной даты (включительно)
@@ -2684,7 +2750,7 @@ router.post('/api/obligations/loans/:id(\\d+)', J, async (req, res) => {
   for (const f of OBL_FIELDS) {
     if (!(f in b)) continue;
     let v = b[f];
-    if (['principal_limit', 'principal_received', 'annual_rate'].includes(f)) v = numOrNull(v);
+    if (['principal_limit', 'principal_received', 'annual_rate', 'base_fx_rate'].includes(f)) v = numOrNull(v);
     else if (['payment_day', 'grace_period_months', 'wallet_id', 'counterparty_id'].includes(f)) v = intOrNull(v);
     else if (['agreement_date', 'date_start', 'date_end', 'first_payment_date'].includes(f)) v = v || null;
     sets.push(`${f}=$${i++}`); vals.push(v);
