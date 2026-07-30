@@ -196,6 +196,47 @@ router.get('/api/settlements', async (req, res) => {
 router.get('/api/supply-advance', async (req, res) => {
   try { res.json(await pfin.supplyAdvance()); } catch (e) { res.status(400).json({ error: e.message }); }
 });
+// Акт сверки с поставщиком за период: долг на начало, поставки/оплаты по датам, обороты, общий долг.
+router.get('/api/act', async (req, res) => {
+  try {
+    const sid = parseInt(req.query.supplier_id, 10);
+    const from = req.query.from || null, to = req.query.to || null;
+    if (!sid) return res.status(400).json({ error: 'Выберите поставщика' });
+    const sup = (await db.pool.query('SELECT id, name, legal_name, inn FROM ref_counterparties WHERE id=$1', [sid])).rows[0];
+    if (!sup) return res.status(404).json({ error: 'Поставщик не найден' });
+    const bals = await pfin.supplierBalances({ from, to });
+    const b = bals.find((x) => x.id === sid) || {};
+    const period = !!(from || to);
+    const opening = period ? (Number(b.balance_start) || 0) : (Number(b.opening_balance) || 0);
+    const delivered = period ? (Number(b.delivered_period) || 0) : (Number(b.delivered) || 0);
+    const paid = period ? (Number(b.paid_period) || 0) : (Number(b.paid) || 0);
+    const closing = period ? (Number(b.balance_end) || 0) : (Number(b.balance) || 0);
+    // Поставки (принятые заявки в периоде): факт-количество × цена заявки.
+    const po = [sid]; let dc = '';
+    if (from) { po.push(from); dc += ` AND to_char(COALESCE(po.received_at::date, po.delivery_date),'YYYY-MM-DD') >= $${po.length}`; }
+    if (to) { po.push(to); dc += ` AND to_char(COALESCE(po.received_at::date, po.delivery_date),'YYYY-MM-DD') <= $${po.length}`; }
+    const orders = (await db.pool.query(
+      `SELECT po.number, to_char(COALESCE(po.received_at::date, po.delivery_date),'YYYY-MM-DD') AS d,
+              SUM(COALESCE(i.fact_qty,0)*i.price) AS val
+         FROM purchase_orders po JOIN purchase_order_items i ON i.order_id=po.id
+        WHERE po.supplier_id=$1 AND po.status='received'${dc}
+        GROUP BY po.id ORDER BY d`, po)).rows;
+    // Оплаты: ручные (наличные) + перечисления из выписки (по ИНН).
+    const pp = [sid]; let pc = '';
+    if (from) { pp.push(from); pc += ` AND paid_at >= $${pp.length}`; }
+    if (to) { pp.push(to); pc += ` AND paid_at <= $${pp.length}`; }
+    const manual = (await db.pool.query(
+      `SELECT to_char(paid_at,'YYYY-MM-DD') AS d, amount, comment FROM supplier_payments WHERE supplier_id=$1${pc} ORDER BY paid_at`, pp)).rows;
+    const wire = (await pfin.wireSupplierPayments()).filter((w) => w.supplier_id === sid && (!from || w.paid_at >= from) && (!to || w.paid_at <= to));
+    const rows = [];
+    orders.forEach((o) => rows.push({ date: o.d, doc: 'Поставка' + (o.number ? ' · ' + o.number : ''), delivery: Number(o.val) || 0, payment: 0 }));
+    manual.forEach((x) => rows.push({ date: x.d, doc: 'Оплата' + (x.comment ? ' · ' + x.comment : ''), delivery: 0, payment: Number(x.amount) || 0 }));
+    wire.forEach((x) => rows.push({ date: x.paid_at, doc: 'Оплата (перечисление)' + (x.purpose ? ' · ' + x.purpose : ''), delivery: 0, payment: Number(x.amount) || 0 }));
+    rows.sort((a, b2) => String(a.date).localeCompare(String(b2.date)));
+    res.json({ supplier: sup, from, to, opening, delivered, paid, closing, rows, today: new Date().toISOString().slice(0, 10) });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 // Курс ЦБ сум/$ из кэша Кассы (для оплаты поставщику в валюте). Нет в кэше — вернём null, курс вводят вручную.
 router.get('/api/fx-rate', async (req, res) => {
   const date = req.query.date || new Date().toISOString().slice(0, 10);

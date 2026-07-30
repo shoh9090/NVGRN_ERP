@@ -1434,11 +1434,73 @@
     return () => { clearTimeout(t); t = setTimeout(fn, ms); };
   }
 
+  // ================= АКТ СВЕРКИ =================
+  const ORG = 'Novagreen Foods';
+  const actState = { supplier: '', from: '', to: '' };
+  let lastActData = null;
+  const escHtml = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const ruD = (s) => (s ? String(s).slice(0, 10).split('-').reverse().join('.') : '');
+  function actHtml(d) {
+    const money = (v) => fmtMoney(Math.round(Number(v) || 0));
+    const closing = Number(d.closing) || 0;
+    const favor = closing > 0.5 ? '«' + ORG + '» должно поставщику' : closing < -0.5 ? 'в пользу «' + ORG + '» (переплата)' : 'взаиморасчёты закрыты';
+    const rowsHtml = (d.rows || []).map((r) => `<tr><td style="padding:6px 10px;border-bottom:1px solid #e3e0d4">${ruD(r.date)}</td><td style="padding:6px 10px;border-bottom:1px solid #e3e0d4">${escHtml(r.doc)}</td><td style="padding:6px 10px;text-align:right;border-bottom:1px solid #e3e0d4">${r.delivery ? money(r.delivery) : '—'}</td><td style="padding:6px 10px;text-align:right;border-bottom:1px solid #e3e0d4">${r.payment ? money(r.payment) : '—'}</td></tr>`).join('');
+    return `<div style="max-width:760px;margin:0 auto;font-family:Manrope,Arial,sans-serif;color:#14241b;font-size:13px;background:#fff;padding:20px;border:1px solid #e3e0d4;border-radius:10px">
+      <div style="text-align:center;margin-bottom:14px"><div style="font-size:18px;font-weight:700">Акт сверки взаиморасчётов</div><div style="color:#7c8579">г. Ташкент · по состоянию на ${ruD(d.to || d.today)}</div></div>
+      <div style="margin-bottom:12px;line-height:1.6">Между <b>«${ORG}»</b> и поставщиком <b>«${escHtml(d.supplier.name)}»</b>${d.supplier.inn ? ' (ИНН ' + escHtml(d.supplier.inn) + ')' : ''} за период с ${ruD(d.from)} по ${ruD(d.to)}.</div>
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr style="background:#f2f5f1"><th style="padding:8px 10px;text-align:left">Дата</th><th style="padding:8px 10px;text-align:left">Документ</th><th style="padding:8px 10px;text-align:right">Поставка</th><th style="padding:8px 10px;text-align:right">Оплата</th></tr></thead>
+        <tbody>
+          <tr style="color:#7c8579"><td colspan="4" style="padding:6px 10px;border-bottom:1px solid #e3e0d4">Долг на начало периода — ${money(d.opening)} сум</td></tr>
+          ${rowsHtml || '<tr><td colspan="4" style="padding:10px;text-align:center;color:#7c8579">Операций за период нет</td></tr>'}
+        </tbody>
+        <tfoot><tr style="background:#f2f5f1;font-weight:700"><td colspan="2" style="padding:8px 10px">Обороты за период</td><td style="padding:8px 10px;text-align:right">${money(d.delivered)}</td><td style="padding:8px 10px;text-align:right">${money(d.paid)}</td></tr></tfoot>
+      </table>
+      <div style="margin-top:14px;padding:10px 14px;background:#eef4e9;border-radius:8px;display:flex;justify-content:space-between;font-weight:700"><span>Общий долг</span><span>${money(Math.abs(closing))} сум · ${favor}</span></div>
+      <div style="display:flex;gap:40px;margin-top:28px"><div style="flex:1"><div style="border-bottom:1px solid #14241b;height:26px"></div><div style="color:#7c8579;margin-top:4px">«${ORG}»</div></div><div style="flex:1"><div style="border-bottom:1px solid #14241b;height:26px"></div><div style="color:#7c8579;margin-top:4px">«${escHtml(d.supplier.name)}»</div></div></div>
+    </div>`;
+  }
+  async function loadAct() {
+    const box = $('#act-body'); if (!box) return;
+    box.innerHTML = '<p class="muted">Считаю…</p>';
+    const p = new URLSearchParams(); p.set('supplier_id', actState.supplier); if (actState.from) p.set('from', actState.from); if (actState.to) p.set('to', actState.to);
+    try { const d = await api('/act?' + p.toString()); lastActData = d; box.innerHTML = actHtml(d); }
+    catch (e) { lastActData = null; box.innerHTML = '<p class="muted">Ошибка: ' + escHtml(e.message) + '</p>'; }
+  }
+  function printAct() {
+    if (!lastActData) return toast('Сначала выберите поставщика и период', true);
+    const w = window.open('', '_blank');
+    if (!w) return toast('Разрешите всплывающие окна для печати', true);
+    w.document.write('<!doctype html><html><head><meta charset="utf-8"><title>Акт сверки — ' + escHtml(lastActData.supplier.name) + '</title></head><body style="margin:0;padding:16px;background:#fff">' + actHtml(lastActData) + '<' + 'script>window.onload=function(){window.print();}<' + '/script></body></html>');
+    w.document.close();
+  }
+  async function viewAct() {
+    const main = $('#pur-main'); main.innerHTML = '';
+    const suppliers = (await api('/suppliers')).items || [];
+    if (!actState.supplier && suppliers.length) actState.supplier = String(suppliers[0].id);
+    const now = new Date();
+    if (!actState.from) actState.from = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-01';
+    if (!actState.to) actState.to = now.toISOString().slice(0, 10);
+    const supSel = el('select', { onchange: (e) => { actState.supplier = e.target.value; loadAct(); } }, suppliers.map((s) => el('option', { value: s.id, selected: String(s.id) === actState.supplier || null }, s.name)));
+    const fromIn = el('input', { type: 'date', value: actState.from, onchange: (e) => { actState.from = e.target.value; loadAct(); } });
+    const toIn = el('input', { type: 'date', value: actState.to, onchange: (e) => { actState.to = e.target.value; loadAct(); } });
+    main.appendChild(el('div', { class: 'pur-toolbar' }, [
+      el('h2', {}, 'Акт сверки'),
+      el('div', { class: 'pur-toolbar-right' }, [el('button', { class: 'btn-primary', onclick: printAct }, '🖨 Печать')]),
+    ]));
+    main.appendChild(el('div', { class: 'pur-filters' }, [
+      el('label', {}, ['Поставщик', supSel]), el('label', {}, ['Период с', fromIn]), el('label', {}, ['по', toIn]),
+    ]));
+    main.appendChild(el('div', { id: 'act-body', class: 'pur-content', style: 'margin-top:10px' }));
+    if (actState.supplier) loadAct();
+  }
+
   function switchTab(tab) {
     currentTab = tab;
     document.querySelectorAll('.pur-tab').forEach((a) => a.classList.toggle('active', a.dataset.tab === tab));
     if (tab === 'suppliers') viewSuppliers();
     else if (tab === 'settlements') viewSettlements();
+    else if (tab === 'act') viewAct();
     else if (tab === 'prices') viewPrices();
     else if (tab === 'specs') viewSpecs();
     else viewOrders();
