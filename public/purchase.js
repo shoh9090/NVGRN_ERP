@@ -787,14 +787,15 @@
     const box = $('#supply-advance'); if (!box) return;
     let d; try { d = await api('/supply-advance'); } catch (e) { box.innerHTML = ''; return; }
     box.innerHTML = '';
-    const card = (label, val, cls) => el('div', { class: 'sa-card' + (cls ? ' ' + cls : '') }, [
+    const card = (label, val, cls, usd) => el('div', { class: 'sa-card' + (cls ? ' ' + cls : '') }, [
       el('div', { class: 'sa-label' }, label),
       el('div', { class: 'sa-val' }, fmtMoney(Number(val) || 0)),
+      (Number(usd) > 0 ? el('div', { class: 'sa-label', style: 'margin-top:2px' }, 'в т.ч. $' + fmtMoney(usd)) : null),
     ]);
     box.appendChild(el('div', { class: 'sa-title' }, '🧾 Подотчёт снабженца (наличные)'));
     box.appendChild(el('div', { class: 'sa-cards' }, [
-      card('Выдано из кассы', d.issued),
-      card('Оплачено поставщикам', d.spent),
+      card('Выдано из кассы', d.issued, '', d.issued_usd),
+      card('Оплачено поставщикам', d.spent, '', d.spent_usd),
       card('Остаток на руках', d.balance, (Number(d.balance) || 0) > 0.5 ? 'sa-bal' : 'sa-ok'),
     ]));
   }

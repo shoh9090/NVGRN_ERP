@@ -215,14 +215,19 @@ async function settlements(opts = {}) {
 // Остаток = сколько денег у снабженца на руках, ещё не отчитано закупками. Снабженец один.
 async function supplyAdvance() {
   const issuedR = await db.pool.query(
-    `SELECT COALESCE(SUM(t.amount),0) AS issued
+    `SELECT COALESCE(SUM(t.amount),0) AS issued,
+            COALESCE(SUM(t.fx_amount) FILTER (WHERE t.currency='USD'),0) AS issued_usd
        FROM cash_transactions t JOIN cash_wallets w ON w.id = t.wallet_id
       WHERE t.tx_type='out' AND t.is_supply_advance=true AND w.kind='cash' AND t.source<>'opening' AND t.tx_date >= '${SETTLE_START}'`);
   const spentR = await db.pool.query(
-    "SELECT COALESCE(SUM(amount),0) AS spent FROM supplier_payments WHERE payment_type='наличка' AND paid_at >= '" + SETTLE_START + "'");
+    `SELECT COALESCE(SUM(amount),0) AS spent,
+            COALESCE(SUM(fx_amount) FILTER (WHERE currency='USD'),0) AS spent_usd
+       FROM supplier_payments WHERE payment_type='наличка' AND paid_at >= '${SETTLE_START}'`);
   const issued = Number(issuedR.rows[0].issued) || 0;
   const spent = Number(spentR.rows[0].spent) || 0;
-  return { issued, spent, balance: issued - spent };
+  const issued_usd = Number(issuedR.rows[0].issued_usd) || 0;
+  const spent_usd = Number(spentR.rows[0].spent_usd) || 0;
+  return { issued, spent, balance: issued - spent, issued_usd, spent_usd };
 }
 
 module.exports = { enrichOrderFinance, supplierBalances, openSupplierObligations, supplierDueAgg, settlements, supplyAdvance, wireSupplierPayments };
