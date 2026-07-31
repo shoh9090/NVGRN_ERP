@@ -100,7 +100,7 @@ async function supplierBalances(opts = {}) {
      FROM ref_counterparties c
      LEFT JOIN ref_parent_categories pc ON pc.id = c.parent_category_id
      LEFT JOIN (
-       SELECT po.supplier_id, SUM(COALESCE(i.fact_qty, 0) * i.price) AS delivered
+       SELECT po.supplier_id, SUM(COALESCE(i.bill_qty, i.fact_qty, 0) * i.price) AS delivered
        FROM purchase_orders po JOIN purchase_order_items i ON i.order_id = po.id
        WHERE po.status = 'received' AND COALESCE(po.received_at::date, po.delivery_date) >= '${SETTLE_START}' GROUP BY po.supplier_id
      ) d ON d.supplier_id = c.id
@@ -138,7 +138,7 @@ async function supplierBalances(opts = {}) {
     const dAgg = (await db.pool.query(
       `WITH ord AS (
          SELECT po.supplier_id, COALESCE(po.received_at::date, po.delivery_date) d,
-                SUM(COALESCE(i.fact_qty, 0) * i.price) val
+                SUM(COALESCE(i.bill_qty, i.fact_qty, 0) * i.price) val
          FROM purchase_orders po JOIN purchase_order_items i ON i.order_id = po.id
          WHERE po.status = 'received' AND COALESCE(po.received_at::date, po.delivery_date) >= '${SETTLE_START}' GROUP BY po.id)
        SELECT supplier_id,
@@ -183,7 +183,7 @@ async function openSupplierObligations() {
   const r = await db.pool.query(
     `SELECT po.id, po.number, po.status, po.pay_condition, po.defer_days,
             po.delivery_date, po.received_at, po.supplier_id, c.name AS supplier_name,
-            COALESCE(SUM(COALESCE(i.fact_qty, 0) * i.price), 0) AS total,
+            COALESCE(SUM(COALESCE(i.bill_qty, i.fact_qty, 0) * i.price), 0) AS total,
             COALESCE((SELECT SUM(amount) FROM supplier_payments sp WHERE sp.order_id = po.id), 0) AS paid
      FROM purchase_orders po
      JOIN ref_counterparties c ON c.id = po.supplier_id

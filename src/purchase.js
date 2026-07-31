@@ -46,7 +46,7 @@ router.get('/api/suppliers', async (req, res) => {
      LEFT JOIN ref_parent_categories pc ON pc.id = c.parent_category_id
      LEFT JOIN cash_categories cc ON cc.id = c.cash_category_id
      LEFT JOIN (
-       SELECT po.supplier_id, SUM(COALESCE(i.fact_qty, 0) * i.price) AS delivered
+       SELECT po.supplier_id, SUM(COALESCE(i.bill_qty, i.fact_qty, 0) * i.price) AS delivered
        FROM purchase_orders po
        JOIN purchase_order_items i ON i.order_id = po.id
        WHERE po.status = 'received'
@@ -135,7 +135,7 @@ router.get('/api/suppliers/:id(\\d+)/statement', async (req, res) => {
   const ordersRaw = await db.pool.query(
     `SELECT po.id, po.number, po.status, po.received_at, po.payment_type, po.pay_condition, po.defer_days,
             po.delivery_date, po.comment,
-            SUM(COALESCE(i.fact_qty, 0) * i.price) AS total,
+            SUM(COALESCE(i.bill_qty, i.fact_qty, 0) * i.price) AS total,
             COALESCE((SELECT SUM(amount) FROM supplier_payments sp WHERE sp.order_id = po.id), 0) AS paid
      FROM purchase_orders po
      JOIN purchase_order_items i ON i.order_id = po.id
@@ -174,7 +174,7 @@ router.get('/api/suppliers/:id(\\d+)/statement', async (req, res) => {
 async function supplierOpenOrders(supplierId) {
   const r = await db.pool.query(
     `SELECT po.id, po.number, po.status, po.pay_condition, po.defer_days, po.delivery_date, po.received_at,
-            COALESCE(SUM(COALESCE(i.fact_qty, 0) * i.price), 0) AS total,
+            COALESCE(SUM(COALESCE(i.bill_qty, i.fact_qty, 0) * i.price), 0) AS total,
             COALESCE((SELECT SUM(amount) FROM supplier_payments sp WHERE sp.order_id = po.id), 0) AS paid
      FROM purchase_orders po LEFT JOIN purchase_order_items i ON i.order_id = po.id
      WHERE po.supplier_id = $1 AND po.status = 'received'
@@ -217,7 +217,7 @@ router.get('/api/act', async (req, res) => {
     if (to) { po.push(to); dc += ` AND to_char(COALESCE(po.received_at::date, po.delivery_date),'YYYY-MM-DD') <= $${po.length}`; }
     const orders = (await db.pool.query(
       `SELECT po.number, to_char(COALESCE(po.received_at::date, po.delivery_date),'YYYY-MM-DD') AS d,
-              SUM(COALESCE(i.fact_qty,0)*i.price) AS val
+              SUM(COALESCE(i.bill_qty, i.fact_qty, 0)*i.price) AS val
          FROM purchase_orders po JOIN purchase_order_items i ON i.order_id=po.id
         WHERE po.supplier_id=$1 AND po.status='received'${dc}
         GROUP BY po.id ORDER BY d`, po)).rows;
@@ -851,7 +851,7 @@ router.get('/api/orders', async (req, res) => {
     `SELECT po.id, po.number, po.status, po.payment_type, po.pay_condition, po.defer_days,
             po.delivery_date, po.delivery_window, po.created_at, po.received_at, po.comment,
             c.name AS supplier_name, pc.name AS parent_category_name, pc.color AS parent_category_color,
-            COALESCE(SUM((CASE WHEN po.status = 'received' THEN COALESCE(i.fact_qty, 0) ELSE i.qty END) * i.price), 0) AS total,
+            COALESCE(SUM((CASE WHEN po.status = 'received' THEN COALESCE(i.bill_qty, i.fact_qty, 0) ELSE i.qty END) * i.price), 0) AS total,
             COALESCE(SUM(i.fact_qty * i.fact_price), 0) AS fact_total,
             COALESCE((SELECT SUM(amount) FROM supplier_payments sp WHERE sp.order_id = po.id), 0) AS paid,
             COUNT(i.id)::int AS positions
@@ -925,6 +925,24 @@ router.post('/api/orders/:id(\\d+)/reconcile', express.json({ limit: '2mb' }), a
       await db.pool.query('UPDATE purchase_order_items SET qty=$1, price=$2 WHERE id=$3 AND order_id=$4', [qty, price, iid, oid]);
     }
     await db.log(req.user.id, 'purchase_order_reconcile', String(oid));
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Оплачиваемое количество (скидка) по позициям принятой заявки. Пусто/= принято → без скидки (NULL).
+// Склад не трогаем — это только про долг. Ставит снабженец/админ (в Закупе видны цены).
+router.post('/api/orders/:id(\\d+)/bill-qty', express.json({ limit: '1mb' }), async (req, res) => {
+  try {
+    const oid = parseInt(req.params.id, 10);
+    const o = (await db.pool.query('SELECT id FROM purchase_orders WHERE id=$1', [oid])).rows[0];
+    if (!o) return res.status(404).json({ error: 'Заявка не найдена' });
+    for (const it of (Array.isArray(req.body.items) ? req.body.items : [])) {
+      const iid = parseInt(it.id, 10);
+      const raw = (it.bill_qty === '' || it.bill_qty == null) ? null : Number(it.bill_qty);
+      const bq = (raw != null && raw >= 0) ? raw : null;
+      await db.pool.query('UPDATE purchase_order_items SET bill_qty=$1 WHERE id=$2 AND order_id=$3', [bq, iid, oid]);
+    }
+    await db.log(req.user.id, 'purchase_order_bill_qty', String(oid));
     res.json({ ok: true });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });

@@ -318,6 +318,9 @@ async function migrate() {
   await pool.query("ALTER TABLE supplier_payments ADD COLUMN IF NOT EXISTS currency TEXT NOT NULL DEFAULT 'UZS'").catch(()=>{});
   await pool.query("ALTER TABLE supplier_payments ADD COLUMN IF NOT EXISTS fx_rate NUMERIC").catch(()=>{});
   await pool.query("ALTER TABLE supplier_payments ADD COLUMN IF NOT EXISTS fx_amount NUMERIC").catch(()=>{});
+  // Оплачиваемое количество по позиции (скидка): NULL = как принято (fact_qty). Долг = оплачиваем × цена.
+  // На склад всё равно идёт всё принятое (fact_qty) — это поле только про долг/взаиморасчёты.
+  await pool.query("ALTER TABLE purchase_order_items ADD COLUMN IF NOT EXISTS bill_qty NUMERIC").catch(()=>{});
 
   // ===== Обязательства: банковские кредиты и займы (Касса → Обязательства, Этап 2) =====
   await pool.query(`CREATE TABLE IF NOT EXISTS finance_obligations (

@@ -418,20 +418,57 @@
     const priceOf = (i) => Number(i.price);
     const sum = d.items.reduce((s, i) => s + qtyOf(i) * priceOf(i), 0);
 
-    const table = el('table', { class: 'dict-table' }, [
-      el('thead', {}, el('tr', {}, ['Артикул', 'Наименование', 'Кол-во', 'Цена', 'Сумма'].map((h) => el('th', {}, h)))),
-      el('tbody', {}, d.items.map((i) => {
-        const q = qtyOf(i);
+    // Для принятой заявки — редактируемое «оплачиваем» (скидка): долг = оплачиваем × цена, склад не трогаем.
+    const billInputs = [];
+    const totalLine = el('div', { class: 'oe-total' }, '');
+    function recompute() {
+      let debt = 0, disc = 0;
+      for (const b of billInputs) {
+        const bill = Math.min(b.accepted, Math.max(0, Number(b.inp.value) || 0));
+        debt += bill * b.price;
+        disc += Math.max(0, (b.accepted - bill) * b.price);
+        b.debtCell.textContent = fmtMoney(bill * b.price);
+        b.discCell.textContent = (b.accepted - bill > 0.0001) ? fmtMoney((b.accepted - bill) * b.price) : '—';
+      }
+      totalLine.innerHTML = '';
+      totalLine.appendChild(el('span', {}, 'Долг: ' + fmtMoney(debt) + ' сум'));
+      if (disc > 0.0001) totalLine.appendChild(el('span', { style: 'margin-left:16px;color:#3f6a16' }, 'Скидка: ' + fmtMoney(disc) + ' сум'));
+    }
+    let table;
+    if (rcvd) {
+      const tb = el('tbody', {}, d.items.map((i) => {
         const p = priceOf(i);
+        const accepted = Number(i.fact_qty) || 0;
+        const bill0 = i.bill_qty != null ? Number(i.bill_qty) : accepted;
+        const inp = el('input', { type: 'number', step: 'any', min: '0', max: String(accepted), value: bill0, style: 'width:84px;text-align:right' });
+        const debtCell = el('td', { class: 'tnum', style: 'font-weight:700' }, fmtMoney(bill0 * p));
+        const discCell = el('td', { class: 'tnum', style: 'color:#3f6a16' }, (accepted - bill0 > 0.0001) ? fmtMoney((accepted - bill0) * p) : '—');
+        inp.oninput = recompute;
+        billInputs.push({ id: i.id, inp, accepted, price: p, debtCell, discCell });
         return el('tr', {}, [
-          el('td', { class: 'tnum' }, i.item_code || ''),
           el('td', {}, i.item_name + (i.item_kind === 'packaging' ? ' 📦' : '')),
-          el('td', { class: 'tnum' }, fmt.format(q) + ' ' + (i.unit || '')),
+          el('td', { class: 'tnum muted' }, fmt.format(accepted) + ' ' + (i.unit || '')),
+          el('td', { class: 'tnum' }, inp),
           el('td', { class: 'tnum' }, fmtMoney(p)),
-          el('td', { class: 'tnum', style: 'font-weight:700' }, fmtMoney(q * p)),
+          debtCell, discCell,
         ]);
-      })),
-    ]);
+      }));
+      table = el('table', { class: 'dict-table' }, [el('thead', {}, el('tr', {}, ['Товар', 'Принято', 'Оплачиваем', 'Цена', 'Долг', 'Скидка'].map((h) => el('th', {}, h)))), tb]);
+    } else {
+      table = el('table', { class: 'dict-table' }, [
+        el('thead', {}, el('tr', {}, ['Артикул', 'Наименование', 'Кол-во', 'Цена', 'Сумма'].map((h) => el('th', {}, h)))),
+        el('tbody', {}, d.items.map((i) => {
+          const q = qtyOf(i), p = priceOf(i);
+          return el('tr', {}, [
+            el('td', { class: 'tnum' }, i.item_code || ''),
+            el('td', {}, i.item_name + (i.item_kind === 'packaging' ? ' 📦' : '')),
+            el('td', { class: 'tnum' }, fmt.format(q) + ' ' + (i.unit || '')),
+            el('td', { class: 'tnum' }, fmtMoney(p)),
+            el('td', { class: 'tnum', style: 'font-weight:700' }, fmtMoney(q * p)),
+          ]);
+        })),
+      ]);
+    }
 
     const body = el('div', {}, [
       el('div', { class: 'pur-card-meta' }, [
@@ -441,11 +478,21 @@
         el('span', { class: 'muted' }, 'создана ' + dt(o.created_at) + (o.received_at ? ' · принята ' + dt(o.received_at) : '')),
       ]),
       o.comment ? el('p', { class: 'muted' }, '💬 ' + o.comment) : null,
+      rcvd ? el('p', { class: 'muted', style: 'font-size:12px' }, 'На склад пришло всё принятое. «Оплачиваем» ≤ принято — долг только за это, разница уходит в скидку.') : null,
       table,
-      el('div', { class: 'oe-total' }, 'Итого: ' + fmtMoney(sum) + ' сум'),
+      rcvd ? totalLine : el('div', { class: 'oe-total' }, 'Итого: ' + fmtMoney(sum) + ' сум'),
     ]);
+    if (rcvd) recompute();
 
     const actions = [el('button', { onclick: () => m.close() }, 'Закрыть')];
+    if (rcvd && billInputs.length) {
+      actions.push(el('button', { class: 'btn-primary', onclick: async (ev) => {
+        ev.target.disabled = true;
+        const items = billInputs.map((b) => ({ id: b.id, bill_qty: b.inp.value }));
+        try { await api('/orders/' + id + '/bill-qty', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items }) }); toast('Оплачиваемое сохранено ✅'); m.close(); loadOrders(); }
+        catch (e) { toast(e.message, true); ev.target.disabled = false; }
+      } }, '💾 Сохранить оплачиваемое'));
+    }
     if (o.status === 'draft') {
       actions.push(el('button', { onclick: () => { m.close(); openOrderEditor(id); } }, '✏️ Редактировать'));
       actions.push(el('button', {
