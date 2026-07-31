@@ -1971,10 +1971,11 @@ router.get('/api/transactions/match-candidates', async (req, res) => {
          AND wo.kind <> 'cash' AND wi.kind <> 'cash'
          -- У перевода между своими счетами нет внешнего контрагента.
          AND o.counterparty_id IS NULL AND i.counterparty_id IS NULL
-         -- Не трогаем строки с уже проставленной РЕАЛЬНОЙ статьёй (кредит/зарплата/выручка/поставщик):
-         -- в пары берём только нераспознанные или уже переводные (100/110/111), иначе склейка перебьёт статью.
-         AND (o.category_id IS NULL OR EXISTS (SELECT 1 FROM cash_categories c WHERE c.id=o.category_id AND c.direction_hint='transfer'))
-         AND (i.category_id IS NULL OR EXISTS (SELECT 1 FROM cash_categories c WHERE c.id=i.category_id AND c.direction_hint='transfer'))
+         -- Защищаем строки с ОСМЫСЛЕННОЙ статьёй (кредит/зарплата/поставщик и т.п.) — их склейка бы перебила.
+         -- Но выручку (200) разрешаем: переброски, ошибочно попавшие в выручку, нужно уметь склеить.
+         -- В пары берём: без статьи, переводные (100/110/111) или выручку (200).
+         AND (o.category_id IS NULL OR EXISTS (SELECT 1 FROM cash_categories c WHERE c.id=o.category_id AND (c.direction_hint='transfer' OR c.code='200')))
+         AND (i.category_id IS NULL OR EXISTS (SELECT 1 FROM cash_categories c WHERE c.id=i.category_id AND (c.direction_hint='transfer' OR c.code='200')))
          -- Хотя бы одна из строк должна выглядеть как перевод (иначе это просто совпадение суммы).
          AND (COALESCE(o.purpose,'') ~* $2 OR COALESCE(i.purpose,'') ~* $2
               OR COALESCE(o.payer_name,'') ~* $2 OR COALESCE(i.payer_name,'') ~* $2)
