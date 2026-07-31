@@ -35,7 +35,7 @@
 
   <div id="pur-modal-root"></div>
 
-  <script>window.HUB_USER = { isAdmin: <%= user.isAdmin ? "true" : "false" %>, name: "<%= user.name %>" };</script>
+  <script>window.HUB_USER = { isAdmin: <%= user.isAdmin ? "true" : "false" %>, name: "<%= user.name %>", buyerEdit: <%= settings.pur_buyer_edit === '1' ? "true" : "false" %> };</script>
   <script src="/static/bell.js"></script>
   <script src="/static/purchase.js"></script>
 </body>

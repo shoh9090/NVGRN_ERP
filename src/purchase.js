@@ -890,6 +890,45 @@ router.get('/api/orders/:id(\\d+)', async (req, res) => {
   res.json({ order: o.rows[0], items: items.rows });
 });
 
+// Временный доступ закупщика к правке заявок (для сверки/переноса). Тумблер держит админ.
+// Правку разрешаем: админу всегда; остальным (в модуль Закуп попадают только по доступу) — когда тумблер включён.
+async function canEditOrders(req) {
+  if (req.user && req.user.isAdmin) return true;
+  const s = await db.getSettings();
+  return s.pur_buyer_edit === '1';
+}
+router.get('/api/buyer-edit', async (req, res) => {
+  const s = await db.getSettings();
+  res.json({ on: s.pur_buyer_edit === '1', isAdmin: !!(req.user && req.user.isAdmin) });
+});
+router.post('/api/buyer-edit', express.json(), async (req, res) => {
+  if (!req.user || !req.user.isAdmin) return res.status(403).json({ error: 'Включать доступ может только администратор' });
+  const on = !!req.body.on;
+  await db.setSetting('pur_buyer_edit', on ? '1' : '0');
+  await db.log(req.user.id, 'pur_buyer_edit', on ? 'on' : 'off');
+  res.json({ ok: true, on });
+});
+
+// Правка заявки для сверки/переноса: поставщик + по позициям кол-во/цена. Приёмку (fact_qty) НЕ трогаем —
+// обновляем позиции по id, а не пересоздаём. Работает и по принятым заявкам (для этого и делается).
+router.post('/api/orders/:id(\\d+)/reconcile', express.json({ limit: '2mb' }), async (req, res) => {
+  try {
+    if (!(await canEditOrders(req))) return res.status(403).json({ error: 'Правка заявок сейчас выключена. Включите доступ (только администратор).' });
+    const oid = parseInt(req.params.id, 10);
+    const o = (await db.pool.query('SELECT id FROM purchase_orders WHERE id=$1', [oid])).rows[0];
+    if (!o) return res.status(404).json({ error: 'Заявка не найдена' });
+    const supplierId = parseInt(req.body.supplier_id, 10);
+    if (supplierId) await db.pool.query('UPDATE purchase_orders SET supplier_id=$1 WHERE id=$2', [supplierId, oid]);
+    for (const it of (Array.isArray(req.body.items) ? req.body.items : [])) {
+      const iid = parseInt(it.id, 10), qty = Number(it.qty), price = Number(it.price);
+      if (!iid || !(qty > 0) || !(price > 0)) continue;
+      await db.pool.query('UPDATE purchase_order_items SET qty=$1, price=$2 WHERE id=$3 AND order_id=$4', [qty, price, iid, oid]);
+    }
+    await db.log(req.user.id, 'purchase_order_reconcile', String(oid));
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 function cleanItems(raw) {
   const out = [];
   for (const it of Array.isArray(raw) ? raw : []) {

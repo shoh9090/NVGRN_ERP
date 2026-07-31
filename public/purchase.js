@@ -62,6 +62,30 @@
   const payIcon = (p) => (p === 'наличка' ? '💵 наличка' : '🏦 перечисление');
 
   // ================= ЗАЯВКИ =================
+  // Тумблер (только админ): временно разрешить закупщику править заявки для сверки/переноса.
+  function buyerEditBar() {
+    const bar = el('div', { style: 'display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:#fff7e6;border:1px solid #e6c98a;border-radius:10px;padding:8px 12px;margin-bottom:12px;font-size:13px' });
+    const state = el('span', { style: 'font-weight:700' }, '…');
+    const btn = el('button', {});
+    let on = !!(window.HUB_USER && window.HUB_USER.buyerEdit);
+    const render = () => {
+      state.textContent = on ? 'Правка заявок закупщиком: ВКЛючена' : 'Правка заявок закупщиком: выключена';
+      state.style.color = on ? '#b25b00' : '#7c8579';
+      btn.textContent = on ? 'Выключить' : 'Включить';
+      btn.className = on ? 'btn-danger-link' : 'btn-primary';
+    };
+    btn.onclick = async () => {
+      try { const r = await api('/buyer-edit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ on: !on }) }); on = !!r.on; window.HUB_USER.buyerEdit = on; render(); toast(on ? 'Закупщик может править заявки' : 'Правка заявок выключена'); }
+      catch (e) { toast(e.message, true); }
+    };
+    render();
+    bar.appendChild(el('span', {}, '🔧'));
+    bar.appendChild(state);
+    bar.appendChild(el('span', { class: 'muted', style: 'flex:1;min-width:120px' }, 'Включай на время сверки/переноса, потом выключи.'));
+    bar.appendChild(btn);
+    return bar;
+  }
+
   async function viewOrders() {
     const main = $('#pur-main');
     main.innerHTML = '';
@@ -83,6 +107,7 @@
       ]),
     ]);
     main.appendChild(toolbar);
+    if (window.HUB_USER && window.HUB_USER.isAdmin) main.appendChild(buyerEditBar());
     await ensureOpts();
     const ordPc = el('select', { id: 'ord-pc', onchange: loadOrders }, [
       el('option', { value: '' }, 'Все родит. категории'),
@@ -463,7 +488,52 @@
         },
       }, '🗑 Удалить'));
     }
+    // Правка для сверки/переноса (поставщик/кол-во/цена) — админу всегда, закупщику пока включён тумблер.
+    if (window.HUB_USER && (window.HUB_USER.isAdmin || window.HUB_USER.buyerEdit)) {
+      actions.push(el('button', { onclick: () => { m.close(); openReconcileEditor(id); } }, '✏️ Изменить (перенос)'));
+    }
     const m = modal('Заявка ' + o.number, body, actions);
+  }
+
+  // Правка заявки для сверки/переноса: поставщик + по позициям кол-во/цена. Приёмку не трогает.
+  async function openReconcileEditor(id) {
+    const d = await api('/orders/' + id);
+    const o = d.order;
+    const rcvd = o.status === 'received';
+    const suppliers = (await api('/suppliers')).items || [];
+    const supSel = el('select', {}, suppliers.map((s) => el('option', { value: s.id, selected: String(s.id) === String(o.supplier_id) || null }, s.name)));
+    const rowInputs = [];
+    const tbody = el('tbody', {}, d.items.map((i) => {
+      const qtyIn = el('input', { type: 'number', step: 'any', min: '0', value: Number(i.qty), style: 'width:90px;text-align:right' });
+      const priceIn = el('input', { type: 'number', step: 'any', min: '0', value: Number(i.price), style: 'width:100px;text-align:right' });
+      rowInputs.push({ id: i.id, qtyIn, priceIn });
+      return el('tr', {}, [
+        el('td', {}, i.item_name + (i.item_kind === 'packaging' ? ' 📦' : '')),
+        el('td', { class: 'tnum' }, qtyIn),
+        el('td', { class: 'tnum' }, priceIn),
+        el('td', { class: 'tnum muted' }, rcvd ? ('принято ' + fmt.format(Number(i.fact_qty) || 0) + ' ' + (i.unit || '')) : '—'),
+      ]);
+    }));
+    const table = el('table', { class: 'dict-table' }, [
+      el('thead', {}, el('tr', {}, ['Товар', 'Кол-во (заявка)', 'Цена', 'Приёмка'].map((h) => el('th', {}, h)))),
+      tbody,
+    ]);
+    const body = el('div', { class: 'form-col' }, [
+      el('div', { class: 'muted', style: 'font-size:12px' }, 'Правка для сверки с данными закупщика (перенос). Меняются поставщик, количество и цена заявки. Приёмка кладовщика (принято) сохраняется. Долг пересчитается по новым цифрам.'),
+      el('label', {}, ['Поставщик', supSel]),
+      el('div', { style: 'overflow-x:auto' }, table),
+    ]);
+    const m = modal('✏️ Изменить заявку ' + o.number, body, [
+      el('button', { onclick: () => m.close() }, 'Отмена'),
+      el('button', { class: 'btn-primary', onclick: async (ev) => {
+        ev.target.disabled = true;
+        const items = rowInputs.map((r) => ({ id: r.id, qty: r.qtyIn.value, price: r.priceIn.value }));
+        try {
+          await api('/orders/' + id + '/reconcile', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ supplier_id: supSel.value, items }) });
+          toast('Заявка изменена ✅'); m.close(); loadOrders();
+        } catch (e) { toast(e.message, true); ev.target.disabled = false; }
+      } }, 'Сохранить'),
+    ]);
   }
 
   // приёмка перенесена в блок «Склад сырья» — закупщик заявку только создаёт
