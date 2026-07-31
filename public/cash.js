@@ -666,7 +666,13 @@
     const prInp = fmoney('', { placeholder: 'тело' });
     const ipInp = fmoney('', { placeholder: 'проценты' });
     const feInp = fmoney('', { placeholder: 'комиссия' });
+    const prRow = frow('Тело кредита', prInp), ipRow = frow('Проценты', ipInp), feRow = frow('Комиссия', feInp);
     const sumNote = el('div', { class: 'cash-sub', style: 'margin-top:4px' }, '');
+    // Целевой платёж по статье: 61 «Погашение кредита» → всё в тело; 60 «Проценты» → всё в проценты (без разбивки).
+    const onlyBody = tx.cat_code === '61';
+    const onlyInt = tx.cat_code === '60';
+    if (onlyBody) { ipRow.style.display = 'none'; feRow.style.display = 'none'; sumNote.style.display = 'none'; }
+    if (onlyInt) { prRow.style.display = 'none'; feRow.style.display = 'none'; sumNote.style.display = 'none'; }
     const amountUzs = Math.round(Number(tx.amount) || 0);
     let schedId = null;
     const unit = () => (isUsd() ? '$' : 'сум');
@@ -691,7 +697,11 @@
         const t = target();
         const remInt = Math.max(0, (Number(s.interest_due) || 0) - (Number(s.ip_paid) || 0));
         const remFee = Math.max(0, (Number(s.fee_due) || 0) - (Number(s.fe_paid) || 0));
-        const ip = Math.min(t, remInt), fe = Math.min(t - ip, remFee), pr = Math.max(0, t - ip - fe);
+        // По статье платежа: погашение тела → всё в тело; проценты → всё в проценты; иначе проценты-в-первую-очередь.
+        let ip = 0, fe = 0, pr = 0;
+        if (onlyBody) pr = t;
+        else if (onlyInt) ip = t;
+        else { ip = Math.min(t, remInt); fe = Math.min(t - ip, remFee); pr = Math.max(0, t - ip - fe); }
         const rnd = usd ? (x) => Math.round(x * 100) / 100 : (x) => Math.round(x);
         ipInp.value = rnd(ip); feInp.value = rnd(fe); prInp.value = rnd(pr);
         info.textContent = 'Ближайший месяц №' + s.installment_no + ' · срок ' + ruDate(s.due_date) + ' · тело ' + money(s.principal_due) + ' · % ' + money(s.interest_due) + ' ' + unit() + (usd ? ' · ' + money(amountUzs) + ' сум ÷ курс = ' + money(t) + ' $' : '');
@@ -711,7 +721,7 @@
     const body = el('div', { class: 'cashf' }, [
       el('div', { class: 'cash-note-info' }, 'Платёж из выписки: ' + ruDate(tx.tx_date) + ' · ' + money(tx.amount) + ' сум' + (tx.purpose ? ' · ' + tx.purpose : '')),
       frow('Кредит', sel), info, rateRow,
-      frow('Тело кредита', prInp), frow('Проценты', ipInp), frow('Комиссия', feInp), sumNote,
+      prRow, ipRow, feRow, sumNote,
     ]);
     modal('Разнести платёж на кредит', body, [save]);
     loadNext();

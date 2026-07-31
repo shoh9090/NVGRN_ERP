@@ -2608,8 +2608,9 @@ router.post('/api/obligations/auto-assign', J, async (req, res) => {
       if (!s) continue;
       const amt = Number(t.amount) || 0;
       const remInt = Math.max(0, (Number(s.interest_due) || 0) - (Number(s.ip_paid) || 0));
-      const ip = t.cat_code === '60' ? amt : Math.min(amt, remInt);
-      const pr = t.cat_code === '60' ? 0 : Math.max(0, amt - ip);
+      // По статье: 61 «Погашение кредита» → всё в тело; 60 «Проценты» → всё в проценты.
+      const ip = t.cat_code === '61' ? 0 : t.cat_code === '60' ? amt : Math.min(amt, remInt);
+      const pr = t.cat_code === '60' ? 0 : amt - ip;
       const client = await db.pool.connect();
       try {
         await client.query('BEGIN');
