@@ -270,7 +270,11 @@ const OWN_INNS = []; // ИНН собственных юрлиц — запол�
 const OWN_NAME_RE = /novagreen|новагрин|нова\s*грин/i; // своё юрлицо в выписке
 // ВАЖНО: \w в JS не матчит кириллицу — используем явный кириллический класс [а-яё].
 const INTERNAL_XFER_RE = /переброск|между\s+сч[её]т|основн[а-яё]*\s+расч[её]т[а-яё]*\s+сч[её]т|\ba2a\b/i;
+// Зарплата/аванс/налоги/проценты — это НЕ переброска между своими счетами, даже если плательщик
+// в выписке — своё юрлицо. Такие назначения не классифицируем как «Межбанк».
+const NOT_XFER_RE = /аванс|зарплат|заработн|\bзп\b|премия|подотч|налог|процент|погашен|кредит|аренд/i;
 function isOwnTransfer(purpose, payerName, inn) {
+  if (NOT_XFER_RE.test(String(purpose || ''))) return false;
   if (inn && OWN_INNS.includes(String(inn).trim())) return true;
   if (payerName && OWN_NAME_RE.test(payerName)) return true;
   return INTERNAL_XFER_RE.test(String(purpose || ''));
