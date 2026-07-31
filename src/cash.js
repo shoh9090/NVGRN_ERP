@@ -1450,8 +1450,25 @@ router.post('/api/tx/:id(\\d+)', J, async (req, res) => {
        is_supply_advance=COALESCE($16,is_supply_advance)
      WHERE id=$8`,
     [b.tx_date || null, b.amount ? Number(b.amount) : null, intOrNull(b.counterparty_id), intOrNull(b.contract_id), cat, b.purpose || null, !!cat, req.params.id, b.payer_name != null ? b.payer_name : null, walletTo, newType, needsCashConfirm, currency, numOrNull(b.fx_rate), numOrNull(b.fx_amount), supplyAdv]);
-  await db.log(req.user.id, 'cash_tx_edit', '#' + req.params.id);
-  res.json({ ok: true });
+  // Если строка стала переводом на счёт С выпиской (банк/карта) — на нём обычно уже есть парный приход
+  // из его же выписки (часто сидит выручкой). Перевод сам зачисляет деньги, поэтому тот приход — дубль.
+  // Убираем ОДИН ближайший парный приход (та же сумма ±0.5, ±1 день, без контрагента). Кассу не трогаем.
+  let removedDup = 0;
+  if (newType === 'transfer' && needsCashConfirm !== true && walletTo) {
+    const me = (await db.pool.query('SELECT amount, tx_date FROM cash_transactions WHERE id=$1', [req.params.id])).rows[0];
+    if (me) {
+      const dq = await db.pool.query(
+        `DELETE FROM cash_transactions WHERE id = (
+           SELECT id FROM cash_transactions
+            WHERE tx_type='in' AND wallet_id=$1 AND counterparty_id IS NULL AND source<>'opening'
+              AND ABS(amount-$2)<0.5 AND ABS(tx_date-$3::date)<=1
+            ORDER BY ABS(tx_date-$3::date), id LIMIT 1)`,
+        [walletTo, Number(me.amount), me.tx_date]);
+      removedDup = dq.rowCount || 0;
+    }
+  }
+  await db.log(req.user.id, 'cash_tx_edit', '#' + req.params.id + (removedDup ? ' (убран дубль-приход)' : ''));
+  res.json({ ok: true, removedDup });
 });
 
 // Подтверждение факт. суммы прихода по обналичиванию/переводу в кассу — считает и списывает

@@ -1986,9 +1986,10 @@
     const save = el('button', { class: 'btn-primary', onclick: async () => {
       try {
         const isA2A = isTransferCat();
-        if (tx.id) await post('/tx/' + tx.id, { tx_date: date.value, amount: moneyVal(amount), counterparty_id: tx.counterparty_id || '', category_id: cat.value, purpose: purpose.value, wallet_to_id: isA2A ? walletTo.value : '' });
+        let r = null;
+        if (tx.id) r = await post('/tx/' + tx.id, { tx_date: date.value, amount: moneyVal(amount), counterparty_id: tx.counterparty_id || '', category_id: cat.value, purpose: purpose.value, wallet_to_id: isA2A ? walletTo.value : '' });
         else await post('/tx', { tx_type: type, tx_date: date.value, amount: moneyVal(amount), wallet_id: wallet.value, category_id: cat.value, purpose: purpose.value, wallet_to_id: isA2A ? walletTo.value : '' });
-        toast('Сохранено'); closeModal(); loadTx();
+        toast(r && r.removedDup ? 'Сохранено · убран дубль-приход на счёте-получателе' : 'Сохранено'); closeModal(); loadTx();
       } catch (e) { toast(e.message, true); }
     } }, 'Сохранить');
     const acts = [save];
