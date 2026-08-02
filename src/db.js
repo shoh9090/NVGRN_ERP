@@ -525,6 +525,10 @@ async function seed() {
       `INSERT INTO role_tiles (role_id, tile_id) SELECT $1, id FROM tiles WHERE url='/cash' ON CONFLICT DO NOTHING`, [finId]).catch(() => {});
   }
 
+  // Роль «Правка заявок»: временный доступ править заявки (поставщик/кол-во/цена) для сверки/переноса.
+  // Отмечаешь галочкой у человека в админ-панели → у него появляется кнопка «Изменить»; снимаешь → пропадает.
+  await pool.query("INSERT INTO roles (name, is_admin) VALUES ('Правка заявок', FALSE) ON CONFLICT (name) DO NOTHING").catch(() => {});
+
   let r = await pool.query("SELECT id FROM roles WHERE is_admin = TRUE LIMIT 1");
   let adminRoleId;
   if (r.rows.length === 0) {

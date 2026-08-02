@@ -62,30 +62,6 @@
   const payIcon = (p) => (p === 'наличка' ? '💵 наличка' : '🏦 перечисление');
 
   // ================= ЗАЯВКИ =================
-  // Тумблер (только админ): временно разрешить закупщику править заявки для сверки/переноса.
-  function buyerEditBar() {
-    const bar = el('div', { style: 'display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:#fff7e6;border:1px solid #e6c98a;border-radius:10px;padding:8px 12px;margin-bottom:12px;font-size:13px' });
-    const state = el('span', { style: 'font-weight:700' }, '…');
-    const btn = el('button', {});
-    let on = !!(window.HUB_USER && window.HUB_USER.buyerEdit);
-    const render = () => {
-      state.textContent = on ? 'Правка заявок закупщиком: ВКЛючена' : 'Правка заявок закупщиком: выключена';
-      state.style.color = on ? '#b25b00' : '#7c8579';
-      btn.textContent = on ? 'Выключить' : 'Включить';
-      btn.className = on ? 'btn-danger-link' : 'btn-primary';
-    };
-    btn.onclick = async () => {
-      try { const r = await api('/buyer-edit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ on: !on }) }); on = !!r.on; window.HUB_USER.buyerEdit = on; render(); toast(on ? 'Закупщик может править заявки' : 'Правка заявок выключена'); }
-      catch (e) { toast(e.message, true); }
-    };
-    render();
-    bar.appendChild(el('span', {}, '🔧'));
-    bar.appendChild(state);
-    bar.appendChild(el('span', { class: 'muted', style: 'flex:1;min-width:120px' }, 'Включай на время сверки/переноса, потом выключи.'));
-    bar.appendChild(btn);
-    return bar;
-  }
-
   async function viewOrders() {
     const main = $('#pur-main');
     main.innerHTML = '';
@@ -107,7 +83,6 @@
       ]),
     ]);
     main.appendChild(toolbar);
-    if (window.HUB_USER && window.HUB_USER.isAdmin) main.appendChild(buyerEditBar());
     await ensureOpts();
     const ordPc = el('select', { id: 'ord-pc', onchange: loadOrders }, [
       el('option', { value: '' }, 'Все родит. категории'),
