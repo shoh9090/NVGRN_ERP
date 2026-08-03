@@ -1241,23 +1241,39 @@
     ]);
   }
 
+  // Клик по кошельку → открыть его операции за текущий месяц. Наличная касса — своя вкладка.
+  function openWalletTxns(x) {
+    if (x.kind === 'cash') {
+      cbState.wallet = String(x.id); cbState.from = monthStartStr(); cbState.to = todayStr();
+      cbState.type = 'in'; cbState.category = ''; cbState.classified = ''; cbState.q = ''; cbState.page = 1;
+      TAB = 'cashbox'; render();
+    } else {
+      txState.wallet = String(x.id); txState.from = monthStartStr(); txState.to = todayStr();
+      txState.type = ''; txState.category = ''; txState.catgroup = ''; txState.classified = ''; txState.q = ''; txState.page = 1;
+      TAB = 'tx'; render();
+    }
+  }
+
   async function renderWallets() {
     const c = $('#cash-content'); c.innerHTML = '<div class="cash-loading">Загрузка…</div>';
     let data; try { data = await api('/wallets'); } catch (e) { c.innerHTML = ''; c.appendChild(el('div', { class: 'cash-empty' }, 'Ошибка: ' + e.message)); return; }
     c.innerHTML = '';
     c.appendChild(el('div', { class: 'cash-head' }, [
-      el('div', {}, [el('div', { class: 'cash-h2' }, 'Кошельки'), el('div', { class: 'cash-sub' }, 'Остаток считается из журнала. Клик — изменить.')]),
+      el('div', {}, [el('div', { class: 'cash-h2' }, 'Кошельки'), el('div', { class: 'cash-sub' }, 'Остаток считается из журнала. Клик по кошельку — открыть его операции за месяц. ✏️ — изменить.')]),
       addBtn('+ Кошелёк', () => openWalletForm(null)),
     ]));
     const w = data.wallets || [];
     if (!w.length) { c.appendChild(el('div', { class: 'cash-empty' }, 'Кошельков нет.')); return; }
     const KIND = { bank: 'Расчётный счёт', card: 'Карта', cash: 'Наличные', reserve: 'Резерв' };
-    c.appendChild(el('div', { class: 'cash-wallets' }, w.map((x) => el('div', { class: 'cash-wallet', style: 'border-left-color:' + (x.color || '#163a28') + ';cursor:pointer', onclick: () => openWalletForm(x) }, [
+    c.appendChild(el('div', { class: 'cash-wallets' }, w.map((x) => el('div', { class: 'cash-wallet', style: 'border-left-color:' + (x.color || '#163a28') + ';cursor:pointer', title: 'Открыть операции за текущий месяц', onclick: () => openWalletTxns(x) }, [
       el('div', { class: 'cash-wallet-nm' }, x.name),
       el('div', { class: 'cash-wallet-kind' }, KIND[x.kind] || x.kind),
       el('div', { class: 'cash-wallet-bal' }, money(x.balance) + ' сум'),
       (Number(x.usd) ? el('div', { style: 'font-size:11px;color:var(--muted);margin-top:-4px' }, 'в т.ч. $' + money(x.usd) + (x.rate ? ' по ' + money(x.rate) : '')) : null),
-      el('a', { class: 'cash-wallet-exp', href: '/cash/api/wallet-export?wallet_id=' + x.id, title: 'Выгрузить операции в Excel (с остатком по строкам)', onclick: (e) => e.stopPropagation() }, '⬇ Excel'),
+      el('div', { style: 'display:flex;gap:10px;align-items:center' }, [
+        el('a', { class: 'cash-wallet-exp', href: 'javascript:void(0)', title: 'Изменить кошелёк', onclick: (e) => { e.stopPropagation(); openWalletForm(x); } }, '✏️ Изменить'),
+        el('a', { class: 'cash-wallet-exp', href: '/cash/api/wallet-export?wallet_id=' + x.id, title: 'Выгрузить операции в Excel (с остатком по строкам)', onclick: (e) => e.stopPropagation() }, '⬇ Excel'),
+      ]),
     ]))));
     const total = w.reduce((s, x) => s + Number(x.balance || 0), 0);
     c.appendChild(el('div', { class: 'cash-total' }, 'Итого по кошелькам: ' + money(total) + ' сум'));
