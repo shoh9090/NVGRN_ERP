@@ -207,6 +207,22 @@ async function ensureCashSchema() {
       await db.setSetting('supply_advance_backfill_v1', 'done');
     }
   } catch (e) { /* бэкфилл необязателен */ }
+  // Разовая правка: «Пополнение корпоративной пластиковой карты» — это статья 111 (Пополнение карты),
+  // а не 100 (Межбанк). Переносим ключевые слова в 111 и переклассифицируем уже загруженные строки.
+  try {
+    const st2 = await db.getSettings();
+    if (!st2.card_topup_kw_v1) {
+      await db.pool.query("UPDATE cash_categories SET keywords='перевод между счет, переброска, на основной расчётный счёт, между счетами' WHERE code='100'");
+      await db.pool.query("UPDATE cash_categories SET keywords='пополнение корпоративн, корпоративной пластиковой, пополнение пластиков, пополнение карт' WHERE code='111'");
+      await db.pool.query(
+        `UPDATE cash_transactions t SET category_id = c111.id, is_classified=true
+           FROM cash_categories c100, cash_categories c111
+          WHERE c100.code='100' AND c111.code='111'
+            AND t.category_id = c100.id
+            AND (t.purpose ILIKE '%пластиков%' OR t.purpose ILIKE '%пополнение корпоративн%')`);
+      await db.setSetting('card_topup_kw_v1', 'done');
+    }
+  } catch (e) { /* правка необязательна */ }
   _ready = true;
 }
 
@@ -214,7 +230,8 @@ async function ensureCashSchema() {
 // Ставим только там, где ещё не заполнено — ручные правки Шоха не трогаем.
 async function seedCategoryKeywords() {
   const defs = {
-    '100': 'пополнение корпоративн, корпоративной пластиковой, пополнение пластиков, перевод между счет, переброска, на основной расчётный счёт, между счетами',
+    '100': 'перевод между счет, переброска, на основной расчётный счёт, между счетами',
+    '111': 'пополнение корпоративн, корпоративной пластиковой, пополнение пластиков, пополнение карт',
     '62': 'начислен, % банка, комиссия банк, оп.обс',
     '60': 'проценты по кредит, процент за кредит',
     '61': 'погашение кредит, возврат кредит',
