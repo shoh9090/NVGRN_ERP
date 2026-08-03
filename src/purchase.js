@@ -328,6 +328,18 @@ router.post('/api/payments', express.json(), async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
+// Удаление ручной оплаты (ошибочная/лишняя строка — напр. наличка, которой не было).
+// Оплаты из выписки (id вида wire-…) сюда не попадают — они считаются из Кассы и правятся в Кассе.
+router.post('/api/payments/:id(\\d+)/delete', express.json(), async (req, res) => {
+  if (!canEditOrders(req)) return res.status(403).json({ error: 'Удаление оплат — только для админа или роли «Правка заявок».' });
+  try {
+    const r = await db.pool.query('DELETE FROM supplier_payments WHERE id=$1 RETURNING supplier_id, amount, payment_type', [parseInt(req.params.id, 10)]);
+    if (!r.rows.length) return res.status(404).json({ error: 'Оплата не найдена' });
+    await db.log(req.user.id, 'purchase_payment_delete', `id=${req.params.id} supplier=${r.rows[0].supplier_id} sum=${r.rows[0].amount} (${r.rows[0].payment_type})`);
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 // Подотчёт закупщика удалён по решению (ломал бизнес-процесс: выдача денег жила не в Кассе).
 // Оплаты поставщикам ведутся по заявкам/FIFO; движение денег — в модуле «Касса».
 // Таблица purchaser_accountable оставлена в БД неиспользуемой (не дропаем на старте).
