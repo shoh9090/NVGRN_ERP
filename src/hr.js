@@ -314,7 +314,19 @@ router.post('/api/events', J, async (req, res) => {
   const type = EVENT_TYPES.includes(b.event_type) ? b.event_type : null;
   if (!empId || !type) return res.status(400).json({ error: 'Укажите сотрудника и тип события' });
   if (!b.event_date) return res.status(400).json({ error: 'Укажите дату' });
-  await addEvent(empId, type, b.event_date, { date_to: b.date_to || null, from_text: b.from_text || null, to_text: b.to_text || null, comment: b.comment || null, created_by: req.user.id });
+  let fromText = b.from_text || null, toText = b.to_text || null;
+  // Перемещение из кадровой истории РЕАЛЬНО переводит сотрудника в новый отдел (меняем department_id),
+  // а не просто пишет запись в журнал — иначе в зарплате человек остаётся в старом отделе.
+  if (type === 'transfer') {
+    const toDept = intOrNull(b.to_department_id);
+    if (!toDept) return res.status(400).json({ error: 'Выберите отдел, куда переводим' });
+    const cur = (await db.pool.query('SELECT department_id FROM hr_employees WHERE id=$1', [empId])).rows[0];
+    if (!cur) return res.status(404).json({ error: 'Сотрудник не найден' });
+    fromText = await deptName(cur.department_id);
+    toText = await deptName(toDept);
+    await db.pool.query('UPDATE hr_employees SET department_id=$1, updated_at=now() WHERE id=$2', [toDept, empId]);
+  }
+  await addEvent(empId, type, b.event_date, { date_to: b.date_to || null, from_text: fromText, to_text: toText, comment: b.comment || null, created_by: req.user.id });
   await db.log(req.user.id, 'hr_event_add', `${type} emp#${empId}`);
   res.json({ ok: true });
 });

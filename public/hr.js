@@ -193,21 +193,27 @@
     try { emps = (await api('/employees?status=')).items || []; } catch (e) { return toast(e.message, true); }
     const active = emps.filter((e) => e.status !== 'archived');
     const empSel = fsel(active.map((e) => ({ v: e.id, t: e.full_name })), presetEmpId || (active[0] && active[0].id) || '');
-    const typeSel = fsel([['vacation', 'Отпуск'], ['sick', 'Больничный'], ['other', 'Прочее'], ['hire', 'Приём'], ['fire', 'Увольнение']].map(([v, t]) => ({ v, t })), 'vacation');
+    const typeSel = fsel([['transfer', 'Перемещение'], ['vacation', 'Отпуск'], ['sick', 'Больничный'], ['other', 'Прочее'], ['hire', 'Приём'], ['fire', 'Увольнение']].map(([v, t]) => ({ v, t })), 'transfer');
     const dFrom = finp(new Date().toISOString().slice(0, 10), { type: 'date' });
     const dTo = finp('', { type: 'date' });
     const dToRow = frow('По (для отпуска/больничного)', dTo);
+    const deptSel = fsel([{ v: '', t: '— выберите отдел —' }, ...DICTS.departments.map((d) => ({ v: d.id, t: d.name }))], '');
+    const deptRow = frow('Куда (отдел)', deptSel);
     const comment = finp('', { placeholder: 'Комментарий' });
-    const applyType = () => { dToRow.style.display = (typeSel.value === 'vacation' || typeSel.value === 'sick') ? '' : 'none'; };
+    const applyType = () => {
+      dToRow.style.display = (typeSel.value === 'vacation' || typeSel.value === 'sick') ? '' : 'none';
+      deptRow.style.display = (typeSel.value === 'transfer') ? '' : 'none';
+    };
     typeSel.onchange = applyType; applyType();
     const save = el('button', { class: 'btn-primary', onclick: async () => {
       if (!empSel.value) return toast('Выберите сотрудника', true);
+      if (typeSel.value === 'transfer' && !deptSel.value) return toast('Выберите отдел, куда переводим', true);
       try {
-        await post('/events', { employee_id: empSel.value, event_type: typeSel.value, event_date: dFrom.value, date_to: (dToRow.style.display !== 'none' ? dTo.value : null) || null, comment: comment.value });
-        toast('Событие добавлено'); closeModal(); if (TAB === 'events') loadEv();
+        await post('/events', { employee_id: empSel.value, event_type: typeSel.value, event_date: dFrom.value, date_to: (dToRow.style.display !== 'none' ? dTo.value : null) || null, to_department_id: (typeSel.value === 'transfer' ? deptSel.value : null), comment: comment.value });
+        toast(typeSel.value === 'transfer' ? 'Сотрудник переведён ✅' : 'Событие добавлено'); closeModal(); if (TAB === 'events') loadEv();
       } catch (e) { toast(e.message, true); }
     } }, 'Добавить');
-    modal('Кадровое событие', el('div', { class: 'hrf' }, [frow('Сотрудник', empSel), frow('Тип', typeSel), frow('Дата (с)', dFrom), dToRow, frow('Комментарий', comment)]), [save]);
+    modal('Кадровое событие', el('div', { class: 'hrf' }, [frow('Сотрудник', empSel), frow('Тип', typeSel), deptRow, frow('Дата (с)', dFrom), dToRow, frow('Комментарий', comment)]), [save]);
   }
 
   // ================= ДАШБОРД =================
