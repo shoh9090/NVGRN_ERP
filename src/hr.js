@@ -423,7 +423,7 @@ router.get('/api/payroll', async (req, res) => {
   if (req.query.schedule && SCHEDULE_CODES.includes(req.query.schedule)) { p.push(req.query.schedule); w.push(`e.schedule_type = $${p.length}`); }
   if (req.query.q) { p.push('%' + String(req.query.q).trim() + '%'); w.push(`e.full_name ILIKE $${p.length}`); }
   const rows = (await db.pool.query(
-    `SELECT e.id AS emp_id, e.full_name, e.position, e.base_salary, e.schedule_type, d.name AS department_name, pr.*
+    `SELECT e.id AS emp_id, e.full_name, e.position, e.base_salary, e.schedule_type, e.status AS emp_status, d.name AS department_name, pr.*
      FROM hr_employees e
      LEFT JOIN hr_departments d ON d.id = e.department_id
      LEFT JOIN hr_payroll pr ON pr.employee_id = e.id AND pr.period = $1
@@ -452,6 +452,12 @@ router.get('/api/payroll', async (req, res) => {
       r.to_pay = (Number(r.accrued) || 0) - r.deducted - r.paid;
     });
   } catch (e) { console.error('cash salary:', e.message); }
+  // Уволенных без движения за месяц (нет начислений, выплат и удержаний) в ведомости не показываем.
+  // При поиске по имени (q) не прячем — чтобы можно было найти любого уволенного.
+  if (!req.query.q) {
+    items = items.filter((r) => r.emp_status !== 'fired'
+      || (Number(r.accrued) || 0) > 0 || (Number(r.paid) || 0) > 0 || (Number(r.deducted) || 0) > 0);
+  }
   const sum = (f) => items.reduce((s, r) => s + (Number(r[f]) || 0), 0);
   const summary = {
     accrued: sum('accrued'), deducted: sum('deducted'), paid: sum('paid'), to_pay: sum('to_pay'),
