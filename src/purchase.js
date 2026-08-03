@@ -915,16 +915,31 @@ router.post('/api/orders/:id(\\d+)/reconcile', express.json({ limit: '2mb' }), a
   try {
     if (!(await canEditOrders(req))) return res.status(403).json({ error: 'Правка заявок сейчас выключена. Включите доступ (только администратор).' });
     const oid = parseInt(req.params.id, 10);
-    const o = (await db.pool.query('SELECT id FROM purchase_orders WHERE id=$1', [oid])).rows[0];
+    const o = (await db.pool.query('SELECT id, status FROM purchase_orders WHERE id=$1', [oid])).rows[0];
     if (!o) return res.status(404).json({ error: 'Заявка не найдена' });
+    const rcvd = o.status === 'received';
     const supplierId = parseInt(req.body.supplier_id, 10);
     if (supplierId) await db.pool.query('UPDATE purchase_orders SET supplier_id=$1 WHERE id=$2', [supplierId, oid]);
+    // Правка существующих позиций (кол-во/цена).
     for (const it of (Array.isArray(req.body.items) ? req.body.items : [])) {
       const iid = parseInt(it.id, 10), qty = Number(it.qty), price = Number(it.price);
       if (!iid || !(qty > 0) || !(price > 0)) continue;
       await db.pool.query('UPDATE purchase_order_items SET qty=$1, price=$2 WHERE id=$3 AND order_id=$4', [qty, price, iid, oid]);
     }
-    await db.log(req.user.id, 'purchase_order_reconcile', String(oid));
+    // Удаление позиций целиком (перенос/сверка). Склад (stock_movements) НЕ трогаем — это про заявку/долг.
+    const delIds = (Array.isArray(req.body.delete_ids) ? req.body.delete_ids : []).map((x) => parseInt(x, 10)).filter(Boolean);
+    if (delIds.length) await db.pool.query('DELETE FROM purchase_order_items WHERE order_id=$1 AND id = ANY($2::int[])', [oid, delIds]);
+    // Добавление новых позиций. Для принятой заявки ставим fact_qty=qty (товар был в поставке) — чтобы долг посчитался.
+    // Склад не пополняем: приход на склад создаётся один раз при приёмке кладовщиком, здесь только заявка/долг.
+    for (const it of (Array.isArray(req.body.add_items) ? req.body.add_items : [])) {
+      const kind = it.item_kind === 'packaging' ? 'packaging' : 'raw';
+      const iid = parseInt(it.item_id, 10), qty = Number(it.qty), price = Number(it.price);
+      if (!iid || !(qty > 0) || !(price >= 0)) continue;
+      await db.pool.query(
+        'INSERT INTO purchase_order_items (order_id, item_kind, item_id, qty, price, fact_qty) VALUES ($1,$2,$3,$4,$5,$6)',
+        [oid, kind, iid, qty, price, rcvd ? qty : null]);
+    }
+    await db.log(req.user.id, 'purchase_order_reconcile', `${oid} del=${delIds.length} add=${(Array.isArray(req.body.add_items) ? req.body.add_items.length : 0)}`);
     res.json({ ok: true });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });

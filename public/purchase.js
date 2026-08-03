@@ -525,33 +525,85 @@
     const suppliers = (await api('/suppliers')).items || [];
     const supSel = el('select', {}, suppliers.map((s) => el('option', { value: s.id, selected: String(s.id) === String(o.supplier_id) || null }, s.name)));
     const rowInputs = [];
-    const tbody = el('tbody', {}, d.items.map((i) => {
-      const qtyIn = el('input', { type: 'number', step: 'any', min: '0', value: Number(i.qty), style: 'width:90px;text-align:right' });
-      const priceIn = el('input', { type: 'number', step: 'any', min: '0', value: Number(i.price), style: 'width:100px;text-align:right' });
-      rowInputs.push({ id: i.id, qtyIn, priceIn });
-      return el('tr', {}, [
-        el('td', {}, i.item_name + (i.item_kind === 'packaging' ? ' 📦' : '')),
-        el('td', { class: 'tnum' }, qtyIn),
-        el('td', { class: 'tnum' }, priceIn),
-        el('td', { class: 'tnum muted' }, rcvd ? ('принято ' + fmt.format(Number(i.fact_qty) || 0) + ' ' + (i.unit || '')) : '—'),
-      ]);
-    }));
+    const delIds = new Set();       // id существующих позиций, помеченных на удаление
+    const tbody = el('tbody', {});
+    function renderExisting() {
+      tbody.innerHTML = ''; rowInputs.length = 0;
+      d.items.forEach((i) => {
+        const deleted = delIds.has(i.id);
+        const qtyIn = el('input', { type: 'number', step: 'any', min: '0', value: Number(i.qty), style: 'width:90px;text-align:right', disabled: deleted || null });
+        const priceIn = el('input', { type: 'number', step: 'any', min: '0', value: Number(i.price), style: 'width:100px;text-align:right', disabled: deleted || null });
+        rowInputs.push({ id: i.id, qtyIn, priceIn });
+        const delBtn = el('a', { href: 'javascript:void(0)', title: deleted ? 'Вернуть товар' : 'Убрать товар из заявки', style: 'color:' + (deleted ? '#3f6a16' : '#c0392b') + ';font-weight:700;text-decoration:none', onclick: (e) => { e.preventDefault(); if (deleted) delIds.delete(i.id); else delIds.add(i.id); renderExisting(); } }, deleted ? '↩' : '✕');
+        tbody.appendChild(el('tr', { style: deleted ? 'opacity:.45;text-decoration:line-through' : '' }, [
+          el('td', {}, i.item_name + (i.item_kind === 'packaging' ? ' 📦' : '')),
+          el('td', { class: 'tnum' }, qtyIn),
+          el('td', { class: 'tnum' }, priceIn),
+          el('td', { class: 'tnum muted' }, rcvd ? ('принято ' + fmt.format(Number(i.fact_qty) || 0) + ' ' + (i.unit || '')) : '—'),
+          el('td', { style: 'text-align:center;width:1%' }, delBtn),
+        ]));
+      });
+    }
+    renderExisting();
     const table = el('table', { class: 'dict-table' }, [
-      el('thead', {}, el('tr', {}, ['Товар', 'Кол-во (заявка)', 'Цена', 'Приёмка'].map((h) => el('th', {}, h)))),
+      el('thead', {}, el('tr', {}, ['Товар', 'Кол-во (заявка)', 'Цена', 'Приёмка', ''].map((h) => el('th', {}, h)))),
       tbody,
     ]);
+
+    // --- Добавление нового товара ---
+    const added = [];               // {kind, id, name, qty, price}
+    const addedBody = el('tbody', {});
+    function renderAdded() {
+      addedBody.innerHTML = '';
+      added.forEach((a, idx) => addedBody.appendChild(el('tr', {}, [
+        el('td', {}, '➕ ' + a.name),
+        el('td', { class: 'tnum' }, fmt.format(a.qty)),
+        el('td', { class: 'tnum' }, fmtMoney(a.price)),
+        el('td', {}, ''),
+        el('td', { style: 'text-align:center;width:1%' }, el('a', { href: 'javascript:void(0)', title: 'Убрать', style: 'color:#c0392b;font-weight:700;text-decoration:none', onclick: (e) => { e.preventDefault(); added.splice(idx, 1); renderAdded(); } }, '✕')),
+      ])));
+    }
+    let mats = [];
+    const matSel = el('select', { style: 'min-width:220px' });
+    async function loadMats() {
+      mats = (await api('/materials?supplier_id=' + (supSel.value || 0))).items || [];
+      matSel.innerHTML = '';
+      matSel.appendChild(el('option', { value: '' }, '— выбрать товар —'));
+      mats.forEach((mm) => matSel.appendChild(el('option', { value: mm.kind + ':' + mm.id }, mm.name + (mm.kind === 'packaging' ? ' 📦' : '') + (mm.unit ? ' (' + mm.unit + ')' : ''))));
+    }
+    const addQty = el('input', { type: 'number', step: 'any', min: '0', placeholder: 'кол-во', style: 'width:90px;text-align:right' });
+    const addPrice = el('input', { type: 'number', step: 'any', min: '0', placeholder: 'цена', style: 'width:100px;text-align:right' });
+    const addBtn = el('button', { onclick: () => {
+      if (!matSel.value) { toast('Выберите товар', true); return; }
+      const qty = Number(addQty.value), price = Number(addPrice.value);
+      if (!(qty > 0)) { toast('Укажите количество', true); return; }
+      const [kind, mid] = matSel.value.split(':');
+      const mm = mats.find((x) => x.kind === kind && String(x.id) === String(mid));
+      added.push({ kind, id: mid, name: mm ? mm.name : ('#' + mid), qty, price: price || 0 });
+      addQty.value = ''; addPrice.value = ''; matSel.value = '';
+      renderAdded();
+    } }, '＋ Добавить товар');
+    supSel.onchange = loadMats;
+    await loadMats();
+    const addTable = el('table', { class: 'dict-table' }, [addedBody]);
+    const addRow = el('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px' }, [matSel, addQty, addPrice, addBtn]);
+
     const body = el('div', { class: 'form-col' }, [
-      el('div', { class: 'muted', style: 'font-size:12px' }, 'Правка для сверки с данными закупщика (перенос). Меняются поставщик, количество и цена заявки. Приёмка кладовщика (принято) сохраняется. Долг пересчитается по новым цифрам.'),
+      el('div', { class: 'muted', style: 'font-size:12px' }, 'Правка для сверки с данными закупщика (перенос). Меняются поставщик, количество и цена; можно убрать товар из заявки (✕) или добавить новый. Приёмка кладовщика и склад НЕ меняются — это только про заявку и долг.'),
       el('label', {}, ['Поставщик', supSel]),
       el('div', { style: 'overflow-x:auto' }, table),
+      el('div', { style: 'margin-top:10px;font-weight:700' }, '➕ Добавить товар'),
+      addTable,
+      addRow,
     ]);
     const m = modal('✏️ Изменить заявку ' + o.number, body, [
       el('button', { onclick: () => m.close() }, 'Отмена'),
       el('button', { class: 'btn-primary', onclick: async (ev) => {
         ev.target.disabled = true;
-        const items = rowInputs.map((r) => ({ id: r.id, qty: r.qtyIn.value, price: r.priceIn.value }));
+        const items = rowInputs.filter((r) => !delIds.has(r.id)).map((r) => ({ id: r.id, qty: r.qtyIn.value, price: r.priceIn.value }));
+        const add_items = added.map((a) => ({ item_kind: a.kind, item_id: a.id, qty: a.qty, price: a.price }));
         try {
-          await api('/orders/' + id + '/reconcile', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ supplier_id: supSel.value, items }) });
+          await api('/orders/' + id + '/reconcile', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ supplier_id: supSel.value, items, delete_ids: [...delIds], add_items }) });
           toast('Заявка изменена ✅'); m.close(); loadOrders();
         } catch (e) { toast(e.message, true); ev.target.disabled = false; }
       } }, 'Сохранить'),
