@@ -80,7 +80,7 @@
         ]),
         el('input', { id: 'ord-q', placeholder: 'Поиск: номер, поставщик...', oninput: debounce(loadOrders, 300) }),
         el('button', { class: 'btn-primary', onclick: () => openOrderEditor(null) }, '+ Новая заявка'),
-        ...((typeof HUB_USER !== 'undefined' && HUB_USER.isAdmin) ? [el('button', { style: 'color:#c0392b', title: 'Удалить все заявки за всё время', onclick: clearAllOrders }, '🧹 Очистить все заявки')] : []),
+        ...((typeof HUB_USER !== 'undefined' && (HUB_USER.isAdmin || HUB_USER.buyerEdit)) ? [el('button', { style: 'color:#c0392b', title: 'Удалить все заявки за всё время', onclick: clearAllOrders }, '🧹 Очистить все заявки')] : []),
       ]),
     ]);
     main.appendChild(toolbar);
@@ -468,7 +468,7 @@
         },
       }, 'Отменить'));
     }
-    if (window.HUB_USER && window.HUB_USER.isAdmin) {
+    if (window.HUB_USER && (window.HUB_USER.isAdmin || window.HUB_USER.buyerEdit)) {
       actions.push(el('button', {
         class: 'btn-danger-link',
         onclick: async () => {

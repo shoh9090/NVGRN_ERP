@@ -948,7 +948,7 @@ router.post('/api/orders/:id(\\d+)/reconcile', express.json({ limit: '2mb' }), a
 // Очистить ВСЕ заявки за всё время (только админ). Склад (stock_movements) НЕ трогаем — остатки остаются.
 // Стартовые долги (opening_balance у поставщиков) не касаемся. Оплаты сохраняем, но отвязываем от заявок.
 router.post('/api/orders/clear-all', express.json(), async (req, res) => {
-  if (!(req.user && req.user.isAdmin)) return res.status(403).json({ error: 'Очистка всех заявок — только для администратора' });
+  if (!canEditOrders(req)) return res.status(403).json({ error: 'Очистка всех заявок — админу или роли «Правка заявок»' });
   try {
     await db.pool.query('UPDATE supplier_payments SET order_id = NULL WHERE order_id IS NOT NULL');
     const r = await db.pool.query('DELETE FROM purchase_orders'); // позиции удалятся каскадом; склад не трогаем
@@ -1128,7 +1128,7 @@ router.post('/api/orders/:id(\\d+)/receive', express.json({ limit: '2mb' }), asy
 });
 
 router.delete('/api/orders/:id(\\d+)', async (req, res) => {
-  if (!req.user.isAdmin) return res.status(403).json({ error: 'Удаление заявок доступно только администратору' });
+  if (!canEditOrders(req)) return res.status(403).json({ error: 'Удаление заявок доступно админу или роли «Правка заявок»' });
   const o = await db.pool.query('SELECT status, number FROM purchase_orders WHERE id = $1', [req.params.id]);
   if (!o.rows.length) return res.status(404).json({ error: 'Заявка не найдена' });
   // принятая заявка влияет на долг — предупреждаем и требуем подтверждение
