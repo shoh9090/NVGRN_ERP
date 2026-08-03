@@ -945,6 +945,18 @@ router.post('/api/orders/:id(\\d+)/reconcile', express.json({ limit: '2mb' }), a
 });
 
 
+// Очистить ВСЕ заявки за всё время (только админ). Склад (stock_movements) НЕ трогаем — остатки остаются.
+// Стартовые долги (opening_balance у поставщиков) не касаемся. Оплаты сохраняем, но отвязываем от заявок.
+router.post('/api/orders/clear-all', express.json(), async (req, res) => {
+  if (!(req.user && req.user.isAdmin)) return res.status(403).json({ error: 'Очистка всех заявок — только для администратора' });
+  try {
+    await db.pool.query('UPDATE supplier_payments SET order_id = NULL WHERE order_id IS NOT NULL');
+    const r = await db.pool.query('DELETE FROM purchase_orders'); // позиции удалятся каскадом; склад не трогаем
+    await db.log(req.user.id, 'purchase_orders_clear_all', `удалено заявок: ${r.rowCount}`);
+    res.json({ ok: true, deleted: r.rowCount });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 function cleanItems(raw) {
   const out = [];
   for (const it of Array.isArray(raw) ? raw : []) {

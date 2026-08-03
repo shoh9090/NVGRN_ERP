@@ -80,6 +80,7 @@
         ]),
         el('input', { id: 'ord-q', placeholder: 'Поиск: номер, поставщик...', oninput: debounce(loadOrders, 300) }),
         el('button', { class: 'btn-primary', onclick: () => openOrderEditor(null) }, '+ Новая заявка'),
+        ...((typeof HUB_USER !== 'undefined' && HUB_USER.isAdmin) ? [el('button', { style: 'color:#c0392b', title: 'Удалить все заявки за всё время', onclick: clearAllOrders }, '🧹 Очистить все заявки')] : []),
       ]),
     ]);
     main.appendChild(toolbar);
@@ -103,6 +104,16 @@
     ]));
     main.appendChild(el('div', { id: 'ord-list', class: 'pur-content' }));
     await loadOrders();
+  }
+
+  async function clearAllOrders() {
+    if (!confirm('Удалить ВСЕ заявки за всё время?\n\n• Склад сырья и остатки — останутся.\n• Стартовые долги поставщиков — останутся.\n• Оплаты поставщикам — сохранятся (отвяжутся от заявок).\n\nОтменить нельзя. Продолжить?')) return;
+    if (!confirm('Точно удаляем все заявки безвозвратно?')) return;
+    try {
+      const r = await api('/orders/clear-all', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+      toast('Удалено заявок: ' + r.deleted);
+      viewOrders();
+    } catch (e) { toast(e.message, true); }
   }
 
   async function loadOrders() {
