@@ -86,6 +86,8 @@ async function ensureSchema() {
     await q(`ALTER TABLE hr_payroll ADD COLUMN IF NOT EXISTS ${col} NUMERIC`);
   }
   await q(`ALTER TABLE hr_payroll ADD COLUMN IF NOT EXISTS overtime_hours NUMERIC`); // переработка, часы (из табеля)
+  // Момент начисления: пока NULL — зарплата НЕ показывается (ни в ведомости, ни в дашборде). Ставится кнопкой «Начислить».
+  await q(`ALTER TABLE hr_payroll ADD COLUMN IF NOT EXISTS accrued_at TIMESTAMPTZ`);
   // Кадровая история: приём/увольнение/отпуск/больничный/перемещения/смена оклада-должности-графика.
   await q(`CREATE TABLE IF NOT EXISTS hr_events (
     id SERIAL PRIMARY KEY,
@@ -133,28 +135,33 @@ const PAYROLL_NUM = [...ACCR_ALL, ...DED, ...PAID, 'plan_days', 'fact_days', 'pl
 
 // Тип оплаты по графику: производство/смена — почасовая; офис (АУП) — фиксированный оклад.
 const POCHASOVOY = new Set(['production', 'shift']);
-// Авторасчёт оклада-начисления (accr_fact). Почасовые: оклад/план_часы × (факт_часы + переработка×2). АУП: оклад.
+// Авторасчёт оклада-начисления (accr_fact) ПО ФАКТУ. Нет факта → 0 (не начисляем).
+// Почасовые: оклад/план_часы × (факт_часы + переработка×2).
+// Окладники: дневная ставка × факт-дни = (оклад / план_дни) × факт_дни.
 function computePay(row) {
   const oklad = Number(row.base_salary) || 0;
-  const planH = Number(row.plan_hours) || 0, factH = Number(row.fact_hours) || 0, otH = Number(row.overtime_hours) || 0;
   if (POCHASOVOY.has(row.schedule_type)) {
-    if (!(planH > 0)) return { base: 0, overtime: 0 };
+    const planH = Number(row.plan_hours) || 0, factH = Number(row.fact_hours) || 0, otH = Number(row.overtime_hours) || 0;
+    if (!(planH > 0) || !((factH + otH) > 0)) return { base: 0, overtime: 0 };
     const rate = oklad / planH;
     return { base: Math.round(rate * (factH + otH * 2)), overtime: Math.round(rate * otH * 2) };
   }
-  return { base: Math.round(oklad), overtime: 0 };
+  const planD = Number(row.plan_days) || 0, factD = Number(row.fact_days) || 0;
+  if (!(planD > 0) || !(factD > 0)) return { base: 0, overtime: 0 };
+  return { base: Math.round(oklad / planD * factD), overtime: 0 };
 }
-// Пересчитать и сохранить accr_fact сотрудника за период (после норм/табеля/правки часов).
+// Пересчитать и сохранить accr_fact сотрудника за период. Возвращает посчитанную базу.
 async function recomputeAccrFact(empId, period) {
   const r = (await db.pool.query(
-    `SELECT e.base_salary, e.schedule_type, pr.plan_hours, pr.fact_hours, pr.overtime_hours
+    `SELECT e.base_salary, e.schedule_type, pr.plan_days, pr.fact_days, pr.plan_hours, pr.fact_hours, pr.overtime_hours
      FROM hr_employees e LEFT JOIN hr_payroll pr ON pr.employee_id = e.id AND pr.period = $2 WHERE e.id = $1`, [empId, period])).rows[0];
-  if (!r) return;
+  if (!r) return 0;
   const pay = computePay(r);
   await db.pool.query(
     `INSERT INTO hr_payroll (employee_id, period, accr_fact) VALUES ($1,$2,$3)
      ON CONFLICT (employee_id, period) DO UPDATE SET accr_fact = EXCLUDED.accr_fact, updated_at = now()`,
     [empId, period, pay.base]);
+  return pay.base;
 }
 const sumF = (row, fields) => fields.reduce((s, f) => s + (Number(row[f]) || 0), 0);
 async function seedDepartments() {
@@ -338,8 +345,14 @@ router.post('/api/events/:id(\\d+)/delete', async (req, res) => {
 
 // ---------- Зарплата ----------
 function withTotals(row) {
-  const accrued = sumF(row, ACCR), deducted = sumF(row, DED_SUM), paid = sumF(row, PAID);
-  return Object.assign({}, row, { accrued, deducted, paid, to_pay: accrued - deducted - paid });
+  // Пока не нажата «Начислить» (accrued_at пуст) — зарплата НЕ отражается: все начисления обнуляем
+  // (и в ведомости, и в дашборде). Удержания/выплаты — реальные, их оставляем.
+  const posted = !!row.accrued_at;
+  const out = Object.assign({}, row);
+  if (!posted) for (const f of ACCR) out[f] = 0;   // прячем начисления (удержания/выплаты не трогаем)
+  const accrued = sumF(out, ACCR), deducted = sumF(out, DED_SUM), paid = sumF(out, PAID);
+  out.posted = posted;
+  return Object.assign(out, { accrued, deducted, paid, to_pay: posted ? (accrued - deducted - paid) : 0 });
 }
 // ---------- Выплаты зарплаты из наличной кассы (производно — всегда в синхроне с кассой) ----------
 // Расход наличной кассы со статьёй 20 (ЗП производство) / 40 (Зарплата офиса) → выплата сотруднику.
@@ -553,9 +566,10 @@ router.post('/api/timesheet-import', upload.single('file'), async (req, res) => 
 });
 // Точечная правка ОДНОГО поля строки зарплаты (инлайн-редактирование в таблице).
 // Обычный /api/payroll перезаписывает всю строку — для одной ячейки он не годится.
-// accr_fact сюда не входит: оклад считается автоматически по формуле.
+// accr_fact правится вручную (после «Начислить»); авто-пересчёт для него НЕ делаем (CELL_RECALC),
+// чтобы ручная сумма не затиралась. Правка accr_fact помечает строку начисленной (accrued_at).
 const CELL_FIELDS = new Set(['plan_days', 'fact_days', 'plan_hours', 'fact_hours', 'overtime_hours',
-  ...ACCR.filter((f) => f !== 'accr_fact'), 'accr_company_debt', ...DED, ...PAID]);
+  'accr_fact', ...ACCR.filter((f) => f !== 'accr_fact'), 'accr_company_debt', ...DED, ...PAID]);
 const CELL_RECALC = ['plan_days', 'fact_days', 'plan_hours', 'fact_hours', 'overtime_hours'];
 router.post('/api/payroll/cell', J, async (req, res) => {
   try {
@@ -571,6 +585,8 @@ router.post('/api/payroll/cell', J, async (req, res) => {
        ON CONFLICT (employee_id, period) DO UPDATE SET ${field} = EXCLUDED.${field}, updated_at = now()`,
       [empId, period, val, req.user.id]);
     if (CELL_RECALC.includes(field)) await recomputeAccrFact(empId, period);  // часы/дни меняют оклад
+    // Ручная правка начисления — сразу считается начисленной (показывается в ведомости/дашборде).
+    if (field === 'accr_fact') await db.pool.query("UPDATE hr_payroll SET accrued_at=COALESCE(accrued_at, now()), status=CASE WHEN status='draft' THEN 'accrued' ELSE status END WHERE employee_id=$1 AND period=$2", [empId, period]);
     await db.log(req.user.id, 'hr_payroll_cell', `emp ${empId} ${period} ${field}=${val}`);
     res.json({ ok: true });
   } catch (e) { res.status(400).json({ error: e.message }); }
@@ -581,7 +597,7 @@ router.post('/api/payroll', J, async (req, res) => {
   const empId = intOrNull(b.employee_id);
   const period = /^\d{4}-\d{2}$/.test(b.period) ? b.period : null;
   if (!empId || !period) return res.status(400).json({ error: 'Нет сотрудника или периода' });
-  const status = ['draft', 'approved', 'paid', 'cancelled'].includes(b.status) ? b.status : 'draft';
+  const status = ['draft', 'accrued', 'approved', 'paid', 'cancelled'].includes(b.status) ? b.status : 'draft';
   const cols = ['plan_days', 'fact_days', 'plan_hours', 'fact_hours', ...ACCR_ALL, ...DED, ...PAID, 'amount_1c'];
   const vals = cols.map((c) => numOrNull(b[c]));
   const allCols = ['employee_id', 'period', 'status', ...cols, 'pay_date', 'pay_method', 'comment'];
@@ -593,8 +609,53 @@ router.post('/api/payroll', J, async (req, res) => {
       `INSERT INTO hr_payroll (${allCols.join(',')}, created_by) VALUES (${ph}, $${allVals.length + 1})
        ON CONFLICT (employee_id, period) DO UPDATE SET ${upd}, updated_at=now()`,
       [...allVals, req.user.id]);
+    // Видимость зарплаты: черновик — скрыт (accrued_at=NULL), любой другой статус — начислено.
+    await db.pool.query(
+      "UPDATE hr_payroll SET accrued_at = CASE WHEN status='draft' THEN NULL ELSE COALESCE(accrued_at, now()) END WHERE employee_id=$1 AND period=$2",
+      [empId, period]);
     await db.log(req.user.id, 'hr_payroll_save', `emp ${empId} ${period} ${status}`);
     res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// «Начислить» — явный расчёт по факту для выбранных сотрудников за месяц.
+// Считает оклад по формуле (дневная ставка × факт-дни / часы), пишет в accr_fact и помечает
+// строку начисленной (accrued_at). У кого нет факта (база 0) — пропускаем. До этого зарплата не видна.
+router.post('/api/payroll/accrue', J, async (req, res) => {
+  try {
+    const b = req.body || {};
+    const period = /^\d{4}-\d{2}$/.test(b.period) ? b.period : null;
+    if (!period) return res.status(400).json({ error: 'Не указан месяц' });
+    const ids = Array.isArray(b.employee_ids) ? b.employee_ids.map((x) => parseInt(x, 10)).filter(Boolean) : [];
+    if (!ids.length) return res.status(400).json({ error: 'Не выбраны сотрудники' });
+    let done = 0, skipped = 0;
+    for (const empId of ids) {
+      const base = await recomputeAccrFact(empId, period);
+      if (base > 0) {
+        await db.pool.query(
+          "UPDATE hr_payroll SET accrued_at=now(), status=CASE WHEN status='draft' THEN 'accrued' ELSE status END WHERE employee_id=$1 AND period=$2",
+          [empId, period]);
+        done++;
+      } else skipped++;   // нет факта — не начисляем
+    }
+    await db.log(req.user.id, 'hr_payroll_accrue', `${period}: начислено ${done}, без факта ${skipped}`);
+    res.json({ ok: true, done, skipped });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// «Отменить начисление» — снять accrued_at у выбранных (факт/дни остаются, зарплата снова скрыта).
+router.post('/api/payroll/unaccrue', J, async (req, res) => {
+  try {
+    const b = req.body || {};
+    const period = /^\d{4}-\d{2}$/.test(b.period) ? b.period : null;
+    if (!period) return res.status(400).json({ error: 'Не указан месяц' });
+    const ids = Array.isArray(b.employee_ids) ? b.employee_ids.map((x) => parseInt(x, 10)).filter(Boolean) : [];
+    if (!ids.length) return res.status(400).json({ error: 'Не выбраны сотрудники' });
+    const r = await db.pool.query(
+      "UPDATE hr_payroll SET accrued_at=NULL, status=CASE WHEN status='accrued' THEN 'draft' ELSE status END WHERE period=$1 AND employee_id = ANY($2::int[])",
+      [period, ids]);
+    await db.log(req.user.id, 'hr_payroll_unaccrue', `${period}: ${r.rowCount}`);
+    res.json({ ok: true, affected: r.rowCount });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 

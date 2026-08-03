@@ -107,6 +107,7 @@
 .hr-ts-inp { width: 100%; padding: 5px 7px; text-align: center; font-variant-numeric: tabular-nums; }
 .hr-pr-none { background: #f1f4ee; color: var(--muted); font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px; }
 .hr-pr-draft { background: #fff8e1; color: #b25b00; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px; }
+.hr-pr-accrued { background: #eaf5e0; color: #3b6d11; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px; }
 .hr-pr-approved { background: #e8f0fe; color: #1a56c4; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px; }
 .hr-pr-paid { background: #e8f5e9; color: #2e7d32; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px; }
 .hr-pr-cancelled { background: #fdecea; color: #c0392b; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px; }

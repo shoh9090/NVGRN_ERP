@@ -709,7 +709,7 @@
   }
 
   // ================= ЗАРПЛАТА =================
-  const PR_STATUS = { draft: 'Черновик', approved: 'Утверждено', paid: 'Выплачено', cancelled: 'Отменено' };
+  const PR_STATUS = { draft: 'Черновик', accrued: 'Начислено', approved: 'Утверждено', paid: 'Выплачено', cancelled: 'Отменено' };
   // Фикса — справочно, НЕ входит в сумму «начислено». Счётные — ниже.
   // «Долг компании» — удержание (уменьшает К выплате), поэтому он в DED_FIELDS, а не в начислениях.
   const ACCR_FIELDS = [['accr_fact', 'Факт по табелю'], ['accr_bonus', 'Бонусы KPI'], ['accr_premium', 'Премия'], ['accr_gsm', 'ГСМ / компенсации'], ['accr_sick', 'Больничные'], ['accr_vacation', 'Отпускные'], ['accr_mataid', 'Матпомощь'], ['accr_comp_vac', 'Компенсация отпуска'], ['accr_other', 'Другое начисление']];
@@ -719,6 +719,7 @@
   const DED_FIELDS = [['ded_fine', 'Штраф за опоздание'], ['ded_advance_card', 'Аванс на карту'], ['ded_advance_cash', 'Аванс наличными'], ['ded_hold', 'Удержание'], ['accr_company_debt', 'Долг компании'], ['ded_emp_debt', 'Долг сотрудника'], ['ded_other', 'Другое удержание']];
   const PAID_FIELDS = [['paid_cash', 'Выплачено наличными'], ['paid_card', 'Выплачено на карту']];
   const salState = { period: '', department: '', schedule: '', status: '', q: '' };
+  let salItems = [];
   let salSel = new Set();
   const payState = { period: '', department: '', status: '', q: '' };
   let paySel = new Set();
@@ -815,21 +816,31 @@
       modal('Импорт табеля — ' + monthLabel(salState.period), body, [load2]);
     }
     c.appendChild(el('div', { class: 'hr-head' }, [
-      el('div', {}, [el('div', { class: 'hr-h2' }, 'Зарплата — ' + monthLabel(salState.period)), el('div', { class: 'hr-sub' }, 'Оклад считается сам по табелю. Клик по сотруднику — карточка. Итоги считаются сами.')]),
-      el('div', { style: 'display:flex;gap:8px;align-self:flex-start' }, [
-        el('button', { class: 'btn-primary', onclick: openFillNorms }, '📋 Заполнить нормы'),
+      el('div', {}, [el('div', { class: 'hr-h2' }, 'Зарплата — ' + monthLabel(salState.period)), el('div', { class: 'hr-sub' }, 'Заполни нормы и факт, затем нажми «Начислить» — зарплата посчитается по факту и появится. До этого суммы не показываются.')]),
+      el('div', { style: 'display:flex;gap:8px;align-self:flex-start;flex-wrap:wrap' }, [
+        el('button', { class: 'btn-ghost', onclick: openFillNorms }, '📋 Заполнить нормы'),
         el('button', { class: 'btn-ghost', onclick: openTimesheetImport }, '📥 Импорт табеля'),
+        el('button', { class: 'btn-primary', onclick: () => { const ids = salItems.map((x) => x.emp_id); if (!ids.length) return toast('Нет сотрудников', true); if (!confirm('Начислить зарплату по факту всем показанным (' + ids.length + ')? У кого не заполнен факт — пропустятся.')) return; accrueEmps(ids, false); } }, '✅ Начислить всех'),
         el('button', { class: 'btn-ghost', onclick: () => openCardStatementImport(salState.period) }, '🏦 Ведомость на карту'),
         el('button', { class: 'btn-ghost', onclick: () => openPayrollImport(salState.period) }, '📊 Импорт зарплаты'),
       ]),
     ]));
     const mInp = el('input', { type: 'month', class: 'hrf-inp hr-filt', value: salState.period, onchange: (e) => { salState.period = e.target.value || curMonth(); load(); } });
     const dSel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { salState.department = e.target.value; load(); } }, [el('option', { value: '' }, 'Все отделы'), ...DICTS.departments.map((d) => el('option', { value: d.id, selected: String(d.id) === salState.department || null }, d.name))]);
-    const stSel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { salState.status = e.target.value; load(); } }, [{ v: '', t: 'Все статусы' }, { v: 'none', t: 'Без начисления' }, { v: 'draft', t: 'Черновик' }, { v: 'approved', t: 'Утверждено' }, { v: 'paid', t: 'Выплачено' }].map((o) => el('option', { value: o.v, selected: o.v === salState.status || null }, o.t)));
+    const stSel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { salState.status = e.target.value; load(); } }, [{ v: '', t: 'Все статусы' }, { v: 'none', t: 'Без начисления' }, { v: 'draft', t: 'Черновик' }, { v: 'accrued', t: 'Начислено' }, { v: 'approved', t: 'Утверждено' }, { v: 'paid', t: 'Выплачено' }].map((o) => el('option', { value: o.v, selected: o.v === salState.status || null }, o.t)));
     const q = el('input', { class: 'hrf-inp hr-filt hr-filt-q', placeholder: 'Поиск по ФИО', value: salState.q, oninput: (e) => { salState.q = e.target.value; clearTimeout(window.__hrS); window.__hrS = setTimeout(load, 300); } });
     c.appendChild(el('div', { class: 'hr-filters' }, [el('span', { class: 'hr-flab' }, 'Месяц:'), mInp, dSel, stSel, q]));
     const box = el('div', { id: 'hr-sal-box' }); c.appendChild(box);
     load();
+
+    async function accrueEmps(empIds, undo) {
+      if (!empIds || !empIds.length) return;
+      try {
+        const r = await post(undo ? '/payroll/unaccrue' : '/payroll/accrue', { period: salState.period, employee_ids: empIds });
+        toast(undo ? ('Начисление снято: ' + r.affected) : ('Начислено: ' + r.done + (r.skipped ? (' · без факта пропущено ' + r.skipped) : '')));
+        load();
+      } catch (e) { toast(e.message, true); }
+    }
 
     async function load() {
       box.innerHTML = '<div class="hr-loading">Считаю…</div>';
@@ -838,6 +849,7 @@
       ['department', 'schedule', 'status', 'q'].forEach((k) => { if (salState[k]) p.set(k, salState[k]); });
       let d; try { d = await api('/payroll?' + p.toString()); } catch (e) { box.innerHTML = ''; box.appendChild(el('div', { class: 'hr-empty' }, 'Ошибка: ' + e.message)); return; }
       box.innerHTML = '';
+      salItems = d.items || [];
       const s = d.summary;
       const bd = (title, fn) => () => openBreakdown(title, d.items, fn);
       // Авансы плюсуем к «Выплачено»; «Удержания» показываем без авансов — чтобы формула читалась.
@@ -890,6 +902,9 @@
       const bulkN = el('span', { class: 'hr-bulk-n' }, '');
       const updBulk = () => { bulk.style.display = salSel.size ? 'flex' : 'none'; bulkN.textContent = 'Выбрано начислений: ' + salSel.size; };
       bulk.appendChild(bulkN);
+      const selEmpIds = () => salItems.filter((x) => salSel.has(x.id)).map((x) => x.emp_id);
+      bulk.appendChild(el('button', { class: 'btn-primary', onclick: () => { const ids = selEmpIds(); if (!ids.length) return; if (!confirm('Начислить зарплату по факту выбранным (' + ids.length + ')? У кого нет факта — пропустятся.')) return; accrueEmps(ids, false); } }, '✅ Начислить выбранных'));
+      bulk.appendChild(el('button', { class: 'btn-ghost', onclick: () => { const ids = selEmpIds(); if (!ids.length) return; if (!confirm('Снять начисление у выбранных (' + ids.length + ')? Факт останется, суммы снова скроются.')) return; accrueEmps(ids, true); } }, '↩ Отменить начисление'));
       bulk.appendChild(el('button', { class: 'btn-ghost hr-del', onclick: async () => { if (!salSel.size) return; if (!confirm('Удалить выбранные начисления (' + salSel.size + ')? Сотрудники останутся.')) return; try { const rr = await post('/payroll/bulk-delete', { ids: [...salSel] }); toast('Удалено: ' + rr.affected); load(); } catch (e) { toast(e.message, true); } } }, '🗑 Удалить начисления'));
       bulk.appendChild(el('button', { class: 'btn-ghost', onclick: () => { salSel.clear(); load(); } }, 'Снять'));
       box.appendChild(bulk);
@@ -947,7 +962,9 @@
           el('span', { style: 'font-weight:700' }, r.full_name),
           pf(r, 'plan_days', 'fact_days'),
           pf(r, 'plan_hours', 'fact_hours'),
-          el('span', { class: 'tnum' }, money(r.accr_fact)),
+          (r.posted
+            ? el('span', { class: 'hr-pf', title: 'оклад ' + money(r.base_salary || 0) + ' / ' + (Number(r.plan_hours) > 0 ? ((r.plan_hours || 0) + ' ч × ' + (r.fact_hours || 0) + ' факт-ч') : ((r.plan_days || 0) + ' дн × ' + (r.fact_days || 0) + ' факт-дн')) }, [cellNum(r, 'accr_fact')])
+            : el('span', { class: 'tnum muted', title: 'Нажми «Начислить» — посчитается по факту', style: 'color:#9a9a90' }, '—')),
           extraCell(r, 'Доп. начисления', EXTRA_ACCR),
           extraCell(r, 'Удержания', EXTRA_DED),
           el('span', { class: 'tnum' }, [money((Number(r.ded_advance_card) || 0) + (Number(r.ded_advance_cash) || 0)), (Number(r.cash_advance) > 0 ? el('div', { style: 'font-size:11px;font-weight:700;color:#2e7d32;margin-top:2px;cursor:pointer;text-decoration:underline', title: 'Показать транзакции', onclick: (ev) => { ev.stopPropagation(); openCashTxs((r.cash_txs || []).filter((t) => t.kind === 'advance'), '💵 Авансы наличными — ' + (r.full_name || '')); } }, '💵 касса ' + money(r.cash_advance)) : null)]),
