@@ -49,6 +49,8 @@ async function ensureSchema() {
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
   )`);
   await q(`CREATE INDEX IF NOT EXISTS idx_hr_emp_dept ON hr_employees (department_id)`);
+  // «Полный месяц»: факт = план (нет табеля). «Заполнить нормы» проставляет таким факт автоматически.
+  await q(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS full_month BOOLEAN DEFAULT FALSE`);
   await q(`CREATE INDEX IF NOT EXISTS idx_hr_emp_status ON hr_employees (status)`);
   await q(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS card_number TEXT`); // для чтения выплат из выписки по номеру карты
   // Начисление зарплаты сотруднику за месяц (одна строка = сотрудник × период).
@@ -248,14 +250,14 @@ router.post('/api/employee', J, async (req, res) => {
   const status = STATUSES.includes(b.status) ? b.status : 'active';
   const args = [name, intOrNull(b.department_id), b.position || null, sched, b.hire_date || null, b.fire_date || null, status,
     numOrNull(b.base_salary), numOrNull(b.salary_official), numOrNull(b.salary_unofficial), b.phone || null, b.telegram_id || null, intOrNull(b.erp_user_id), b.comment || null,
-    b.card_number || null];
+    b.card_number || null, !!b.full_month];
   const today = new Date().toISOString().slice(0, 10);
   try {
     if (b.id) {
       const old = (await db.pool.query('SELECT department_id, position, schedule_type, base_salary, status FROM hr_employees WHERE id=$1', [b.id])).rows[0];
       await db.pool.query(
         `UPDATE hr_employees SET full_name=$1, department_id=$2, position=$3, schedule_type=$4, hire_date=$5, fire_date=$6, status=$7,
-          base_salary=$8, salary_official=$9, salary_unofficial=$10, phone=$11, telegram_id=$12, erp_user_id=$13, comment=$14, card_number=$15, updated_at=now() WHERE id=$16`,
+          base_salary=$8, salary_official=$9, salary_unofficial=$10, phone=$11, telegram_id=$12, erp_user_id=$13, comment=$14, card_number=$15, full_month=$16, updated_at=now() WHERE id=$17`,
         [...args, b.id]);
       // Авто-логирование изменений в кадровую историю.
       if (old) {
@@ -272,8 +274,8 @@ router.post('/api/employee', J, async (req, res) => {
       }
     } else {
       const ins = await db.pool.query(
-        `INSERT INTO hr_employees (full_name, department_id, position, schedule_type, hire_date, fire_date, status, base_salary, salary_official, salary_unofficial, phone, telegram_id, erp_user_id, comment, card_number)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`, args);
+        `INSERT INTO hr_employees (full_name, department_id, position, schedule_type, hire_date, fire_date, status, base_salary, salary_official, salary_unofficial, phone, telegram_id, erp_user_id, comment, card_number, full_month)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id`, args);
       await addEvent(ins.rows[0].id, 'hire', b.hire_date || today, { created_by: req.user.id });
     }
     await db.log(req.user.id, 'hr_employee_save', name);
@@ -508,8 +510,13 @@ router.post('/api/fill-norms', J, async (req, res) => {
       count++;
     }
   }
-  await db.log(req.user.id, 'hr_fill_norms', `${period}: ${count}`);
-  res.json({ ok: true, count });
+  // «Полный месяц» (full_month): факт = план — проставляем автоматически после заполнения норм.
+  const fm = await db.pool.query(
+    `UPDATE hr_payroll SET fact_days = COALESCE(plan_days, fact_days), fact_hours = COALESCE(plan_hours, fact_hours), updated_at = now()
+       WHERE period = $1 AND (plan_days IS NOT NULL OR plan_hours IS NOT NULL)
+         AND employee_id IN (SELECT id FROM hr_employees WHERE full_month = true AND status = 'active')`, [period]);
+  await db.log(req.user.id, 'hr_fill_norms', `${period}: ${count}, факт=план ${fm.rowCount}`);
+  res.json({ ok: true, count, factFromPlan: fm.rowCount });
 });
 
 // Импорт табеля производства: 2 строки на сотрудника (1-я — факт дни/часы, 2-я — переработка дни/часы).
@@ -664,6 +671,23 @@ router.post('/api/payroll/unaccrue', J, async (req, res) => {
       "UPDATE hr_payroll SET accrued_at=NULL, status=CASE WHEN status='accrued' THEN 'draft' ELSE status END WHERE period=$1 AND employee_id = ANY($2::int[])",
       [period, ids]);
     await db.log(req.user.id, 'hr_payroll_unaccrue', `${period}: ${r.rowCount}`);
+    res.json({ ok: true, affected: r.rowCount });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Оптом «Факт = план» выбранным (для офисных: отработали весь месяц). Копирует plan_days/plan_hours в факт.
+// Нужны заполненные нормы (plan). У кого строки/плана нет — пропускаем.
+router.post('/api/payroll/fact-from-plan', J, async (req, res) => {
+  try {
+    const b = req.body || {};
+    const period = /^\d{4}-\d{2}$/.test(b.period) ? b.period : null;
+    if (!period) return res.status(400).json({ error: 'Не указан месяц' });
+    const ids = Array.isArray(b.employee_ids) ? b.employee_ids.map((x) => parseInt(x, 10)).filter(Boolean) : [];
+    if (!ids.length) return res.status(400).json({ error: 'Не выбраны сотрудники' });
+    const r = await db.pool.query(
+      `UPDATE hr_payroll SET fact_days = COALESCE(plan_days, fact_days), fact_hours = COALESCE(plan_hours, fact_hours), updated_at=now()
+       WHERE period=$1 AND employee_id = ANY($2::int[])`, [period, ids]);
+    await db.log(req.user.id, 'hr_payroll_fact_from_plan', `${period}: ${r.rowCount}`);
     res.json({ ok: true, affected: r.rowCount });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });

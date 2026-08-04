@@ -593,6 +593,9 @@
     const name = finp(e.full_name, { placeholder: 'Фамилия Имя Отчество' });
     const dept = fsel([{ v: '', t: '— отдел —' }, ...DICTS.departments.map((d) => ({ v: d.id, t: d.name }))], e.department_id || '');
     const pos = finp(e.position, { placeholder: 'Должность' });
+    const fullMonth = el('input', { type: 'checkbox' });
+    if (e.full_month) fullMonth.checked = true;
+    const fullMonthRow = frow('Табель', el('label', { style: 'display:flex;gap:8px;align-items:center;cursor:pointer;font-weight:400' }, [fullMonth, el('span', {}, 'Факт = план (полный месяц, без табеля)')]));
     const hire = finp(e.hire_date ? String(e.hire_date).slice(0, 10) : '', { type: 'date' });
     const base = minp(e.base_salary, { placeholder: 'Оклад / ставка' });
     const off = minp(e.salary_official, { placeholder: 'Официальная часть' });
@@ -606,7 +609,7 @@
     const tg = finp(e.telegram_id, { placeholder: 'Telegram ID (если есть)' });
     const comment = finp(e.comment, { placeholder: 'Комментарий' });
     const body = el('div', { class: 'hrf' }, [
-      frow('ФИО *', name), frow('Отдел', dept), frow('Должность', pos), frow('Дата приёма', hire),
+      frow('ФИО *', name), frow('Отдел', dept), frow('Должность', pos), fullMonthRow, frow('Дата приёма', hire),
       el('div', { class: 'hrf-sec' }, 'Зарплата'),
       frow('Оклад / ставка', base), frow('Официальная часть', off), frow('Неофициальная часть', unoff),
       el('div', { class: 'hrf-sec' }, 'Контакты'),
@@ -614,7 +617,7 @@
     ]);
     const save = el('button', { class: 'btn-primary', onclick: async () => {
       try {
-        await post('/employee', { id: e.id, full_name: name.value, department_id: dept.value, position: pos.value, schedule_type: e.schedule_type || '', hire_date: hire.value, base_salary: mval(base), salary_official: mval(off), salary_unofficial: mval(unoff), phone: phone.value, card_number: card.value, telegram_id: tg.value, comment: comment.value });
+        await post('/employee', { id: e.id, full_name: name.value, department_id: dept.value, position: pos.value, schedule_type: e.schedule_type || '', hire_date: hire.value, base_salary: mval(base), salary_official: mval(off), salary_unofficial: mval(unoff), phone: phone.value, card_number: card.value, telegram_id: tg.value, comment: comment.value, full_month: fullMonth.checked });
         toast('Сохранено'); closeModal(); await reloadDicts(); render();
       } catch (err) { toast(err.message, true); }
     } }, 'Сохранить');
@@ -847,6 +850,11 @@
         load();
       } catch (e) { toast(e.message, true); }
     }
+    async function factFromPlan(empIds) {
+      if (!empIds || !empIds.length) return;
+      try { const r = await post('/payroll/fact-from-plan', { period: salState.period, employee_ids: empIds }); toast('Факт = план проставлен: ' + r.affected); load(); }
+      catch (e) { toast(e.message, true); }
+    }
 
     async function load() {
       box.innerHTML = '<div class="hr-loading">Считаю…</div>';
@@ -909,6 +917,7 @@
       const updBulk = () => { bulk.style.display = salSel.size ? 'flex' : 'none'; bulkN.textContent = 'Выбрано начислений: ' + salSel.size; };
       bulk.appendChild(bulkN);
       const selEmpIds = () => salItems.filter((x) => salSel.has(x.id)).map((x) => x.emp_id);
+      bulk.appendChild(el('button', { onclick: () => { const ids = selEmpIds(); if (!ids.length) return; if (!confirm('Проставить факт = план выбранным (' + ids.length + ')? Для тех, кто отработал весь месяц. Нужны заполненные нормы.')) return; factFromPlan(ids); } }, '📋 Факт = план'));
       bulk.appendChild(el('button', { class: 'btn-primary', onclick: () => { const ids = selEmpIds(); if (!ids.length) return; if (!confirm('Начислить зарплату по факту выбранным (' + ids.length + ')? У кого нет факта — пропустятся.')) return; accrueEmps(ids, false); } }, '✅ Начислить выбранных'));
       bulk.appendChild(el('button', { class: 'btn-ghost', onclick: () => { const ids = selEmpIds(); if (!ids.length) return; if (!confirm('Снять начисление у выбранных (' + ids.length + ')? Факт останется, суммы снова скроются.')) return; accrueEmps(ids, true); } }, '↩ Отменить начисление'));
       bulk.appendChild(el('button', { class: 'btn-ghost hr-del', onclick: async () => { if (!salSel.size) return; if (!confirm('Удалить выбранные начисления (' + salSel.size + ')? Сотрудники останутся.')) return; try { const rr = await post('/payroll/bulk-delete', { ids: [...salSel] }); toast('Удалено: ' + rr.affected); load(); } catch (e) { toast(e.message, true); } } }, '🗑 Удалить начисления'));
