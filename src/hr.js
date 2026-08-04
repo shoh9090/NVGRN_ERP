@@ -499,7 +499,8 @@ router.get('/api/payroll', async (req, res) => {
       // и уменьшают «К выплате» (раньше показывались только подсказкой и в остаток не шли).
       r.paid = (Number(r.paid) || 0) + r.cash_paid;
       r.deducted = (Number(r.deducted) || 0) + r.cash_advance;
-      r.to_pay = (Number(r.accrued) || 0) - r.deducted - r.paid;
+      // Не начислено (Черновик) → «К выплате» = 0 (а не минус от выплат/авансов). Переплату тоже не уводим в минус.
+      r.to_pay = r.posted ? Math.max(0, (Number(r.accrued) || 0) - r.deducted - r.paid) : 0;
     });
   } catch (e) { console.error('cash salary:', e.message); }
   // Уволенных без движения за месяц (нет начислений, выплат и удержаний) в ведомости не показываем.

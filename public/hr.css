@@ -98,7 +98,7 @@
 /* Правка прямо в строке (дни/часы): плоское поле, рамка появляется при наведении/фокусе */
 .hr-pf { display: inline-flex; align-items: center; gap: 2px; }
 .hr-pf-sep { color: var(--muted); }
-.hr-cell { width: 40px; text-align: right; border: 1px solid transparent; background: transparent; border-radius: 6px; padding: 3px 4px; font: inherit; font-size: 12.5px; font-variant-numeric: tabular-nums; color: var(--ink); min-width: 0; }
+.hr-cell { width: 54px; text-align: right; border: 1px solid transparent; background: transparent; border-radius: 6px; padding: 3px 4px; font: inherit; font-size: 12.5px; font-variant-numeric: tabular-nums; color: var(--ink); min-width: 0; }
 .hr-cell:hover { border-color: var(--line); background: #fff; }
 .hr-cell:focus { border-color: var(--forest); background: #fff; outline: none; box-shadow: 0 0 0 2px rgba(22,58,40,.08); }
 .hr-ts { grid-template-columns: 34px 1.5fr 1fr 0.8fr 0.8fr 0.8fr 0.8fr 0.9fr 1fr; }
