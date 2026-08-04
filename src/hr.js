@@ -382,14 +382,9 @@ router.post('/api/events/:id(\\d+)/delete', async (req, res) => {
 
 // ---------- Зарплата ----------
 function withTotals(row) {
-  // Пока не нажата «Начислить» (accrued_at пуст) — зарплата НЕ отражается: все начисления обнуляем
-  // (и в ведомости, и в дашборде). Удержания/выплаты — реальные, их оставляем.
-  const posted = !!row.accrued_at;
-  const out = Object.assign({}, row);
-  if (!posted) for (const f of ACCR) out[f] = 0;   // прячем начисления (удержания/выплаты не трогаем)
-  const accrued = sumF(out, ACCR), deducted = sumF(out, DED_SUM), paid = sumF(out, PAID);
-  out.posted = posted;
-  return Object.assign(out, { accrued, deducted, paid, to_pay: posted ? (accrued - deducted - paid) : 0 });
+  // Начисление видно ВСЕГДА (это история). accrued_at — просто пометка «начислено» для статуса.
+  const accrued = sumF(row, ACCR), deducted = sumF(row, DED_SUM), paid = sumF(row, PAID);
+  return Object.assign({}, row, { accrued, deducted, paid, to_pay: Math.max(0, accrued - deducted - paid), posted: !!row.accrued_at });
 }
 // ---------- Выплаты зарплаты из наличной кассы (производно — всегда в синхроне с кассой) ----------
 // Расход наличной кассы со статьёй 20 (ЗП производство) / 40 (Зарплата офиса) → выплата сотруднику.
@@ -499,8 +494,8 @@ router.get('/api/payroll', async (req, res) => {
       // и уменьшают «К выплате» (раньше показывались только подсказкой и в остаток не шли).
       r.paid = (Number(r.paid) || 0) + r.cash_paid;
       r.deducted = (Number(r.deducted) || 0) + r.cash_advance;
-      // Не начислено (Черновик) → «К выплате» = 0 (а не минус от выплат/авансов). Переплату тоже не уводим в минус.
-      r.to_pay = r.posted ? Math.max(0, (Number(r.accrued) || 0) - r.deducted - r.paid) : 0;
+      // «К выплате» без минуса (переплату не уводим в минус). Начисление видно всегда.
+      r.to_pay = Math.max(0, (Number(r.accrued) || 0) - r.deducted - r.paid);
     });
   } catch (e) { console.error('cash salary:', e.message); }
   // Уволенных без движения за месяц (нет начислений, выплат и удержаний) в ведомости не показываем.
@@ -545,6 +540,10 @@ router.post('/api/fill-norms', J, async (req, res) => {
     `UPDATE hr_payroll SET fact_days = COALESCE(plan_days, fact_days), fact_hours = COALESCE(plan_hours, fact_hours), updated_at = now()
        WHERE period = $1 AND (plan_days IS NOT NULL OR plan_hours IS NOT NULL)
          AND employee_id IN (SELECT id FROM hr_employees WHERE full_month = true AND status = 'active')`, [period]);
+  // Пересчитать начисление у «полного месяца» (факт только что проставили) — чтобы сумма появилась сразу.
+  for (const e of (await db.pool.query("SELECT id FROM hr_employees WHERE full_month = true AND status = 'active'")).rows) {
+    await recomputeAccrFact(e.id, period);
+  }
   await db.log(req.user.id, 'hr_fill_norms', `${period}: ${count}, факт=план ${fm.rowCount}`);
   res.json({ ok: true, count, factFromPlan: fm.rowCount });
 });
@@ -717,6 +716,7 @@ router.post('/api/payroll/fact-from-plan', J, async (req, res) => {
     const r = await db.pool.query(
       `UPDATE hr_payroll SET fact_days = COALESCE(plan_days, fact_days), fact_hours = COALESCE(plan_hours, fact_hours), updated_at=now()
        WHERE period=$1 AND employee_id = ANY($2::int[])`, [period, ids]);
+    for (const empId of ids) await recomputeAccrFact(empId, period);   // пересчитать начисление сразу
     await db.log(req.user.id, 'hr_payroll_fact_from_plan', `${period}: ${r.rowCount}`);
     res.json({ ok: true, affected: r.rowCount });
   } catch (e) { res.status(400).json({ error: e.message }); }

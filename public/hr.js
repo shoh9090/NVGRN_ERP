@@ -993,9 +993,7 @@
           el('span', { style: 'font-weight:700' }, r.full_name),
           pf(r, 'plan_days', 'fact_days'),
           pf(r, 'plan_hours', 'fact_hours'),
-          (r.posted
-            ? el('span', { class: 'tnum hr-extra', title: 'Начислено: оклад ' + money(r.base_salary || 0) + ' / ' + (Number(r.plan_hours) > 0 ? ((r.plan_hours || 0) + ' ч × ' + (r.fact_hours || 0) + ' факт-ч') : ((r.plan_days || 0) + ' дн × ' + (r.fact_days || 0) + ' факт-дн')) + ' · клик — править вручную', onclick: (ev) => { ev.stopPropagation(); openExtra(r, 'Начислено', [['accr_fact', 'Начислено (ручная правка)']]); } }, money(r.accr_fact))
-            : el('span', { class: 'tnum muted', title: 'Нажми «Начислить» — посчитается по факту', style: 'color:#9a9a90' }, '—')),
+          el('span', { class: 'tnum hr-extra', title: 'Начислено: оклад ' + money(r.base_salary || 0) + ' / ' + (Number(r.plan_hours) > 0 ? ((r.plan_hours || 0) + ' ч × ' + (r.fact_hours || 0) + ' факт-ч') : ((r.plan_days || 0) + ' дн × ' + (r.fact_days || 0) + ' факт-дн')) + ' · клик — править вручную', onclick: (ev) => { ev.stopPropagation(); openExtra(r, 'Начислено', [['accr_fact', 'Начислено (ручная правка)']]); } }, money(r.accr_fact)),
           extraCell(r, 'Доп. начисления', EXTRA_ACCR),
           extraCell(r, 'Удержания', EXTRA_DED),
           el('span', { class: 'tnum' }, [money((Number(r.ded_advance_card) || 0) + (Number(r.ded_advance_cash) || 0)), (Number(r.cash_advance) > 0 ? el('div', { style: 'font-size:11px;font-weight:700;color:#2e7d32;margin-top:2px;cursor:pointer;text-decoration:underline', title: 'Показать транзакции', onclick: (ev) => { ev.stopPropagation(); openCashTxs((r.cash_txs || []).filter((t) => t.kind === 'advance'), '💵 Авансы наличными — ' + (r.full_name || '')); } }, '💵 касса ' + money(r.cash_advance)) : null)]),
