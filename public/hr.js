@@ -179,7 +179,10 @@
     if (!items.length) { box.appendChild(el('div', { class: 'hr-empty' }, 'Событий нет.')); return; }
     const head = el('tr', {}, ['Дата', 'Сотрудник', 'Отдел', 'Событие', 'Детали', ''].map((h) => el('th', { style: 'padding:8px 10px;background:#f2f5f1;text-align:left;white-space:nowrap' }, h)));
     const tb = el('tbody', {}, items.map((x) => el('tr', { style: 'border-bottom:0.5px solid var(--line,#e3e0d4)' }, [
-      el('td', { style: 'padding:7px 10px;white-space:nowrap' }, ruDate(x.event_date)),
+      el('td', { style: 'padding:7px 10px;white-space:nowrap' }, [
+        el('div', {}, ruDate(x.event_date)),
+        x.created_at ? el('div', { style: 'font-size:11px;color:#9aa295' }, 'внесено ' + ruDate(String(x.created_at).slice(0, 10))) : null,
+      ]),
       el('td', { style: 'padding:7px 10px;font-weight:700' }, x.full_name),
       el('td', { style: 'padding:7px 10px;color:#7c8579' }, x.dept_name || '—'),
       el('td', { style: 'padding:7px 10px;white-space:nowrap' }, el('span', { style: 'font-size:12px;font-weight:700;padding:3px 9px;border-radius:999px;color:#fff;background:' + ((EV[x.event_type] || EV.other).c) }, (EV[x.event_type] || EV.other).t)),
@@ -203,23 +206,26 @@
     const curEmp = () => active.find((e) => String(e.id) === String(empSel.value)) || {};
     const posInp = finp(curEmp().position || '', { placeholder: 'должность' });
     const posRow = frow('Должность (новая)', posInp);
-    empSel.onchange = () => { posInp.value = curEmp().position || ''; };
+    const schedSel = fsel([{ v: '', t: '— не менять —' }, ...(DICTS.schedules || []).map((s) => ({ v: s.code, t: s.name }))], curEmp().schedule_type || '');
+    const schedRow = frow('График (новый)', schedSel);
+    empSel.onchange = () => { posInp.value = curEmp().position || ''; schedSel.value = curEmp().schedule_type || ''; };
     const comment = finp('', { placeholder: 'Комментарий' });
     const applyType = () => {
       dToRow.style.display = (typeSel.value === 'vacation' || typeSel.value === 'sick') ? '' : 'none';
       deptRow.style.display = (typeSel.value === 'transfer') ? '' : 'none';
       posRow.style.display = (typeSel.value === 'transfer') ? '' : 'none';
+      schedRow.style.display = (typeSel.value === 'transfer') ? '' : 'none';
     };
     typeSel.onchange = applyType; applyType();
     const save = el('button', { class: 'btn-primary', onclick: async () => {
       if (!empSel.value) return toast('Выберите сотрудника', true);
       if (typeSel.value === 'transfer' && !deptSel.value) return toast('Выберите отдел, куда переводим', true);
       try {
-        await post('/events', { employee_id: empSel.value, event_type: typeSel.value, event_date: dFrom.value, date_to: (dToRow.style.display !== 'none' ? dTo.value : null) || null, to_department_id: (typeSel.value === 'transfer' ? deptSel.value : null), to_position: (typeSel.value === 'transfer' ? posInp.value : null), comment: comment.value });
+        await post('/events', { employee_id: empSel.value, event_type: typeSel.value, event_date: dFrom.value, date_to: (dToRow.style.display !== 'none' ? dTo.value : null) || null, to_department_id: (typeSel.value === 'transfer' ? deptSel.value : null), to_position: (typeSel.value === 'transfer' ? posInp.value : null), to_schedule: (typeSel.value === 'transfer' ? schedSel.value : null), comment: comment.value });
         toast(typeSel.value === 'transfer' ? 'Сотрудник переведён ✅' : 'Событие добавлено'); closeModal(); if (TAB === 'events') loadEv();
       } catch (e) { toast(e.message, true); }
     } }, 'Добавить');
-    modal('Кадровое событие', el('div', { class: 'hrf' }, [frow('Сотрудник', empSel), frow('Тип', typeSel), deptRow, posRow, frow('Дата (с)', dFrom), dToRow, frow('Комментарий', comment)]), [save]);
+    modal('Кадровое событие', el('div', { class: 'hrf' }, [frow('Сотрудник', empSel), frow('Тип', typeSel), deptRow, posRow, schedRow, frow('Дата (с)', dFrom), dToRow, frow('Комментарий', comment)]), [save]);
   }
 
   // ================= ДАШБОРД =================
@@ -417,6 +423,15 @@
       bulk.appendChild(el('button', { class: 'btn-ghost hrf-warn', onclick: () => doBulk('archived', 'В архив') }, 'В архив'));
       bulk.appendChild(el('button', { class: 'btn-ghost hrf-warn', onclick: () => doBulk('fired', 'Уволить') }, 'Уволить'));
       bulk.appendChild(el('button', { class: 'btn-ghost hr-del', onclick: () => doBulk('delete', 'УДАЛИТЬ безвозвратно') }, '🗑 Удалить'));
+      // Массовая простановка графика выбранным.
+      const schedSel = el('select', { class: 'hrf-inp', style: 'height:32px' }, (DICTS.schedules || []).map((s) => el('option', { value: s.code }, s.name)));
+      bulk.appendChild(schedSel);
+      bulk.appendChild(el('button', { class: 'btn-primary', onclick: async () => {
+        if (!empSel.size) return;
+        const nm = (schedSel.options[schedSel.selectedIndex] || {}).text || '';
+        if (!confirm('Поставить график «' + nm + '» выбранным (' + empSel.size + ')?')) return;
+        try { const r = await post('/employees/set-schedule', { ids: [...empSel], schedule_type: schedSel.value }); toast('График проставлен: ' + r.changed); await reloadDicts(); load(); } catch (e) { toast(e.message, true); }
+      } }, '🕒 Поставить график'));
       bulk.appendChild(el('button', { class: 'btn-ghost', onclick: () => { empSel.clear(); load(); } }, 'Снять'));
       box.appendChild(bulk);
       const selAll = el('input', { type: 'checkbox', class: 'hr-chk' });
@@ -593,6 +608,7 @@
     const name = finp(e.full_name, { placeholder: 'Фамилия Имя Отчество' });
     const dept = fsel([{ v: '', t: '— отдел —' }, ...DICTS.departments.map((d) => ({ v: d.id, t: d.name }))], e.department_id || '');
     const pos = finp(e.position, { placeholder: 'Должность' });
+    const sched = fsel([{ v: '', t: '— график —' }, ...(DICTS.schedules || []).map((s) => ({ v: s.code, t: s.name }))], e.schedule_type || '');
     const fullMonth = el('input', { type: 'checkbox' });
     if (e.full_month) fullMonth.checked = true;
     const fullMonthRow = frow('Табель', el('label', { style: 'display:flex;gap:8px;align-items:center;cursor:pointer;font-weight:400' }, [fullMonth, el('span', {}, 'Факт = план (полный месяц, без табеля)')]));
@@ -609,7 +625,7 @@
     const tg = finp(e.telegram_id, { placeholder: 'Telegram ID (если есть)' });
     const comment = finp(e.comment, { placeholder: 'Комментарий' });
     const body = el('div', { class: 'hrf' }, [
-      frow('ФИО *', name), frow('Отдел', dept), frow('Должность', pos), fullMonthRow, frow('Дата приёма', hire),
+      frow('ФИО *', name), frow('Отдел', dept), frow('Должность', pos), frow('График', sched), fullMonthRow, frow('Дата приёма', hire),
       el('div', { class: 'hrf-sec' }, 'Зарплата'),
       frow('Оклад / ставка', base), frow('Официальная часть', off), frow('Неофициальная часть', unoff),
       el('div', { class: 'hrf-sec' }, 'Контакты'),
@@ -617,7 +633,7 @@
     ]);
     const save = el('button', { class: 'btn-primary', onclick: async () => {
       try {
-        await post('/employee', { id: e.id, full_name: name.value, department_id: dept.value, position: pos.value, schedule_type: e.schedule_type || '', hire_date: hire.value, base_salary: mval(base), salary_official: mval(off), salary_unofficial: mval(unoff), phone: phone.value, card_number: card.value, telegram_id: tg.value, comment: comment.value, full_month: fullMonth.checked });
+        await post('/employee', { id: e.id, full_name: name.value, department_id: dept.value, position: pos.value, schedule_type: sched.value, hire_date: hire.value, base_salary: mval(base), salary_official: mval(off), salary_unofficial: mval(unoff), phone: phone.value, card_number: card.value, telegram_id: tg.value, comment: comment.value, full_month: fullMonth.checked });
         toast('Сохранено'); closeModal(); await reloadDicts(); render();
       } catch (err) { toast(err.message, true); }
     } }, 'Сохранить');

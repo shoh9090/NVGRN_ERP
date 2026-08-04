@@ -12,9 +12,9 @@ const numOrNull = (v) => (v === '' || v == null ? null : Number(v));
 
 // Типы графика — фиксированный набор (не текстом, чтобы не расползалось).
 const SCHEDULES = [
-  { code: 'office', name: 'Офис (5/2)' },
-  { code: 'production', name: 'Производство' },
-  { code: 'shift', name: 'Производство — смена' },
+  { code: 'day5', name: '5-дневка' },
+  { code: 'day6', name: '6-дневка' },
+  { code: 'shift22', name: 'Смена 2/2' },
 ];
 const SCHEDULE_CODES = SCHEDULES.map((s) => s.code);
 const STATUSES = ['active', 'fired', 'archived'];
@@ -51,6 +51,9 @@ async function ensureSchema() {
   await q(`CREATE INDEX IF NOT EXISTS idx_hr_emp_dept ON hr_employees (department_id)`);
   // «Полный месяц»: факт = план (нет табеля). «Заполнить нормы» проставляет таким факт автоматически.
   await q(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS full_month BOOLEAN DEFAULT FALSE`);
+  // Переход на общие графики (не по отделам): office→5-дневка, production/shift→смена 2/2. Идемпотентно.
+  await q("UPDATE hr_employees SET schedule_type='day5' WHERE schedule_type='office'");
+  await q("UPDATE hr_employees SET schedule_type='shift22' WHERE schedule_type IN ('production','shift')");
   await q(`CREATE INDEX IF NOT EXISTS idx_hr_emp_status ON hr_employees (status)`);
   await q(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS card_number TEXT`); // для чтения выплат из выписки по номеру карты
   // Начисление зарплаты сотруднику за месяц (одна строка = сотрудник × период).
@@ -135,8 +138,8 @@ const DED_SUM = [...DED, 'accr_company_debt'];
 const PAID = ['paid_cash', 'paid_card'];
 const PAYROLL_NUM = [...ACCR_ALL, ...DED, ...PAID, 'plan_days', 'fact_days', 'plan_hours', 'fact_hours', 'amount_1c'];
 
-// Тип оплаты по графику: производство/смена — почасовая; офис (АУП) — фиксированный оклад.
-const POCHASOVOY = new Set(['production', 'shift']);
+// Тип оплаты по графику: смена 2/2 — почасовая (табель); 5/6-дневка — по дням (оклад/план-дни × факт-дни).
+const POCHASOVOY = new Set(['shift22']);
 // Авторасчёт оклада-начисления (accr_fact) ПО ФАКТУ. Нет факта → 0 (не начисляем).
 // Почасовые: оклад/план_часы × (факт_часы + переработка×2).
 // Окладники: дневная ставка × факт-дни = (оклад / план_дни) × факт_дни.
@@ -283,6 +286,26 @@ router.post('/api/employee', J, async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
+// Массовая простановка графика выбранным сотрудникам (в списке «Сотрудники»).
+// Пишем смену графика в кадровую историю у каждого, у кого он реально изменился.
+router.post('/api/employees/set-schedule', J, async (req, res) => {
+  const sched = SCHEDULE_CODES.includes(req.body.schedule_type) ? req.body.schedule_type : null;
+  if (!sched) return res.status(400).json({ error: 'Неверный график' });
+  const ids = Array.isArray(req.body.ids) ? req.body.ids.map((x) => parseInt(x, 10)).filter(Boolean) : [];
+  if (!ids.length) return res.status(400).json({ error: 'Не выбраны сотрудники' });
+  const today = new Date().toISOString().slice(0, 10);
+  const rows = (await db.pool.query('SELECT id, schedule_type FROM hr_employees WHERE id = ANY($1::int[])', [ids])).rows;
+  let changed = 0;
+  for (const r of rows) {
+    if ((r.schedule_type || '') === sched) continue;
+    await db.pool.query('UPDATE hr_employees SET schedule_type=$1, updated_at=now() WHERE id=$2', [sched, r.id]);
+    await addEvent(r.id, 'schedule', today, { from_text: schedLabel(r.schedule_type), to_text: schedLabel(sched), created_by: req.user.id });
+    changed++;
+  }
+  await db.log(req.user.id, 'hr_set_schedule', `${sched}: ${changed}/${ids.length}`);
+  res.json({ ok: true, changed });
+});
+
 // Смена статуса (не удаляем физически).
 router.post('/api/employee/:id(\\d+)/status', J, async (req, res) => {
   const st = STATUSES.includes(req.body.status) ? req.body.status : null;
@@ -329,7 +352,7 @@ router.post('/api/events', J, async (req, res) => {
   if (type === 'transfer') {
     const toDept = intOrNull(b.to_department_id);
     if (!toDept) return res.status(400).json({ error: 'Выберите отдел, куда переводим' });
-    const cur = (await db.pool.query('SELECT department_id, position FROM hr_employees WHERE id=$1', [empId])).rows[0];
+    const cur = (await db.pool.query('SELECT department_id, position, schedule_type FROM hr_employees WHERE id=$1', [empId])).rows[0];
     if (!cur) return res.status(404).json({ error: 'Сотрудник не найден' });
     fromText = await deptName(cur.department_id);
     toText = await deptName(toDept);
@@ -339,6 +362,12 @@ router.post('/api/events', J, async (req, res) => {
     if (newPos && newPos !== (cur.position || '')) {
       await db.pool.query('UPDATE hr_employees SET position=$1, updated_at=now() WHERE id=$2', [newPos, empId]);
       await addEvent(empId, 'position', b.event_date, { from_text: cur.position || '—', to_text: newPos, created_by: req.user.id });
+    }
+    // График: если выбран и изменился — обновляем + событие «смена графика».
+    const newSched = SCHEDULE_CODES.includes(b.to_schedule) ? b.to_schedule : null;
+    if (newSched && newSched !== (cur.schedule_type || '')) {
+      await db.pool.query('UPDATE hr_employees SET schedule_type=$1, updated_at=now() WHERE id=$2', [newSched, empId]);
+      await addEvent(empId, 'schedule', b.event_date, { from_text: schedLabel(cur.schedule_type), to_text: schedLabel(newSched), created_by: req.user.id });
     }
   }
   await addEvent(empId, type, b.event_date, { date_to: b.date_to || null, from_text: fromText, to_text: toText, comment: b.comment || null, created_by: req.user.id });
