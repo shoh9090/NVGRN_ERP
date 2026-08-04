@@ -553,10 +553,13 @@ router.post('/api/timesheet-import', upload.single('file'), async (req, res) => 
     for (const r of parsed.rows) {
       const emp = csMatchEmp(r.fio, emps);
       if (!emp) { unmatched.push({ fio: r.fio, fact_hours: r.factHours, overtime_hours: r.otHours }); continue; }
+      // Факт-часы = отработанные + переработка × 2 (переработка оплачивается вдвойне и «свёрнута» в факт).
+      // overtime_hours обнуляем, чтобы начисление не удвоило переработку второй раз. План (часы/дни) не трогаем.
+      const factHoursWithOt = (Number(r.factHours) || 0) + (Number(r.otHours) || 0) * 2;
       await db.pool.query(
-        `INSERT INTO hr_payroll (employee_id, period, fact_days, fact_hours, overtime_hours, created_by) VALUES ($1,$2,$3,$4,$5,$6)
-         ON CONFLICT (employee_id, period) DO UPDATE SET fact_days = EXCLUDED.fact_days, fact_hours = EXCLUDED.fact_hours, overtime_hours = EXCLUDED.overtime_hours, updated_at = now()`,
-        [emp.id, period, r.factDays, r.factHours, r.otHours, req.user.id]);
+        `INSERT INTO hr_payroll (employee_id, period, fact_days, fact_hours, overtime_hours, created_by) VALUES ($1,$2,$3,$4,0,$5)
+         ON CONFLICT (employee_id, period) DO UPDATE SET fact_days = EXCLUDED.fact_days, fact_hours = EXCLUDED.fact_hours, overtime_hours = 0, updated_at = now()`,
+        [emp.id, period, r.factDays, factHoursWithOt, req.user.id]);
       await recomputeAccrFact(emp.id, period);
       updated++;
     }
