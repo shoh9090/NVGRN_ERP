@@ -914,18 +914,17 @@
       if (!d.items.length) { box.appendChild(el('div', { class: 'hr-empty' }, 'Нет сотрудников по фильтру.')); return; }
       const bulk = el('div', { id: 'hr-sal-bulk', class: 'hr-bulkbar', style: 'display:none' });
       const bulkN = el('span', { class: 'hr-bulk-n' }, '');
-      const updBulk = () => { bulk.style.display = salSel.size ? 'flex' : 'none'; bulkN.textContent = 'Выбрано начислений: ' + salSel.size; };
+      const updBulk = () => { bulk.style.display = salSel.size ? 'flex' : 'none'; bulkN.textContent = 'Выбрано: ' + salSel.size; };
       bulk.appendChild(bulkN);
-      const selEmpIds = () => salItems.filter((x) => salSel.has(x.id)).map((x) => x.emp_id);
+      const selEmpIds = () => [...salSel];   // salSel хранит emp_id — галочки есть у всех строк, в т.ч. «нет»
       bulk.appendChild(el('button', { onclick: () => { const ids = selEmpIds(); if (!ids.length) return; if (!confirm('Проставить факт = план выбранным (' + ids.length + ')? Для тех, кто отработал весь месяц. Нужны заполненные нормы.')) return; factFromPlan(ids); } }, '📋 Факт = план'));
       bulk.appendChild(el('button', { class: 'btn-primary', onclick: () => { const ids = selEmpIds(); if (!ids.length) return; if (!confirm('Начислить зарплату по факту выбранным (' + ids.length + ')? У кого нет факта — пропустятся.')) return; accrueEmps(ids, false); } }, '✅ Начислить выбранных'));
       bulk.appendChild(el('button', { class: 'btn-ghost', onclick: () => { const ids = selEmpIds(); if (!ids.length) return; if (!confirm('Снять начисление у выбранных (' + ids.length + ')? Факт останется, суммы снова скроются.')) return; accrueEmps(ids, true); } }, '↩ Отменить начисление'));
-      bulk.appendChild(el('button', { class: 'btn-ghost hr-del', onclick: async () => { if (!salSel.size) return; if (!confirm('Удалить выбранные начисления (' + salSel.size + ')? Сотрудники останутся.')) return; try { const rr = await post('/payroll/bulk-delete', { ids: [...salSel] }); toast('Удалено: ' + rr.affected); load(); } catch (e) { toast(e.message, true); } } }, '🗑 Удалить начисления'));
+      bulk.appendChild(el('button', { class: 'btn-ghost hr-del', onclick: async () => { const pids = salItems.filter((x) => salSel.has(x.emp_id) && x.id).map((x) => x.id); if (!pids.length) return toast('Нет строк начисления для удаления', true); if (!confirm('Удалить выбранные начисления (' + pids.length + ')? Сотрудники останутся.')) return; try { const rr = await post('/payroll/bulk-delete', { ids: pids }); toast('Удалено: ' + rr.affected); load(); } catch (e) { toast(e.message, true); } } }, '🗑 Удалить начисления'));
       bulk.appendChild(el('button', { class: 'btn-ghost', onclick: () => { salSel.clear(); load(); } }, 'Снять'));
       box.appendChild(bulk);
-      const withId = d.items.filter((x) => x.id);
       const selAll = el('input', { type: 'checkbox', class: 'hr-chk' });
-      selAll.onclick = (ev) => { const on = ev.target.checked; salSel = new Set(on ? withId.map((x) => x.id) : []); box.querySelectorAll('.hr-salchk').forEach((cc) => { cc.checked = on; }); updBulk(); };
+      selAll.onclick = (ev) => { const on = ev.target.checked; salSel = new Set(on ? d.items.map((x) => x.emp_id) : []); box.querySelectorAll('.hr-salchk').forEach((cc) => { cc.checked = on; }); updBulk(); };
       const HEADS = [
         ['ФИО'],
         ['Дн. п/ф', 'Плановые / фактические дни'],
@@ -971,7 +970,7 @@
       };
       const pf = (r, a, b2) => el('span', { class: 'hr-pf' }, [cellNum(r, a), el('span', { class: 'hr-pf-sep' }, '/'), cellNum(r, b2)]);
       box.appendChild(el('div', { class: 'hr-list' }, [head, ...d.items.map((r, i) => {
-        const chk = r.id ? el('input', { type: 'checkbox', class: 'hr-chk hr-salchk', onclick: (ev) => { ev.stopPropagation(); if (ev.target.checked) salSel.add(r.id); else salSel.delete(r.id); updBulk(); } }) : el('span', {});
+        const chk = el('input', { type: 'checkbox', class: 'hr-chk hr-salchk', checked: salSel.has(r.emp_id) || null, onclick: (ev) => { ev.stopPropagation(); if (ev.target.checked) salSel.add(r.emp_id); else salSel.delete(r.emp_id); updBulk(); } });
         return el('div', { class: 'hr-row hr-sal', onclick: () => openPayroll(r) }, [
           chk,
           el('span', { class: 'hr-idx' }, String(i + 1)),
