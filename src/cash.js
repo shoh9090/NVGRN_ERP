@@ -2427,7 +2427,9 @@ router.get('/api/obligations/loans', async (req, res) => {
               (SELECT MIN(due_date) FROM finance_obligation_schedule s WHERE s.obligation_id=o.id AND s.status IN ('planned','soon','today','partial','overdue')) AS next_due
        FROM finance_obligations o LEFT JOIN cash_wallets w ON w.id=o.wallet_id
        WHERE o.obligation_type = ANY($1) ORDER BY o.status='closed', o.creditor_name`, [group])).rows;
-    res.json({ items: rows.map((o) => ({ ...o, principal_balance: (Number(o.principal_received) || 0) - (Number(o.principal_paid) || 0) })) });
+    // Курс ЦБ нужен фронту, чтобы свести валютные строки к общему итогу.
+    let rate = null; try { rate = await getCbuUsdRate(new Date().toISOString().slice(0, 10)); } catch (e) { rate = null; }
+    res.json({ rate: Number(rate) || 0, items: rows.map((o) => ({ ...o, principal_balance: (Number(o.principal_received) || 0) - (Number(o.principal_paid) || 0) })) });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 

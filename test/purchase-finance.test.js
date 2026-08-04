@@ -28,32 +28,32 @@ test('не принято, по факту → Ожидает поставки',
 });
 
 test('принято, по факту, не оплачено, срок сегодня → Не оплачено (не просрочено)', () => {
-  const r = enrichOrderFinance({ status: 'received', pay_condition: 'on_fact', received_at: iso(0), fact_total: 1000, paid: 0 });
+  const r = enrichOrderFinance({ status: 'received', pay_condition: 'on_fact', received_at: iso(0), total: 1000, fact_total: 1000, paid: 0 });
   assert.strictEqual(r.pay_status, 'Не оплачено');
   assert.strictEqual(r.overdue, false);
   assert.strictEqual(r.remainder, 1000);
 });
 
 test('принято, отсрочка 7 дней, приёмка 30 дней назад, не оплачено → Просрочено', () => {
-  const r = enrichOrderFinance({ status: 'received', pay_condition: 'defer', defer_days: 7, received_at: iso(-30), fact_total: 5000, paid: 0 });
+  const r = enrichOrderFinance({ status: 'received', pay_condition: 'defer', defer_days: 7, received_at: iso(-30), total: 5000, fact_total: 5000, paid: 0 });
   assert.strictEqual(r.overdue, true);
   assert.strictEqual(r.pay_status, 'Просрочено');
 });
 
 test('принято, оплачено полностью → Оплачено', () => {
-  const r = enrichOrderFinance({ status: 'received', pay_condition: 'on_fact', received_at: iso(0), fact_total: 2000, paid: 2000 });
+  const r = enrichOrderFinance({ status: 'received', pay_condition: 'on_fact', received_at: iso(0), total: 2000, fact_total: 2000, paid: 2000 });
   assert.strictEqual(r.pay_status, 'Оплачено');
   assert.ok(r.remainder <= 0.01);
 });
 
 test('принято, оплачено частично → Частично оплачено, остаток верный', () => {
-  const r = enrichOrderFinance({ status: 'received', pay_condition: 'on_fact', received_at: iso(0), fact_total: 10000, paid: 3000 });
+  const r = enrichOrderFinance({ status: 'received', pay_condition: 'on_fact', received_at: iso(0), total: 10000, fact_total: 10000, paid: 3000 });
   assert.strictEqual(r.pay_status, 'Частично оплачено');
   assert.strictEqual(r.remainder, 7000);
 });
 
 test('принято, оплачено больше факта → Переплата / аванс', () => {
-  const r = enrichOrderFinance({ status: 'received', pay_condition: 'on_fact', received_at: iso(0), fact_total: 1000, paid: 1500 });
+  const r = enrichOrderFinance({ status: 'received', pay_condition: 'on_fact', received_at: iso(0), total: 1000, fact_total: 1000, paid: 1500 });
   assert.strictEqual(r.pay_status, 'Переплата / аванс');
 });
 

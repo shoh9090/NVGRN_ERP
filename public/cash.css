@@ -61,6 +61,19 @@
 .cash-obl.head > span:nth-child(n+2) { border-left-color: #e2e7de; }
 .cash-row.foot { background: #f2f5f1; border-top: 2px solid var(--line); }
 
+/* Итоговые строки таблиц: ИТОГО по валютам + сведение к общей сумме */
+.cash-foot-row td { background: #f2f5f1; font-weight: 800; border-top: 2px solid var(--forest); }
+.cash-foot-row2 td { background: #eaefe6; font-weight: 800; color: var(--forest); }
+
+/* Пагинация под таблицей: «Показано 1–20 из 57» + 10/20/50/Все + страницы */
+.obl-pager { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin: 10px 2px 0; font-size: 12px; color: var(--muted); }
+.obl-pg-grp { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.obl-pg-lbl { color: var(--muted); font-weight: 700; }
+.obl-pgn { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 4px 9px; font-size: 12px; font-weight: 700; color: var(--forest); cursor: pointer; line-height: 1.2; }
+.obl-pgn:hover:not(:disabled) { background: #eef4e9; border-color: var(--forest); }
+.obl-pgn.on { background: var(--forest); color: #fff; border-color: var(--forest); }
+.obl-pgn:disabled { opacity: .4; cursor: default; }
+
 /* Компактные фильтры «Обязательства → Поставщики» — иконки + узкие контролы в одну строку */
 .obl-filt { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
 .obl-pill { display: inline-flex; align-items: center; gap: 6px; background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 4px 8px; }

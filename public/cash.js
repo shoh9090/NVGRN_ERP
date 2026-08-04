@@ -522,28 +522,53 @@
     // Сум-эквивалент долларов — по курсу каждой записи (если задан), иначе по текущему курсу ЦБ.
     const usdUzs = pend.filter((x) => x.currency === 'USD').reduce((s, x) => s + Number(x.amount || 0) * (Number(x.fx_rate) || rate || 0), 0);
     box.appendChild(el('div', { class: 'cash-note-info', style: 'margin-bottom:8px' }, 'К возмещению (не выплачено): ' + money(uzs) + ' сум' + (usd ? ' · $' + money(usd) : '') + ((usd && (usdUzs > 0)) ? ' · итого ≈ ' + money(Math.round(uzs + usdUzs)) + ' сум' : '')));
-    const cols = ['Дата', 'Подотчётное лицо', 'Сумма', 'Вал.', 'Назначение расхода', 'Примечание', 'Статус'].concat(isAdmin() ? [''] : []);
-    const thead = el('thead', {}, el('tr', {}, cols.map((h, i) => el('th', { style: 'padding:8px 10px;background:#f2f5f1;text-align:' + (i === 2 ? 'right' : 'left') + ';white-space:nowrap' }, h))));
-    const tb = el('tbody', {}, items.map((x) => {
-      const paid = x.status === 'reimbursed';
-      const cells = [
-        el('td', { style: 'padding:7px 10px;white-space:nowrap' }, x.reim_date ? ruDate(x.reim_date) : '—'),
-        el('td', { style: 'padding:7px 10px;font-weight:700' }, x.person),
-        el('td', { style: 'padding:7px 10px;text-align:right;white-space:nowrap;font-weight:700' }, x.currency === 'USD'
-          ? el('div', {}, [el('div', {}, '$' + curFmt(x.amount, 'USD')), (Number(x.fx_rate) > 0 ? el('div', { class: 'cash-sub', style: 'font-size:11px;font-weight:400' }, '≈ ' + money(Math.round(Number(x.amount) * Number(x.fx_rate))) + ' сум') : null)])
-          : curFmt(x.amount, 'UZS')),
-        el('td', { style: 'padding:7px 10px' }, x.currency === 'USD' ? '$' : 'сум'),
-        el('td', { style: 'padding:7px 10px' }, x.purpose || ''),
-        el('td', { style: 'padding:7px 10px;color:var(--muted)' }, x.comment || ''),
-        el('td', { style: 'padding:7px 10px;white-space:nowrap' }, el('span', { class: 'cash-flow', style: paid ? 'background:#e8f5e9;color:#2e7d32' : 'background:#fff3e0;color:#b25b00' }, paid ? ('Возмещено' + (x.reimbursed_date ? ' ' + ruDate(x.reimbursed_date) : '')) : 'Не возмещено')),
-      ];
-      if (isAdmin()) cells.push(el('td', { style: 'padding:7px 10px;white-space:nowrap' }, el('div', { style: 'display:flex;gap:6px' }, [
-        el('button', { class: 'btn-ghost cash-add', style: 'padding:4px 8px;font-size:12px', title: 'Изменить', onclick: () => oblReimbForm(x) }, '✎'),
-        el('button', { class: 'btn-ghost cashf-del', style: 'padding:4px 8px;font-size:12px', title: 'Удалить', onclick: async () => { if (!confirm('Удалить возмещение «' + x.person + '»?')) return; try { await post('/reimbursements/' + x.id + '/delete', {}); toast('Удалено'); oblReimbursements(box); } catch (e) { toast(e.message, true); } } }, '🗑'),
-      ])));
-      return el('tr', {}, cells);
-    }));
-    box.appendChild(el('div', { style: 'overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:#fff' }, el('table', { class: 'cash-reimb-table', style: 'border-collapse:collapse;width:100%;font-size:13px' }, [thead, tb])));
+    // Валюты — в отдельных столбцах; в ИТОГО сводим к общей сумме по курсу.
+    const isUsd = (x) => x.currency === 'USD';
+    const rowRate = (x) => Number(x.fx_rate) || rate || 0;
+    const sumUsd = items.filter(isUsd).reduce((a, x) => a + (Number(x.amount) || 0), 0);
+    const sumUzs = items.filter((x) => !isUsd(x)).reduce((a, x) => a + (Number(x.amount) || 0), 0);
+    const sumUsdInUzs = items.filter(isUsd).reduce((a, x) => a + (Number(x.amount) || 0) * rowRate(x), 0);
+    const cols = ['Дата', 'Подотчётное лицо', 'Сумма, $', 'Сумма, сум', 'Назначение расхода', 'Примечание', 'Статус'].concat(isAdmin() ? [''] : []);
+    const numIdx = [2, 3];
+    const tableBox = el('div'); box.appendChild(tableBox);
+    const pgKey = 'reimb';
+    const draw = () => {
+      tableBox.innerHTML = '';
+      const thead = el('thead', {}, el('tr', {}, cols.map((h, i) => el('th', { style: 'padding:8px 10px;background:#f2f5f1;text-align:' + (numIdx.includes(i) ? 'right' : 'left') + ';white-space:nowrap' }, h))));
+      const tb = el('tbody', {}, pgSlice(pgKey, items).map((x) => {
+        const paid = x.status === 'reimbursed';
+        const numSt = 'padding:7px 10px;text-align:right;white-space:nowrap;font-weight:700;font-variant-numeric:tabular-nums';
+        const cells = [
+          el('td', { style: 'padding:7px 10px;white-space:nowrap' }, x.reim_date ? ruDate(x.reim_date) : '—'),
+          el('td', { style: 'padding:7px 10px;font-weight:700' }, x.person),
+          // Доллары: сумма + мелкой строкой сум-эквивалент по курсу записи.
+          el('td', { style: numSt }, isUsd(x)
+            ? el('div', {}, [el('div', {}, '$' + curFmt(x.amount, 'USD')), (Number(x.fx_rate) > 0 ? el('div', { class: 'cash-sub', style: 'font-size:11px;font-weight:400' }, '≈ ' + money(Math.round(Number(x.amount) * Number(x.fx_rate))) + ' сум') : null)])
+            : '—'),
+          el('td', { style: numSt }, isUsd(x) ? '—' : money(x.amount)),
+          el('td', { style: 'padding:7px 10px' }, x.purpose || ''),
+          el('td', { style: 'padding:7px 10px;color:var(--muted)' }, x.comment || ''),
+          el('td', { style: 'padding:7px 10px;white-space:nowrap' }, el('span', { class: 'cash-flow', style: paid ? 'background:#e8f5e9;color:#2e7d32' : 'background:#fff3e0;color:#b25b00' }, paid ? ('Возмещено' + (x.reimbursed_date ? ' ' + ruDate(x.reimbursed_date) : '')) : 'Не возмещено')),
+        ];
+        if (isAdmin()) cells.push(el('td', { style: 'padding:7px 10px;white-space:nowrap' }, el('div', { style: 'display:flex;gap:6px' }, [
+          el('button', { class: 'btn-ghost cash-add', style: 'padding:4px 8px;font-size:12px', title: 'Изменить', onclick: () => oblReimbForm(x) }, '✎'),
+          el('button', { class: 'btn-ghost cashf-del', style: 'padding:4px 8px;font-size:12px', title: 'Удалить', onclick: async () => { if (!confirm('Удалить возмещение «' + x.person + '»?')) return; try { await post('/reimbursements/' + x.id + '/delete', {}); toast('Удалено'); oblReimbursements(box); } catch (e) { toast(e.message, true); } } }, '🗑'),
+        ])));
+        return el('tr', {}, cells);
+      }));
+      const cell = (i, content) => el('td', { style: 'padding:8px 10px;' + (numIdx.includes(i) ? 'text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums' : '') }, content);
+      const foot1 = el('tr', { class: 'cash-foot-row' }, cols.map((c, i) =>
+        i === 0 ? cell(i, 'ИТОГО (' + items.length + ')')
+          : i === 2 ? cell(i, sumUsd ? '$' + curFmt(sumUsd, 'USD') : '—')
+            : i === 3 ? cell(i, sumUzs ? money(sumUzs) : '—') : cell(i, '')));
+      const foot2 = el('tr', { class: 'cash-foot-row2' }, cols.map((c, i) =>
+        i === 0 ? cell(i, rate ? ('Всего в сумах (курс ЦБ ' + money(rate) + ')') : 'Всего в сумах')
+          : i === 3 ? cell(i, money(Math.round(sumUzs + sumUsdInUzs))) : cell(i, '')));
+      const table = el('table', { class: 'cash-reimb-table', style: 'border-collapse:collapse;width:100%;font-size:13px' }, [thead, tb, el('tfoot', {}, [foot1, foot2])]);
+      tableBox.appendChild(el('div', { style: 'overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:#fff' }, table));
+      tableBox.appendChild(pgBar(pgKey, items.length, draw));
+    };
+    draw();
   }
   function oblReimbForm(x) {
     x = x || {};
@@ -593,6 +618,42 @@
   // Право вести обязательства: админ ИЛИ роль «Финансы/Бухгалтерия».
   const isAdmin = () => !!(window.HUB_USER && (window.HUB_USER.isAdmin || window.HUB_USER.isFinance));
 
+  // ---------- Пагинация (общая для таблиц Обязательств) ----------
+  // Состояние по разделам: сколько строк на странице и какая страница открыта.
+  const PAGE_SIZES = [10, 20, 50, 0]; // 0 = показать все
+  const oblPg = {};
+  const pgState = (key) => (oblPg[key] = oblPg[key] || { size: 20, page: 1 });
+  // Строки текущей страницы.
+  function pgSlice(key, items) {
+    const st = pgState(key);
+    if (!st.size) { st.page = 1; return items; }
+    const pages = Math.max(1, Math.ceil(items.length / st.size));
+    if (st.page > pages) st.page = pages;
+    if (st.page < 1) st.page = 1;
+    const from = (st.page - 1) * st.size;
+    return items.slice(from, from + st.size);
+  }
+  // Панель под таблицей: «Показано 1–20 из 57» + выбор 10/20/50/Все + страницы.
+  function pgBar(key, total, redraw) {
+    const st = pgState(key);
+    const pages = st.size ? Math.max(1, Math.ceil(total / st.size)) : 1;
+    const from = total ? (st.size ? (st.page - 1) * st.size + 1 : 1) : 0;
+    const to = st.size ? Math.min(total, st.page * st.size) : total;
+    const sizeBtn = (n) => el('button', { class: 'obl-pgn' + (st.size === n ? ' on' : ''), onclick: () => { st.size = n; st.page = 1; redraw(); } }, n ? String(n) : 'Все');
+    const navBtn = (label, target, dis) => el('button', { class: 'obl-pgn', disabled: dis || null, onclick: () => { if (dis) return; st.page = target; redraw(); } }, label);
+    return el('div', { class: 'obl-pager' }, [
+      el('span', {}, total ? ('Показано ' + from + '–' + to + ' из ' + total) : 'Нет строк'),
+      el('span', { class: 'obl-pg-grp' }, [el('span', { class: 'obl-pg-lbl' }, 'Строк на странице:')].concat(PAGE_SIZES.map(sizeBtn))),
+      pages > 1 ? el('span', { class: 'obl-pg-grp' }, [
+        navBtn('«', 1, st.page <= 1), navBtn('‹', st.page - 1, st.page <= 1),
+        el('span', { class: 'obl-pg-lbl' }, st.page + ' / ' + pages),
+        navBtn('›', st.page + 1, st.page >= pages), navBtn('»', pages, st.page >= pages),
+      ]) : null,
+    ]);
+  }
+  // Числовая ячейка в «своей» валюте: показываем значение только в колонке нужной валюты.
+  const cellCur = (v, cur) => (Math.abs(Number(v) || 0) > 0.001 ? (cur === 'USD' ? '$' + curFmt(v, 'USD') : money(v)) : '—');
+
   async function oblLoans(box, group) {
     box.innerHTML = '';
     const title = group === 'bank' ? 'Банковские кредиты' : 'Понятийные и инвестиционные займы';
@@ -608,21 +669,59 @@
     }
     let d; try { d = await api('/obligations/loans?group=' + group); } catch (e) { box.appendChild(el('div', { class: 'cash-empty' }, 'Ошибка: ' + e.message)); return; }
     if (!d.items.length) { box.appendChild(el('div', { class: 'cash-empty' }, 'Пока нет записей. ' + (isAdmin() ? 'Нажмите «+».' : ''))); return; }
-    const cols = group === 'bank'
-      ? ['Кредитор', 'Договор', 'Вал.', 'Получено', 'Ставка', 'Остаток тела', 'След. платёж', 'Статус']
-      : ['Кредитор', 'Соглашение', 'Вал.', 'Получено', 'Выплачено', 'Остаток', 'Ближайший', 'Статус'];
-    const thead = el('thead', {}, el('tr', {}, cols.map((h, i) => el('th', { style: (i >= 3 && i <= 6 ? 'text-align:right;' : '') + 'white-space:nowrap;padding:8px 10px;background:#f2f5f1' }, h))));
-    const tb = el('tbody', {}, d.items.map((o) => el('tr', { style: 'cursor:pointer', onclick: () => oblLoanCard(o.id, group) }, [
-      el('td', { style: 'font-weight:700;padding:7px 10px' }, o.creditor_name),
-      el('td', { style: 'padding:7px 10px;color:var(--muted)' }, o.agreement_number || '—'),
-      el('td', { style: 'padding:7px 10px' }, o.currency),
-      el('td', { style: 'text-align:right;padding:7px 10px' }, curFmt(o.principal_received, o.currency)),
-      el('td', { style: 'text-align:right;padding:7px 10px' }, group === 'bank' ? (Number(o.annual_rate) || 0) + '%' : curFmt(o.principal_paid, o.currency)),
-      el('td', { style: 'text-align:right;padding:7px 10px;font-weight:700' }, curFmt(o.principal_balance, o.currency)),
-      el('td', { style: 'padding:7px 10px;color:var(--muted)' }, o.next_due ? ruDate(o.next_due) : '—'),
-      el('td', { style: 'padding:7px 10px' }, el('span', { class: 'cash-flow', style: 'background:#eef1ec;color:var(--forest)' }, LOAN_STATUS[o.status] || o.status)),
-    ])));
-    box.appendChild(el('div', { style: 'overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:#fff' }, el('table', { style: 'border-collapse:collapse;width:100%;font-size:13px' }, [thead, tb])));
+    const isBank = group === 'bank';
+    const rate = Number(d.rate) || 0;
+    const items = d.items;
+    // Каждая денежная величина — в двух столбцах ($ и сум); строка попадает в столбец своей валюты.
+    const cols = [
+      { label: 'Кредитор', get: (o) => o.creditor_name, bold: true },
+      { label: isBank ? 'Договор' : 'Соглашение', get: (o) => o.agreement_number || '—', muted: true },
+      { label: 'Получено, $', cur: 'USD', metric: 'recv', get: (o) => o.principal_received },
+      { label: 'Получено, сум', cur: 'UZS', metric: 'recv', get: (o) => o.principal_received },
+    ];
+    if (isBank) cols.push({ label: 'Ставка', num: true, get: (o) => (Number(o.annual_rate) || 0) + '%' });
+    else cols.push(
+      { label: 'Выплачено, $', cur: 'USD', metric: 'paid', get: (o) => o.principal_paid },
+      { label: 'Выплачено, сум', cur: 'UZS', metric: 'paid', get: (o) => o.principal_paid });
+    cols.push(
+      { label: (isBank ? 'Остаток тела, $' : 'Остаток, $'), cur: 'USD', metric: 'bal', get: (o) => o.principal_balance, strong: true },
+      { label: (isBank ? 'Остаток тела, сум' : 'Остаток, сум'), cur: 'UZS', metric: 'bal', get: (o) => o.principal_balance, strong: true },
+      { label: isBank ? 'След. платёж' : 'Ближайший', get: (o) => (o.next_due ? ruDate(o.next_due) : '—'), muted: true },
+      { label: 'Статус', status: true });
+
+    const tableBox = el('div'); box.appendChild(tableBox);
+    const pgKey = 'loans:' + group;
+    // Итоги считаем по всем записям раздела, а не по видимой странице.
+    const sumCol = (c) => items.filter((o) => o.currency === c.cur).reduce((a, o) => a + (Number(c.get(o)) || 0), 0);
+    const draw = () => {
+      tableBox.innerHTML = '';
+      const thNum = 'text-align:right;';
+      const thead = el('thead', {}, el('tr', {}, cols.map((c) => el('th', { style: (c.cur || c.num ? thNum : '') + 'white-space:nowrap;padding:8px 10px;background:#f2f5f1' }, c.label))));
+      const tb = el('tbody', {}, pgSlice(pgKey, items).map((o) => el('tr', { style: 'cursor:pointer', onclick: () => oblLoanCard(o.id, group) }, cols.map((c) => {
+        if (c.status) return el('td', { style: 'padding:7px 10px' }, el('span', { class: 'cash-flow', style: 'background:#eef1ec;color:var(--forest)' }, LOAN_STATUS[o.status] || o.status));
+        if (c.cur) return el('td', { style: 'text-align:right;white-space:nowrap;padding:7px 10px;font-variant-numeric:tabular-nums;' + (c.strong ? 'font-weight:800' : '') }, o.currency === c.cur ? cellCur(c.get(o), c.cur) : '—');
+        if (c.num) return el('td', { style: 'text-align:right;white-space:nowrap;padding:7px 10px' }, c.get(o));
+        return el('td', { style: 'padding:7px 10px;' + (c.bold ? 'font-weight:700' : c.muted ? 'color:var(--muted)' : '') }, c.get(o));
+      }))));
+      // ИТОГО: суммы по каждой валюте отдельно.
+      const foot1 = el('tr', { class: 'cash-foot-row' }, cols.map((c, i) => {
+        if (i === 0) return el('td', { style: 'padding:8px 10px' }, 'ИТОГО (' + items.length + ')');
+        if (!c.cur) return el('td', {}, '');
+        return el('td', { style: 'text-align:right;white-space:nowrap;padding:8px 10px;font-variant-numeric:tabular-nums' }, cellCur(sumCol(c), c.cur));
+      }));
+      // Вторая строка: всё сведено в сумы по курсу ЦБ (доллары × курс + сумовые).
+      const foot2 = el('tr', { class: 'cash-foot-row2' }, cols.map((c, i) => {
+        if (i === 0) return el('td', { style: 'padding:8px 10px' }, rate ? ('Всего в сумах (курс ЦБ ' + money(rate) + ')') : 'Всего в сумах (курс ЦБ недоступен)');
+        if (!c.cur || c.cur !== 'UZS') return el('td', {}, '');
+        const usdCol = cols.find((x) => x.metric === c.metric && x.cur === 'USD');
+        const all = sumCol(c) + (usdCol ? sumCol(usdCol) * rate : 0);
+        return el('td', { style: 'text-align:right;white-space:nowrap;padding:8px 10px;font-variant-numeric:tabular-nums' }, rate || !usdCol ? money(Math.round(all)) : '—');
+      }));
+      const table = el('table', { style: 'border-collapse:collapse;width:100%;font-size:13px' }, [thead, tb, el('tfoot', {}, [foot1, foot2])]);
+      tableBox.appendChild(el('div', { style: 'overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:#fff' }, table));
+      tableBox.appendChild(pgBar(pgKey, items.length, draw));
+    };
+    draw();
   }
 
   // Панель «Платежи по кредитам к разнесению»: оплаты из выписки (статья 60/61) без привязки к графику.
@@ -1217,7 +1316,7 @@
       tableBox.appendChild(kpiBar([['Всего должны поставщикам', owe, 'tot-out'], ['Наши авансы поставщикам', adv, 'tot-in']]));
       const thNum = 'text-align:right';
       const thead = el('thead', {}, el('tr', {}, cols.map((c) => el('th', { style: (c.num ? thNum : '') + ';white-space:nowrap;padding:8px 10px;background:#f2f5f1' }, c.label))));
-      const tb = el('tbody', {}, items.map((s) => el('tr', {}, cols.map((c) => {
+      const tb = el('tbody', {}, pgSlice('sup', items).map((s) => el('tr', {}, cols.map((c) => {
         if (c.num) { const v = Number(c.get(s)) || 0; const color = c.bal ? (v > 0 ? '#c0392b' : v < 0 ? '#2e7d32' : '') : (c.warn && v > 0 ? '#c0392b' : ''); return el('td', { style: 'text-align:right;white-space:nowrap;padding:7px 10px;font-variant-numeric:tabular-nums;' + (c.bal ? 'font-weight:800;' : '') + (color ? 'color:' + color : '') }, money(v)); }
         return el('td', { style: 'white-space:nowrap;padding:7px 10px;' + (c.id === 'name' ? 'font-weight:700' : 'color:var(--muted)') }, c.get(s));
       }))));
@@ -1230,6 +1329,7 @@
       }));
       const table = el('table', { style: 'border-collapse:collapse;width:100%;font-size:13px' }, [thead, tb, el('tfoot', {}, foot)]);
       tableBox.appendChild(el('div', { style: 'overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:#fff' }, table));
+      tableBox.appendChild(pgBar('sup', items.length, drawSup));
     }
     await loadSup();
   }
