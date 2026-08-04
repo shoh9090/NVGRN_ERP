@@ -945,8 +945,9 @@
       }
       const extraCell = (r, title, fields) => el('span', { class: 'tnum hr-extra', title: 'Клик — изменить', onclick: (ev) => { ev.stopPropagation(); openExtra(r, title, fields); } }, money(sumOf(r, fields)));
       // Правка прямо в строке: дни/часы меняются на месте, оклад пересчитывается сам.
+      // Дни/часы показываем как есть, с дробной частью (15,5 не округляем). Формат — русский (запятая), чтобы mval корректно читал ввод.
       const cellNum = (r, field) => {
-        const inp = el('input', { class: 'hr-cell', value: r[field] == null ? '' : String(Math.round(Number(r[field]))), onclick: (ev) => ev.stopPropagation() });
+        const inp = el('input', { class: 'hr-cell', value: (r[field] == null || r[field] === '') ? '' : Number(r[field]).toLocaleString('ru-RU', { maximumFractionDigits: 2 }), onclick: (ev) => ev.stopPropagation() });
         inp.onchange = async () => {
           try { await post('/payroll/cell', { employee_id: r.emp_id, period: salState.period, field, value: mval(inp) }); load(); }
           catch (e) { toast(e.message, true); }
