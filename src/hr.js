@@ -327,11 +327,17 @@ router.post('/api/events', J, async (req, res) => {
   if (type === 'transfer') {
     const toDept = intOrNull(b.to_department_id);
     if (!toDept) return res.status(400).json({ error: 'Выберите отдел, куда переводим' });
-    const cur = (await db.pool.query('SELECT department_id FROM hr_employees WHERE id=$1', [empId])).rows[0];
+    const cur = (await db.pool.query('SELECT department_id, position FROM hr_employees WHERE id=$1', [empId])).rows[0];
     if (!cur) return res.status(404).json({ error: 'Сотрудник не найден' });
     fromText = await deptName(cur.department_id);
     toText = await deptName(toDept);
     await db.pool.query('UPDATE hr_employees SET department_id=$1, updated_at=now() WHERE id=$2', [toDept, empId]);
+    // Должность: если указана и изменилась — обновляем в карточке + отдельным событием «смена должности».
+    const newPos = (b.to_position != null ? String(b.to_position).trim() : '');
+    if (newPos && newPos !== (cur.position || '')) {
+      await db.pool.query('UPDATE hr_employees SET position=$1, updated_at=now() WHERE id=$2', [newPos, empId]);
+      await addEvent(empId, 'position', b.event_date, { from_text: cur.position || '—', to_text: newPos, created_by: req.user.id });
+    }
   }
   await addEvent(empId, type, b.event_date, { date_to: b.date_to || null, from_text: fromText, to_text: toText, comment: b.comment || null, created_by: req.user.id });
   await db.log(req.user.id, 'hr_event_add', `${type} emp#${empId}`);
