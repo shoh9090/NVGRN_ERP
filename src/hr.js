@@ -115,6 +115,12 @@ async function ensureSchema() {
     created_by INT, created_at TIMESTAMPTZ NOT NULL DEFAULT now()
   )`);
   await q(`CREATE INDEX IF NOT EXISTS idx_hr_salhist ON hr_salary_history (employee_id, effective_from)`);
+  // Налоги на ФОТ по месяцам (вписываются вручную, платятся позже начисления): ИНПС, НДФЛ, соцналог.
+  await q(`CREATE TABLE IF NOT EXISTS hr_fot_taxes (
+    period TEXT PRIMARY KEY,
+    inps NUMERIC DEFAULT 0, ndfl NUMERIC DEFAULT 0, social NUMERIC DEFAULT 0,
+    updated_by INT, updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
   // Бэкфилл: у кого нет истории — текущий оклад с даты приёма (или далёкого прошлого).
   await q(`INSERT INTO hr_salary_history (employee_id, base_salary, effective_from)
            SELECT id, COALESCE(base_salary,0), COALESCE(hire_date,'2000-01-01') FROM hr_employees e
@@ -999,6 +1005,26 @@ router.post('/api/payouts/pay', J, async (req, res) => {
   finally { client.release(); }
   await db.log(req.user.id, 'hr_payout', `${period} ${method}: ${done} на ${Math.round(total)}`);
   res.json({ ok: true, count: done, total, cashNote });
+});
+
+// Налоги на ФОТ за месяц (ИНПС/НДФЛ/соцналог) — ручной ввод.
+router.get('/api/fot-taxes', async (req, res) => {
+  const period = /^\d{4}-\d{2}$/.test(req.query.period) ? req.query.period : new Date().toISOString().slice(0, 7);
+  const r = (await db.pool.query('SELECT inps, ndfl, social FROM hr_fot_taxes WHERE period=$1', [period])).rows[0]
+    || { inps: 0, ndfl: 0, social: 0 };
+  res.json(r);
+});
+router.post('/api/fot-taxes', J, async (req, res) => {
+  const b = req.body || {};
+  const period = /^\d{4}-\d{2}$/.test(b.period) ? b.period : null;
+  if (!period) return res.status(400).json({ error: 'Не указан месяц' });
+  const inps = numOrNull(b.inps) || 0, ndfl = numOrNull(b.ndfl) || 0, social = numOrNull(b.social) || 0;
+  await db.pool.query(
+    `INSERT INTO hr_fot_taxes (period, inps, ndfl, social, updated_by) VALUES ($1,$2,$3,$4,$5)
+     ON CONFLICT (period) DO UPDATE SET inps=EXCLUDED.inps, ndfl=EXCLUDED.ndfl, social=EXCLUDED.social, updated_by=EXCLUDED.updated_by, updated_at=now()`,
+    [period, inps, ndfl, social, req.user.id]);
+  await db.log(req.user.id, 'hr_fot_taxes', `${period}: инпс ${inps}, ндфл ${ndfl}, соц ${social}`);
+  res.json({ ok: true });
 });
 
 router.get('/api/dashboard', async (req, res) => {

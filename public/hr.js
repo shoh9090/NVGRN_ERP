@@ -266,6 +266,29 @@
       kpi('= К выплате', moneyShort(t.to_pay), 'green', t.overpay ? () => openOverpaid(d.overpaid || []) : () => openBreakdown('К выплате (остаток)', d.emps || [], (r) => Math.max(0, r.to_pay), dashState.period), t.overpay ? 'переплата ' + moneyShort(t.overpay) + ' · клик' : 'клик'),
     ]));
     box.appendChild(el('div', { class: 'hr-sub', style: 'margin:2px 0 6px' }, 'Начислено − Удержания − Выплачено (с авансами) = К выплате.' + (t.overpay ? ' Переплата ' + moneyShort(t.overpay) + ' (кому-то выдали больше — на общий остаток не влияет).' : '') + '  ·  Сотрудников: ' + t.count));
+    // Налоги на ФОТ (ручной ввод по видам): ИНПС, НДФЛ, соцналог + итог и % от ФОТ.
+    let tax; try { tax = await api('/fot-taxes?period=' + dashState.period); } catch (e) { tax = { inps: 0, ndfl: 0, social: 0 }; }
+    const taxInps = minp(tax.inps || '', { placeholder: '0' });
+    const taxNdfl = minp(tax.ndfl || '', { placeholder: '0' });
+    const taxSoc = minp(tax.social || '', { placeholder: '0' });
+    const taxTotEl = el('b', {}); const taxPctEl = el('span', { class: 'muted' });
+    const recalcTax = () => {
+      const tot = (Number(mval(taxInps)) || 0) + (Number(mval(taxNdfl)) || 0) + (Number(mval(taxSoc)) || 0);
+      taxTotEl.textContent = money(tot);
+      const fot = Number(t.accrued) || 0;
+      taxPctEl.textContent = fot > 0 ? (' · ' + (tot / fot * 100).toFixed(1) + '% от ФОТ') : '';
+    };
+    [taxInps, taxNdfl, taxSoc].forEach((i) => i.addEventListener('input', recalcTax));
+    const taxField = (label, inp) => el('div', { style: 'display:flex;flex-direction:column;gap:3px' }, [el('span', { style: 'font-size:12px;color:#7c8579;font-weight:700' }, label), inp]);
+    const taxSave = el('button', { class: 'btn-primary', onclick: async () => {
+      try { await post('/fot-taxes', { period: dashState.period, inps: mval(taxInps), ndfl: mval(taxNdfl), social: mval(taxSoc) }); toast('Налоги сохранены ✅'); } catch (e) { toast(e.message, true); }
+    } }, 'Сохранить');
+    box.appendChild(el('div', { class: 'hr-chart-card', style: 'margin:10px 0;padding:14px 16px' }, [
+      el('div', { class: 'hr-h2', style: 'font-size:16px;margin:0 0 8px' }, '🧾 Налоги на ФОТ — ' + monthLabel(dashState.period)),
+      el('div', { style: 'display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap' }, [taxField('ИНПС', taxInps), taxField('НДФЛ', taxNdfl), taxField('Соцналог', taxSoc), taxSave]),
+      el('div', { style: 'margin-top:10px;font-size:14px' }, ['Итого налогов: ', taxTotEl, taxPctEl]),
+    ]));
+    recalcTax();
     if (!d.byDept.length) { box.appendChild(el('div', { class: 'hr-empty' }, 'Нет данных за месяц.')); return; }
     const items = d.byDept.filter((x) => x.accrued > 0).map((x, i) => ({ label: x.name, value: x.accrued, color: HR_COLORS[i % HR_COLORS.length] }));
     box.appendChild(el('div', { class: 'hr-h2', style: 'font-size:18px;margin:16px 0 4px' }, 'ФОТ по отделам'));
