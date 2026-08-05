@@ -670,6 +670,7 @@
   const tsState = { period: '', department: '', schedule: '', q: '' };
   async function renderTimesheet() {
     const c = $('#hr-content');
+    c.innerHTML = '';
     if (!tsState.period) tsState.period = curMonth();
     c.appendChild(el('div', { class: 'hr-head' }, [
       el('div', {}, [el('div', { class: 'hr-h2' }, 'Табель — ' + monthLabel(tsState.period)), el('div', { class: 'hr-sub' }, 'Часы/дни за месяц. Переработка = факт − план часов (оплата ×2 — механизм расчёта настроим позже). Деньги начислений не затрагиваются.')]),
@@ -794,8 +795,9 @@
 
   async function renderSalary() {
     const c = $('#hr-content');
+    c.innerHTML = '';   // очищаем — иначе при повторных вызовах ведомость дорисовывается сверху (дубли)
     if (!salState.period) salState.period = curMonth();
-    const NORM_DEFAULTS = { production: { d: 26, h: 208 }, office: { d: 22, h: 176 }, shift: { d: 15, h: 180 } };
+    const NORM_DEFAULTS = { day5: { d: 22, h: 176 }, day6: { d: 26, h: 208 }, shift22: { d: 15, h: 180 } };
     function openFillNorms() {
       const rows = {};
       const body = el('div', { class: 'hrf' }, [
