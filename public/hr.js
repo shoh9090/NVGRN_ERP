@@ -196,7 +196,7 @@
     try { emps = (await api('/employees?status=')).items || []; } catch (e) { return toast(e.message, true); }
     const active = emps.filter((e) => e.status !== 'archived');
     const empSel = fsel(active.map((e) => ({ v: e.id, t: e.full_name })), presetEmpId || (active[0] && active[0].id) || '');
-    const typeSel = fsel([['transfer', 'Перемещение'], ['vacation', 'Отпуск'], ['sick', 'Больничный'], ['other', 'Прочее'], ['hire', 'Приём'], ['fire', 'Увольнение']].map(([v, t]) => ({ v, t })), 'transfer');
+    const typeSel = fsel([['transfer', 'Перемещение'], ['salary', 'Изменение оклада'], ['vacation', 'Отпуск'], ['sick', 'Больничный'], ['other', 'Прочее'], ['hire', 'Приём'], ['fire', 'Увольнение']].map(([v, t]) => ({ v, t })), 'transfer');
     const dFrom = finp(new Date().toISOString().slice(0, 10), { type: 'date' });
     const dTo = finp('', { type: 'date' });
     const dToRow = frow('По (для отпуска/больничного)', dTo);
@@ -208,24 +208,28 @@
     const posRow = frow('Должность (новая)', posInp);
     const schedSel = fsel([{ v: '', t: '— не менять —' }, ...(DICTS.schedules || []).map((s) => ({ v: s.code, t: s.name }))], curEmp().schedule_type || '');
     const schedRow = frow('График (новый)', schedSel);
-    empSel.onchange = () => { posInp.value = curEmp().position || ''; schedSel.value = curEmp().schedule_type || ''; };
+    const salInp = minp(curEmp().base_salary || '', { placeholder: 'новый оклад' });
+    const salRow = frow('Новый оклад', salInp);
+    empSel.onchange = () => { posInp.value = curEmp().position || ''; schedSel.value = curEmp().schedule_type || ''; salInp.value = curEmp().base_salary ? Number(curEmp().base_salary).toLocaleString('ru-RU') : ''; };
     const comment = finp('', { placeholder: 'Комментарий' });
     const applyType = () => {
       dToRow.style.display = (typeSel.value === 'vacation' || typeSel.value === 'sick') ? '' : 'none';
       deptRow.style.display = (typeSel.value === 'transfer') ? '' : 'none';
       posRow.style.display = (typeSel.value === 'transfer') ? '' : 'none';
       schedRow.style.display = (typeSel.value === 'transfer') ? '' : 'none';
+      salRow.style.display = (typeSel.value === 'salary') ? '' : 'none';
     };
     typeSel.onchange = applyType; applyType();
     const save = el('button', { class: 'btn-primary', onclick: async () => {
       if (!empSel.value) return toast('Выберите сотрудника', true);
       if (typeSel.value === 'transfer' && !deptSel.value) return toast('Выберите отдел, куда переводим', true);
+      if (typeSel.value === 'salary' && !(Number(mval(salInp)) > 0)) return toast('Укажите новый оклад', true);
       try {
-        await post('/events', { employee_id: empSel.value, event_type: typeSel.value, event_date: dFrom.value, date_to: (dToRow.style.display !== 'none' ? dTo.value : null) || null, to_department_id: (typeSel.value === 'transfer' ? deptSel.value : null), to_position: (typeSel.value === 'transfer' ? posInp.value : null), to_schedule: (typeSel.value === 'transfer' ? schedSel.value : null), comment: comment.value });
-        toast(typeSel.value === 'transfer' ? 'Сотрудник переведён ✅' : 'Событие добавлено'); closeModal(); if (TAB === 'events') loadEv();
+        await post('/events', { employee_id: empSel.value, event_type: typeSel.value, event_date: dFrom.value, date_to: (dToRow.style.display !== 'none' ? dTo.value : null) || null, to_department_id: (typeSel.value === 'transfer' ? deptSel.value : null), to_position: (typeSel.value === 'transfer' ? posInp.value : null), to_schedule: (typeSel.value === 'transfer' ? schedSel.value : null), new_salary: (typeSel.value === 'salary' ? mval(salInp) : null), comment: comment.value });
+        toast(typeSel.value === 'transfer' ? 'Сотрудник переведён ✅' : (typeSel.value === 'salary' ? 'Оклад изменён ✅' : 'Событие добавлено')); closeModal(); if (TAB === 'events') loadEv();
       } catch (e) { toast(e.message, true); }
     } }, 'Добавить');
-    modal('Кадровое событие', el('div', { class: 'hrf' }, [frow('Сотрудник', empSel), frow('Тип', typeSel), deptRow, posRow, schedRow, frow('Дата (с)', dFrom), dToRow, frow('Комментарий', comment)]), [save]);
+    modal('Кадровое событие', el('div', { class: 'hrf' }, [frow('Сотрудник', empSel), frow('Тип', typeSel), deptRow, posRow, schedRow, salRow, frow('Дата (с)', dFrom), dToRow, frow('Комментарий', comment)]), [save]);
   }
 
   // ================= ДАШБОРД =================

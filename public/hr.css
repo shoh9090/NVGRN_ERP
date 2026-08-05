@@ -3,8 +3,9 @@
 #hr-main { max-width: 1180px; margin: 0 auto; padding: 16px; }
 
 .hr-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 16px; border-bottom: 1px solid var(--line); }
-.hr-tab { background: none; border: none; padding: 10px 15px; font-size: 14px; font-weight: 700; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
-.hr-tab.on { color: var(--forest); border-bottom-color: var(--lime); }
+.hr-tab { background: none; border: none; padding: 10px 15px; font-size: 14px; font-weight: 700; color: #4a5a50; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; transition: color .12s, background .12s; }
+.hr-tab:hover { color: var(--forest); }
+.hr-tab.on { color: var(--forest); border-bottom-color: var(--lime); background: rgba(140, 198, 63, .14); border-radius: 8px 8px 0 0; }
 
 .hr-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
 .hr-h2 { font-family: 'Lora', Georgia, serif; font-weight: 600; font-size: 24px; margin: 2px 0 4px; color: var(--ink); }

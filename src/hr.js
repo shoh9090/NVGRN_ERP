@@ -106,6 +106,19 @@ async function ensureSchema() {
   )`);
   await q(`CREATE INDEX IF NOT EXISTS idx_hr_events_emp ON hr_events (employee_id)`);
   await q(`CREATE INDEX IF NOT EXISTS idx_hr_events_date ON hr_events (event_date)`);
+  // История окладов (для расчёта месяца изменения по частям). Каждая запись — оклад с даты действия.
+  await q(`CREATE TABLE IF NOT EXISTS hr_salary_history (
+    id SERIAL PRIMARY KEY,
+    employee_id INT NOT NULL REFERENCES hr_employees(id) ON DELETE CASCADE,
+    base_salary NUMERIC NOT NULL DEFAULT 0,
+    effective_from DATE NOT NULL,
+    created_by INT, created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  await q(`CREATE INDEX IF NOT EXISTS idx_hr_salhist ON hr_salary_history (employee_id, effective_from)`);
+  // Бэкфилл: у кого нет истории — текущий оклад с даты приёма (или далёкого прошлого).
+  await q(`INSERT INTO hr_salary_history (employee_id, base_salary, effective_from)
+           SELECT id, COALESCE(base_salary,0), COALESCE(hire_date,'2000-01-01') FROM hr_employees e
+            WHERE NOT EXISTS (SELECT 1 FROM hr_salary_history h WHERE h.employee_id=e.id)`).catch(() => {});
   // Разовый бэкфилл приёма/увольнения из дат карточки (идемпотентно — если события ещё нет).
   await q(`INSERT INTO hr_events (employee_id, event_type, event_date)
            SELECT id, 'hire', hire_date FROM hr_employees e
@@ -155,13 +168,35 @@ function computePay(row) {
   if (!(planD > 0) || !(factD > 0)) return { base: 0, overtime: 0 };
   return { base: Math.round(oklad / planD * factD), overtime: 0 };
 }
+// Эффективный «месячный» оклад за период с учётом истории изменений (календарно-взвешенный).
+// Оклад сменился в середине месяца → доля дней до/от даты × соответствующий оклад. Ставка потом = /план.
+async function effectiveOklad(empId, period, fallback) {
+  const [y, m] = period.split('-').map(Number);
+  const monthStart = period + '-01';
+  const D = new Date(Date.UTC(y, m, 0)).getUTCDate();                 // дней в месяце
+  const monthEnd = `${period}-${String(D).padStart(2, '0')}`;
+  const hist = (await db.pool.query(
+    "SELECT base_salary, to_char(effective_from,'YYYY-MM-DD') AS eff FROM hr_salary_history WHERE employee_id=$1 ORDER BY effective_from, id", [empId])).rows;
+  if (!hist.length) return Number(fallback) || 0;
+  let startOklad = null;
+  for (const h of hist) { if (h.eff <= monthStart) startOklad = Number(h.base_salary); }
+  if (startOklad == null) startOklad = Number(hist[0].base_salary);   // раньше всех записей — берём первую
+  const changes = hist.filter((h) => h.eff > monthStart && h.eff <= monthEnd)
+    .map((h) => ({ day: Number(h.eff.slice(8, 10)), oklad: Number(h.base_salary) })).sort((a, b) => a.day - b.day);
+  if (!changes.length) return startOklad;
+  let sum = 0, prevDay = 1, prevOklad = startOklad;
+  for (const ch of changes) { sum += prevOklad * (ch.day - prevDay); prevDay = ch.day; prevOklad = ch.oklad; }
+  sum += prevOklad * (D - prevDay + 1);
+  return sum / D;                                                     // календарно-взвешенный месячный оклад
+}
 // Пересчитать и сохранить accr_fact сотрудника за период. Возвращает посчитанную базу.
 async function recomputeAccrFact(empId, period) {
   const r = (await db.pool.query(
     `SELECT e.base_salary, e.schedule_type, pr.plan_days, pr.fact_days, pr.plan_hours, pr.fact_hours, pr.overtime_hours
      FROM hr_employees e LEFT JOIN hr_payroll pr ON pr.employee_id = e.id AND pr.period = $2 WHERE e.id = $1`, [empId, period])).rows[0];
   if (!r) return 0;
-  const pay = computePay(r);
+  const effOklad = await effectiveOklad(empId, period, r.base_salary);
+  const pay = computePay(Object.assign({}, r, { base_salary: effOklad }));
   await db.pool.query(
     `INSERT INTO hr_payroll (employee_id, period, accr_fact) VALUES ($1,$2,$3)
      ON CONFLICT (employee_id, period) DO UPDATE SET accr_fact = EXCLUDED.accr_fact, updated_at = now()`,
@@ -368,6 +403,21 @@ router.post('/api/events', J, async (req, res) => {
     if (newSched && newSched !== (cur.schedule_type || '')) {
       await db.pool.query('UPDATE hr_employees SET schedule_type=$1, updated_at=now() WHERE id=$2', [newSched, empId]);
       await addEvent(empId, 'schedule', b.event_date, { from_text: schedLabel(cur.schedule_type), to_text: schedLabel(newSched), created_by: req.user.id });
+    }
+  }
+  // Изменение оклада с даты: пишем в историю окладов, обновляем текущий оклад, пересчитываем месяцы с даты.
+  if (type === 'salary') {
+    const newSal = numOrNull(b.new_salary);
+    if (!(newSal >= 0)) return res.status(400).json({ error: 'Укажите новый оклад' });
+    const cur = (await db.pool.query('SELECT base_salary FROM hr_employees WHERE id=$1', [empId])).rows[0];
+    if (!cur) return res.status(404).json({ error: 'Сотрудник не найден' });
+    fromText = fmtSum(cur.base_salary); toText = fmtSum(newSal);
+    await db.pool.query('INSERT INTO hr_salary_history (employee_id, base_salary, effective_from, created_by) VALUES ($1,$2,$3,$4)', [empId, newSal, b.event_date, req.user.id]);
+    await db.pool.query('UPDATE hr_employees SET base_salary=$1, updated_at=now() WHERE id=$2', [newSal, empId]);
+    // Пересчитать начисление за месяц изменения и все последующие, где уже есть строки зарплаты.
+    const changePeriod = String(b.event_date).slice(0, 7);
+    for (const pr of (await db.pool.query('SELECT DISTINCT period FROM hr_payroll WHERE employee_id=$1 AND period >= $2', [empId, changePeriod])).rows) {
+      await recomputeAccrFact(empId, pr.period);
     }
   }
   await addEvent(empId, type, b.event_date, { date_to: b.date_to || null, from_text: fromText, to_text: toText, comment: b.comment || null, created_by: req.user.id });
