@@ -468,7 +468,7 @@ router.get('/api/payroll', async (req, res) => {
   if (req.query.schedule && SCHEDULE_CODES.includes(req.query.schedule)) { p.push(req.query.schedule); w.push(`e.schedule_type = $${p.length}`); }
   if (req.query.q) { p.push('%' + String(req.query.q).trim() + '%'); w.push(`e.full_name ILIKE $${p.length}`); }
   const rows = (await db.pool.query(
-    `SELECT e.id AS emp_id, e.full_name, e.position, e.base_salary, e.schedule_type, e.status AS emp_status, d.name AS department_name, pr.*
+    `SELECT e.id AS emp_id, e.full_name, e.position, e.base_salary, e.schedule_type, e.status AS emp_status, to_char(e.fire_date,'YYYY-MM-DD') AS fire_date, d.name AS department_name, pr.*
      FROM hr_employees e
      LEFT JOIN hr_departments d ON d.id = e.department_id
      LEFT JOIN hr_payroll pr ON pr.employee_id = e.id AND pr.period = $1
@@ -498,10 +498,12 @@ router.get('/api/payroll', async (req, res) => {
       r.to_pay = Math.max(0, (Number(r.accrued) || 0) - r.deducted - r.paid);
     });
   } catch (e) { console.error('cash salary:', e.message); }
-  // Уволенных без движения за месяц (нет начислений, выплат и удержаний) в ведомости не показываем.
-  // При поиске по имени (q) не прячем — чтобы можно было найти любого уволенного.
+  // Прячем только уволенных ДО этого месяца и без движения. Кто уволен в этом месяце (или позже) —
+  // работал часть месяца, его нужно начислить, поэтому показываем. При поиске (q) не прячем никого.
   if (!req.query.q) {
+    const monthStart = period + '-01';
     items = items.filter((r) => r.emp_status !== 'fired'
+      || (r.fire_date && r.fire_date >= monthStart)
       || (Number(r.accrued) || 0) > 0 || (Number(r.paid) || 0) > 0 || (Number(r.deducted) || 0) > 0);
   }
   const sum = (f) => items.reduce((s, r) => s + (Number(r[f]) || 0), 0);
@@ -512,6 +514,21 @@ router.get('/api/payroll', async (req, res) => {
     cash_advance: sum('cash_advance'), cash_paid: sum('cash_paid'),
   };
   res.json({ period, items, summary, cash_unmatched: cashUnmatched });
+});
+
+// Текущие применённые нормы по графикам за месяц (чтобы окно «Заполнить нормы» показывало
+// то, что уже стоит, а не значения по умолчанию).
+router.get('/api/norms', async (req, res) => {
+  const period = /^\d{4}-\d{2}$/.test(req.query.period) ? req.query.period : new Date().toISOString().slice(0, 7);
+  const rows = (await db.pool.query(
+    `SELECT e.schedule_type AS sched, MAX(pr.plan_days) AS plan_days, MAX(pr.plan_hours) AS plan_hours
+       FROM hr_employees e JOIN hr_payroll pr ON pr.employee_id = e.id AND pr.period = $1
+      WHERE e.status = 'active' AND e.schedule_type IS NOT NULL
+        AND (pr.plan_days IS NOT NULL OR pr.plan_hours IS NOT NULL)
+      GROUP BY e.schedule_type`, [period])).rows;
+  const norms = {};
+  rows.forEach((r) => { norms[r.sched] = { plan_days: r.plan_days, plan_hours: r.plan_hours }; });
+  res.json({ period, norms });
 });
 
 // Заполнить плановые нормы (дни/часы) по графикам за месяц — всем активным сотрудникам графика,

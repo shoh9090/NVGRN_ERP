@@ -802,14 +802,19 @@
     c.innerHTML = '';   // очищаем — иначе при повторных вызовах ведомость дорисовывается сверху (дубли)
     if (!salState.period) salState.period = curMonth();
     const NORM_DEFAULTS = { day5: { d: 22, h: 176 }, day6: { d: 26, h: 208 }, shift22: { d: 15, h: 180 } };
-    function openFillNorms() {
+    async function openFillNorms() {
+      // Подгружаем УЖЕ применённые нормы за месяц — чтобы окно показывало их, а не значения по умолчанию.
+      let current = {};
+      try { current = (await api('/norms?period=' + salState.period)).norms || {}; } catch (e) { /* нет — покажем дефолт */ }
       const rows = {};
       const body = el('div', { class: 'hrf' }, [
-        el('div', { class: 'hr-sub' }, 'Плановые нормы на месяц по графикам. Проставятся всем активным сотрудникам графика; начисление пересчитается (у офиса — сразу оклад, у почасовых — после табеля).'),
+        el('div', { class: 'hr-sub' }, 'Плановые нормы на месяц по графикам. Показаны текущие значения (если уже проставляли). Проставятся всем активным сотрудникам графика; начисление пересчитается.'),
         el('div', { style: 'display:grid;grid-template-columns:1fr 90px 90px;gap:8px;font-size:12px;color:#7c8579;font-weight:700' }, [el('span', {}, 'График'), el('span', {}, 'План дни'), el('span', {}, 'План часы')]),
         ...(DICTS.schedules || []).map((s) => {
+          const cur = current[s.code] || {};
           const def = NORM_DEFAULTS[s.code] || { d: '', h: '' };
-          const pd = minp(def.d, { placeholder: 'дни' }); const ph = minp(def.h, { placeholder: 'часы' });
+          const pd = minp(cur.plan_days != null ? cur.plan_days : def.d, { placeholder: 'дни' });
+          const ph = minp(cur.plan_hours != null ? cur.plan_hours : def.h, { placeholder: 'часы' });
           rows[s.code] = { pd, ph };
           return el('div', { style: 'display:grid;grid-template-columns:1fr 90px 90px;gap:8px;align-items:center' }, [el('span', {}, s.name), pd, ph]);
         }),
