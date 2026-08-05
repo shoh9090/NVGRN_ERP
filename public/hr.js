@@ -873,6 +873,45 @@
       try { const r = await post('/payroll/fact-from-plan', { period: salState.period, employee_ids: empIds }); toast('Факт = план проставлен: ' + r.affected); load(); }
       catch (e) { toast(e.message, true); }
     }
+    // Печать расчётных карточек (6 на A4, 2×3) — только выбранные галочками.
+    function printPayslips(emps) {
+      if (!emps || !emps.length) return;
+      const f = (n) => new Intl.NumberFormat('ru-RU').format(Math.round(Number(n) || 0));
+      const fn = (n) => (n == null || n === '') ? '—' : new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(Number(n));
+      const mo = monthLabel(salState.period);
+      const esc = (s) => String(s == null ? '' : s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+      const cards = emps.map((r) => {
+        const avans = (Number(r.ded_advance_card) || 0) + (Number(r.ded_advance_cash) || 0) + (Number(r.cash_advance) || 0);
+        const uderzh = (Number(r.deducted) || 0) - avans;
+        const bonus = (Number(r.accrued) || 0) - (Number(r.accr_fact) || 0);
+        return '<div class="card">'
+          + '<div class="ch"><span class="nm">' + esc(r.full_name) + '</span><span class="mo">' + mo + '</span></div>'
+          + '<div class="row"><span class="lbl">Оклад</span><span>' + f(r.base_salary) + '</span></div>'
+          + '<div class="sub">Дни ' + fn(r.plan_days) + '/' + fn(r.fact_days) + ' · Часы ' + fn(r.plan_hours) + '/' + fn(r.fact_hours) + '</div>'
+          + '<div class="row"><span class="lbl">Начислено (факт)</span><span>' + f(r.accr_fact) + '</span></div>'
+          + '<div class="row g"><span>Бонусы</span><span>+' + f(bonus) + '</span></div>'
+          + '<div class="row d"><span>Удержания</span><span>−' + f(uderzh) + '</span></div>'
+          + '<div class="row d"><span>Аванс</span><span>−' + f(avans) + '</span></div>'
+          + '<div class="tot"><span>К выплате</span><span>' + f(r.to_pay) + '</span></div>'
+          + '</div>';
+      }).join('');
+      const html = '<!doctype html><html><head><meta charset="utf-8"><title>Расчётные листки — ' + mo + '</title><style>'
+        + '@page{size:A4;margin:8mm}*{box-sizing:border-box}'
+        + 'body{font-family:Arial,sans-serif;margin:0;color:#14241b}'
+        + '.sheet{display:grid;grid-template-columns:1fr 1fr;gap:6mm}'
+        + '.card{break-inside:avoid;border:0.4mm dashed #999;border-radius:2mm;padding:3mm 3.5mm;height:82mm;display:flex;flex-direction:column;gap:1.1mm}'
+        + '.ch{display:flex;justify-content:space-between;align-items:baseline;border-bottom:0.3mm solid #ccc;padding-bottom:1.2mm;margin-bottom:.6mm}'
+        + '.nm{font-size:12pt;font-weight:bold}.mo{font-size:8pt;color:#777}'
+        + '.row{display:flex;justify-content:space-between;font-size:10pt}.lbl{color:#777}.sub{font-size:8.5pt;color:#777}'
+        + '.g{color:#2b6a0f}.d{color:#a32d2d}'
+        + '.tot{display:flex;justify-content:space-between;align-items:baseline;border-top:0.3mm solid #ccc;padding-top:1.2mm;margin-top:auto}'
+        + '.tot span:first-child{font-size:11pt;font-weight:bold}.tot span:last-child{font-size:14pt;font-weight:bold}'
+        + '</style></head><body><div class="sheet">' + cards + '</div>'
+        + '<scr' + 'ipt>window.onload=function(){window.print()}</scr' + 'ipt></body></html>';
+      const w = window.open('', '_blank');
+      if (!w) { toast('Разрешите всплывающие окна для печати', true); return; }
+      w.document.write(html); w.document.close();
+    }
 
     async function load() {
       box.innerHTML = '<div class="hr-loading">Считаю…</div>';
@@ -935,6 +974,7 @@
       const updBulk = () => { bulk.style.display = salSel.size ? 'flex' : 'none'; bulkN.textContent = 'Выбрано: ' + salSel.size; };
       bulk.appendChild(bulkN);
       const selEmpIds = () => [...salSel];   // salSel хранит emp_id — галочки есть у всех строк, в т.ч. «нет»
+      bulk.appendChild(el('button', { onclick: () => { const emps = salItems.filter((x) => salSel.has(x.emp_id)); if (!emps.length) return; printPayslips(emps); } }, '🖨 Печать карточек'));
       bulk.appendChild(el('button', { onclick: () => { const ids = selEmpIds(); if (!ids.length) return; if (!confirm('Проставить факт = план выбранным (' + ids.length + ')? Для тех, кто отработал весь месяц. Нужны заполненные нормы.')) return; factFromPlan(ids); } }, '📋 Факт = план'));
       bulk.appendChild(el('button', { class: 'btn-primary', onclick: () => { const ids = selEmpIds(); if (!ids.length) return; if (!confirm('Начислить зарплату по факту выбранным (' + ids.length + ')? У кого нет факта — пропустятся.')) return; accrueEmps(ids, false); } }, '✅ Начислить выбранных'));
       bulk.appendChild(el('button', { class: 'btn-ghost', onclick: () => { const ids = selEmpIds(); if (!ids.length) return; if (!confirm('Снять начисление у выбранных (' + ids.length + ')? Факт останется, суммы снова скроются.')) return; accrueEmps(ids, true); } }, '↩ Отменить начисление'));
