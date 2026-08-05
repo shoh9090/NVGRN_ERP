@@ -813,7 +813,7 @@ function payoutDue(period) { const [y, m] = period.split('-').map(Number); retur
 // Строки выплат за период: К выплате (net на руки) / Выплачено / Остаток / статус.
 async function computePayouts(period) {
   const rows = (await db.pool.query(
-    `SELECT e.id AS emp_id, e.full_name, e.department_id, d.name AS department_name, pr.*
+    `SELECT e.id AS emp_id, e.full_name, e.department_id, e.status AS emp_status, d.name AS department_name, pr.*
      FROM hr_employees e LEFT JOIN hr_departments d ON d.id = e.department_id
      LEFT JOIN hr_payroll pr ON pr.employee_id = e.id AND pr.period = $1
      WHERE e.status <> 'archived' ORDER BY e.full_name`, [period])).rows.map(withTotals);
@@ -830,13 +830,15 @@ async function computePayouts(period) {
     const paid = Number(r.paid) || 0;
     const remainder = Math.max(0, net - paid);
     let status; if (remainder <= 0.5 && net > 0.5) status = 'paid'; else if (net <= 0.5) status = 'none'; else if (overdue) status = 'overdue'; else if (paid > 0.5) status = 'partial'; else status = 'pending';
-    return { emp_id: r.emp_id, full_name: r.full_name, department_id: r.department_id, department_name: r.department_name || null, net, paid, remainder, status, payouts: byEmp[r.emp_id] || [] };
+    return { emp_id: r.emp_id, full_name: r.full_name, department_id: r.department_id, department_name: r.department_name || null, emp_status: r.emp_status, net, paid, remainder, status, payouts: byEmp[r.emp_id] || [] };
   });
 }
 router.get('/api/payouts', async (req, res) => {
   try {
     const period = /^\d{4}-\d{2}$/.test(req.query.period) ? req.query.period : new Date().toISOString().slice(0, 7);
     let items = await computePayouts(period);
+    // «Нет начисления» и уволенных без остатка к выплате в список выплат не показываем.
+    items = items.filter((x) => x.status !== 'none' && !(x.emp_status === 'fired' && x.remainder <= 0.5));
     if (req.query.department === '__none__') items = items.filter((x) => !x.department_id);
     else if (req.query.department) items = items.filter((x) => String(x.department_id) === String(req.query.department));
     if (req.query.q) { const q = String(req.query.q).trim().toLowerCase(); items = items.filter((x) => (x.full_name || '').toLowerCase().includes(q)); }
@@ -844,6 +846,28 @@ router.get('/api/payouts', async (req, res) => {
     if (req.query.status) items = items.filter((x) => x.status === req.query.status);
     res.json({ period, due: payoutDue(period), items, summary, count: items.length });
   } catch (e) { res.status(400).json({ error: e.message }); }
+});
+// Выгрузка «К выплате» в Excel (те же фильтры, что в списке; уволенных без остатка и «нет начисления» не берём).
+router.get('/api/payouts-export.xlsx', async (req, res) => {
+  try {
+    const period = /^\d{4}-\d{2}$/.test(req.query.period) ? req.query.period : new Date().toISOString().slice(0, 7);
+    let items = await computePayouts(period);
+    items = items.filter((x) => x.status !== 'none' && !(x.emp_status === 'fired' && x.remainder <= 0.5));
+    if (req.query.department === '__none__') items = items.filter((x) => !x.department_id);
+    else if (req.query.department) items = items.filter((x) => String(x.department_id) === String(req.query.department));
+    if (req.query.q) { const q = String(req.query.q).trim().toLowerCase(); items = items.filter((x) => (x.full_name || '').toLowerCase().includes(q)); }
+    const ST = { pending: 'Ожидает', partial: 'Частично', overdue: 'Просрочено', paid: 'Выплачено' };
+    const aoa = [['ФИО', 'Отдел', 'К выплате', 'Выплачено', 'Остаток', 'Статус']];
+    items.forEach((x) => aoa.push([x.full_name || '', x.department_name || '', Math.round(x.net), Math.round(x.paid), Math.round(x.remainder), ST[x.status] || x.status]));
+    aoa.push(['ИТОГО', '', Math.round(items.reduce((s, x) => s + x.net, 0)), Math.round(items.reduce((s, x) => s + x.paid, 0)), Math.round(items.reduce((s, x) => s + x.remainder, 0)), '']);
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = [{ wch: 28 }, { wch: 22 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 12 }];
+    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'К выплате');
+    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="k_vyplate_${period}.xlsx"`);
+    res.send(buf);
+  } catch (e) { res.status(400).send('Ошибка выгрузки: ' + e.message); }
 });
 // Провести выплату(ы): по каждому сотруднику — остаток (или заданная сумма для одного = частичная).
 router.post('/api/payouts/pay', J, async (req, res) => {
