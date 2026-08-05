@@ -304,7 +304,17 @@ router.post('/api/employee', J, async (req, res) => {
         if (String(old.department_id || '') !== String(newDept || '')) await addEvent(b.id, 'transfer', today, { from_text: await deptName(old.department_id), to_text: await deptName(newDept), created_by: uid });
         if ((old.position || '') !== (b.position || '')) await addEvent(b.id, 'position', today, { from_text: old.position || '—', to_text: b.position || '—', created_by: uid });
         if ((old.schedule_type || '') !== (sched || '')) await addEvent(b.id, 'schedule', today, { from_text: schedLabel(old.schedule_type), to_text: schedLabel(sched), created_by: uid });
-        if (Number(old.base_salary || 0) !== Number(numOrNull(b.base_salary) || 0)) await addEvent(b.id, 'salary', today, { from_text: fmtSum(old.base_salary), to_text: fmtSum(numOrNull(b.base_salary)), created_by: uid });
+        if (Number(old.base_salary || 0) !== Number(numOrNull(b.base_salary) || 0)) {
+          const newSal = numOrNull(b.base_salary) || 0;
+          await addEvent(b.id, 'salary', today, { from_text: fmtSum(old.base_salary), to_text: fmtSum(newSal), created_by: uid });
+          // Правка оклада в карточке = изменение с 1-го числа текущего месяца (без разбивки середины).
+          // Пишем в историю окладов и пересчитываем текущий месяц и последующие, чтобы цифры не расходились.
+          const effFrom = today.slice(0, 7) + '-01';
+          await db.pool.query('INSERT INTO hr_salary_history (employee_id, base_salary, effective_from, created_by) VALUES ($1,$2,$3,$4)', [b.id, newSal, effFrom, uid]);
+          for (const pr of (await db.pool.query('SELECT DISTINCT period FROM hr_payroll WHERE employee_id=$1 AND period >= $2', [b.id, today.slice(0, 7)])).rows) {
+            await recomputeAccrFact(b.id, pr.period);
+          }
+        }
         if ((old.status || '') !== status) {
           if (status === 'fired') await addEvent(b.id, 'fire', b.fire_date || today, { created_by: uid });
           else if (old.status === 'fired' && status === 'active') await addEvent(b.id, 'hire', today, { comment: 'Восстановлен', created_by: uid });
