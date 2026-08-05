@@ -324,7 +324,10 @@
           el('span', { style: 'font-weight:700' }, r.full_name),
           el('span', { class: 'muted' }, r.department_name || '—'),
           el('span', { class: 'tnum' }, money2(r.net)),
-          el('span', { class: 'tnum' }, money2(r.paid)),
+          el('span', { class: 'tnum' }, [
+            money2(r.paid),
+            (r.payouts && r.payouts.length ? el('div', { style: 'font-size:11px;color:#9aa295;font-weight:400', title: 'Даты выплат — клик по строке' }, ruDate(r.payouts[r.payouts.length - 1].pay_date) + (r.payouts.length > 1 ? ' (+' + (r.payouts.length - 1) + ')' : '')) : null),
+          ]),
           el('span', { class: 'tnum', style: 'font-weight:800;color:' + (r.remainder > 0.5 ? '#b25b00' : '#2e7d32') }, money2(r.remainder)),
           el('span', {}, el('span', { class: 'hr-st hr-payst-' + r.status }, PAYOUT_STATUS[r.status] || r.status)),
           el('span', {}, canPay ? el('button', { class: 'btn-ghost', style: 'padding:4px 10px;font-size:12px', onclick: (ev) => { ev.stopPropagation(); openPay([r]); } }, r.paid > 0.5 ? 'Доплатить' : 'Выплатить') : el('span', { class: 'muted', style: 'font-size:12px' }, '✓')),

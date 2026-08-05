@@ -857,11 +857,12 @@ router.get('/api/payouts-export.xlsx', async (req, res) => {
     else if (req.query.department) items = items.filter((x) => String(x.department_id) === String(req.query.department));
     if (req.query.q) { const q = String(req.query.q).trim().toLowerCase(); items = items.filter((x) => (x.full_name || '').toLowerCase().includes(q)); }
     const ST = { pending: 'Ожидает', partial: 'Частично', overdue: 'Просрочено', paid: 'Выплачено' };
-    const aoa = [['ФИО', 'Отдел', 'К выплате', 'Выплачено', 'Остаток', 'Статус']];
-    items.forEach((x) => aoa.push([x.full_name || '', x.department_name || '', Math.round(x.net), Math.round(x.paid), Math.round(x.remainder), ST[x.status] || x.status]));
-    aoa.push(['ИТОГО', '', Math.round(items.reduce((s, x) => s + x.net, 0)), Math.round(items.reduce((s, x) => s + x.paid, 0)), Math.round(items.reduce((s, x) => s + x.remainder, 0)), '']);
+    const payDates = (x) => (x.payouts || []).map((p) => p.pay_date).filter(Boolean).join(', ');
+    const aoa = [['ФИО', 'Отдел', 'К выплате', 'Выплачено', 'Дата выплаты', 'Остаток', 'Статус']];
+    items.forEach((x) => aoa.push([x.full_name || '', x.department_name || '', Math.round(x.net), Math.round(x.paid), payDates(x), Math.round(x.remainder), ST[x.status] || x.status]));
+    aoa.push(['ИТОГО', '', Math.round(items.reduce((s, x) => s + x.net, 0)), Math.round(items.reduce((s, x) => s + x.paid, 0)), '', Math.round(items.reduce((s, x) => s + x.remainder, 0)), '']);
     const ws = XLSX.utils.aoa_to_sheet(aoa);
-    ws['!cols'] = [{ wch: 28 }, { wch: 22 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 12 }];
+    ws['!cols'] = [{ wch: 28 }, { wch: 22 }, { wch: 14 }, { wch: 14 }, { wch: 18 }, { wch: 14 }, { wch: 12 }];
     const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'К выплате');
     const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
