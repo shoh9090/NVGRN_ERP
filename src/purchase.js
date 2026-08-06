@@ -83,6 +83,25 @@ router.put('/api/suppliers/:id(\\d+)', express.json(), async (req, res) => {
   res.json({ ok: true });
 });
 
+// Удаление поставщика (чистка ошибочно созданных карточек, напр. из неудачного импорта).
+// Разрешаем только если у поставщика НЕТ заявок и НЕТ оплат — иначе можно потерять историю.
+router.delete('/api/suppliers/:id(\\d+)', async (req, res) => {
+  if (!(req.user && (req.user.isAdmin || canEditOrders(req)))) return res.status(403).json({ error: 'Удаление поставщиков — админу или роли «Правка заявок».' });
+  const id = parseInt(req.params.id, 10);
+  try {
+    const ord = await db.pool.query('SELECT COUNT(*)::int AS n FROM purchase_orders WHERE supplier_id = $1', [id]);
+    const pay = await db.pool.query('SELECT COUNT(*)::int AS n FROM supplier_payments WHERE supplier_id = $1', [id]);
+    if (ord.rows[0].n > 0 || pay.rows[0].n > 0) {
+      return res.status(400).json({ error: `Нельзя удалить: у поставщика есть заявки (${ord.rows[0].n}) или оплаты (${pay.rows[0].n}). Сначала уберите их.` });
+    }
+    const r = await db.pool.query("DELETE FROM ref_counterparties WHERE id = $1 AND role_supplier = TRUE RETURNING name", [id]);
+    if (!r.rows.length) return res.status(404).json({ error: 'Поставщик не найден' });
+    await db.pool.query('DELETE FROM supplier_materials WHERE supplier_id = $1', [id]).catch(() => {});
+    await db.log(req.user.id, 'purchase_supplier_delete', `${id} «${r.rows[0].name}»`);
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 router.post('/api/suppliers', express.json(), async (req, res) => {
   const name = String(req.body.name || '').trim();
   if (!name) return res.status(400).json({ error: 'Укажите имя поставщика' });

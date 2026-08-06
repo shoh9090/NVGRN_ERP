@@ -629,8 +629,9 @@
       box.appendChild(el('p', { class: 'dict-empty' }, 'Поставщиков нет. Добавьте вручную или загрузите через «Импорт Excel».'));
       return;
     }
+    const canDel = typeof HUB_USER !== 'undefined' && (HUB_USER.isAdmin || HUB_USER.buyerEdit);
     box.appendChild(el('table', { class: 'dict-table' }, [
-      el('thead', {}, el('tr', {}, ['Имя', 'Категория', 'Статья ДДС', 'Фирма', 'Телефон', 'Товары', 'Сальдо'].map((h, i) =>
+      el('thead', {}, el('tr', {}, ['Имя', 'Категория', 'Статья ДДС', 'Фирма', 'Телефон', 'Товары', 'Сальдо', ''].map((h, i) =>
         el('th', { style: i === 6 ? 'text-align:right' : '' }, h)))),
       el('tbody', {}, data.items.map((s) =>
         el('tr', { onclick: () => openStatement(s.id) }, [
@@ -643,11 +644,24 @@
           el('td', { class: 'muted' }, s.attached_count > 0 ? '📎 ' + s.attached_count : ((s.supplies || '').slice(0, 40) || '—')),
           el('td', { class: 'tnum', style: 'text-align:right;font-weight:800;color:' + (Number(s.balance) > 0 ? 'var(--red)' : '#3f6a16') },
             fmtMoney(s.balance)),
+          el('td', { style: 'text-align:right;white-space:nowrap' }, canDel
+            ? el('button', { class: 'inv-mini', title: 'Удалить поставщика', style: 'color:#c0392b', onclick: (e) => { e.stopPropagation(); deleteSupplier(s); } }, '🗑')
+            : ''),
         ])
       )),
     ]));
   }
 
+
+  async function deleteSupplier(s) {
+    if (!confirm(`Удалить поставщика «${s.name}»?\n\nМожно удалить только если у него нет заявок и оплат. Отменить нельзя.`)) return;
+    try {
+      await api('/suppliers/' + s.id, { method: 'DELETE' });
+      toast('Поставщик удалён');
+      FOPTS = null;
+      loadSuppliers();
+    } catch (e) { toast(e.message, true); }
+  }
 
   // импорт поставщиков (файл 4 / TOTAL) — мастер с предпросмотром, не выходя из закупа
   async function importSuppliers(file) {
