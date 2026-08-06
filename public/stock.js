@@ -61,13 +61,14 @@
   let selDate = todayISO();
   let stripStart = null; // ISO даты первого дня полоски (null = авто: selDate - 3)
 
-  async function wipeStock() {
-    const word = prompt('Полная зачистка склада для тестов: остатки, движения, приёмки, передачи будут удалены.\nВведите слово ОЧИСТИТЬ для подтверждения:');
+  async function wipeStock(after) {
+    if (!confirm('ПОЛНАЯ очистка склада. Будут БЕЗВОЗВРАТНО удалены:\n\n• все остатки и вся история движений;\n• все передачи в производство;\n• все приёмки сбросятся в «Ожидается» (факт очистится).\n\nСправочники сырья/упаковки и заявки останутся. Продолжить?')) return;
+    const word = prompt('Это нельзя отменить.\nВведите слово ОЧИСТИТЬ (заглавными) для подтверждения:');
     if (!word) return;
     try {
       await api('/wipe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm: word }) });
-      toast('Склад очищен');
-      viewReceiving();
+      toast('Склад полностью очищен');
+      if (typeof after === 'function') after(); else viewReceiving();
     } catch (e) { toast(e.message, true); }
   }
 
@@ -557,6 +558,9 @@
       ]),
       el('div', { class: 'stk-datenav', style: 'display:flex;align-items:center;gap:4px' }, [
         el('label', { class: 'stk-datejump-lbl' }, ['Остаток на дату:', dateInp]), todayBtn,
+        ...((typeof HUB_USER !== 'undefined' && HUB_USER.isAdmin) ? [
+          el('button', { style: 'color:#c0392b;margin-left:12px', title: 'Полностью очистить остатки и всю историю склада', onclick: () => wipeStock(viewInventory) }, '🧹 Очистить весь склад'),
+        ] : []),
       ]),
     ]));
     if (isPast) main.appendChild(el('div', { class: 'stk-past-note', style: 'margin:6px 0;padding:8px 12px;background:rgba(140,198,63,.14);border-radius:8px;font-size:14px' },
