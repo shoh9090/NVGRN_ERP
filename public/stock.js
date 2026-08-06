@@ -189,7 +189,6 @@
         el('div', { class: 'imp-head' }, [el('h3', {}, '♻️ Бесплатный отход?')]),
         el('div', { class: 'imp-body pur-modal-body' }, [
           el('p', { style: 'font-size:16px' }, 'Есть ли бесплатный отход по этой поставке?'),
-          el('p', { class: 'muted', style: 'font-size:13px' }, 'Отход попадёт на склад бесплатно (во взаиморасчётах его нет).'),
           listWrap,
         ]),
         el('div', { class: 'imp-actions' }, [noBtn, yesBtn, saveBtn]),
