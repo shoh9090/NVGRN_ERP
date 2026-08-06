@@ -511,6 +511,7 @@
   // ================= ВКЛАДКА: РЕЗЮМЕ / ОСТАТКИ (инвентаризация) =================
   let invFilter = 'all'; // all | instock | nomove
   let invPc = '', invCat = '';
+  let invDate = null; // выбранная дата остатка (null = сегодня)
   let invData = null;
   let invCount = false; // режим быстрого пересчёта (инвентаризация одним экраном)
   let invCountComment = '';
@@ -531,7 +532,8 @@
     { key: 'today_out', label: 'Передано сег.', align: 'right', node: (m) => el('td', { class: 'tnum muted', style: 'text-align:right' }, Number(m.today_out) ? '−' + fmtQty(m.today_out) : '—') },
     { key: 'unit', label: 'Ед.', get: (m) => m.unit || '' },
     { key: 'actions', label: '', always: true, align: 'right', node: (m) => el('td', { style: 'text-align:right;white-space:nowrap' }, [
-      el('button', { class: 'inv-mini', title: 'Корректировка (инвентаризация)', onclick: () => openAdjust(m) }, '✏️'),
+      // Корректировку прячем при просмотре прошлой даты — править можно только текущий остаток.
+      ...(invDate && invDate < todayISO() ? [] : [el('button', { class: 'inv-mini', title: 'Корректировка (инвентаризация)', onclick: () => openAdjust(m) }, '✏️')]),
       el('button', { class: 'inv-mini', style: 'margin-left:4px', title: 'История корректировок', onclick: () => openInvLog(m) }, '🕘'),
     ]) },
   ];
@@ -539,14 +541,26 @@
   async function viewInventory() {
     const main = $('#stk-main');
     main.innerHTML = '';
-    invData = await api('/inventory');
+    if (!invDate) invDate = todayISO();
+    const isPast = invDate < todayISO();
+    invData = await api('/inventory?date=' + invDate);
     const data = invData;
+    // Выбор даты: остаток показывается на конец выбранного дня.
+    const dateInp = el('input', { type: 'date', class: 'stk-datejump', value: invDate, max: todayISO(),
+      onchange: (e) => { if (e.target.value) { invDate = e.target.value; invCount = false; viewInventory(); } } });
+    const todayBtn = el('button', { class: 'inv-mini', title: 'Вернуться к сегодня', style: 'margin-left:6px',
+      onclick: () => { if (invDate !== todayISO()) { invDate = todayISO(); viewInventory(); } } }, 'Сегодня');
     main.appendChild(el('div', { class: 'stk-head' }, [
       el('div', {}, [
-        el('div', { class: 'stk-today' }, 'Резюме склада — остатки для инвентаризации'),
+        el('div', { class: 'stk-today' }, isPast ? ('Остатки на конец дня — ' + ruDate(invDate)) : 'Резюме склада — остатки для инвентаризации'),
         el('div', { class: 'stk-counts' }, [el('span', { id: 'inv-count' }, 'Позиций: ' + data.items.length)]),
       ]),
+      el('div', { class: 'stk-datenav', style: 'display:flex;align-items:center;gap:4px' }, [
+        el('label', { class: 'stk-datejump-lbl' }, ['Остаток на дату:', dateInp]), todayBtn,
+      ]),
     ]));
+    if (isPast) main.appendChild(el('div', { class: 'stk-past-note', style: 'margin:6px 0;padding:8px 12px;background:rgba(140,198,63,.14);border-radius:8px;font-size:14px' },
+      '🕓 Показан остаток на конец ' + ruDate(invDate) + '. Пересчёт и корректировки доступны только на сегодня — нажмите «Сегодня».'));
 
     // Задача 1: фильтр по родительской категории + категории (каскад)
     const pcSel = el('select', { id: 'inv-pc' }, [
@@ -606,6 +620,7 @@
     const toolbar = el('div', { class: 'stk-count-bar' });
     function buildToolbar() {
       toolbar.innerHTML = '';
+      if (isPast) return; // на прошлую дату пересчёт недоступен
       if (!invCount) {
         toolbar.appendChild(el('button', { class: 'btn-primary', onclick: () => { invCount = true; render(); buildToolbar(); } }, '📋 Начать пересчёт'));
         toolbar.appendChild(el('span', { class: 'muted', style: 'font-size:13px;align-self:center' }, 'Введёте фактические остатки списком, система запишет расхождения одним действием.'));

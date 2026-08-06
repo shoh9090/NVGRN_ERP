@@ -412,7 +412,7 @@ router.get('/api/inventory', async (req, res) => {
        LEFT JOIN ref_parent_categories pc ON pc.id = c.parent_id
        WHERE pk.status='active'
      ),
-     bal AS (SELECT item_kind, item_id, SUM(qty) AS balance FROM stock_movements GROUP BY item_kind, item_id),
+     bal AS (SELECT item_kind, item_id, SUM(qty) AS balance FROM stock_movements WHERE moved_at <= $1::date GROUP BY item_kind, item_id),
      opening AS (SELECT item_kind, item_id, SUM(qty) AS s FROM stock_movements WHERE reason='opening' GROUP BY item_kind, item_id),
      today_in AS (SELECT item_kind, item_id, SUM(qty) AS s FROM stock_movements WHERE reason='receive' AND moved_at=$1::date GROUP BY item_kind, item_id),
      today_out AS (SELECT item_kind, item_id, SUM(-qty) AS s FROM stock_movements WHERE reason='production' AND moved_at=$1::date GROUP BY item_kind, item_id),
