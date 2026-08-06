@@ -360,7 +360,7 @@ router.get('/api/materials', async (req, res) => {
        FROM ref_raw_materials rm
        LEFT JOIN ref_units u ON u.id = rm.unit_id
        LEFT JOIN ref_categories c ON c.id = rm.category_id
-       WHERE rm.status = 'active'
+       WHERE rm.status = 'active' AND rm.is_waste = false
        UNION ALL
        SELECT 'packaging', pk.id, pk.code, pk.name, u.short_name, c.name
        FROM ref_packaging pk

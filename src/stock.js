@@ -5,6 +5,24 @@ const { notify } = require('./notifications');
 
 const router = express.Router();
 
+// Отход-подноменклатура: находим (или создаём один раз) бесплатную парную карточку
+// сырья «<товар> отх». Кладовщик её не выбирает — формируется автоматически.
+// Возвращает id карточки отхода для заданного основного сырья (rawId).
+async function ensureWasteItem(rawId, userId) {
+  const found = await db.pool.query('SELECT id FROM ref_raw_materials WHERE waste_of_id = $1 LIMIT 1', [rawId]);
+  if (found.rows.length) return found.rows[0].id;
+  const p = await db.pool.query('SELECT name, code, unit_id, category_id FROM ref_raw_materials WHERE id = $1', [rawId]);
+  if (!p.rows.length) return null;
+  const par = p.rows[0];
+  const ins = await db.pool.query(
+    `INSERT INTO ref_raw_materials (name, code, unit_id, category_id, status, is_waste, waste_of_id, created_by, comment)
+     VALUES ($1, $2, $3, $4, 'active', true, $5, $6, 'Отход (бесплатная подноменклатура), создан автоматически')
+     RETURNING id`,
+    [`${par.name} отх`, par.code ? `${par.code}-ОТХ` : '', par.unit_id || null, par.category_id || null, rawId, userId || null]
+  );
+  return ins.rows[0].id;
+}
+
 router.get('/', async (req, res) => {
   const settings = await db.getSettings();
   res.render('stock', { settings, user: req.user });
@@ -139,6 +157,29 @@ router.post('/api/receipt/:id(\\d+)', express.json({ limit: '2mb' }), async (req
      FROM purchase_order_items i WHERE i.order_id = $1 AND COALESCE(i.fact_qty,0) > 0`,
     [req.params.id, req.user.id]
   );
+
+  // Бесплатный отход: по каждой позиции сырья кладовщик мог указать кол-во отхода.
+  // Кладём приход по авто-карточке «<товар> отх» (цена 0). Привязка к этой приёмке
+  // (ref_type='purchase_order') — при откате/переприёмке отход удаляется/перезаписывается
+  // вместе с основным приходом (DELETE выше это уже сделал).
+  const wasteRows = Array.isArray(req.body.waste) ? req.body.waste : [];
+  for (const w of wasteRows) {
+    const oiId = parseInt(w.order_item_id);
+    const wq = Number(w.qty);
+    if (!oiId || !(wq > 0)) continue;
+    const oi = await db.pool.query(
+      "SELECT item_kind, item_id FROM purchase_order_items WHERE id = $1 AND order_id = $2 AND item_kind = 'raw'",
+      [oiId, req.params.id]
+    );
+    if (!oi.rows.length) continue; // отход только для сырья и только по позициям этой заявки
+    const wasteId = await ensureWasteItem(oi.rows[0].item_id, req.user.id);
+    if (!wasteId) continue;
+    await db.pool.query(
+      `INSERT INTO stock_movements (item_kind, item_id, qty, direction, reason, price, ref_type, ref_id, comment, moved_at, created_by)
+       VALUES ('raw', $1, $2, 'in', 'receive_waste', 0, 'purchase_order', $3, 'Бесплатный отход', now()::date, $4)`,
+      [wasteId, wq, req.params.id, req.user.id]
+    );
+  }
 
   const dev = factSum - planSum;
   const statusText = rstatus === 'received' ? 'принята полностью' : rstatus === 'partial' ? 'принята частично' : 'не приехала';
@@ -397,7 +438,7 @@ router.get('/api/inventory', async (req, res) => {
   const r = await db.pool.query(
     `WITH mats AS (
        SELECT 'raw' AS kind, rm.id, rm.code, rm.name, u.short_name AS unit, rm.characteristics,
-              rm.category_id, c.name AS category_name, c.parent_id AS pc_id, pc.name AS pc_name
+              rm.category_id, c.name AS category_name, c.parent_id AS pc_id, pc.name AS pc_name, rm.is_waste
        FROM ref_raw_materials rm
        LEFT JOIN ref_units u ON u.id = rm.unit_id
        LEFT JOIN ref_categories c ON c.id = rm.category_id
@@ -405,7 +446,7 @@ router.get('/api/inventory', async (req, res) => {
        WHERE rm.status='active'
        UNION ALL
        SELECT 'packaging', pk.id, pk.code, pk.name, u.short_name, NULL,
-              pk.category_id, c.name, c.parent_id, pc.name
+              pk.category_id, c.name, c.parent_id, pc.name, false
        FROM ref_packaging pk
        LEFT JOIN ref_units u ON u.id = pk.unit_id
        LEFT JOIN ref_categories c ON c.id = pk.category_id
@@ -422,7 +463,7 @@ router.get('/api/inventory', async (req, res) => {
        GROUP BY pii.item_kind, pii.item_id
      )
      SELECT m.kind, m.id, m.code, m.name, m.unit, m.characteristics,
-            m.category_id, m.category_name, m.pc_id, m.pc_name,
+            m.category_id, m.category_name, m.pc_id, m.pc_name, m.is_waste,
             COALESCE(o.s,0) AS opening_balance,
             COALESCE(b.balance,0) AS balance,
             COALESCE(ti.s,0) AS today_in,

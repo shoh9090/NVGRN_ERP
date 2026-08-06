@@ -294,6 +294,10 @@ async function migrate() {
   await pool.query("ALTER TABLE production_issues ADD COLUMN IF NOT EXISTS confirmed_by INTEGER").catch(()=>{});
   await pool.query("ALTER TABLE production_issue_items ADD COLUMN IF NOT EXISTS fact_qty NUMERIC").catch(()=>{});
   await pool.query("ALTER TABLE production_issue_items ADD COLUMN IF NOT EXISTS diff_comment TEXT DEFAULT ''").catch(()=>{});
+  // Отход-подноменклатура: бесплатная парная карточка сырья, создаётся автоматически при приёмке.
+  // is_waste — это карточка отхода; waste_of_id — на какой основной товар она ссылается.
+  await pool.query("ALTER TABLE ref_raw_materials ADD COLUMN IF NOT EXISTS is_waste BOOLEAN NOT NULL DEFAULT false").catch(()=>{});
+  await pool.query("ALTER TABLE ref_raw_materials ADD COLUMN IF NOT EXISTS waste_of_id INTEGER").catch(()=>{});
   await pool.query("ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS delivery_window TEXT DEFAULT ''").catch(()=>{});
   await pool.query("ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS temperature TEXT DEFAULT ''").catch(()=>{});
   await pool.query("ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS receipt_comment TEXT DEFAULT ''").catch(()=>{});
