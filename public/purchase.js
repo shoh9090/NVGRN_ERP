@@ -602,6 +602,10 @@
         el('input', { id: 'sup-q', placeholder: 'Поиск...', oninput: debounce(loadSuppliers, 300) }),
         el('button', { onclick: () => $('#sup-import-file').click(), title: 'Файл со списком поставщиков или вкладкой TOTAL' }, '📥 Импорт Excel'),
         (() => { const f = el('input', { id: 'sup-import-file', type: 'file', accept: '.xlsx,.xls,.csv', style: 'display:none', onchange: (e) => { if (e.target.files[0]) importSuppliers(e.target.files[0]); e.target.value = ''; } }); return f; })(),
+        ...((typeof HUB_USER !== 'undefined' && HUB_USER.isAdmin) ? [
+          el('button', { onclick: () => $('#sup-bal-file').click(), title: 'Проставить стартовые остатки (долги) существующим поставщикам из Excel' }, '💰 Импорт остатков'),
+          (() => { const f = el('input', { id: 'sup-bal-file', type: 'file', accept: '.xlsx,.xls,.csv', style: 'display:none', onchange: (e) => { if (e.target.files[0]) importSupplierBalances(e.target.files[0]); e.target.value = ''; } }); return f; })(),
+        ] : []),
         el('button', { class: 'btn-primary', onclick: () => openSupplierEdit(null) }, '+ Поставщик'),
       ]),
     ]));
@@ -692,6 +696,64 @@
           } catch (e) { toast(e.message, true); ev.target.disabled = false; }
         },
       }, `Загрузить ${counts.create + counts.update} строк`),
+    ]);
+  }
+
+  // Импорт стартовых остатков (долгов): сопоставляем строки файла с существующими
+  // поставщиками и проставляем opening_balance. Не создаёт новых — только обновляет.
+  async function importSupplierBalances(file) {
+    const fd = new FormData();
+    fd.append('file', file);
+    let preview;
+    try {
+      const res = await fetch('/purchase/api/suppliers/opening-import-preview', { method: 'POST', body: fd });
+      preview = await res.json();
+      if (!res.ok) throw new Error(preview.error || 'Ошибка чтения файла');
+    } catch (e) { return toast(e.message, true); }
+
+    const items = preview.items || [];
+    const matched = items.filter((r) => r.matched_id);
+    const unmatched = items.filter((r) => !r.matched_id);
+    const sumMatched = matched.reduce((a, r) => a + (Number(r.amount) || 0), 0);
+    const table = el('table', { class: 'dict-table' }, [
+      el('thead', {}, el('tr', {}, ['', 'Из файла', 'Фирма', 'Поставщик в системе', 'Совпало по', 'Остаток → долг'].map((h, i) =>
+        el('th', { style: i === 5 ? 'text-align:right' : '' }, h)))),
+      el('tbody', {}, items.map((r) =>
+        el('tr', { class: r.matched_id ? '' : 'imp-err' }, [
+          el('td', {}, r.matched_id ? '↻' : '✖'),
+          el('td', { style: 'font-weight:600' }, r.name || ''),
+          el('td', { class: 'muted' }, r.legal || ''),
+          el('td', {}, r.matched_id ? r.matched_name : el('span', { class: 'muted' }, 'не найден')),
+          el('td', { class: 'muted' }, r.match_by || '—'),
+          el('td', { class: 'tnum', style: 'text-align:right;font-weight:700' }, fmtMoney(r.amount)),
+        ])
+      )),
+    ]);
+    const body = el('div', {}, [
+      el('p', { class: 'muted' }, `Совпало с поставщиками: ${matched.length} · не найдено: ${unmatched.length}. Сумма к проставлению: ${fmtMoney(sumMatched)}. Обновятся только найденные (стартовый долг). В базу ничего не пишется, пока не подтвердите.`),
+      unmatched.length ? el('p', { style: 'color:var(--red)' }, '⚠ Не найденные строки будут пропущены — их можно завести вручную или поправить имя в файле и загрузить снова.') : null,
+      el('div', { class: 'oe-table-wrap' }, [table]),
+    ]);
+    const m = modal('💰 Предпросмотр импорта остатков', body, [
+      el('button', { onclick: () => m.close() }, 'Отмена'),
+      el('button', {
+        class: 'btn-primary',
+        onclick: async (ev) => {
+          if (!matched.length) return toast('Нет ни одного совпадения — нечего проставлять', true);
+          if (!confirm(`Проставить стартовый долг ${matched.length} поставщикам на сумму ${fmtMoney(sumMatched)}?\n\nЭто перезапишет их текущий «Стартовый долг».`)) return;
+          ev.target.disabled = true;
+          try {
+            const fd2 = new FormData();
+            fd2.append('file', file);
+            const res = await fetch('/purchase/api/suppliers/opening-import-commit', { method: 'POST', body: fd2 });
+            const r = await res.json();
+            if (!res.ok) throw new Error(r.error || 'Ошибка импорта');
+            toast(`Проставлено: ${r.applied}, пропущено: ${r.skipped}`);
+            m.close();
+            loadSuppliers();
+          } catch (e) { toast(e.message, true); ev.target.disabled = false; }
+        },
+      }, `Проставить ${matched.length}`),
     ]);
   }
 

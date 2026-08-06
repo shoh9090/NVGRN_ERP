@@ -569,6 +569,111 @@ router.post('/api/price-history/import-commit', requireAdmin, upload.single('fil
 });
 
 
+// ===== Импорт стартовых остатков (долгов) по поставщикам из Excel =====
+// Файл: строки с колонками «Имя поставщика», «Наименование фирмы», «ИНН», «Приход» (сумма долга).
+// Сопоставление с существующими поставщиками: по ИНН → по наименованию фирмы → по имени.
+const normStr = (s) => String(s == null ? '' : s).toLowerCase().replace(/\s+/g, ' ').trim();
+const normInn = (s) => String(s == null ? '' : s).replace(/\D/g, '');
+const parseMoney = (s) => {
+  const str = String(s == null ? '' : s).trim();
+  if (!str || str === '-' || /^-\s*$/.test(str)) return 0;
+  const n = parseFloat(str.replace(/[^\d.,-]/g, '').replace(/,/g, ''));
+  return isNaN(n) ? 0 : n;
+};
+// Разбор книги: находим строку заголовка и колонки; возвращаем строки {name, legal, inn, amount}.
+function parseSupplierBalances(buffer) {
+  const XLSX = require('xlsx');
+  const wb = XLSX.read(buffer, { type: 'buffer' });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+  // строка заголовка — где встречается «Имя поставщика»
+  let hRow = -1, cName = -1, cLegal = -1, cInn = -1, cAmount = -1;
+  for (let r = 0; r < Math.min(rows.length, 10); r++) {
+    const row = rows[r] || [];
+    for (let c = 0; c < row.length; c++) {
+      const v = normStr(row[c]);
+      if (v.includes('имя поставщик')) { hRow = r; cName = c; }
+      if (v.includes('наименование фирм')) cLegal = c;
+      if (v === 'инн') cInn = c;
+      if (v.includes('приход')) cAmount = c;
+    }
+    if (hRow === r) break;
+  }
+  if (hRow < 0 || cName < 0 || cAmount < 0) return null;
+  const out = [];
+  const stop = new Set(['итого', 'курс', 'общее', 'всего']);
+  for (let r = hRow + 1; r < rows.length; r++) {
+    const row = rows[r] || [];
+    const name = String(row[cName] || '').trim();
+    if (!name || stop.has(normStr(name))) continue;
+    out.push({
+      row: r + 1,
+      name,
+      legal: cLegal >= 0 ? String(row[cLegal] || '').trim() : '',
+      inn: cInn >= 0 ? String(row[cInn] || '').trim() : '',
+      amount: Math.round(parseMoney(row[cAmount])),
+    });
+  }
+  return out;
+}
+// Сопоставление одной строки файла с поставщиком из справочника.
+function matchSupplier(fileRow, suppliers) {
+  const fi = normInn(fileRow.inn), fl = normStr(fileRow.legal), fn = normStr(fileRow.name);
+  if (fi) { const s = suppliers.find((x) => normInn(x.inn) && normInn(x.inn) === fi); if (s) return { s, by: 'ИНН' }; }
+  if (fl) { const s = suppliers.find((x) => normStr(x.legal_name) === fl || normStr(x.name) === fl); if (s) return { s, by: 'фирма' }; }
+  if (fn) { const s = suppliers.find((x) => normStr(x.name) === fn || normStr(x.legal_name) === fn); if (s) return { s, by: 'имя' }; }
+  return null;
+}
+
+router.post('/api/suppliers/opening-import-preview', requireAdmin, upload.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'Файл не получен' });
+  try {
+    const parsed = parseSupplierBalances(req.file.buffer);
+    if (!parsed) return res.status(400).json({ error: 'Не нашёл заголовки «Имя поставщика» и «Приход» в файле' });
+    const suppliers = (await db.pool.query(
+      "SELECT id, name, legal_name, inn, COALESCE(opening_balance,0) AS opening_balance FROM ref_counterparties WHERE role_supplier = TRUE AND status = 'active'"
+    )).rows;
+    const items = parsed.map((fr) => {
+      const m = matchSupplier(fr, suppliers);
+      return {
+        row: fr.row, name: fr.name, legal: fr.legal, amount: fr.amount,
+        matched_id: m ? m.s.id : null,
+        matched_name: m ? m.s.name : null,
+        match_by: m ? m.by : null,
+        current: m ? Math.round(Number(m.s.opening_balance)) : null,
+      };
+    });
+    res.json({ items });
+  } catch (e) { res.status(400).json({ error: 'Ошибка чтения файла: ' + e.message }); }
+});
+
+router.post('/api/suppliers/opening-import-commit', requireAdmin, upload.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'Файл не получен' });
+  const client = await db.pool.connect();
+  try {
+    const parsed = parseSupplierBalances(req.file.buffer);
+    if (!parsed) return res.status(400).json({ error: 'Не нашёл заголовки в файле' });
+    const suppliers = (await client.query(
+      "SELECT id, name, legal_name, inn FROM ref_counterparties WHERE role_supplier = TRUE AND status = 'active'"
+    )).rows;
+    await client.query('BEGIN');
+    let applied = 0, skipped = 0;
+    for (const fr of parsed) {
+      const m = matchSupplier(fr, suppliers);
+      if (!m) { skipped++; continue; }
+      await client.query('UPDATE ref_counterparties SET opening_balance = $1, updated_at = now(), updated_by = $2 WHERE id = $3',
+        [fr.amount, req.user.id, m.s.id]);
+      applied++;
+    }
+    await client.query('COMMIT');
+    await db.log(req.user.id, 'supplier_opening_import', `обновлено=${applied}, пропущено=${skipped}`);
+    res.json({ applied, skipped });
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    res.status(400).json({ error: 'Ошибка импорта: ' + e.message });
+  } finally { client.release(); }
+});
+
 // ===== Справочник спецификаций (физические параметры на продукт) =====
 // Список продуктов (сырьё + упаковка) с признаком наличия спеки
 router.get('/api/spec-products', async (req, res) => {
