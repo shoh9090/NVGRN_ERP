@@ -80,10 +80,7 @@
         ]),
         el('input', { id: 'ord-q', placeholder: 'Поиск: номер, поставщик...', oninput: debounce(loadOrders, 300) }),
         el('button', { class: 'btn-primary', onclick: () => openOrderEditor(null) }, '+ Новая заявка'),
-        ...((typeof HUB_USER !== 'undefined' && (HUB_USER.isAdmin || HUB_USER.buyerEdit)) ? [
-          el('button', { style: 'color:#c0392b', title: 'Удалить все заявки за всё время', onclick: clearAllOrders }, '🧹 Очистить все заявки'),
-          el('button', { style: 'color:#c0392b', title: 'Удалить все ручные оплаты поставщикам до 01.08.2026', onclick: clearPaymentsBefore }, '🗑 Удалить оплаты до 01.08'),
-        ] : []),
+        ...((typeof HUB_USER !== 'undefined' && (HUB_USER.isAdmin || HUB_USER.buyerEdit)) ? [el('button', { style: 'color:#c0392b', title: 'Удалить все заявки за всё время', onclick: clearAllOrders }, '🧹 Очистить все заявки')] : []),
       ]),
     ]);
     main.appendChild(toolbar);
@@ -115,16 +112,6 @@
     try {
       const r = await api('/orders/clear-all', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
       toast('Удалено заявок: ' + r.deleted);
-      viewOrders();
-    } catch (e) { toast(e.message, true); }
-  }
-
-  async function clearPaymentsBefore() {
-    if (!confirm('Удалить ВСЕ ручные оплаты поставщикам с датой ДО 01.08.2026?\n\n• Наличка и ручные перечисления, вбитые в Закупе, — удалятся.\n• Оплаты из банковской выписки (Касса) — НЕ трогаем.\n• Заявки и склад — останутся.\n\nОтменить нельзя. Продолжить?')) return;
-    if (!confirm('Точно удаляем все ручные оплаты до 01.08.2026 безвозвратно?')) return;
-    try {
-      const r = await api('/payments/delete-before', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ before: '2026-08-01' }) });
-      toast('Удалено ручных оплат: ' + r.deleted);
       viewOrders();
     } catch (e) { toast(e.message, true); }
   }
