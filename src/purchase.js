@@ -340,6 +340,20 @@ router.post('/api/payments/:id(\\d+)/delete', express.json(), async (req, res) =
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
+// Массовое удаление РУЧНЫХ оплат до указанной даты (разовая чистка перед переносом).
+// Трогает только supplier_payments (наличка + ручные перечисления). Оплаты из выписки
+// (Касса) сюда не попадают — они считаются из транзакций Кассы и правятся там.
+router.post('/api/payments/delete-before', express.json(), async (req, res) => {
+  if (!canEditOrders(req)) return res.status(403).json({ error: 'Массовое удаление оплат — только для админа или роли «Правка заявок».' });
+  const before = String(req.body.before || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(before)) return res.status(400).json({ error: 'Укажите дату в формате ГГГГ-ММ-ДД (удаляются оплаты строго ДО неё).' });
+  try {
+    const r = await db.pool.query('DELETE FROM supplier_payments WHERE paid_at < $1::date', [before]);
+    await db.log(req.user.id, 'purchase_payments_delete_before', `удалено ручных оплат: ${r.rowCount} (до ${before})`);
+    res.json({ ok: true, deleted: r.rowCount });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 // Подотчёт закупщика удалён по решению (ломал бизнес-процесс: выдача денег жила не в Кассе).
 // Оплаты поставщикам ведутся по заявкам/FIFO; движение денег — в модуле «Касса».
 // Таблица purchaser_accountable оставлена в БД неиспользуемой (не дропаем на старте).
