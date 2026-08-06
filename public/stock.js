@@ -158,6 +158,48 @@
     main.appendChild(list);
   }
 
+  // Окно «Бесплатный отход?» при закрытии приёмки. Спрашивает Да/Нет, при «Да» —
+  // кол-во по каждому сырью (в ед. товара). Возвращает массив {order_item_id, qty}
+  // (пустой — отхода нет) либо null (отмена — приёмку не сохраняем).
+  function askWasteModal(rawLines) {
+    return new Promise((resolve) => {
+      const qtyInputs = {};
+      const listWrap = el('div', { style: 'display:none;margin-top:14px' },
+        rawLines.map((i) => {
+          const inp = el('input', { type: 'number', step: 'any', min: '0', class: 'stk-fact', style: 'width:120px', placeholder: '0' });
+          qtyInputs[i.id] = inp;
+          return el('div', { style: 'display:flex;align-items:center;gap:10px;margin-bottom:8px' }, [
+            el('span', { style: 'flex:1;font-weight:600' }, i.item_name),
+            inp, el('span', { class: 'muted' }, i.unit || ''),
+          ]);
+        }));
+      const done = (val) => { overlay.remove(); resolve(val); };
+      const finish = () => {
+        const arr = Object.entries(qtyInputs)
+          .map(([oid, inp]) => ({ order_item_id: oid, qty: Number(inp.value) }))
+          .filter((w) => w.qty > 0);
+        done(arr);
+      };
+      const noBtn = el('button', { onclick: () => done([]) }, 'Нет, отхода нет');
+      const saveBtn = el('button', { class: 'btn-primary', style: 'display:none', onclick: finish }, '💾 Записать отход');
+      const yesBtn = el('button', { class: 'btn-primary', onclick: () => {
+        listWrap.style.display = ''; yesBtn.style.display = 'none'; noBtn.textContent = 'Отмена'; noBtn.onclick = () => done([]); saveBtn.style.display = '';
+      } }, 'Да');
+      const panel = el('div', { class: 'imp-panel pur-modal', style: 'max-width:520px' }, [
+        el('div', { class: 'imp-head' }, [el('h3', {}, '♻️ Бесплатный отход?')]),
+        el('div', { class: 'imp-body pur-modal-body' }, [
+          el('p', { style: 'font-size:16px' }, 'Есть ли бесплатный отход по этой поставке?'),
+          el('p', { class: 'muted', style: 'font-size:13px' }, 'Отход попадёт на склад бесплатно (во взаиморасчётах его нет).'),
+          listWrap,
+        ]),
+        el('div', { class: 'imp-actions' }, [noBtn, yesBtn, saveBtn]),
+      ]);
+      const overlay = el('div', { class: 'imp-overlay', style: 'z-index:10000' }, [panel]);
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) done(null); }); // клик мимо = отмена
+      document.body.appendChild(overlay);
+    });
+  }
+
   async function openReceipt(id) {
     const d = await api('/receipt/' + id);
     const reasons = (await api('/reasons?scope=receipt')).items.concat((await api('/reasons?scope=spec')).items);
@@ -246,14 +288,21 @@
     const fillAll = () => { for (const k in inputs) inputs[k].inp.value = inputs[k].plan; };
     const zeroAll = () => { for (const k in inputs) inputs[k].inp.value = 0; };
 
+    let wasteData; // кэш ответа про отход (чтобы не спрашивать снова при повторной отправке)
     async function save(override) {
       // П2: мягкая проверка превышения плана
       const over = Object.values(inputs).filter((v) => Number(v.inp.value) > v.plan);
       if (over.length && !override && !confirm('По ' + over.length + ' позиц. факт больше плана. Привезли с запасом — принять как есть?')) return;
+      // Окно отхода — только по сырью и только если что-то приняли (факт > 0).
+      if (wasteData === undefined) {
+        const raws = d.items.filter((i) => i.item_kind === 'raw' && Number(inputs[i.id] && inputs[i.id].inp.value) > 0);
+        wasteData = raws.length ? await askWasteModal(raws) : [];
+        if (wasteData === null) { wasteData = undefined; return; } // отмена — приёмку не сохраняем
+      }
       const items = Object.entries(inputs).map(([iid, v]) => ({ id: iid, fact_qty: v.inp.value === '' ? 0 : Number(v.inp.value) }));
       const checks = Object.values(checkState);
       const payload = {
-        items, checks,
+        items, checks, waste: wasteData,
         temperature: tempIn.value, comment: commentIn.value, reason: reasonSel.value,
         override_spec: !!override,
       };
@@ -524,7 +573,10 @@
   const STK_COLS = [
     { key: 'num', label: '#', always: true, get: (m, i) => String(i + 1), cls: 'tnum muted' },
     { key: 'code', label: 'Артикул', get: (m) => m.code || '', cls: 'tnum muted' },
-    { key: 'name', label: 'Наименование', always: true, node: (m) => el('td', { style: 'font-weight:600' }, m.name + (m.kind === 'packaging' ? ' 📦' : '')) },
+    { key: 'name', label: 'Наименование', always: true, node: (m) => el('td', { style: 'font-weight:600' }, [
+      m.name + (m.kind === 'packaging' ? ' 📦' : ''),
+      m.is_waste ? el('span', { style: 'margin-left:6px;font-size:11px;font-weight:700;color:#8a6d0a;background:rgba(240,200,40,.18);padding:1px 6px;border-radius:6px;vertical-align:middle' }, '♻ отход') : null,
+    ]) },
     { key: 'char', label: 'Характеристика', node: (m) => el('td', { class: 'muted', style: 'max-width:320px' }, m.characteristics || '—') },
     { key: 'opening', label: 'Перв. остаток', align: 'right', node: (m) => el('td', { class: 'tnum muted', style: 'text-align:right' }, Number(m.opening_balance) !== 0 ? fmtQty(m.opening_balance) : '—') },
     { key: 'balance', label: 'Остаток', always: true, align: 'right', node: (m) => { const bal = Number(m.balance); return el('td', { class: 'tnum', style: 'text-align:right;font-weight:800;color:' + (bal > 0 ? '#3f6a16' : bal < 0 ? 'var(--red)' : 'var(--ink-faint)') }, fmtQty(bal)); } },
