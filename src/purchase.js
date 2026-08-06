@@ -159,6 +159,7 @@ router.get('/api/suppliers/:id(\\d+)/statement', async (req, res) => {
      FROM purchase_orders po
      JOIN purchase_order_items i ON i.order_id = po.id
      WHERE po.supplier_id = $1 AND po.status = 'received'
+       AND COALESCE(po.received_at::date, po.delivery_date) >= '${pfin.SETTLE_START}'
      GROUP BY po.id ORDER BY po.received_at DESC`,
     [req.params.id]
   );
@@ -177,7 +178,8 @@ router.get('/api/suppliers/:id(\\d+)/statement', async (req, res) => {
     [req.params.id]
   );
   const payments = await db.pool.query(
-    'SELECT id, amount, payment_type, paid_at, comment, currency, fx_rate, fx_amount FROM supplier_payments WHERE supplier_id = $1 ORDER BY paid_at DESC, id DESC',
+    `SELECT id, amount, payment_type, paid_at, comment, currency, fx_rate, fx_amount FROM supplier_payments
+     WHERE supplier_id = $1 AND paid_at >= '${pfin.SETTLE_START}' ORDER BY paid_at DESC, id DESC`,
     [req.params.id]
   );
   // Перечисления из банковской выписки (Касса) по ИНН — read-only строки «из выписки» (Часть 2).

@@ -8,8 +8,8 @@ const daysBetween = (a, b) => Math.round((new Date(a) - new Date(b)) / DAY_MS);
 
 // Старт учёта долгов/оплат. Всё ДО этой даты в системе не считаем — оно уже зашито в «начальный
 // остаток» поставщика (opening_balance). Так начальные остатки имеют смысл, а не задваиваются со
-// старыми документами. Дата запуска учёта — 17.07.2026.
-const SETTLE_START = '2026-07-17';
+// старыми документами. Дата запуска учёта — 07.08.2026 (склад и закуп стартуют заново с этой даты).
+const SETTLE_START = '2026-08-07';
 
 // Перечисления поставщикам из банковской выписки (Касса) — авто-оплаты во Взаиморасчётах (Часть 2).
 // Берём расходы (out) с банковских кошельков, у которых ИНН плательщика = ИНН поставщика из Закупа.
@@ -230,4 +230,4 @@ async function supplyAdvance() {
   return { issued, spent, balance: issued - spent, issued_usd, spent_usd };
 }
 
-module.exports = { enrichOrderFinance, supplierBalances, openSupplierObligations, supplierDueAgg, settlements, supplyAdvance, wireSupplierPayments };
+module.exports = { SETTLE_START, enrichOrderFinance, supplierBalances, openSupplierObligations, supplierDueAgg, settlements, supplyAdvance, wireSupplierPayments };
