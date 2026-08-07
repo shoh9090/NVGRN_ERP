@@ -5,7 +5,9 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "check": "node scripts/check.js",
+    "verify": "node scripts/check.js && node --test test/*.test.js"
   },
   "engines": {
     "node": ">=18"

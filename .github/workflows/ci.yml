@@ -1,0 +1,28 @@
+name: Проверка перед деплоем
+
+# Гоняем на каждый пуш и на каждый Pull Request — чтобы сломанный код было видно
+# ДО того, как Railway задеплоит его в прод.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    name: Синтаксис, шаблоны, охранные правила, тесты
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Установка зависимостей
+        run: npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+
+      - name: Проверка (синтаксис JS + EJS + охранные правила)
+        run: npm run check
+
+      - name: Тесты
+        run: npm test
