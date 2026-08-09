@@ -1,5 +1,5 @@
 /* complaints.css — стили блока «Претензии». Опирается на style.css / purchase.css. */
-#cmp-main { padding: 16px; max-width: 1200px; margin: 0 auto; }
+#cmp-main { padding: 16px; max-width: var(--page-max); margin: 0 auto; }
 
 .cmp-filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
 .cmp-f { padding: 7px 9px; border: 1px solid #d8dcd6; border-radius: 8px; font-size: 13px; background: #fff; }

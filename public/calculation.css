@@ -1,6 +1,6 @@
 /* calculation.css — плитка «Калькуляция», вкладка «Справочники». Тема Hub. */
 :root { --ink:#14241b; --paper:#f4f2ea; --forest:#163a28; --lime:#8cc63f; --muted:#7c8579; --line:#e3e0d4; --soft:#fbfaf5; --danger:#c0392b; --warn:#b25b00; }
-#calc-main { max-width: 1500px; margin: 0 auto; padding: 14px; }
+#calc-main { max-width: var(--page-max); margin: 0 auto; padding: 14px; }
 
 /* ghost-кнопки читаемы на светлом фоне (глобальный .btn-ghost белый для тёмной шапки) */
 #calc-main .btn-ghost { background:#fff; border:1px solid var(--line); color:var(--forest); }

@@ -4,7 +4,7 @@
 
 /* Вкладки */
 .pur-tabs{
-  display:flex;gap:6px;padding:12px 24px 0;max-width:1120px;margin:0 auto;width:100%;
+  display:flex;gap:6px;padding:12px 24px 0;max-width:var(--page-max);margin:0 auto;width:100%;
   overflow-x:auto;
 }
 .pur-tab{
@@ -14,7 +14,7 @@
 .pur-tab:hover{background:var(--surface-2);color:var(--ink)}
 .pur-tab.active{background:var(--lime-soft);color:#3f6a16;border-color:#d3e8b4}
 
-.pur-main{max-width:1120px;margin:0 auto;width:100%;padding:14px 24px 90px;flex:1}
+.pur-main{max-width:var(--page-max);margin:0 auto;width:100%;padding:14px 24px 90px;flex:1}
 
 .pur-toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px}
 .pur-toolbar h2{margin:0;font-family:'Lora',serif;font-weight:600;font-size:21px}
