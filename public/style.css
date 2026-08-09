@@ -119,6 +119,53 @@ label input,label select{margin-top:5px;font-weight:500;text-transform:none;lett
 .topbar .btn-ghost{color:var(--ink-soft);border:1px solid var(--line);background:var(--surface)}
 .topbar .btn-ghost:hover{background:var(--surface-2);border-color:#cfc9b9}
 .topbar .muted{color:var(--ink-soft)}
+
+/* ===== Колокольчик уведомлений (общий для всех плиток) =====
+   Раньше эти стили лежали только в stock.css — на остальных страницах панель
+   выводилась без оформления (сплошные подчёркнутые ссылки). Теперь здесь,
+   в общем style.css, который подключают все модули. */
+.bell-root{position:relative}
+.bell-btn{position:relative;background:none;border:none;font-size:20px;line-height:1;cursor:pointer;padding:5px 8px;border-radius:10px}
+.bell-btn:hover{background:var(--surface-2)}
+.bell-badge{
+  position:absolute;top:-1px;right:0;background:var(--red);color:#fff;font-size:10px;font-weight:800;
+  min-width:17px;height:17px;border-radius:9px;display:flex;align-items:center;justify-content:center;
+  padding:0 4px;border:2px solid var(--surface);box-sizing:content-box;
+}
+.bell-panel{
+  position:absolute;top:calc(100% + 8px);right:0;width:400px;max-width:calc(100vw - 24px);
+  background:var(--surface);border:1px solid var(--line);border-radius:14px;
+  box-shadow:var(--shadow-lg);z-index:90;overflow:hidden;text-align:left;
+}
+.bell-head{
+  display:flex;justify-content:space-between;align-items:center;gap:10px;
+  padding:11px 14px;border-bottom:1px solid var(--line);
+  font-weight:800;font-size:14px;color:var(--ink);background:var(--surface-2);
+}
+.bell-readall{
+  background:var(--surface);border:1px solid var(--line);border-radius:8px;
+  color:var(--forest);font-weight:700;font-size:12px;padding:4px 10px;cursor:pointer;white-space:nowrap;
+}
+.bell-readall:hover{background:var(--lime-soft);border-color:var(--lime-d)}
+.bell-list{max-height:min(440px,70vh);overflow-y:auto;overscroll-behavior:contain}
+/* Каждое уведомление — карточка: заголовок, пояснение, время. Без подчёркиваний. */
+.bell-item{
+  display:block;padding:10px 14px 10px 12px;border-bottom:1px solid var(--line-soft);
+  text-decoration:none;color:var(--ink);border-left:3px solid transparent;
+}
+.bell-item:last-child{border-bottom:none}
+.bell-item:hover{background:var(--surface-2);text-decoration:none}
+.bell-item.unread{background:var(--lime-soft);border-left-color:var(--lime-d)}
+.bell-item-title{font-weight:700;font-size:13px;line-height:1.35;color:var(--ink)}
+.bell-item-body{font-size:12.5px;line-height:1.4;color:var(--ink-soft);margin-top:3px}
+.bell-item-date{font-size:11px;color:var(--ink-faint);margin-top:4px;font-variant-numeric:tabular-nums}
+/* Цветная левая полоса по важности (класс ставит bell.js) */
+.bell-item.bell-warning{border-left-color:var(--amber)}
+.bell-item.bell-warning.unread{background:var(--amber-soft)}
+.bell-item.bell-success{border-left-color:var(--lime-d)}
+.bell-empty{padding:26px 16px;text-align:center;color:var(--ink-faint);font-size:13px}
+@media (max-width:560px){ .bell-panel{width:calc(100vw - 24px);right:-8px} }
+
 .user-menu{position:relative}
 .user-menu summary{
   cursor:pointer;list-style:none;padding:8px 16px;font-weight:700;font-size:13px;
