@@ -189,3 +189,32 @@
   .calc-pack-read { grid-template-columns: 1fr auto; }
   .calc-pack-read > :nth-child(3) { grid-column: 1 / -1; }
 }
+
+/* ===== Матрица себестоимости (ТЗ 17.3) =====
+   Изделия по колонкам, показатели по строкам. Закреплены шапка и первая колонка,
+   как в Excel: при прокрутке видно, что за показатель и что за изделие. */
+.calc-mx-wrap { overflow: auto; max-height: 74vh; border: 1px solid var(--line);
+  border-radius: var(--radius); background: var(--surface); }
+.calc-mx { border-collapse: separate; border-spacing: 0; min-width: max-content; }
+.calc-mx thead th { position: sticky; top: 0; z-index: 3; background: #f2f5f1;
+  border-bottom: 1px solid var(--line); }
+.calc-mx th.calc-mx-first { position: sticky; left: 0; z-index: 4; background: #f2f5f1;
+  text-align: left; min-width: 232px; max-width: 300px; border-right: 1px solid var(--line);
+  font-size: 12px; font-weight: 700; color: var(--ink); text-transform: none; letter-spacing: 0; }
+.calc-mx tbody th.calc-mx-first { z-index: 2; background: var(--surface-2); }
+.calc-mx th.calc-mx-col { min-width: 150px; cursor: pointer; text-transform: none;
+  letter-spacing: 0; font-size: 12px; color: var(--ink); vertical-align: top; }
+.calc-mx th.calc-mx-col:hover { background: var(--lime-soft); }
+.calc-mx th.calc-mx-col.bad { background: #fbeee9; }
+.calc-mx td { border-bottom: 1px solid var(--line-soft); padding: 7px 11px; }
+.calc-mx tbody tr:hover td { background: #fbfaf4; }
+.calc-mx tr.calc-mx-strong td, .calc-mx tr.calc-mx-strong th { font-weight: 800; background: #f7f9f5; }
+.calc-mx tr.calc-mx-strong:hover td { background: #f2f5f1; }
+.calc-mx .calc-mx-neg { color: var(--red); }
+
+@media (max-width: 760px) {
+  /* Узкий экран: матрицу не сжимаем, прокручиваем; первая колонка уже (ТЗ 18.1) */
+  .calc-mx th.calc-mx-first { min-width: 150px; max-width: 170px; font-size: 11px; }
+  .calc-mx th.calc-mx-col { min-width: 120px; }
+  .calc-mx-wrap { max-height: 66vh; }
+}

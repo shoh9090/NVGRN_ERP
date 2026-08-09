@@ -13,6 +13,7 @@ const engine = require('./calculation-engine');
 const sources = require('./calculation-sources');
 const groupPolicy = require('./calculation-group-policy');
 const { ensureCalculationSchema } = require('./calculation-schema');
+const matrix = require('./calculation-matrix');
 
 const router = express.Router();
 const J = express.json({ limit: '2mb' });
@@ -829,5 +830,205 @@ async function nomenclatureInfo(items) {
   }
   return map;
 }
+
+// ===========================================================================
+// Этап 3: матрица, план выпуска, утверждение версии, история
+// ===========================================================================
+
+// Матрица себестоимости (ТЗ 17.3). Всё считает сервер, строки приходят готовыми.
+router.get('/api/matrix', async (req, res) => {
+  try {
+    const m = await matrix.buildMatrix(db.pool, {
+      group_id: req.query.group_id === 'none' ? 'none' : intOrNull(req.query.group_id),
+      period: req.query.period,
+      output_mode: req.query.output_mode,
+    });
+    delete m._full;   // полные результаты нужны только утверждению
+    res.json(m);
+  } catch (e) {
+    console.error('[КАЛЬКУЛЯЦИЯ] матрица:', e.message);
+    res.status(400).json({ error: 'Не удалось собрать матрицу: ' + e.message });
+  }
+});
+
+// Период: план выпуска по изделиям + расшифровка источников (ТЗ 17.7, 21.1).
+router.get('/api/periods/:period/plan', async (req, res) => {
+  try {
+    const period = String(req.params.period);
+    if (!/^\d{4}-\d{2}$/.test(period)) return res.status(400).json({ error: 'Период указывается как ГГГГ-ММ' });
+    const pr = (await db.pool.query('SELECT * FROM calculation_periods WHERE period=$1', [period])).rows[0] || null;
+    const rows = (await db.pool.query(
+      `SELECT p.id AS product_id, p.name, g.name AS group_name, g.sort_order AS group_sort_order,
+              pp.planned_output_qty, pp.actual_output_qty, pp.actual_comment
+       FROM calculation_products p
+       LEFT JOIN calculation_groups g ON g.id = p.group_id
+       LEFT JOIN calculation_period_products pp ON pp.product_id = p.id AND pp.period_id = $1
+       WHERE p.status = 'active'
+       ORDER BY COALESCE(g.sort_order,9999), COALESCE(g.name,'Я'), p.name`,
+      [pr ? pr.id : -1])).rows;
+    const fot = await sources.monthlyFot(db.pool, period);
+    const cash = await sources.cashExpensesByBucket(db.pool, period);
+    const planned = rows.reduce((a, x) => a + asNum(x.planned_output_qty), 0);
+    const actual = rows.reduce((a, x) => a + asNum(x.actual_output_qty), 0);
+    res.json({
+      period, period_row: pr, items: rows,
+      totals: { planned, actual },
+      fot, cash,
+      // Ссылка на операции Кассы того же месяца (ТЗ 8.6).
+      cash_link: '/cash?tab=tx&from=' + period + '-01',
+    });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Сохранение планового (и фактического) выпуска по изделиям.
+router.post('/api/periods/:period/plan', J, async (req, res) => {
+  if (!canEdit(req)) return denyEdit(res);
+  const period = String(req.params.period);
+  if (!/^\d{4}-\d{2}$/.test(period)) return res.status(400).json({ error: 'Период указывается как ГГГГ-ММ' });
+  const items = Array.isArray((req.body || {}).items) ? req.body.items : [];
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    let pr = (await client.query('SELECT * FROM calculation_periods WHERE period=$1 FOR UPDATE', [period])).rows[0];
+    if (!pr) {
+      pr = (await client.query(
+        `INSERT INTO calculation_periods (period, source_period, vat_rate, profit_tax_rate, status, created_by)
+         VALUES ($1,$1,12,15,'draft',$2) RETURNING *`, [period, req.user.id])).rows[0];
+    }
+    if (pr.actual_status === 'closed') throw new Error('Фактический месяц закрыт: сначала переоткройте его');
+    for (const it of items) {
+      const pid = intOrNull(it.product_id);
+      if (!pid) continue;
+      const plannedGiven = it.planned_output_qty !== undefined;
+      const actualGiven = it.actual_output_qty !== undefined;
+      const planned = asNum(it.planned_output_qty);
+      if (plannedGiven && planned < 0) throw new Error('Плановый выпуск не может быть отрицательным');
+      const actual = it.actual_output_qty === null || it.actual_output_qty === '' ? null : asNum(it.actual_output_qty);
+      if (actualGiven && actual !== null && actual < 0) throw new Error('Фактический выпуск не может быть отрицательным');
+      await client.query(
+        `INSERT INTO calculation_period_products
+           (period_id, product_id, planned_output_qty, actual_output_qty, actual_comment, actual_source, actual_updated_by, actual_updated_at)
+         VALUES ($1,$2,$3,$4,$5,'manual',$6, CASE WHEN $4 IS NULL THEN NULL ELSE now() END)
+         ON CONFLICT (period_id, product_id) DO UPDATE SET
+           planned_output_qty = CASE WHEN $7 THEN EXCLUDED.planned_output_qty ELSE calculation_period_products.planned_output_qty END,
+           actual_output_qty  = CASE WHEN $8 THEN EXCLUDED.actual_output_qty  ELSE calculation_period_products.actual_output_qty END,
+           actual_comment     = CASE WHEN $8 THEN EXCLUDED.actual_comment     ELSE calculation_period_products.actual_comment END,
+           actual_updated_by  = CASE WHEN $8 THEN EXCLUDED.actual_updated_by  ELSE calculation_period_products.actual_updated_by END,
+           actual_updated_at  = CASE WHEN $8 THEN now() ELSE calculation_period_products.actual_updated_at END`,
+        [pr.id, pid, planned, actual, String(it.actual_comment || ''), req.user.id, plannedGiven, actualGiven]);
+    }
+    await client.query('UPDATE calculation_periods SET updated_at=now() WHERE id=$1', [pr.id]);
+    await client.query('COMMIT');
+    await db.log(req.user.id, 'calculation_plan_update', { period, items: items.length });
+    res.json({ ok: true, period_id: pr.id });
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    res.status(400).json({ error: e.message });
+  } finally { client.release(); }
+});
+
+// Утверждение версии (ТЗ 9.2, 20.6). Только администратор, всё в одной транзакции.
+router.post('/api/periods/:period/approve', J, async (req, res) => {
+  if (!canApprove(req)) return res.status(403).json({ error: 'Утверждать версию может только администратор' });
+  const period = String(req.params.period);
+  if (!/^\d{4}-\d{2}$/.test(period)) return res.status(400).json({ error: 'Период указывается как ГГГГ-ММ' });
+  const client = await db.pool.connect();
+  try {
+    // Считаем ВСЕ активные изделия периода, а не только выбранную группу.
+    const m = await matrix.buildMatrix(db.pool, { period });
+    if (!m.columns.length) throw new Error('Нет активных изделий: утверждать нечего');
+    const blocked = m._full.filter((c) => !c.result.can_approve);
+    if (blocked.length) {
+      const err = new Error('Утверждение невозможно: ' + blocked.length + ' изделий с блокирующими ошибками');
+      err.details = blocked.slice(0, 20).map((c) => ({ product: c.name, errors: c.result.errors.map((e) => e.message) }));
+      throw err;
+    }
+
+    await client.query('BEGIN');
+    let pr = (await client.query('SELECT * FROM calculation_periods WHERE period=$1 FOR UPDATE', [period])).rows[0];
+    if (!pr) throw new Error('Период не создан: сначала заполните план выпуска');
+
+    // Защита от повторного нажатия: уже есть активная версия этого периода с теми же данными?
+    const nextRev = (await client.query(
+      `SELECT COALESCE(MAX(revision_no),0)+1 AS n FROM calculation_versions
+       WHERE period_id=$1 AND version_kind='approved'`, [pr.id])).rows[0].n;
+
+    // Предыдущая действующая версия уходит в историю (не удаляется).
+    await client.query(
+      `UPDATE calculation_versions SET status='archived'
+       WHERE version_kind='approved' AND status='active'`);
+
+    const ver = (await client.query(
+      `INSERT INTO calculation_versions
+         (period_id, version_kind, revision_no, status, common_inputs_json, common_sources_json,
+          formula_version, comment, created_by, approved_by, approved_at)
+       VALUES ($1,'approved',$2,'active',$3,$4,$5,$6,$7,$7,now()) RETURNING *`,
+      [pr.id, nextRev,
+        JSON.stringify({ period, output: m.output, kpi: m.kpi }),
+        JSON.stringify({ fot: m.fot, cash: m.cash, output: m.output, warnings: m.warnings }),
+        m.formula_version, String((req.body || {}).comment || ''), req.user.id])).rows[0];
+
+    // Снимок по каждому изделию: входы, источники цен и результат формул.
+    for (const c of m._full) {
+      await client.query(
+        `INSERT INTO calculation_snapshots
+           (version_id, product_id, recipe_id, inputs_json, sources_json, result_json, formula_version, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [ver.id, c.product_id, c.recipe_id,
+          JSON.stringify({ batch_output_qty: c.result.inputs.batch_output_qty, commercial: c.result.inputs.commercial, packaging_source: c.packaging_source }),
+          JSON.stringify({ rows: c.result.rows, group: { id: c.group_id, name: c.group_name } }),
+          JSON.stringify({ layers: c.result.layers, commercial: c.result.commercial, recommended: c.result.recommended, fot: c.result.fot, overheads: c.result.overheads }),
+          c.result.formula_version, req.user.id]);
+      // Черновик рецептуры утверждается в той же транзакции (ТЗ 20.2).
+      if (c.recipe_id) {
+        await client.query(
+          `UPDATE calculation_recipes SET status='approved', approved_by=$1, approved_at=now(),
+                  valid_from = COALESCE(valid_from, CURRENT_DATE)
+           WHERE id=$2 AND status='draft'`, [req.user.id, c.recipe_id]);
+      }
+    }
+
+    await client.query(
+      `UPDATE calculation_periods SET status='active', approved_by=$1, approved_at=now(), updated_at=now() WHERE id=$2`,
+      [req.user.id, pr.id]);
+    await client.query('COMMIT');
+    await db.log(req.user.id, 'calculation_version_approve', { period, version_id: ver.id, revision_no: nextRev, products: m._full.length });
+    res.json({ ok: true, version_id: ver.id, revision_no: nextRev, products: m._full.length });
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    res.status(400).json({ error: e.message, details: e.details });
+  } finally { client.release(); }
+});
+
+// История версий (ТЗ 17.8)
+router.get('/api/history', async (req, res) => {
+  try {
+    const r = await db.pool.query(
+      `SELECT v.*, p.period,
+              (SELECT COUNT(*)::int FROM calculation_snapshots s WHERE s.version_id = v.id) AS products,
+              cu.full_name AS created_name, au.full_name AS approved_name
+       FROM calculation_versions v
+       JOIN calculation_periods p ON p.id = v.period_id
+       LEFT JOIN users cu ON cu.id = v.created_by
+       LEFT JOIN users au ON au.id = v.approved_by
+       ORDER BY v.created_at DESC LIMIT 100`);
+    res.json({ items: r.rows });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Снимок версии: изделия и их зафиксированный расчёт.
+router.get('/api/versions/:id(\\d+)', async (req, res) => {
+  try {
+    const v = (await db.pool.query(
+      `SELECT v.*, p.period FROM calculation_versions v
+       JOIN calculation_periods p ON p.id = v.period_id WHERE v.id=$1`, [req.params.id])).rows[0];
+    if (!v) return res.status(404).json({ error: 'Версия не найдена' });
+    const s = (await db.pool.query(
+      `SELECT s.*, pr.name AS product_name FROM calculation_snapshots s
+       LEFT JOIN calculation_products pr ON pr.id = s.product_id
+       WHERE s.version_id=$1 ORDER BY pr.name`, [req.params.id])).rows;
+    res.json({ version: v, snapshots: s });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
 
 module.exports = router;

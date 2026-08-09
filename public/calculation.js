@@ -115,7 +115,327 @@
     main.appendChild(box);
     if (tab === 'products') return viewProducts(box);
     if (tab === 'groups') return viewGroups(box);
+    if (tab === 'matrix') return viewMatrix(box);
+    if (tab === 'history') return viewHistory(box);
     return viewSoon(box, tab);
+  }
+
+  // ===========================================================================
+  // Вкладка «Калькуляция» — матрица (ТЗ 17.2, 17.3)
+  // ===========================================================================
+  // Все цифры приходят готовыми строками с сервера; здесь только отображение.
+  const matrixFilter = { group: '', period: '', detail: false };
+  let MATRIX = null;
+
+  async function viewMatrix(box) {
+    box.innerHTML = '';
+    if (!matrixFilter.period) matrixFilter.period = (BOOT.period && BOOT.period.period) || new Date().toISOString().slice(0, 7);
+
+    box.appendChild(el('div', { class: 'calc-head' }, [
+      el('div', {}, [
+        el('div', { class: 'calc-h2' }, 'Калькуляция себестоимости'),
+        el('div', { class: 'calc-sub' }, 'Изделия по колонкам, показатели по строкам — как в привычном Excel. Группа = отдельный лист.'),
+      ]),
+      el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;align-items:center' }, [
+        el('span', { class: 'calc-f-lbl' }, 'Период'),
+        el('input', { type: 'month', value: matrixFilter.period, style: 'width:auto',
+          onchange: (e) => { matrixFilter.period = e.target.value; loadMatrix(); } }),
+        el('button', { class: 'calc-btn', onclick: () => { matrixFilter.detail = !matrixFilter.detail; drawMatrix(); } },
+          matrixFilter.detail ? '▤ Кратко' : '▦ Подробно'),
+        canEdit() ? el('button', { class: 'calc-btn', onclick: () => openPlan(matrixFilter.period) }, '📋 План выпуска') : null,
+      ]),
+    ]));
+
+    box.appendChild(groupTabs(matrixFilter.group, (value) => { matrixFilter.group = value; loadMatrix(); }));
+    box.appendChild(el('div', { id: 'calc-matrix-box' }));
+    await loadMatrix();
+  }
+
+  async function loadMatrix() {
+    const host = $('#calc-matrix-box'); if (!host) return;
+    host.innerHTML = '';
+    host.appendChild(el('div', {}, [el('div', { class: 'calc-skel' }), el('div', { class: 'calc-skel' }), el('div', { class: 'calc-skel' })]));
+    const p = new URLSearchParams({ period: matrixFilter.period });
+    if (matrixFilter.group) p.set('group_id', matrixFilter.group);
+    try { MATRIX = await api('/matrix?' + p.toString()); }
+    catch (e) { host.innerHTML = ''; host.appendChild(el('div', { class: 'calc-empty' }, 'Ошибка: ' + e.message)); return; }
+    drawMatrix();
+  }
+
+  function drawMatrix() {
+    const host = $('#calc-matrix-box'); if (!host || !MATRIX) return;
+    host.innerHTML = '';
+    const m = MATRIX;
+
+    // Верхние показатели — компактные карточки (ТЗ 17.2).
+    const k = m.kpi || {};
+    const kpiCard = (label, value, cls) => el('div', { class: 'calc-sum-card' + (cls ? ' ' + cls : '') }, [
+      el('div', { class: 'calc-sum-lbl' }, label),
+      el('div', { class: 'calc-sum-val' }, value),
+    ]);
+    const av = BOOT.active_version;
+    host.appendChild(el('div', { class: 'calc-sum', style: 'margin-bottom:12px' }, [
+      kpiCard('Активных изделий', String(k.products || 0)),
+      kpiCard('Без полной цены', String(k.without_price || 0), k.without_price ? 'bad' : null),
+      kpiCard('Предупреждение по марже', String(k.margin_warnings || 0)),
+      kpiCard('Средняя чистая маржа', k.avg_net_margin === null || k.avg_net_margin === undefined ? '—' : pct(k.avg_net_margin), 'accent'),
+      kpiCard('Действующая версия', av ? '№' + av.revision_no : '—'),
+    ]));
+
+    // Сводка источников периода: выпуск, ФОТ, расходы.
+    const out = m.output || {};
+    host.appendChild(el('div', { class: 'calc-recipe-note' }, [
+      'Период ' + m.period + '. Общий выпуск для распределения: '
+      + (out.total ? qty(out.total) + ' ед. (план, заполнено ' + out.filled + ' из ' + out.products + ')' : 'не задан')
+      + '. ФОТ с налогами за месяц: ' + money(m.fot ? m.fot.total_load : 0) + ' сум.',
+      canEdit() ? el('button', { class: 'calc-btn tiny', style: 'margin-left:8px', onclick: () => openPlan(m.period) }, 'Заполнить план') : null,
+    ]));
+
+    (m.warnings || []).forEach((w) => host.appendChild(el('div', { class: 'calc-msg warn' }, '⚠️ ' + w.message)));
+
+    if (!m.columns.length) {
+      host.appendChild(el('div', { class: 'calc-empty' }, [
+        el('div', { class: 'calc-empty-h' }, 'В этой группе нет изделий'),
+        el('div', { class: 'calc-empty-t' }, 'Добавьте изделия на вкладке «Изделия» — они сразу появятся здесь колонками.'),
+        el('button', { class: 'calc-btn', onclick: () => { tab = 'products'; render(); } }, 'Перейти к изделиям'),
+      ]));
+      return;
+    }
+
+    // Таблица: первая колонка — показатель, дальше по колонке на изделие.
+    const cols = m.columns;
+    const thead = el('thead', {}, el('tr', {}, [
+      el('th', { class: 'calc-mx-first' }, 'Показатель'),
+      ...cols.map((c) => el('th', { class: 'calc-mx-col' + (c.can_approve ? '' : ' bad'), title: 'Открыть карточку изделия',
+        onclick: () => openProduct(c.product_id) }, [
+        el('div', { style: 'font-weight:800' }, c.name),
+        el('div', { class: 'calc-src' }, c.group_name || 'без группы'),
+        c.can_approve ? null : el('div', { class: 'calc-src', style: 'color:var(--red)' }, 'есть блокирующая ошибка'),
+      ])),
+    ]));
+    const rows = (m.rows || []).filter((r) => matrixFilter.detail || !r.detail);
+    const fmt = (v, f) => {
+      if (v === null || v === undefined) return '—';
+      if (f === 'money') return money(v);
+      if (f === 'money0') return money(v, 0);
+      if (f === 'pct') return pct(v);
+      if (f === 'qty') return qty(v);
+      return String(v);
+    };
+    const tb = el('tbody', {}, rows.map((r) => el('tr', { class: r.strong ? 'calc-mx-strong' : '' }, [
+      el('th', { class: 'calc-mx-first' }, r.label),
+      ...r.values.map((v) => {
+        const negative = r.sign && typeof v === 'number' && v < 0;
+        return el('td', { class: 'calc-num' + (negative ? ' calc-mx-neg' : '') }, fmt(v, r.format));
+      }),
+    ])));
+    host.appendChild(el('div', { class: 'calc-mx-wrap' }, el('table', { class: 'calc-table calc-mx' }, [thead, tb])));
+    host.appendChild(el('div', { class: 'calc-sub', style: 'margin-top:8px' },
+      'Клик по названию изделия открывает карточку с расшифровкой каждой цифры. Общие условия (НДС, ретро, налог, резерв брака) и упаковка берутся из группы.'));
+  }
+
+  // ---------------------------------------------------------------------------
+  // План выпуска периода + источники + утверждение версии
+  // ---------------------------------------------------------------------------
+  async function openPlan(period) {
+    let d;
+    try { d = await api('/periods/' + period + '/plan'); } catch (e) { return toast(e.message, true); }
+    const inputs = new Map();
+    const totalEl = el('div', { class: 'calc-sum-val' }, '');
+    const recalcTotal = () => {
+      let sum = 0;
+      inputs.forEach((inp) => { sum += Number(inp.value) || 0; });
+      totalEl.textContent = qty(sum) + ' ед.';
+    };
+    const rowsEl = (d.items || []).map((it) => {
+      const inp = el('input', { type: 'number', step: '1', min: '0', class: 'calc-num-in',
+        value: it.planned_output_qty === null || it.planned_output_qty === undefined ? '' : Number(it.planned_output_qty),
+        oninput: recalcTotal, disabled: canEdit() ? null : true });
+      inputs.set(it.product_id, inp);
+      return el('tr', {}, [
+        el('td', {}, [el('div', { style: 'font-weight:700' }, it.name), el('div', { class: 'calc-src' }, it.group_name || 'без группы')]),
+        el('td', { style: 'width:150px' }, inp),
+      ]);
+    });
+    recalcTotal();
+
+    const fot = d.fot || {};
+    const fotBlock = el('div', { class: 'calc-block' }, [
+      el('div', { class: 'calc-block-h' }, 'ФОТ и налоги месяца · источник: Персонал'),
+      el('div', { class: 'calc-block-b' }, [
+        el('div', { class: 'calc-sum' }, [
+          ['Начислено', fot.accrued], ['ИНПС', fot.inps], ['НДФЛ', fot.ndfl], ['Соцналог', fot.social],
+        ].map(([l, v]) => el('div', { class: 'calc-sum-card' }, [
+          el('div', { class: 'calc-sum-lbl' }, l), el('div', { class: 'calc-sum-val' }, money(v)),
+        ])).concat([el('div', { class: 'calc-sum-card accent' }, [
+          el('div', { class: 'calc-sum-lbl' }, 'Полная нагрузка ФОТ'), el('div', { class: 'calc-sum-val' }, money(fot.total_load)),
+        ])])),
+        el('div', { class: 'calc-sub', style: 'margin:10px 0 0' }, 'Все четыре части показаны отдельно и полностью входят в фонд. Ничего не спрятано в итоге.'),
+        ...(fot.warnings || []).map((w) => el('div', { class: 'calc-msg warn' }, '⚠️ ' + w.message)),
+      ]),
+    ]);
+
+    const cash = d.cash || {};
+    const bucketNames = { production: 'Производственные', admin: 'Административные', commercial: 'Коммерческие', logistics: 'Логистика', finance: 'Финансовые' };
+    const cashLines = (cash.lines || []).filter((x) => Number(x.amount) > 0);
+    const cashBlock = el('div', { class: 'calc-block' }, [
+      el('div', { class: 'calc-block-h' }, [
+        el('span', {}, 'Расходы месяца · источник: Касса'),
+        el('a', { href: d.cash_link || '/cash', target: '_blank', class: 'calc-btn tiny', style: 'text-decoration:none' }, 'Открыть операции в Кассе →'),
+      ]),
+      el('div', { class: 'calc-block-b' }, [
+        el('div', { class: 'calc-sum' }, Object.keys(bucketNames).map((key) => el('div', { class: 'calc-sum-card' }, [
+          el('div', { class: 'calc-sum-lbl' }, bucketNames[key]),
+          el('div', { class: 'calc-sum-val' }, money((cash.buckets || {})[key])),
+        ]))),
+        cashLines.length ? el('div', { class: 'calc-table-wrap', style: 'margin-top:12px' },
+          el('table', { class: 'calc-table' }, [
+            el('thead', {}, el('tr', {}, ['Статья ДДС', 'Сумма', 'Блок калькуляции'].map((h, i) =>
+              el('th', { style: i === 1 ? 'text-align:right' : '' }, h)))),
+            el('tbody', {}, cashLines.map((x) => el('tr', {}, [
+              el('td', {}, [el('div', {}, (x.code ? x.code + ' · ' : '') + (x.name || 'без статьи')), el('div', { class: 'calc-src' }, x.group_name || '')]),
+              el('td', { class: 'calc-num' }, money(x.amount)),
+              el('td', {}, x.bucket
+                ? el('span', { class: 'calc-pill ok' }, bucketNames[x.bucket] || x.bucket)
+                : el('span', { class: 'calc-pill plain', title: x.excluded_reason || '' }, 'не входит: ' + (x.excluded_reason || '—'))),
+            ]))),
+          ])) : el('div', { class: 'calc-sub', style: 'margin:10px 0 0' }, 'Исходящих операций за месяц не найдено.'),
+        ...(cash.warnings || []).map((w) => el('div', { class: 'calc-msg warn' }, '⚠️ ' + w.message)),
+      ]),
+    ]);
+
+    const planBlock = el('div', { class: 'calc-block' }, [
+      el('div', { class: 'calc-block-h' }, [
+        el('span', {}, 'Плановый выпуск по изделиям'),
+        el('span', { style: 'font-weight:400;font-size:12px' }, 'вводится вручную'),
+      ]),
+      el('div', { class: 'calc-block-b' }, [
+        el('div', { class: 'calc-sub', style: 'margin:0 0 8px' }, 'Общий выпуск — знаменатель для ФОТ и накладных. Нулевой выпуск блокирует расчёт: ноль не подставляется.'),
+        rowsEl.length ? el('div', { class: 'calc-table-wrap' }, el('table', { class: 'calc-table' }, [
+          el('thead', {}, el('tr', {}, [el('th', {}, 'Изделие'), el('th', { style: 'text-align:right' }, 'План, ед.')])),
+          el('tbody', {}, rowsEl),
+        ])) : el('div', { class: 'calc-sub', style: 'margin:0' }, 'Активных изделий нет.'),
+        el('div', { class: 'calc-sum', style: 'margin-top:12px' }, el('div', { class: 'calc-sum-card accent' }, [
+          el('div', { class: 'calc-sum-lbl' }, 'Итого плановый выпуск'), totalEl,
+        ])),
+      ]),
+    ]);
+
+    const errBox = el('div');
+    const footer = [];
+    if (canEdit()) {
+      footer.push(el('button', { class: 'calc-btn primary', onclick: async () => {
+        errBox.innerHTML = '';
+        const items = [];
+        inputs.forEach((inp, pid) => items.push({ product_id: pid, planned_output_qty: Number(inp.value) || 0 }));
+        try { await post('/periods/' + period + '/plan', { items }); toast('План сохранён'); closePanel(false); if (tab === 'matrix') loadMatrix(); }
+        catch (e) { errBox.appendChild(el('div', { class: 'calc-msg err' }, e.message)); }
+      } }, 'Сохранить план'));
+    }
+    if (BOOT.rights && BOOT.rights.can_approve) {
+      footer.unshift(el('button', { class: 'calc-btn', onclick: async () => {
+        errBox.innerHTML = '';
+        errBox.appendChild(el('div', { class: 'calc-msg warn' }, 'Утверждаю версию: цены, ФОТ, расходы и результаты будут зафиксированы снимком и перестанут меняться.'));
+        try {
+          const r = await post('/periods/' + period + '/approve', {});
+          toast('Версия №' + r.revision_no + ' утверждена: изделий ' + r.products);
+          closePanel(false);
+          BOOT = await api('/bootstrap');
+          render();
+        } catch (e) {
+          errBox.innerHTML = '';
+          errBox.appendChild(el('div', { class: 'calc-msg err' }, e.message));
+          (e.details || []).forEach(() => {});
+        }
+      } }, '✅ Утвердить версию'));
+    }
+    openPanel('Период ' + period, [errBox, planBlock, fotBlock, cashBlock], footer);
+  }
+
+  // ===========================================================================
+  // Вкладка «История» (ТЗ 17.8)
+  // ===========================================================================
+  async function viewHistory(box) {
+    box.innerHTML = '';
+    box.appendChild(el('div', { class: 'calc-head' }, el('div', {}, [
+      el('div', { class: 'calc-h2' }, 'История версий'),
+      el('div', { class: 'calc-sub' }, 'Утверждённые снимки. Старую версию нельзя перезаписать — из неё создаётся новый черновик.'),
+    ])));
+    box.appendChild(el('div', { class: 'calc-skel' }));
+    let d; try { d = await api('/history'); } catch (e) { box.appendChild(el('div', { class: 'calc-empty' }, 'Ошибка: ' + e.message)); return; }
+    box.innerHTML = '';
+    box.appendChild(el('div', { class: 'calc-head' }, el('div', {}, [
+      el('div', { class: 'calc-h2' }, 'История версий'),
+      el('div', { class: 'calc-sub' }, 'Утверждённые снимки. Старую версию нельзя перезаписать — из неё создаётся новый черновик.'),
+    ])));
+    if (!(d.items || []).length) {
+      box.appendChild(el('div', { class: 'calc-empty' }, [
+        el('div', { class: 'calc-empty-h' }, 'Версий пока нет'),
+        el('div', { class: 'calc-empty-t' }, 'Заполните план выпуска в периоде и утвердите версию — она появится здесь со снимком всех исходных данных.'),
+        el('button', { class: 'calc-btn', onclick: () => { tab = 'matrix'; render(); } }, 'Перейти к калькуляции'),
+      ]));
+      return;
+    }
+    const KIND = { approved: 'Утверждённая', actual: 'Фактическая' };
+    const ST = { active: ['Действующая', 'ok'], archived: ['В истории', 'plain'], closed: ['Закрыта', 'plain'] };
+    box.appendChild(el('div', { class: 'calc-table-wrap' }, el('table', { class: 'calc-table' }, [
+      el('thead', {}, el('tr', {}, ['№', 'Вид', 'Период', 'Изделий', 'Утвердил', 'Дата', 'Формула', 'Статус'].map((h) => el('th', {}, h)))),
+      el('tbody', {}, d.items.map((v) => {
+        const st = ST[v.status] || [v.status, 'plain'];
+        return el('tr', { class: 'clickable', onclick: () => openVersion(v.id) }, [
+          el('td', { class: 'calc-strong' }, String(v.revision_no)),
+          el('td', {}, KIND[v.version_kind] || v.version_kind),
+          el('td', {}, v.period),
+          el('td', { class: 'calc-num' }, String(v.products)),
+          el('td', {}, v.approved_name || v.created_name || '—'),
+          el('td', {}, ruDate(v.approved_at || v.created_at)),
+          el('td', { class: 'calc-src' }, v.formula_version),
+          el('td', {}, el('span', { class: 'calc-pill ' + st[1] }, st[0])),
+        ]);
+      })),
+    ])));
+  }
+
+  async function openVersion(id) {
+    let d; try { d = await api('/versions/' + id); } catch (e) { return toast(e.message, true); }
+    const v = d.version;
+    const src = v.common_sources_json || {};
+    const fot = src.fot || {};
+    const body = [
+      el('div', { class: 'calc-block' }, [
+        el('div', { class: 'calc-block-h' }, 'Снимок источников'),
+        el('div', { class: 'calc-block-b' }, [
+          el('div', { class: 'calc-sum' }, [
+            ['Начислено', fot.accrued], ['ИНПС', fot.inps], ['НДФЛ', fot.ndfl], ['Соцналог', fot.social],
+            ['Полная нагрузка ФОТ', fot.total_load],
+          ].map(([l, x]) => el('div', { class: 'calc-sum-card' }, [
+            el('div', { class: 'calc-sum-lbl' }, l), el('div', { class: 'calc-sum-val' }, money(x)),
+          ]))),
+          el('div', { class: 'calc-sub', style: 'margin:10px 0 0' },
+            'Выпуск: ' + qty((src.output || {}).total) + ' ед. · формула ' + v.formula_version + ' · период ' + v.period),
+        ]),
+      ]),
+      el('div', { class: 'calc-block' }, [
+        el('div', { class: 'calc-block-h' }, 'Изделия версии'),
+        el('div', { class: 'calc-block-b' }, el('div', { class: 'calc-table-wrap' }, el('table', { class: 'calc-table' }, [
+          el('thead', {}, el('tr', {}, ['Изделие', 'Сырьё', 'Упаковка', 'Полная с/с', 'Цена', 'Чистая маржа'].map((h, i) =>
+            el('th', { style: i ? 'text-align:right' : '' }, h)))),
+          el('tbody', {}, (d.snapshots || []).map((s) => {
+            const r = s.result_json || {};
+            const L = r.layers || {}, C = r.commercial || {};
+            return el('tr', {}, [
+              el('td', { class: 'calc-strong' }, s.product_name || '—'),
+              el('td', { class: 'calc-num' }, money(L.raw)),
+              el('td', { class: 'calc-num' }, money(L.packaging)),
+              el('td', { class: 'calc-num calc-strong' }, money(L.full_cost)),
+              el('td', { class: 'calc-num' }, money(C.price, 0)),
+              el('td', { class: 'calc-num' }, C.net_margin === null || C.net_margin === undefined ? '—' : pct(C.net_margin)),
+            ]);
+          })),
+        ]))),
+      ]),
+    ];
+    openPanel('Версия №' + v.revision_no + ' · ' + v.period, body, []);
   }
 
   function viewSoon(box, which) {
