@@ -46,6 +46,54 @@ async function ensureCalculationSchema(pool) {
     await q(`ALTER TABLE calculation_periods ADD COLUMN IF NOT EXISTS ${col} ${type}`).catch((e) => console.error('calc period col ' + col + ':', e.message));
   }
 
+  // --- Группы калькуляции --------------------------------------------------
+  // Это рабочие «листы» как в исходном Excel: Розница, HoReCa 250 г,
+  // HoReCa 500 г и т. п. Общие коммерческие условия и упаковка задаются здесь
+  // один раз, а не повторяются в каждой карточке изделия.
+  await q(`CREATE TABLE IF NOT EXISTS calculation_groups (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    code TEXT UNIQUE,
+    price_includes_vat BOOLEAN NOT NULL DEFAULT true,
+    vat_rate NUMERIC NOT NULL DEFAULT 12,
+    retro_rate NUMERIC NOT NULL DEFAULT 0,
+    profit_tax_rate NUMERIC NOT NULL DEFAULT 15,
+    waste_reserve_rate NUMERIC NOT NULL DEFAULT 0,
+    sort_order INTEGER NOT NULL DEFAULT 100,
+    status TEXT NOT NULL DEFAULT 'active',
+    comment TEXT DEFAULT '',
+    created_by INTEGER, created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by INTEGER, updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  await q(`CREATE UNIQUE INDEX IF NOT EXISTS uq_calc_groups_name_active
+           ON calculation_groups (lower(name)) WHERE status = 'active'`)
+    .catch((e) => console.error('calc uq group name:', e.message));
+
+  // Стартовые рабочие вкладки взяты из фактической структуры Excel. Это не
+  // массив-справочник в коде: после первого запуска записи живут и правятся в БД.
+  await q(`INSERT INTO calculation_groups
+           (name, code, price_includes_vat, vat_rate, retro_rate, profit_tax_rate, waste_reserve_rate, sort_order)
+           VALUES
+             ('Розница', 'retail', true, 12, 21, 15, 50, 10),
+             ('HoReCa 250 г', 'horeca_250', true, 12, 0, 15, 50, 20),
+             ('HoReCa 500 г', 'horeca_500', true, 12, 0, 15, 35, 30)
+           ON CONFLICT DO NOTHING`);
+
+  // Комплект упаковки группы: только существующие позиции ref_packaging.
+  // Количество хранится на одну готовую единицу.
+  await q(`CREATE TABLE IF NOT EXISTS calculation_group_packaging (
+    id SERIAL PRIMARY KEY,
+    group_id INTEGER NOT NULL REFERENCES calculation_groups(id) ON DELETE CASCADE,
+    item_id INTEGER NOT NULL,
+    qty NUMERIC NOT NULL DEFAULT 1,
+    unit_id INTEGER,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    comment TEXT DEFAULT '',
+    UNIQUE (group_id, item_id)
+  )`);
+  await q(`CREATE INDEX IF NOT EXISTS idx_calc_group_packaging_group
+           ON calculation_group_packaging (group_id, sort_order, id)`);
+
   // --- Изделия (ТЗ 20.1) ---------------------------------------------------
   await q(`CREATE TABLE IF NOT EXISTS calculation_products (
     id SERIAL PRIMARY KEY,
@@ -72,6 +120,11 @@ async function ensureCalculationSchema(pool) {
     created_by INTEGER, created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_by INTEGER, updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
   )`);
+  // Старые карточки остаются читаемыми. Группу пользователь назначает при
+  // следующем редактировании; опасный автоматический выбор по названию не делаем.
+  await q(`ALTER TABLE calculation_products ADD COLUMN IF NOT EXISTS group_id INTEGER`)
+    .catch((e) => console.error('calc product group_id:', e.message));
+  await q(`CREATE INDEX IF NOT EXISTS idx_calc_products_group ON calculation_products (group_id, status)`);
   // Уникальность названия среди активных изделий, без учёта регистра (ТЗ 12.1).
   await q(`CREATE UNIQUE INDEX IF NOT EXISTS uq_calc_products_name_active
            ON calculation_products (lower(name)) WHERE status = 'active'`).catch((e) => console.error('calc uq name:', e.message));

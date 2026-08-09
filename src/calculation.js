@@ -4,13 +4,14 @@
 // Формулы живут в calculation-engine.js, чтение источников — в calculation-sources.js,
 // схема — в calculation-schema.js. Дублировать формулы здесь запрещено.
 //
-// Готово: этап 1 (ядро) и этап 2 (изделия и рецептуры).
+// Готово: этап 1 (ядро), этап 2 (изделия и рецептуры), этап 2.1 (группы).
 // Старая вкладка «Справочники» (статьи затрат/ставки/каналы) убрана из интерфейса;
 // её таблицы в базе НЕ удаляются (ТЗ 20.9) — просто больше не используются.
 const express = require('express');
 const db = require('./db');
 const engine = require('./calculation-engine');
 const sources = require('./calculation-sources');
+const groupPolicy = require('./calculation-group-policy');
 const { ensureCalculationSchema } = require('./calculation-schema');
 
 const router = express.Router();
@@ -42,6 +43,71 @@ const FAMILIES = [
 ];
 const FAMILY_SET = new Set(FAMILIES.map((f) => f.v));
 
+const GROUP_FIELDS = [
+  'name', 'price_includes_vat', 'vat_rate', 'retro_rate',
+  'profit_tax_rate', 'waste_reserve_rate', 'sort_order', 'status', 'comment',
+];
+const normGroupValue = (f, v) => {
+  if (f === 'price_includes_vat') return asBool(v);
+  if (f === 'status') return v === 'archived' ? 'archived' : 'active';
+  if (f === 'sort_order') return parseInt(v, 10) || 100;
+  if (['vat_rate', 'retro_rate', 'profit_tax_rate', 'waste_reserve_rate'].includes(f)) return asNum(v);
+  return v === undefined || v === null ? '' : String(v).trim();
+};
+
+async function groupsWithPackaging(includeArchived = false) {
+  const where = includeArchived ? '' : "WHERE g.status='active'";
+  const groups = (await db.pool.query(
+    `SELECT g.*, COUNT(p.id)::int AS product_count
+     FROM calculation_groups g
+     LEFT JOIN calculation_products p ON p.group_id=g.id AND p.status='active'
+     ${where}
+     GROUP BY g.id ORDER BY g.sort_order, g.name`)).rows;
+  if (!groups.length) return [];
+
+  const packRows = (await db.pool.query(
+    `SELECT gp.*, pk.name, pk.code, COALESCE(u.short_name,'') AS unit
+     FROM calculation_group_packaging gp
+     LEFT JOIN ref_packaging pk ON pk.id=gp.item_id
+     LEFT JOIN ref_units u ON u.id=COALESCE(gp.unit_id,pk.unit_id)
+     WHERE gp.group_id=ANY($1)
+     ORDER BY gp.group_id,gp.sort_order,gp.id`, [groups.map((g) => g.id)])).rows;
+  const priceMap = await sources.lastAcceptedPricesMap(db.pool, packRows.map((x) => ({ item_kind: 'packaging', item_id: x.item_id })));
+  const byGroup = new Map();
+  for (const row of packRows) {
+    const price = priceMap.get('packaging:' + row.item_id) || null;
+    const item = {
+      ...row,
+      qty: asNum(row.qty),
+      price: price ? price.price : null,
+      price_date: price ? price.price_date : null,
+      price_source: price ? price.source : null,
+      supplier_name: price ? price.supplier_name : null,
+      line_cost: price ? asNum(row.qty) * asNum(price.price) : null,
+      nomenclature_missing: !row.name,
+    };
+    if (!byGroup.has(row.group_id)) byGroup.set(row.group_id, []);
+    byGroup.get(row.group_id).push(item);
+  }
+  return groups.map((g) => {
+    const packaging = byGroup.get(g.id) || [];
+    const known = packaging.filter((x) => x.line_cost !== null);
+    return {
+      ...g,
+      vat_rate: asNum(g.vat_rate), retro_rate: asNum(g.retro_rate),
+      profit_tax_rate: asNum(g.profit_tax_rate), waste_reserve_rate: asNum(g.waste_reserve_rate),
+      packaging,
+      packaging_cost: known.reduce((sum, x) => sum + x.line_cost, 0),
+      packaging_missing_prices: packaging.length - known.length,
+    };
+  });
+}
+
+async function validateGroup(groupId, client = db.pool) {
+  if (!groupId) return null;
+  return (await client.query("SELECT * FROM calculation_groups WHERE id=$1 AND status='active'", [groupId])).rows[0] || null;
+}
+
 router.use(async (req, res, next) => {
   try { await ensureCalculationSchema(db.pool); next(); } catch (e) { next(e); }
 });
@@ -57,6 +123,7 @@ router.get('/', async (req, res) => {
 router.get('/api/bootstrap', async (req, res) => {
   try {
     const units = (await db.pool.query('SELECT id, name, short_name FROM ref_units ORDER BY short_name')).rows;
+    const groups = await groupsWithPackaging(false);
     const periods = (await db.pool.query('SELECT * FROM calculation_periods ORDER BY period DESC')).rows;
     const active = periods.find((p) => p.status === 'active') || periods[0] || null;
     const activeVersion = (await db.pool.query(
@@ -66,6 +133,7 @@ router.get('/api/bootstrap', async (req, res) => {
     res.json({
       rights: { can_edit: canEdit(req), can_approve: canApprove(req) },
       families: FAMILIES,
+      groups,
       units,
       periods,
       period: active,
@@ -75,6 +143,116 @@ router.get('/api/bootstrap', async (req, res) => {
       defaults: { vat_rate: 12, profit_tax_rate: 15, price_round_step: 500 },
     });
   } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// ===========================================================================
+// Группы калькуляции: общие условия и комплект упаковки
+// ===========================================================================
+router.get('/api/groups', async (req, res) => {
+  try { res.json({ items: await groupsWithPackaging(req.query.status === 'all') }); }
+  catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+async function replaceGroupPackaging(client, groupId, items) {
+  if (!Array.isArray(items)) return;
+  const clean = [];
+  const seen = new Set();
+  for (let i = 0; i < items.length; i++) {
+    const itemId = intOrNull(items[i] && items[i].item_id);
+    const qty = asNum(items[i] && items[i].qty);
+    if (!itemId) throw new Error('В строке упаковки ' + (i + 1) + ' не выбрана позиция');
+    if (!(qty > 0)) throw new Error('Количество упаковки должно быть больше нуля');
+    if (seen.has(itemId)) throw new Error('Одна позиция упаковки добавлена дважды');
+    seen.add(itemId);
+    const row = (await client.query(
+      "SELECT id,unit_id FROM ref_packaging WHERE id=$1 AND status='active'", [itemId])).rows[0];
+    if (!row) throw new Error('Выбранной позиции упаковки больше нет в номенклатуре');
+    clean.push({ itemId, qty, unitId: row.unit_id, comment: String(items[i].comment || '') });
+  }
+  await client.query('DELETE FROM calculation_group_packaging WHERE group_id=$1', [groupId]);
+  for (let i = 0; i < clean.length; i++) {
+    const x = clean[i];
+    await client.query(
+      `INSERT INTO calculation_group_packaging (group_id,item_id,qty,unit_id,sort_order,comment)
+       VALUES ($1,$2,$3,$4,$5,$6)`, [groupId, x.itemId, x.qty, x.unitId, i, x.comment]);
+  }
+}
+
+function validateGroupRates(body) {
+  for (const key of ['vat_rate', 'retro_rate', 'profit_tax_rate']) {
+    if (body[key] === undefined) continue;
+    const value = asNum(body[key]);
+    if (value < 0 || value > 100) throw new Error('Ставка должна быть от 0 до 100%');
+  }
+  if (body.waste_reserve_rate !== undefined) {
+    const value = asNum(body.waste_reserve_rate);
+    if (value < 0 || value > 500) throw new Error('Резерв брака должен быть от 0 до 500%');
+  }
+}
+
+router.post('/api/groups', J, async (req, res) => {
+  if (!canEdit(req)) return denyEdit(res);
+  const body = req.body || {};
+  const name = String(body.name || '').trim();
+  if (!name) return res.status(400).json({ error: 'Укажите название группы' });
+  const client = await db.pool.connect();
+  try {
+    validateGroupRates(body);
+    await client.query('BEGIN');
+    const inserted = await client.query(
+      `INSERT INTO calculation_groups
+       (name,price_includes_vat,vat_rate,retro_rate,profit_tax_rate,waste_reserve_rate,sort_order,status,comment,created_by,updated_by)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,'active',$8,$9,$9) RETURNING id`,
+      [name, body.price_includes_vat === undefined ? true : asBool(body.price_includes_vat),
+        body.vat_rate === undefined ? 12 : asNum(body.vat_rate), asNum(body.retro_rate),
+        body.profit_tax_rate === undefined ? 15 : asNum(body.profit_tax_rate), asNum(body.waste_reserve_rate),
+        parseInt(body.sort_order, 10) || 100, String(body.comment || ''), req.user.id]);
+    await replaceGroupPackaging(client, inserted.rows[0].id, body.packaging || []);
+    await client.query('COMMIT');
+    await db.log(req.user.id, 'calculation_group_create', { id: inserted.rows[0].id, name });
+    res.json({ ok: true, id: inserted.rows[0].id });
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    if (/uq_calc_groups_name_active/.test(e.message)) return res.status(400).json({ error: 'Группа с таким названием уже есть' });
+    res.status(400).json({ error: e.message });
+  } finally { client.release(); }
+});
+
+router.patch('/api/groups/:id(\\d+)', J, async (req, res) => {
+  if (!canEdit(req)) return denyEdit(res);
+  const body = req.body || {};
+  const client = await db.pool.connect();
+  try {
+    validateGroupRates(body);
+    await client.query('BEGIN');
+    const current = (await client.query('SELECT * FROM calculation_groups WHERE id=$1 FOR UPDATE', [req.params.id])).rows[0];
+    if (!current) throw new Error('Группа не найдена');
+    if (body.status === 'archived') {
+      const used = (await client.query(
+        "SELECT COUNT(*)::int AS n FROM calculation_products WHERE group_id=$1 AND status='active'", [req.params.id])).rows[0].n;
+      if (used) throw new Error('Сначала перенесите активные изделия в другую группу');
+    }
+    const sets = [], vals = [];
+    for (const fieldName of GROUP_FIELDS) {
+      if (!(fieldName in body)) continue;
+      if (fieldName === 'name' && !String(body.name || '').trim()) throw new Error('Название группы не может быть пустым');
+      vals.push(normGroupValue(fieldName, body[fieldName]));
+      sets.push(`${fieldName}=$${vals.length}`);
+    }
+    if (sets.length) {
+      vals.push(req.user.id); sets.push(`updated_by=$${vals.length}`); sets.push('updated_at=now()');
+      vals.push(req.params.id);
+      await client.query(`UPDATE calculation_groups SET ${sets.join(',')} WHERE id=$${vals.length}`, vals);
+    }
+    await replaceGroupPackaging(client, Number(req.params.id), body.packaging);
+    await client.query('COMMIT');
+    await db.log(req.user.id, 'calculation_group_update', { id: Number(req.params.id), fields: Object.keys(body) });
+    res.json({ ok: true });
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    if (/uq_calc_groups_name_active/.test(e.message)) return res.status(400).json({ error: 'Группа с таким названием уже есть' });
+    res.status(400).json({ error: e.message });
+  } finally { client.release(); }
 });
 
 // ===========================================================================
@@ -137,7 +315,7 @@ router.get('/api/prices', async (req, res) => {
 // Изделия (ТЗ 12, 21.1/21.2)
 // ===========================================================================
 const PRODUCT_FIELDS = [
-  'name', 'internal_code', 'product_family', 'linked_finished_good_id', 'barcode',
+  'name', 'group_id', 'internal_code', 'product_family', 'linked_finished_good_id', 'barcode',
   'output_unit_id', 'output_unit_name', 'net_weight', 'net_weight_unit_id',
   'price', 'price_includes_vat', 'vat_rate', 'retro_rate', 'profit_tax_rate',
   'target_margin_rate', 'price_round_step', 'waste_reserve_rate', 'status', 'comment',
@@ -146,7 +324,7 @@ const normProductValue = (f, v) => {
   if (f === 'product_family') return FAMILY_SET.has(v) ? v : 'other';
   if (f === 'status') return v === 'archived' ? 'archived' : 'active';
   if (f === 'price_includes_vat') return asBool(v);
-  if (['linked_finished_good_id', 'output_unit_id', 'net_weight_unit_id'].includes(f)) return intOrNull(v);
+  if (['group_id', 'linked_finished_good_id', 'output_unit_id', 'net_weight_unit_id'].includes(f)) return intOrNull(v);
   if (['price', 'vat_rate', 'profit_tax_rate', 'target_margin_rate', 'net_weight'].includes(f)) return numOrNull(v);
   if (['retro_rate', 'price_round_step', 'waste_reserve_rate'].includes(f)) return asNum(v);
   return v === undefined || v === null ? '' : String(v);
@@ -158,18 +336,20 @@ router.get('/api/products', async (req, res) => {
   try {
     const where = ["p.status = $1"];
     const params = [req.query.status === 'archived' ? 'archived' : 'active'];
-    if (req.query.family && FAMILY_SET.has(req.query.family)) { params.push(req.query.family); where.push(`p.product_family = $${params.length}`); }
+    if (req.query.group_id === 'none') where.push('p.group_id IS NULL');
+    else if (intOrNull(req.query.group_id)) { params.push(intOrNull(req.query.group_id)); where.push(`p.group_id = $${params.length}`); }
     if (req.query.q) { params.push('%' + String(req.query.q).trim() + '%'); where.push(`(p.name ILIKE $${params.length} OR p.internal_code ILIKE $${params.length} OR p.barcode ILIKE $${params.length})`); }
     const r = await db.pool.query(
       `SELECT p.*, u.short_name AS output_unit_short,
-              fg.name AS linked_name,
+              fg.name AS linked_name, g.name AS group_name, g.sort_order AS group_sort_order,
               (SELECT id FROM calculation_recipes rc WHERE rc.product_id = p.id AND rc.status <> 'archived'
                 ORDER BY (rc.status = 'approved') DESC, rc.version_no DESC LIMIT 1) AS recipe_id
        FROM calculation_products p
        LEFT JOIN ref_units u ON u.id = p.output_unit_id
        LEFT JOIN ref_finished_goods fg ON fg.id = p.linked_finished_good_id
+       LEFT JOIN calculation_groups g ON g.id = p.group_id
        WHERE ${where.join(' AND ')}
-       ORDER BY p.name`, params);
+       ORDER BY COALESCE(g.sort_order,9999), COALESCE(g.name,'Я'), p.name`, params);
 
     // Материалы считаем одним проходом: собираем все компоненты всех рецептур.
     const recipeIds = r.rows.map((x) => x.recipe_id).filter(Boolean);
@@ -187,27 +367,37 @@ router.get('/api/products', async (req, res) => {
     }
     const allItems = [].concat(...[...itemsByRecipe.values()]);
     const priceMap = await sources.lastAcceptedPricesMap(db.pool, allItems);
+    const groupMap = new Map((await groupsWithPackaging(true)).map((g) => [Number(g.id), g]));
 
     const items = r.rows.map((p) => {
       const list = itemsByRecipe.get(p.recipe_id) || [];
       const batch = asNum(list[0] && list[0].batch_output_qty) || 1;
-      let raw = 0, pack = 0, missing = 0;
+      const ownPackaging = list.filter((x) => x.item_kind === 'packaging');
+      let raw = 0, ownPack = 0, missing = 0, rawComponents = 0;
       for (const ri of list) {
+        if (ri.item_kind !== 'packaging') rawComponents++;
         const pr = priceMap.get(ri.item_kind + ':' + ri.item_id);
         if (!pr) { missing++; continue; }
         const loss = asNum(ri.loss_rate) / 100;
         const qty = loss < 1 ? (asNum(ri.qty_net) / batch) / (1 - loss) : 0;
         const cost = qty * pr.price;
-        if (ri.item_kind === 'packaging') pack += cost; else raw += cost;
+        if (ri.item_kind === 'packaging') ownPack += cost;
+        else raw += cost;
       }
+      const group = groupMap.get(Number(p.group_id)) || null;
+      const pack = ownPackaging.length ? ownPack : (group ? group.packaging_cost : 0);
+      if (!ownPackaging.length && group) missing += group.packaging_missing_prices;
       return {
         ...p,
-        components: list.length,
+        components: rawComponents + (ownPackaging.length ? ownPackaging.length : (group ? group.packaging.length : 0)),
+        raw_components: rawComponents,
+        packaging_components: ownPackaging.length ? ownPackaging.length : (group ? group.packaging.length : 0),
+        packaging_source: ownPackaging.length ? 'product' : 'group',
         raw_cost: raw, packaging_cost: pack, material_cost: raw + pack,
         missing_prices: missing,
       };
     });
-    res.json({ items, families: FAMILIES });
+    res.json({ items, groups: [...groupMap.values()] });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
@@ -215,10 +405,12 @@ router.get('/api/products', async (req, res) => {
 router.get('/api/products/:id(\\d+)', async (req, res) => {
   try {
     const p = (await db.pool.query(
-      `SELECT p.*, u.short_name AS output_unit_short, fg.name AS linked_name, fg.status AS linked_status
+      `SELECT p.*, u.short_name AS output_unit_short, fg.name AS linked_name, fg.status AS linked_status,
+              g.name AS group_name
        FROM calculation_products p
        LEFT JOIN ref_units u ON u.id = p.output_unit_id
        LEFT JOIN ref_finished_goods fg ON fg.id = p.linked_finished_good_id
+       LEFT JOIN calculation_groups g ON g.id = p.group_id
        WHERE p.id = $1`, [req.params.id])).rows[0];
     if (!p) return res.status(404).json({ error: 'Изделие не найдено' });
 
@@ -255,37 +447,58 @@ router.get('/api/products/:id(\\d+)', async (req, res) => {
         };
       });
     }
-    res.json({ product: p, recipes, recipe, items, families: FAMILIES });
+    const groups = await groupsWithPackaging(false);
+    const group = groups.find((g) => Number(g.id) === Number(p.group_id)) || null;
+    res.json({ product: p, recipes, recipe, items, group, groups });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 // Создать изделие
 router.post('/api/products', J, async (req, res) => {
   if (!canEdit(req)) return denyEdit(res);
-  const b = req.body || {};
+  const b = { ...(req.body || {}) };
   const name = String(b.name || '').trim();
   if (!name) return res.status(400).json({ error: 'Укажите название изделия' });
+  const client = await db.pool.connect();
   try {
+    await client.query('BEGIN');
+    const groupId = intOrNull(b.group_id);
+    if (!groupId || !(await validateGroup(groupId, client))) throw new Error('Выберите группу калькуляции');
+    b.group_id = groupId;
+    // Для пользователя единица готового изделия очевидна: одна карточка = одна
+    // готовая единица. Техническую «подпись выхода» больше не спрашиваем.
+    if (!b.output_unit_id) {
+      const unit = (await client.query(
+        "SELECT id FROM ref_units WHERE lower(short_name) IN ('шт','шт.') OR lower(name) LIKE 'штук%' ORDER BY id LIMIT 1")).rows[0];
+      b.output_unit_id = unit ? unit.id : null;
+    }
+    if (b.net_weight !== undefined && b.net_weight !== null && b.net_weight !== '' && !b.net_weight_unit_id) {
+      const gram = (await client.query(
+        "SELECT id FROM ref_units WHERE lower(short_name) IN ('г','гр','гр.') ORDER BY id LIMIT 1")).rows[0];
+      b.net_weight_unit_id = gram ? gram.id : null;
+    }
     const cols = [], vals = [], ph = [];
     for (const f of PRODUCT_FIELDS) {
       if (!(f in b) && f !== 'name') continue;
       cols.push(f); vals.push(f === 'name' ? name : normProductValue(f, b[f])); ph.push('$' + vals.length);
     }
     cols.push('created_by'); vals.push(req.user.id); ph.push('$' + vals.length);
-    const r = await db.pool.query(
+    const r = await client.query(
       `INSERT INTO calculation_products (${cols.join(',')}) VALUES (${ph.join(',')}) RETURNING id`, vals);
     const id = r.rows[0].id;
     // Сразу создаём черновик рецептуры — чтобы было куда добавлять компоненты.
-    await db.pool.query(
+    await client.query(
       `INSERT INTO calculation_recipes (product_id, version_no, batch_output_qty, status, created_by)
        VALUES ($1, 1, $2, 'draft', $3)`, [id, asNum(b.batch_output_qty) || 1, req.user.id]);
+    await client.query('COMMIT');
     await db.log(req.user.id, 'calculation_product_create', { id, name });
     res.json({ ok: true, id });
   } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
     if (/uq_calc_products_name_active/.test(e.message)) return res.status(400).json({ error: 'Изделие с таким названием уже есть' });
     if (/uq_calc_products_linked_active/.test(e.message)) return res.status(400).json({ error: 'Эта готовая продукция уже связана с другим изделием' });
     res.status(400).json({ error: e.message });
-  }
+  } finally { client.release(); }
 });
 
 // Изменить карточку / архивировать
@@ -293,6 +506,10 @@ router.patch('/api/products/:id(\\d+)', J, async (req, res) => {
   if (!canEdit(req)) return denyEdit(res);
   const b = req.body || {};
   try {
+    if ('group_id' in b) {
+      const groupId = intOrNull(b.group_id);
+      if (!groupId || !(await validateGroup(groupId))) return res.status(400).json({ error: 'Выберите группу калькуляции' });
+    }
     const sets = [], vals = [];
     for (const f of PRODUCT_FIELDS) {
       if (!(f in b)) continue;
@@ -469,7 +686,19 @@ router.post('/api/calculate', J, async (req, res) => {
   try {
     const b = req.body || {};
     const period = /^\d{4}-\d{2}$/.test(b.period || '') ? b.period : curPeriod();
-    const items = Array.isArray(b.items) ? b.items : [];
+    const group = await validateGroup(intOrNull(b.group_id));
+    if (b.group_id && !group) return res.status(400).json({ error: 'Группа калькуляции не найдена' });
+    const batchOutput = asNum(b.batch_output_qty) || 1;
+    const items = Array.isArray(b.items) ? [...b.items] : [];
+    const hasOwnPackaging = items.some((x) => x && x.item_kind === 'packaging');
+    // Комплект группы — источник по умолчанию. Старые индивидуальные строки
+    // упаковки сохраняются как осознанное исключение и не складываются второй раз.
+    if (group && !hasOwnPackaging && b.use_group_packaging !== false) {
+      const pack = (await db.pool.query(
+        `SELECT item_id,qty,unit_id,comment FROM calculation_group_packaging
+         WHERE group_id=$1 ORDER BY sort_order,id`, [group.id])).rows;
+      items.push(...groupPolicy.packagingForBatch(pack, batchOutput));
+    }
     if (!items.length) return res.status(400).json({ error: 'Не передан состав рецептуры' });
 
     const names = await nomenclatureInfo(items);
@@ -492,6 +721,7 @@ router.post('/api/calculate', J, async (req, res) => {
         price_source: p ? p.source : null,
         supplier_name: p ? p.supplier_name : null,
         is_model_price: !!manual,
+        inherited_from_group: !!it.inherited_from_group,
       };
     });
 
@@ -507,17 +737,24 @@ router.post('/api/calculate', J, async (req, res) => {
       }
     }
 
+    const commercial = groupPolicy.commercialForGroup(group, b.commercial || {}, b.mode);
+
     const result = engine.calculateProduct({
       today: today(),
-      recipe: { batch_output_qty: asNum(b.batch_output_qty) || 1, items: rows },
+      recipe: { batch_output_qty: batchOutput, items: rows },
       total_output: totalOutput,
       fot: { accrued: fot.accrued, inps: fot.inps, ndfl: fot.ndfl, social: fot.social },
       monthly_expenses: cash.buckets,
-      commercial: b.commercial || {},
+      commercial,
     });
 
     res.json({
       period,
+      group: group ? {
+        id: group.id, name: group.name, price_includes_vat: group.price_includes_vat,
+        vat_rate: asNum(group.vat_rate), retro_rate: asNum(group.retro_rate),
+        profit_tax_rate: asNum(group.profit_tax_rate), waste_reserve_rate: asNum(group.waste_reserve_rate),
+      } : null,
       result,
       sources: {
         fot,

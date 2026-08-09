@@ -14,10 +14,22 @@
 .calc-tab:hover { color: var(--ink); background: none; border-color: transparent; border-bottom-color: var(--line); }
 .calc-tab.on { color: var(--forest); border-bottom-color: var(--lime); }
 
+/* Подвкладки по группам товаров — аналог отдельных листов в Excel */
+.calc-group-tabs { display: flex; gap: 8px; flex-wrap: wrap; margin: 4px 0 14px; }
+.calc-group-tab { min-height: 36px; padding: 7px 12px; border: 1px solid var(--line); border-radius: 999px;
+  background: var(--surface); color: var(--ink-soft); font-size: 12px; font-weight: 750; cursor: pointer; }
+.calc-group-tab:hover { background: var(--lime-soft); border-color: #cfe3ad; color: var(--forest); }
+.calc-group-tab.on { background: var(--forest); border-color: var(--forest); color: #fff; }
+.calc-group-tab.warn:not(.on) { color: #8a5a00; background: var(--amber-soft); }
+.calc-group-count { display: inline-flex; min-width: 20px; height: 20px; align-items: center; justify-content: center;
+  margin-left: 6px; padding: 0 6px; border-radius: 999px; background: rgba(20,36,27,.08); font-size: 10px; }
+.calc-group-tab.on .calc-group-count { background: rgba(255,255,255,.18); }
+
 .calc-h2 { font-family: 'Lora', Georgia, serif; font-weight: 600; font-size: 23px; margin: 2px 0 4px; color: var(--ink); }
 .calc-sub { color: var(--ink-soft); font-size: 13px; margin-bottom: 14px; }
 .calc-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
 .calc-loading, .calc-empty { padding: 40px 20px; text-align: center; color: var(--ink-faint); }
+.calc-empty.compact { padding: 18px 12px; }
 .calc-empty-h { font-size: 15px; font-weight: 700; color: var(--ink); margin-bottom: 6px; }
 .calc-empty-t { font-size: 13px; max-width: 520px; margin: 0 auto 14px; }
 
@@ -35,6 +47,12 @@
 .calc-filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
 .calc-filters input, .calc-filters select { width: auto; min-width: 150px; }
 .calc-f-lbl { font-size: 12px; font-weight: 700; color: var(--ink-soft); }
+
+.calc-group-info { display: flex; justify-content: space-between; gap: 12px; align-items: center;
+  margin-bottom: 14px; padding: 10px; border: 1px solid #d5e6bd;
+  border-radius: var(--radius); background: var(--lime-soft); }
+.calc-group-info > div { min-width: 0; padding: 3px 6px; }
+.calc-group-info .calc-src { margin-top: 1px; }
 
 /* Таблицы */
 .calc-table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
@@ -80,6 +98,7 @@
 
 /* Сетка полей паспорта */
 .calc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.calc-grid.simple { grid-template-columns: repeat(2, minmax(220px, 1fr)); }
 .calc-field label { display: block; margin-bottom: 4px; }
 .calc-field .calc-hint { font-size: 11px; color: var(--ink-faint); margin-top: 3px; font-weight: 400; text-transform: none; letter-spacing: 0; }
 .calc-err-inline { font-size: 12px; color: var(--red); margin-top: 4px; font-weight: 600; }
@@ -87,6 +106,10 @@
 /* Редактор рецептуры */
 .calc-recipe-note { font-size: 12px; color: var(--ink-soft); background: var(--surface-2);
   border: 1px solid var(--line); border-radius: 9px; padding: 7px 11px; margin-bottom: 10px; }
+.calc-inner-head { margin: -14px -14px 14px; border-bottom: 1px solid var(--line); }
+.calc-group-inherit { padding: 10px 12px; border-radius: 10px; border: 1px solid #d5e6bd;
+  background: var(--lime-soft); color: var(--forest); font-size: 12px; line-height: 1.55; }
+.calc-group-inherit.warn { border-color: #eddcae; background: var(--amber-soft); color: #8a5a00; }
 .calc-rrow { display: grid; grid-template-columns: minmax(180px, 2fr) 108px 92px 96px minmax(120px, 1fr) 108px 36px;
   gap: 8px; align-items: start; padding: 8px 0; border-bottom: 1px solid var(--line-soft); }
 .calc-rrow.head { border-bottom: 1px solid var(--line); padding-bottom: 6px; }
@@ -98,12 +121,27 @@
 .calc-rrow-del:hover { color: var(--red); background: var(--red-soft); border-color: #e8c7bd; }
 .calc-rowname { font-weight: 700; font-size: 13px; }
 .calc-rowcode { font-size: 11px; color: var(--ink-faint); }
+.calc-qty-control { display: grid; grid-template-columns: minmax(62px, 1fr) auto; gap: 5px; align-items: center; }
+.calc-unit-label { min-height: 36px; display: flex; align-items: center; }
+
+/* Состав упаковки хранится на группе, а изделие его только наследует */
+.calc-pack-row { display: grid; grid-template-columns: minmax(190px, 2fr) 110px minmax(150px, 1fr) 36px;
+  gap: 8px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line-soft); }
+.calc-pack-row.head { padding-top: 0; border-bottom-color: var(--line); }
+.calc-pack-row.head span { font-size: 11px; font-weight: 800; text-transform: uppercase; color: var(--ink-soft); }
+.calc-pack-row input { padding: 7px 9px; }
+.calc-group-total { display: flex; justify-content: flex-end; gap: 10px; padding-top: 12px;
+  color: var(--ink-soft); font-size: 12px; }
+.calc-pack-read { display: grid; grid-template-columns: minmax(180px, 1fr) auto auto; gap: 10px;
+  align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--line-soft); font-size: 12px; }
+.calc-pack-read:last-child { border-bottom: none; }
 
 /* Поиск номенклатуры */
 .calc-pick { position: relative; }
 .calc-pick-list { position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 10;
   background: var(--surface); border: 1px solid var(--line); border-radius: 11px; box-shadow: var(--shadow-lg);
   max-height: 280px; overflow-y: auto; }
+.calc-pick-list.static { position: static; margin-top: 8px; box-shadow: none; }
 .calc-pick-item { padding: 9px 12px; cursor: pointer; border-bottom: 1px solid var(--line-soft); }
 .calc-pick-item:last-child { border-bottom: none; }
 .calc-pick-item:hover, .calc-pick-item.sel { background: var(--lime-soft); }
@@ -143,4 +181,11 @@
   .calc-rrow { grid-template-columns: 1fr 1fr; gap: 6px; }
   .calc-rrow.head { display: none; }
   .calc-rrow > * { min-width: 0; }
+  .calc-grid.simple { grid-template-columns: 1fr; }
+  .calc-group-info { align-items: flex-start; flex-direction: column; }
+  .calc-pack-row { grid-template-columns: 1fr 90px 34px; }
+  .calc-pack-row.head { display: none; }
+  .calc-pack-row > :nth-child(3) { display: none; }
+  .calc-pack-read { grid-template-columns: 1fr auto; }
+  .calc-pack-read > :nth-child(3) { grid-column: 1 / -1; }
 }

@@ -1,56 +1,72 @@
-// calculation.js — интерфейс плитки «Калькуляция себестоимости».
-//
-// ВАЖНО (ТЗ 19.1): здесь НЕТ денежных формул. Любая себестоимость, маржа и
-// рекомендуемая цена приходят с сервера (/api/calculate). Браузер только
-// показывает цифры и собирает ввод.
+// Интерфейс плитки «Калькуляция себестоимости».
+// Денежные формулы выполняются только сервером. Браузер собирает ввод и
+// показывает готовый результат.
 (function () {
-  const $ = (s, r) => (r || document).querySelector(s);
+  const $ = (selector, root) => (root || document).querySelector(selector);
   const el = (tag, attrs = {}, children = []) => {
-    const n = document.createElement(tag);
-    for (const [k, v] of Object.entries(attrs)) {
-      if (v === false || v === null || v === undefined) continue;
-      if (k === 'class') n.className = v;
-      else if (k.startsWith('on')) n.addEventListener(k.slice(2), v);
-      else if (k === 'html') n.innerHTML = v;
-      else n.setAttribute(k, v);
+    const node = document.createElement(tag);
+    for (const [key, value] of Object.entries(attrs)) {
+      if (value === false || value === null || value === undefined) continue;
+      if (key === 'class') node.className = value;
+      else if (key.startsWith('on')) node.addEventListener(key.slice(2), value);
+      else if (key === 'html') node.innerHTML = value;
+      else node.setAttribute(key, value);
     }
-    for (const c of [].concat(children)) { if (c == null) continue; n.appendChild(typeof c === 'string' ? document.createTextNode(c) : c); }
-    return n;
+    for (const child of [].concat(children)) {
+      if (child === null || child === undefined) continue;
+      node.appendChild(typeof child === 'string' ? document.createTextNode(child) : child);
+    }
+    return node;
   };
-  // Деньги: на экране до двух знаков, коммерческая цена — без копеек.
-  const money = (v, dec = 2) => (v === null || v === undefined || Number.isNaN(Number(v)))
-    ? '—' : Number(v).toLocaleString('ru-RU', { minimumFractionDigits: dec, maximumFractionDigits: dec });
-  const money0 = (v) => (v === null || v === undefined ? '—' : Math.round(Number(v)).toLocaleString('ru-RU'));
-  const qty = (v) => (v === null || v === undefined ? '—' : Number(v).toLocaleString('ru-RU', { maximumFractionDigits: 6 }));
-  const pct = (v) => (v === null || v === undefined ? '—' : Number(v).toLocaleString('ru-RU', { maximumFractionDigits: 2 }) + '%');
-  const ruDate = (s) => { if (!s) return '—'; const d = new Date(s); return isNaN(d) ? '—' : d.toLocaleDateString('ru-RU'); };
+
+  const money = (value, decimals = 2) => (value === null || value === undefined || Number.isNaN(Number(value)))
+    ? '—'
+    : Number(value).toLocaleString('ru-RU', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+  const qty = (value) => (value === null || value === undefined)
+    ? '—' : Number(value).toLocaleString('ru-RU', { maximumFractionDigits: 6 });
+  const pct = (value) => (value === null || value === undefined)
+    ? '—' : Number(value).toLocaleString('ru-RU', { maximumFractionDigits: 2 }) + '%';
+  const ruDate = (value) => {
+    if (!value) return '—';
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? '—' : date.toLocaleDateString('ru-RU');
+  };
   const api = async (path, opts) => {
-    const r = await fetch('/calculation/api' + path, opts);
-    const data = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(data.error || 'Ошибка сервера');
+    const response = await fetch('/calculation/api' + path, opts);
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || 'Ошибка сервера');
     return data;
   };
   const post = (path, body, method = 'POST') => api(path, {
-    method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}),
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body || {}),
   });
-  let toastT = null;
-  function toast(msg, bad) {
-    const old = $('.calc-toast'); if (old) old.remove();
-    const t = el('div', { class: 'calc-toast' + (bad ? ' bad' : '') }, msg);
-    document.body.appendChild(t);
-    clearTimeout(toastT); toastT = setTimeout(() => t.remove(), 3200);
+
+  let toastTimer = null;
+  function toast(message, bad) {
+    const old = $('.calc-toast');
+    if (old) old.remove();
+    const item = el('div', { class: 'calc-toast' + (bad ? ' bad' : '') }, message);
+    document.body.appendChild(item);
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => item.remove(), 3400);
   }
 
   let BOOT = null;
-  let tab = 'products';   // на этапе 2 главное — состав изделий
-  const canEdit = () => !!(BOOT && BOOT.rights && BOOT.rights.can_edit);
+  let ALL_GROUPS = [];
+  let tab = 'products';
+  let PANEL = null;
+  let pickerOpen = null;
 
-  // ---------------------------------------------------------------------------
-  // Каркас страницы
-  // ---------------------------------------------------------------------------
+  const canEdit = () => !!(BOOT && BOOT.rights && BOOT.rights.can_edit);
+  const activeGroups = () => (BOOT && BOOT.groups ? BOOT.groups : []).filter((group) => group.status === 'active');
+  const groupById = (id) => activeGroups().find((group) => Number(group.id) === Number(id)) || null;
+
   const TABS = [
     ['matrix', 'Калькуляция'],
-    ['products', 'Состав изделий'],
+    ['products', 'Изделия'],
+    ['groups', 'Группы и упаковка'],
     ['models', 'Модели'],
     ['actual', 'Фактическая'],
     ['history', 'История'],
@@ -58,517 +74,828 @@
 
   async function boot() {
     const main = $('#calc-main');
-    main.appendChild(el('div', { class: 'calc-loading' }, [el('div', { class: 'calc-skel', style: 'width:260px;margin:0 auto' }), el('div', { class: 'calc-skel', style: 'width:420px;margin:8px auto' })]));
-    try { BOOT = await api('/bootstrap'); } catch (e) { main.innerHTML = ''; main.appendChild(el('div', { class: 'calc-empty' }, 'Не удалось загрузить: ' + e.message)); return; }
+    main.appendChild(el('div', { class: 'calc-loading' }, [
+      el('div', { class: 'calc-skel', style: 'width:260px;margin:0 auto' }),
+      el('div', { class: 'calc-skel', style: 'width:420px;margin:8px auto' }),
+    ]));
+    try {
+      BOOT = await api('/bootstrap');
+      ALL_GROUPS = BOOT.groups || [];
+    } catch (error) {
+      main.innerHTML = '';
+      main.appendChild(el('div', { class: 'calc-empty' }, 'Не удалось загрузить: ' + error.message));
+      return;
+    }
     const badge = $('#calc-mode-badge');
     if (badge) {
-      const av = BOOT.active_version;
-      badge.textContent = av
-        ? 'действующая версия №' + av.revision_no + ' · ' + av.period
+      const version = BOOT.active_version;
+      badge.textContent = version
+        ? 'действующая версия №' + version.revision_no + ' · ' + version.period
         : 'утверждённой версии пока нет';
     }
     render();
+  }
+
+  async function refreshGroups(includeArchived) {
+    const data = await api('/groups' + (includeArchived ? '?status=all' : ''));
+    ALL_GROUPS = data.items || [];
+    BOOT.groups = ALL_GROUPS.filter((group) => group.status === 'active');
+    return ALL_GROUPS;
   }
 
   function render() {
     const main = $('#calc-main');
     main.innerHTML = '';
     main.appendChild(el('div', { class: 'calc-tabs' }, TABS.map(([id, label]) =>
-      el('button', { class: 'calc-tab' + (tab === id ? ' on' : ''), onclick: () => { tab = id; render(); } }, label))));
+      el('button', {
+        class: 'calc-tab' + (tab === id ? ' on' : ''),
+        onclick: () => { tab = id; render(); },
+      }, label))));
     const box = el('div', { id: 'calc-content' });
     main.appendChild(box);
     if (tab === 'products') return viewProducts(box);
+    if (tab === 'groups') return viewGroups(box);
     return viewSoon(box, tab);
   }
 
-  // Понятное пустое состояние с одним следующим действием (ТЗ 18).
   function viewSoon(box, which) {
     const texts = {
-      matrix: ['Матрица себестоимости', 'Здесь появится привычная таблица: изделия по колонкам, показатели по строкам. Она собирается из состава изделий и данных периода.', 'Сначала соберите изделия'],
-      models: ['Модели «что будет, если»', 'Здесь можно будет менять цену сырья, состав и цену продажи, не задевая утверждённый расчёт.', 'Сначала соберите изделия'],
-      actual: ['Фактическая калькуляция', 'Здесь будет расчёт по фактическим ценам закупки месяца, фактическому ФОТ и расходам Кассы.', 'Сначала соберите изделия'],
-      history: ['История версий', 'Здесь будут утверждённые и закрытые версии со снимками исходных данных и сравнением.', 'Сначала соберите изделия'],
+      matrix: ['Матрица себестоимости', 'Здесь каждая группа станет отдельной рабочей вкладкой, а изделия — колонками, как в исходном Excel.', 'Перейти к изделиям'],
+      models: ['Модели «что будет, если»', 'Изменения цен и состава будут выполняться здесь, не затрагивая утверждённую калькуляцию.', 'Перейти к изделиям'],
+      actual: ['Фактическая калькуляция', 'Расчёт месяца по фактическим ценам Закупа, ФОТ, Кассе и выпуску.', 'Перейти к изделиям'],
+      history: ['История версий', 'Утверждённые и фактические снимки с расшифровкой источников.', 'Перейти к изделиям'],
     };
-    const [h, t, act] = texts[which] || ['Раздел', '', ''];
+    const [title, text, action] = texts[which] || ['Раздел', '', ''];
+    if (which === 'matrix' && activeGroups().length) {
+      box.appendChild(groupTabs('', () => {}));
+    }
     box.appendChild(el('div', { class: 'calc-empty' }, [
-      el('div', { class: 'calc-empty-h' }, h),
-      el('div', { class: 'calc-empty-t' }, t),
-      el('button', { class: 'calc-btn', onclick: () => { tab = 'products'; render(); } }, act),
+      el('div', { class: 'calc-empty-h' }, title),
+      el('div', { class: 'calc-empty-t' }, text),
+      el('button', { class: 'calc-btn', onclick: () => { tab = 'products'; render(); } }, action),
     ]));
   }
 
-  // ---------------------------------------------------------------------------
-  // Вкладка «Состав изделий»
-  // ---------------------------------------------------------------------------
-  const prodFilter = { q: '', family: '', status: 'active' };
+  function groupTabs(selected, onSelect, showAll = true) {
+    const buttons = [];
+    if (showAll) buttons.push(el('button', {
+      class: 'calc-group-tab' + (selected === '' ? ' on' : ''),
+      onclick: () => onSelect(''),
+    }, 'Все'));
+    activeGroups().forEach((group) => buttons.push(el('button', {
+      class: 'calc-group-tab' + (String(selected) === String(group.id) ? ' on' : ''),
+      onclick: () => onSelect(String(group.id)),
+    }, [group.name, el('span', { class: 'calc-group-count' }, String(group.product_count || 0))])));
+    if (showAll) buttons.push(el('button', {
+      class: 'calc-group-tab' + (selected === 'none' ? ' on warn' : ''),
+      onclick: () => onSelect('none'),
+    }, 'Без группы'));
+    return el('div', { class: 'calc-group-tabs' }, buttons);
+  }
+
+  function groupRuleText(group) {
+    if (!group) return '';
+    const pack = (group.packaging || []).map((item) => item.name).filter(Boolean).join(', ') || 'упаковка не задана';
+    return (group.price_includes_vat === false ? 'цена без НДС, ставка ' : 'цена с НДС, ставка ') + pct(group.vat_rate)
+      + ' · ретро ' + pct(group.retro_rate)
+      + ' · налог на прибыль ' + pct(group.profit_tax_rate)
+      + ' · резерв брака ' + pct(group.waste_reserve_rate)
+      + ' · ' + pack;
+  }
+
+  // -----------------------------------------------------------------------
+  // Изделия
+  // -----------------------------------------------------------------------
+  const productFilter = { q: '', group: '', status: 'active' };
   let PRODUCTS = [];
+
+  function startProduct() {
+    if (!activeGroups().length) {
+      tab = 'groups';
+      render();
+      toast('Сначала создайте группу калькуляции', true);
+      return;
+    }
+    openProduct(null);
+  }
 
   async function viewProducts(box) {
     box.innerHTML = '';
     box.appendChild(el('div', { class: 'calc-head' }, [
       el('div', {}, [
-        el('div', { class: 'calc-h2' }, 'Состав изделий'),
-        el('div', { class: 'calc-sub' }, 'Карточки изделий и рецептуры. Сырьё и упаковка берутся из существующей номенклатуры — отдельных справочников здесь нет.'),
+        el('div', { class: 'calc-h2' }, 'Изделия'),
+        el('div', { class: 'calc-sub' }, 'Выберите рабочую группу как лист Excel. Общие налоги, ретро и упаковка в карточках товаров не повторяются.'),
       ]),
-      canEdit() ? el('button', { class: 'calc-btn primary', onclick: () => openProduct(null) }, '+ Изделие') : null,
+      canEdit() ? el('button', { class: 'calc-btn primary', onclick: startProduct }, '+ Изделие') : null,
     ]));
 
-    const search = el('input', { type: 'search', placeholder: 'Поиск по названию, артикулу, штрих-коду…', value: prodFilter.q,
-      oninput: (e) => { prodFilter.q = e.target.value; clearTimeout(window.__calcT); window.__calcT = setTimeout(loadProducts, 300); } });
-    const famSel = el('select', { onchange: (e) => { prodFilter.family = e.target.value; loadProducts(); } },
-      [el('option', { value: '' }, 'Все виды')].concat((BOOT.families || []).map((f) => el('option', { value: f.v, selected: prodFilter.family === f.v || null }, f.t))));
-    const stSel = el('select', { onchange: (e) => { prodFilter.status = e.target.value; loadProducts(); } },
-      [['active', 'Активные'], ['archived', 'Архив']].map(([v, t]) => el('option', { value: v, selected: prodFilter.status === v || null }, t)));
-    box.appendChild(el('div', { class: 'calc-filters' }, [search, famSel, stSel]));
+    box.appendChild(groupTabs(productFilter.group, (value) => {
+      productFilter.group = value;
+      loadProducts();
+      drawSelectedGroupInfo();
+    }));
+    const groupInfo = el('div', { id: 'calc-selected-group' });
+    box.appendChild(groupInfo);
 
-    const list = el('div', { id: 'calc-prod-list' });
-    box.appendChild(list);
+    const search = el('input', {
+      type: 'search', placeholder: 'Название или штрих-код…', value: productFilter.q,
+      oninput: (event) => {
+        productFilter.q = event.target.value;
+        clearTimeout(window.__calcSearchTimer);
+        window.__calcSearchTimer = setTimeout(loadProducts, 300);
+      },
+    });
+    const status = el('select', { onchange: (event) => { productFilter.status = event.target.value; loadProducts(); } }, [
+      el('option', { value: 'active', selected: productFilter.status === 'active' || null }, 'Активные'),
+      el('option', { value: 'archived', selected: productFilter.status === 'archived' || null }, 'Архив'),
+    ]);
+    box.appendChild(el('div', { class: 'calc-filters' }, [search, status]));
+    box.appendChild(el('div', { id: 'calc-prod-list' }));
+    drawSelectedGroupInfo();
     await loadProducts();
   }
 
+  function drawSelectedGroupInfo() {
+    const host = $('#calc-selected-group');
+    if (!host) return;
+    host.innerHTML = '';
+    const group = groupById(productFilter.group);
+    if (!group) return;
+    host.appendChild(el('div', { class: 'calc-group-info' }, [
+      el('div', {}, [
+        el('div', { class: 'calc-strong' }, group.name),
+        el('div', { class: 'calc-src' }, groupRuleText(group)),
+      ]),
+      canEdit() ? el('button', { class: 'calc-btn tiny', onclick: () => openGroup(group.id) }, 'Настроить группу') : null,
+    ]));
+  }
+
   async function loadProducts() {
-    const list = $('#calc-prod-list'); if (!list) return;
+    const list = $('#calc-prod-list');
+    if (!list) return;
     list.innerHTML = '';
-    list.appendChild(el('div', {}, [el('div', { class: 'calc-skel' }), el('div', { class: 'calc-skel' }), el('div', { class: 'calc-skel' })]));
-    const p = new URLSearchParams();
-    if (prodFilter.q) p.set('q', prodFilter.q);
-    if (prodFilter.family) p.set('family', prodFilter.family);
-    p.set('status', prodFilter.status);
-    let d; try { d = await api('/products?' + p.toString()); } catch (e) { list.innerHTML = ''; list.appendChild(el('div', { class: 'calc-empty' }, 'Ошибка: ' + e.message)); return; }
-    PRODUCTS = d.items || [];
+    list.appendChild(el('div', {}, [el('div', { class: 'calc-skel' }), el('div', { class: 'calc-skel' })]));
+    const params = new URLSearchParams({ status: productFilter.status });
+    if (productFilter.q) params.set('q', productFilter.q);
+    if (productFilter.group) params.set('group_id', productFilter.group);
+    let data;
+    try { data = await api('/products?' + params.toString()); }
+    catch (error) {
+      list.innerHTML = '';
+      list.appendChild(el('div', { class: 'calc-empty' }, 'Ошибка: ' + error.message));
+      return;
+    }
+    PRODUCTS = data.items || [];
     list.innerHTML = '';
     if (!PRODUCTS.length) {
       list.appendChild(el('div', { class: 'calc-empty' }, [
-        el('div', { class: 'calc-empty-h' }, prodFilter.q || prodFilter.family ? 'Ничего не найдено' : 'Изделий пока нет'),
-        el('div', { class: 'calc-empty-t' }, prodFilter.q || prodFilter.family
-          ? 'Измените условия поиска.'
-          : 'Создайте первое изделие: название, вид, единица выхода — потом добавите сырьё и упаковку.'),
-        canEdit() && !prodFilter.q ? el('button', { class: 'calc-btn primary', onclick: () => openProduct(null) }, '+ Изделие') : null,
+        el('div', { class: 'calc-empty-h' }, 'В этой вкладке изделий пока нет'),
+        el('div', { class: 'calc-empty-t' }, productFilter.group === 'none'
+          ? 'Откройте изделие и назначьте ему рабочую группу.'
+          : 'Создайте изделие: группа сразу подставит упаковку и общие коммерческие условия.'),
+        canEdit() && productFilter.status === 'active' ? el('button', { class: 'calc-btn primary', onclick: startProduct }, '+ Изделие') : null,
       ]));
       return;
     }
-    const famName = (v) => ((BOOT.families || []).find((f) => f.v === v) || {}).t || v;
-    const head = ['Изделие', 'Вид', 'Выход', 'Компонентов', 'Сырьё', 'Упаковка', 'Материалы всего', 'Состояние'];
-    const thead = el('thead', {}, el('tr', {}, head.map((h, i) =>
-      el('th', { class: i >= 4 && i <= 6 ? 'calc-num' : '', style: i >= 4 && i <= 6 ? 'text-align:right' : '' }, h))));
-    const tb = el('tbody', {}, PRODUCTS.map((p) => el('tr', { class: 'clickable', onclick: () => openProduct(p.id) }, [
+
+    const headers = ['Изделие', 'Группа', 'Граммаж', 'Сырьё', 'Упаковка', 'Материалы всего', 'Состояние'];
+    const tableHead = el('thead', {}, el('tr', {}, headers.map((header, index) =>
+      el('th', { style: index >= 3 && index <= 5 ? 'text-align:right' : '' }, header))));
+    const body = el('tbody', {}, PRODUCTS.map((product) => el('tr', {
+      class: 'clickable', onclick: () => openProduct(product.id),
+    }, [
       el('td', {}, [
-        el('div', { class: 'calc-strong' }, p.name),
-        el('div', { class: 'calc-src' }, [p.internal_code, p.linked_name ? 'ERP: ' + p.linked_name : null].filter(Boolean).join(' · ') || '—'),
+        el('div', { class: 'calc-strong' }, product.name),
+        el('div', { class: 'calc-src' }, product.barcode || 'без штрих-кода'),
       ]),
-      el('td', {}, famName(p.product_family)),
-      el('td', {}, (p.output_unit_short || p.output_unit_name || '—') + (p.net_weight ? ' · ' + qty(p.net_weight) : '')),
-      el('td', { class: 'calc-num' }, String(p.components || 0)),
-      el('td', { class: 'calc-num' }, p.components ? money(p.raw_cost) : '—'),
-      el('td', { class: 'calc-num' }, p.components ? money(p.packaging_cost) : '—'),
-      el('td', { class: 'calc-num calc-strong' }, p.components ? money(p.material_cost) : '—'),
-      el('td', {}, statePill(p)),
+      el('td', {}, product.group_name || el('span', { class: 'calc-pill warn' }, 'Без группы')),
+      el('td', {}, product.net_weight ? qty(product.net_weight) + ' г' : '—'),
+      el('td', { class: 'calc-num' }, product.raw_components ? money(product.raw_cost) : '—'),
+      el('td', { class: 'calc-num' }, product.packaging_components ? money(product.packaging_cost) : '—'),
+      el('td', { class: 'calc-num calc-strong' }, product.components ? money(product.material_cost) : '—'),
+      el('td', {}, productState(product)),
     ])));
-    list.appendChild(el('div', { class: 'calc-table-wrap' }, el('table', { class: 'calc-table' }, [thead, tb])));
+    list.appendChild(el('div', { class: 'calc-table-wrap' }, el('table', { class: 'calc-table' }, [tableHead, body])));
     list.appendChild(el('div', { class: 'calc-sub', style: 'margin-top:8px' },
-      'Столбцы «Сырьё» и «Упаковка» — стоимость материалов на одну единицу по последним принятым ценам Закупа. ФОТ и накладные добавляются в матрице периода.'));
+      'Сырьё хранится в изделии. Упаковка наследуется из группы; индивидуальная упаковка показывается как исключение.'));
   }
 
-  function statePill(p) {
-    if (p.status === 'archived') return el('span', { class: 'calc-pill plain' }, 'Архив');
-    if (!p.components) return el('span', { class: 'calc-pill warn' }, 'Нет рецептуры');
-    if (p.missing_prices) return el('span', { class: 'calc-pill bad' }, 'Нет цены: ' + p.missing_prices);
+  function productState(product) {
+    if (product.status === 'archived') return el('span', { class: 'calc-pill plain' }, 'Архив');
+    if (!product.group_id) return el('span', { class: 'calc-pill warn' }, 'Назначьте группу');
+    if (!product.raw_components) return el('span', { class: 'calc-pill warn' }, 'Нет состава сырья');
+    if (product.missing_prices) return el('span', { class: 'calc-pill bad' }, 'Нет цены: ' + product.missing_prices);
     return el('span', { class: 'calc-pill ok' }, 'Готово');
   }
 
-  // ---------------------------------------------------------------------------
-  // Карточка изделия: паспорт + рецептура + предварительный расчёт
-  // ---------------------------------------------------------------------------
-  let PANEL = null;
-  let pickerOpen = null;   // функция закрытия открытого окна выбора номенклатуры
+  // -----------------------------------------------------------------------
+  // Группы и общая упаковка
+  // -----------------------------------------------------------------------
+  async function viewGroups(box) {
+    box.innerHTML = '';
+    box.appendChild(el('div', { class: 'calc-head' }, [
+      el('div', {}, [
+        el('div', { class: 'calc-h2' }, 'Группы и упаковка'),
+        el('div', { class: 'calc-sub' }, 'Одна группа — одна рабочая вкладка калькуляции. НДС, ретро, налог, резерв брака и комплект упаковки задаются здесь один раз.'),
+      ]),
+      canEdit() ? el('button', { class: 'calc-btn primary', onclick: () => openGroup(null) }, '+ Группа') : null,
+    ]));
+    const list = el('div');
+    box.appendChild(list);
+    list.appendChild(el('div', {}, [el('div', { class: 'calc-skel' }), el('div', { class: 'calc-skel' })]));
+    try { await refreshGroups(true); }
+    catch (error) { list.innerHTML = ''; list.appendChild(el('div', { class: 'calc-empty' }, error.message)); return; }
+    list.innerHTML = '';
+    if (!ALL_GROUPS.length) {
+      list.appendChild(el('div', { class: 'calc-empty' }, [
+        el('div', { class: 'calc-empty-h' }, 'Групп пока нет'),
+        canEdit() ? el('button', { class: 'calc-btn primary', onclick: () => openGroup(null) }, '+ Создать группу') : null,
+      ]));
+      return;
+    }
+    const headers = ['Рабочая вкладка', 'Общие условия', 'Упаковка', 'Стоимость упаковки', 'Изделий'];
+    const head = el('thead', {}, el('tr', {}, headers.map((header, index) =>
+      el('th', { style: index === 3 || index === 4 ? 'text-align:right' : '' }, header))));
+    const body = el('tbody', {}, ALL_GROUPS.map((group) => el('tr', {
+      class: 'clickable', onclick: () => openGroup(group.id),
+    }, [
+      el('td', {}, [
+        el('div', { class: 'calc-strong' }, group.name),
+        group.status === 'archived' ? el('span', { class: 'calc-pill plain' }, 'Архив') : null,
+      ]),
+      el('td', {}, [
+        el('div', {}, (group.price_includes_vat === false ? 'Цена без НДС' : 'Цена с НДС') + ' · ставка ' + pct(group.vat_rate)),
+        el('div', { class: 'calc-src' }, 'налог ' + pct(group.profit_tax_rate) + ' · резерв ' + pct(group.waste_reserve_rate)),
+      ]),
+      el('td', {}, (group.packaging || []).length
+        ? (group.packaging || []).map((item) => item.name + ' × ' + qty(item.qty)).join(', ')
+        : el('span', { class: 'calc-pill warn' }, 'Не задана')),
+      el('td', { class: 'calc-num' }, group.packaging_missing_prices
+        ? el('span', { class: 'calc-pill bad' }, 'Нет цены')
+        : money(group.packaging_cost)),
+      el('td', { class: 'calc-num calc-strong' }, String(group.product_count || 0)),
+    ])));
+    list.appendChild(el('div', { class: 'calc-table-wrap' }, el('table', { class: 'calc-table' }, [head, body])));
+  }
+
+  async function openGroup(id) {
+    let group = null;
+    if (id) {
+      try {
+        const groups = await refreshGroups(true);
+        group = groups.find((item) => Number(item.id) === Number(id)) || null;
+      } catch (error) { return toast(error.message, true); }
+    }
+    const isNew = !group;
+    const readOnly = !canEdit();
+    const packaging = (group && group.packaging ? group.packaging : []).map((item) => ({ ...item, qty: Number(item.qty) }));
+
+    const fName = input(group ? group.name : '', { placeholder: 'Например: Розница', disabled: readOnly || null });
+    const fIncludes = select([
+      { v: 'yes', t: 'Да — цена уже с НДС' },
+      { v: 'no', t: 'Нет — НДС сверху' },
+    ], group && group.price_includes_vat === false ? 'no' : 'yes', { disabled: readOnly || null });
+    const fVat = input(group ? group.vat_rate : 12, { type: 'number', step: '0.01', disabled: readOnly || null });
+    const fRetro = input(group ? group.retro_rate : 0, { type: 'number', step: '0.01', disabled: readOnly || null });
+    const fTax = input(group ? group.profit_tax_rate : 15, { type: 'number', step: '0.01', disabled: readOnly || null });
+    const fWaste = input(group ? group.waste_reserve_rate : 0, { type: 'number', step: '0.01', disabled: readOnly || null });
+    const fComment = el('textarea', { rows: 2, placeholder: 'Необязательный комментарий', disabled: readOnly || null }, group ? group.comment || '' : '');
+
+    const passport = el('div', { class: 'calc-block' }, [
+      el('div', { class: 'calc-block-h' }, 'Общие условия группы'),
+      el('div', { class: 'calc-block-b' }, [
+        el('div', { class: 'calc-grid' }, [
+          field('Название вкладки *', fName),
+          field('Цена включает НДС', fIncludes),
+          field('Ставка НДС, %', fVat),
+          field('Ретро / бонус, %', fRetro),
+          field('Налог на прибыль, %', fTax),
+          field('Резерв брака, %', fWaste, 'Один раз для всей группы'),
+        ]),
+        el('div', { style: 'margin-top:12px' }, field('Комментарий', fComment)),
+      ]),
+    ]);
+
+    const packHost = el('div');
+    const packBlock = el('div', { class: 'calc-block' }, [
+      el('div', { class: 'calc-block-h' }, [
+        el('span', {}, 'Комплект упаковки на одно изделие'),
+        readOnly ? null : el('button', { class: 'calc-btn tiny', onclick: () => addPackaging() }, '+ Добавить'),
+      ]),
+      el('div', { class: 'calc-block-b' }, [
+        el('div', { class: 'calc-recipe-note' }, 'Упаковка собирается из существующей номенклатуры Закупа и автоматически применяется ко всем изделиям этой вкладки.'),
+        packHost,
+      ]),
+    ]);
+
+    function drawPackaging() {
+      packHost.innerHTML = '';
+      if (!packaging.length) {
+        packHost.appendChild(el('div', { class: 'calc-empty compact' }, 'Упаковка группы пока не задана.'));
+        return;
+      }
+      packHost.appendChild(el('div', { class: 'calc-pack-row head' }, [
+        el('span', {}, 'Позиция'), el('span', {}, 'Количество'), el('span', {}, 'Последняя цена'), el('span'),
+      ]));
+      packaging.forEach((item, index) => {
+        const amount = input(item.qty, {
+          type: 'number', step: 'any', min: '0', disabled: readOnly || null,
+          oninput: (event) => { item.qty = Number(event.target.value) || 0; },
+        });
+        packHost.appendChild(el('div', { class: 'calc-pack-row' }, [
+          el('div', {}, [
+            el('div', { class: 'calc-rowname' }, item.name || '(позиция удалена)'),
+            el('div', { class: 'calc-rowcode' }, [item.code, item.unit].filter(Boolean).join(' · ')),
+          ]),
+          amount,
+          el('div', {}, item.price === null || item.price === undefined
+            ? el('span', { class: 'calc-pill bad' }, 'Нет цены')
+            : [el('div', { class: 'calc-strong' }, money(item.price) + (item.unit ? ' / ' + item.unit : '')),
+              el('div', { class: 'calc-src' }, ruDate(item.price_date))]),
+          readOnly ? el('span') : el('button', {
+            class: 'calc-rrow-del', title: 'Убрать', onclick: () => { packaging.splice(index, 1); drawPackaging(); },
+          }, '🗑'),
+        ]));
+      });
+      if (group && group.packaging_cost !== null && group.packaging_cost !== undefined) {
+        packHost.appendChild(el('div', { class: 'calc-group-total' }, [
+          el('span', {}, 'Текущая стоимость комплекта'),
+          el('strong', {}, group.packaging_missing_prices ? 'Есть позиции без цены' : money(group.packaging_cost) + ' сум'),
+        ]));
+      }
+    }
+
+    function addPackaging() {
+      pickNomenclature('packaging', (item) => {
+        if (packaging.some((row) => Number(row.item_id) === Number(item.id))) return toast('Эта упаковка уже добавлена', true);
+        packaging.push({
+          item_id: item.id, name: item.name, code: item.code, unit: item.unit,
+          qty: 1, price: item.price, price_date: item.price_date,
+        });
+        drawPackaging();
+      });
+    }
+
+    const errorBox = el('div');
+    const buttons = [];
+    if (!readOnly) buttons.push(el('button', { class: 'calc-btn primary', onclick: async () => {
+      errorBox.innerHTML = '';
+      if (!fName.value.trim()) return errorBox.appendChild(el('div', { class: 'calc-msg err' }, 'Укажите название группы'));
+      const payload = {
+        name: fName.value.trim(),
+        price_includes_vat: fIncludes.value === 'yes',
+        vat_rate: Number(fVat.value) || 0,
+        retro_rate: Number(fRetro.value) || 0,
+        profit_tax_rate: Number(fTax.value) || 0,
+        waste_reserve_rate: Number(fWaste.value) || 0,
+        comment: fComment.value,
+        packaging: packaging.map((item) => ({ item_id: item.item_id, qty: Number(item.qty), comment: item.comment || '' })),
+      };
+      try {
+        if (isNew) await post('/groups', payload);
+        else await post('/groups/' + group.id, payload, 'PATCH');
+        await refreshGroups(false).catch(() => {});
+        toast('Группа сохранена');
+        closePanel(true);
+      } catch (error) { errorBox.appendChild(el('div', { class: 'calc-msg err' }, error.message)); }
+    } }, isNew ? 'Создать группу' : 'Сохранить'));
+    if (group && !readOnly) buttons.unshift(el('button', {
+      class: 'calc-btn' + (group.status === 'archived' ? '' : ' danger'),
+      onclick: async () => {
+        try {
+          await post('/groups/' + group.id, { status: group.status === 'archived' ? 'active' : 'archived' }, 'PATCH');
+          await refreshGroups(false).catch(() => {});
+          toast(group.status === 'archived' ? 'Группа восстановлена' : 'Группа перенесена в архив');
+          closePanel(true);
+        } catch (error) { toast(error.message, true); }
+      },
+    }, group.status === 'archived' ? '↩ Вернуть из архива' : '🗄 В архив'));
+
+    openPanel(isNew ? 'Новая группа' : group.name, [errorBox, passport, packBlock], buttons);
+    drawPackaging();
+  }
+
+  // -----------------------------------------------------------------------
+  // Карточка изделия
+  // -----------------------------------------------------------------------
+  const field = (label, control, hint) => el('div', { class: 'calc-field' }, [
+    el('label', {}, [label, control]),
+    hint ? el('div', { class: 'calc-hint' }, hint) : null,
+  ]);
+  const input = (value, attrs = {}) => el('input', Object.assign({
+    value: value === null || value === undefined ? '' : String(value),
+  }, attrs));
+  const select = (options, value, attrs = {}) => el('select', attrs, options.map((option) =>
+    el('option', { value: option.v, selected: String(option.v) === String(value) || null }, option.t)));
+
   function closePanel(reload) {
     if (PANEL) { PANEL.remove(); PANEL = null; }
     document.body.style.overflow = '';
-    if (reload) loadProducts();
+    if (reload) render();
   }
-  function openPanel(title, bodyEl, footEls) {
+
+  function openPanel(title, body, footer) {
     closePanel(false);
     const panel = el('div', { class: 'calc-panel' }, [
       el('div', { class: 'calc-panel-head' }, [
         el('div', { class: 'calc-panel-title' }, title),
         el('button', { class: 'calc-x', title: 'Закрыть', onclick: () => closePanel(true) }, '×'),
       ]),
-      el('div', { class: 'calc-panel-body' }, bodyEl),
-      el('div', { class: 'calc-panel-foot' }, footEls || []),
+      el('div', { class: 'calc-panel-body' }, body),
+      el('div', { class: 'calc-panel-foot' }, footer || []),
     ]);
-    const ov = el('div', { class: 'calc-ov', onclick: (e) => { if (e.target === ov) closePanel(true); } }, panel);
-    document.getElementById('calc-modal-root').appendChild(ov);
+    const overlay = el('div', {
+      class: 'calc-ov', onclick: (event) => { if (event.target === overlay) closePanel(true); },
+    }, panel);
+    $('#calc-modal-root').appendChild(overlay);
     document.body.style.overflow = 'hidden';
-    PANEL = ov;
-    return panel;
+    PANEL = overlay;
   }
 
-  const field = (label, input, hint) => el('div', { class: 'calc-field' }, [
-    el('label', {}, [label, input]),
-    hint ? el('div', { class: 'calc-hint' }, hint) : null,
-  ]);
-  const inp = (value, attrs = {}) => el('input', Object.assign({ value: value === null || value === undefined ? '' : String(value) }, attrs));
-  const sel = (options, value, attrs = {}) => el('select', attrs, options.map((o) => el('option', { value: o.v, selected: String(o.v) === String(value) || null }, o.t)));
-
   async function openProduct(id) {
-    let data = { product: {}, recipe: null, items: [], families: BOOT.families };
+    let data = { product: {}, recipe: null, items: [], groups: activeGroups() };
     if (id) {
-      try { data = await api('/products/' + id); } catch (e) { return toast(e.message, true); }
+      try { data = await api('/products/' + id); }
+      catch (error) { return toast(error.message, true); }
     }
-    const p = data.product || {};
+    const product = data.product || {};
+    const recipe = data.recipe || null;
     const isNew = !id;
-    const ro = !canEdit();
+    const readOnly = !canEdit();
+    const recipeBatch = recipe ? Number(recipe.batch_output_qty) || 1 : 1;
+    const rawRows = (data.items || []).filter((item) => item.item_kind !== 'packaging').map(normalizeRecipeRow);
+    let ownPackaging = (data.items || []).filter((item) => item.item_kind === 'packaging').map(normalizeRecipeRow);
 
-    // --- Паспорт изделия (ТЗ 12.1) ---
-    const fName = inp(p.name, { placeholder: 'Например: Латук 100 г', disabled: ro || null });
-    const fFamily = sel((BOOT.families || []).map((f) => ({ v: f.v, t: f.t })), p.product_family || 'mono', { disabled: ro || null });
-    const fCode = inp(p.internal_code, { placeholder: 'необязательно', disabled: ro || null });
-    const fBarcode = inp(p.barcode, { placeholder: 'необязательно', disabled: ro || null });
-    const fOutUnit = sel([{ v: '', t: '— выберите —' }].concat((BOOT.units || []).map((u) => ({ v: u.id, t: u.short_name + ' · ' + u.name }))), p.output_unit_id || '', { disabled: ro || null });
-    const fOutName = inp(p.output_unit_name, { placeholder: 'штука / пучок / упаковка', disabled: ro || null });
-    const fWeight = inp(p.net_weight, { type: 'number', step: '0.001', placeholder: 'граммы или кг', disabled: ro || null });
-    const fPrice = inp(p.price, { type: 'number', step: '0.01', placeholder: 'цена продажи', disabled: ro || null });
-    const fIncl = sel([{ v: 'yes', t: 'Да — цена с НДС' }, { v: 'no', t: 'Нет — НДС сверху' }], p.price_includes_vat === false ? 'no' : 'yes', { disabled: ro || null });
-    const fVat = inp(p.vat_rate === null || p.vat_rate === undefined ? BOOT.defaults.vat_rate : p.vat_rate, { type: 'number', step: '0.01', disabled: ro || null });
-    const fRetro = inp(p.retro_rate || 0, { type: 'number', step: '0.01', disabled: ro || null });
-    const fTax = inp(p.profit_tax_rate === null || p.profit_tax_rate === undefined ? BOOT.defaults.profit_tax_rate : p.profit_tax_rate, { type: 'number', step: '0.01', disabled: ro || null });
-    const fTarget = inp(p.target_margin_rate, { type: 'number', step: '0.01', placeholder: 'необязательно', disabled: ro || null });
-    const fStep = inp(p.price_round_step === null || p.price_round_step === undefined ? BOOT.defaults.price_round_step : p.price_round_step, { type: 'number', step: '1', disabled: ro || null });
-    const fWaste = inp(p.waste_reserve_rate || 0, { type: 'number', step: '0.01', disabled: ro || null });
-    const fComment = el('textarea', { rows: 2, placeholder: 'договорные и разовые условия', disabled: ro || null }, p.comment || '');
+    const fName = input(product.name, { placeholder: 'Например: Латук 100 г', disabled: readOnly || null });
+    const fGroup = select(
+      [{ v: '', t: '— выберите рабочую группу —' }].concat(activeGroups().map((group) => ({ v: group.id, t: group.name }))),
+      product.group_id || '', { disabled: readOnly || null });
+    const fBarcode = input(product.barcode, { placeholder: 'необязательно', disabled: readOnly || null });
+    const fWeight = input(product.net_weight, { type: 'number', step: '1', min: '0', placeholder: 'например, 100', disabled: readOnly || null });
+    const fPrice = input(product.price, { type: 'number', step: '1', min: '0', placeholder: 'сум', disabled: readOnly || null });
+    const fComment = el('textarea', { rows: 2, placeholder: 'Необязательный комментарий', disabled: readOnly || null }, product.comment || '');
+    const inherited = el('div');
 
     const passport = el('div', { class: 'calc-block' }, [
-      el('div', { class: 'calc-block-h' }, 'Паспорт изделия'),
+      el('div', { class: 'calc-block-h' }, 'Изделие'),
       el('div', { class: 'calc-block-b' }, [
-        el('div', { class: 'calc-grid' }, [
+        el('div', { class: 'calc-grid simple' }, [
           field('Название *', fName),
-          field('Вид изделия *', fFamily),
-          field('Артикул калькулятора', fCode),
+          field('Группа калькуляции *', fGroup),
           field('Штрих-код', fBarcode),
-          field('Единица выхода *', fOutUnit),
-          field('Подпись выхода', fOutName, 'как называть единицу в отчётах'),
-          field('Вес нетто', fWeight, 'для понятного отображения, рецептуру не заменяет'),
+          field('Граммаж, г', fWeight, '100, 250, 500 и т. п.; для пучка или горшка можно не заполнять'),
+          field('Цена продажи', fPrice),
         ]),
-        el('div', { class: 'calc-block-h', style: 'background:none;padding:14px 0 8px' }, 'Коммерческие параметры'),
-        el('div', { class: 'calc-grid' }, [
-          field('Цена продажи', fPrice, 'обязательна для утверждения версии'),
-          field('Цена включает НДС', fIncl),
-          field('Ставка НДС, %', fVat),
-          field('Ретро / бонус, %', fRetro),
-          field('Налог на прибыль, %', fTax, 'управленческая оценка, не декларация'),
-          field('Целевая чистая маржа, %', fTarget),
-          field('Шаг округления цены', fStep, 'по умолчанию 500 сум, вверх'),
-          field('Резерв брака, %', fWaste, 'надбавка к себестоимости: 50% = ×1,5'),
-        ]),
+        inherited,
         el('div', { style: 'margin-top:12px' }, field('Комментарий', fComment)),
       ]),
     ]);
 
-    // --- Рецептура ---
-    let rows = (data.items || []).map((x) => ({
-      item_kind: x.item_kind, item_id: x.item_id, name: x.name, code: x.code, unit: x.unit,
-      qty_net: Number(x.qty_net), loss_rate: Number(x.loss_rate), comment: x.comment || '',
-      price: x.price, price_date: x.price_date, price_source: x.price_source, supplier_name: x.supplier_name,
-      nomenclature_missing: x.nomenclature_missing,
-    }));
-    const recipe = data.recipe;
-    const fBatch = inp(recipe ? Number(recipe.batch_output_qty) : 1, { type: 'number', step: '0.000001', style: 'max-width:120px', disabled: ro || null });
-
-    const rawBox = el('div');
-    const packBox = el('div');
-    const calcBox = el('div');
-
+    const rawHost = el('div');
+    const packagingHost = el('div');
+    const calcHost = el('div');
     const recipeBlock = el('div', { class: 'calc-block' }, [
       el('div', { class: 'calc-block-h' }, [
-        el('span', {}, 'Рецептура'),
-        el('span', { style: 'display:inline-flex;align-items:center;gap:8px;font-weight:400;font-size:12px' }, ['рецептура на', fBatch, 'единиц(ы) выхода']),
+        el('span', {}, 'Состав продукта'),
+        readOnly ? null : el('button', { class: 'calc-btn tiny', onclick: () => addRaw() }, '+ Добавить сырьё'),
       ]),
       el('div', { class: 'calc-block-b' }, [
-        el('div', { class: 'calc-recipe-note' }, 'Количество вводится на указанный выход. Сервер сначала приводит каждую строку к одной единице изделия и только потом считает стоимость. Для сырья в кг можно вводить граммы — переключатель единицы в строке.'),
-        el('div', { class: 'calc-block-h', style: 'background:none;padding:6px 0' }, [
-          el('span', {}, '🥬 Сырьё'),
-          ro ? null : el('button', { class: 'calc-btn tiny', onclick: () => addRow('raw') }, '+ добавить сырьё'),
-        ]),
-        rawBox,
-        el('div', { class: 'calc-block-h', style: 'background:none;padding:14px 0 6px' }, [
-          el('span', {}, '📦 Упаковка и материалы'),
-          ro ? null : el('button', { class: 'calc-btn tiny', onclick: () => addRow('packaging') }, '+ добавить упаковку'),
-        ]),
-        packBox,
+        recipeBatch !== 1 ? el('div', { class: 'calc-recipe-note' },
+          'Эта старая рецептура введена на ' + qty(recipeBatch) + ' единиц. Пересчёт сохранён; новые изделия создаются сразу на одну единицу.') : null,
+        rawHost,
+        el('div', { class: 'calc-block-h calc-inner-head' }, 'Упаковка группы'),
+        packagingHost,
       ]),
     ]);
-
-    const HEAD_COLS = ['Позиция', 'Количество', 'Потери, %', 'С потерями', 'Цена и источник', 'Стоимость', ''];
-    function drawRows() {
-      for (const [kind, host] of [['raw', rawBox], ['packaging', packBox]]) {
-        host.innerHTML = '';
-        const list = rows.filter((r) => r.item_kind === kind);
-        if (!list.length) {
-          host.appendChild(el('div', { class: 'calc-sub', style: 'padding:8px 0;margin:0' },
-            kind === 'raw' ? 'Сырьё не добавлено.' : 'Упаковка не добавлена.'));
-          continue;
-        }
-        host.appendChild(el('div', { class: 'calc-rrow head' }, HEAD_COLS.map((h) => el('span', {}, h))));
-        list.forEach((r) => host.appendChild(rowEl(r)));
-      }
-      recalc();
-    }
-
-    function rowEl(r) {
-      const idx = rows.indexOf(r);
-      // Количество: для кг/л разрешаем быстрый ввод в граммах/миллилитрах (ТЗ 13.4).
-      const baseUnit = (r.unit || '').toLowerCase();
-      const small = baseUnit === 'кг' ? 'г' : baseUnit === 'л' ? 'мл' : null;
-      let showUnit = r._show_unit || baseUnit;
-      const factor = () => (small && showUnit === small ? 1000 : 1);
-      const qtyIn = inp(r.qty_net * factor(), { type: 'number', step: 'any', class: 'calc-num-in', disabled: ro || null,
-        oninput: (e) => { r.qty_net = (Number(e.target.value) || 0) / factor(); recalc(); } });
-      const unitSel = small
-        ? sel([{ v: baseUnit, t: baseUnit }, { v: small, t: small }], showUnit, { disabled: ro || null,
-            onchange: (e) => { r._show_unit = e.target.value; drawRows(); } })
-        : el('span', { class: 'calc-src', style: 'padding-top:9px;display:block' }, r.unit || '—');
-      const lossIn = inp(r.loss_rate, { type: 'number', step: '0.01', class: 'calc-num-in', disabled: ro || null,
-        oninput: (e) => { r.loss_rate = Number(e.target.value) || 0; recalc(); } });
-      // Количество с потерями и стоимость строки считает СЕРВЕР (ТЗ 19.1):
-      // здесь только места под цифры, которые заполнит ответ /api/calculate.
-      return el('div', { class: 'calc-rrow', 'data-rowkey': String(idx) }, [
-        el('div', {}, [
-          el('div', { class: 'calc-rowname' + (r.nomenclature_missing ? ' ' : '') }, r.name || '(не выбрано)'),
-          el('div', { class: 'calc-rowcode' }, [r.code, r.unit].filter(Boolean).join(' · ') || ''),
-          r.nomenclature_missing ? el('div', { class: 'calc-err-inline' }, 'позиции нет в справочнике') : null,
-        ]),
-        el('div', { style: 'display:flex;gap:4px;align-items:flex-start' }, [qtyIn, unitSel]),
-        lossIn,
-        el('div', { class: 'calc-num calc-cell-qty', style: 'padding-top:9px;color:var(--ink-faint)' }, '…'),
-        el('div', {}, r.price === null || r.price === undefined
-          ? el('span', { class: 'calc-pill bad' }, 'Нет закупочной цены')
-          : el('div', {}, [
-              el('div', { class: 'calc-num', style: 'text-align:left;font-weight:700' }, money(r.price) + (r.unit ? ' / ' + r.unit : '')),
-              el('div', { class: 'calc-src' }, [r.price_source === 'import' ? 'архив' : 'Закуп', ruDate(r.price_date), r.supplier_name].filter(Boolean).join(' · ')),
-            ])),
-        el('div', { class: 'calc-num calc-strong calc-cell-cost', style: 'padding-top:9px;color:var(--ink-faint)' }, '…'),
-        ro ? el('span') : el('button', { class: 'calc-rrow-del', title: 'Убрать строку',
-          onclick: () => { rows.splice(idx, 1); drawRows(); } }, '🗑'),
-      ]);
-    }
-
-    // Добавление позиции: поиск по существующей номенклатуре (ТЗ 13.5 — свободный текст запрещён).
-    function addRow(kind) {
-      pickNomenclature(kind, (item) => {
-        rows.push({ item_kind: kind, item_id: item.id, name: item.name, code: item.code, unit: item.unit,
-          qty_net: 0, loss_rate: 0, comment: '', price: item.price, price_date: item.price_date, price_source: item.price_source });
-        drawRows();
-      });
-    }
-
-    // Предварительный расчёт — считает сервер.
-    let calcT = null;
-    function recalc() {
-      clearTimeout(calcT);
-      calcT = setTimeout(runCalc, 350);
-    }
-    async function runCalc() {
-      const usable = rows.map((r, i) => ({ r, i })).filter((x) => x.r.item_id && Number(x.r.qty_net) > 0);
-      if (!usable.length) {
-        calcBox.innerHTML = '';
-        calcBox.appendChild(el('div', { class: 'calc-sub', style: 'margin:0' }, 'Добавьте компоненты с количеством — расчёт появится сразу.'));
-        return;
-      }
-      calcBox.innerHTML = '';
-      calcBox.appendChild(el('div', { class: 'calc-skel', style: 'width:60%' }));
-      try {
-        const d = await post('/calculate', {
-          period: BOOT.period ? BOOT.period.period : undefined,
-          batch_output_qty: Number(fBatch.value) || 1,
-          items: usable.map((x) => ({ item_kind: x.r.item_kind, item_id: x.r.item_id, qty_net: x.r.qty_net, loss_rate: x.r.loss_rate })),
-          commercial: {
-            price: Number(fPrice.value) || 0,
-            price_includes_vat: fIncl.value === 'yes',
-            vat_rate: Number(fVat.value) || 0,
-            retro_rate: Number(fRetro.value) || 0,
-            profit_tax_rate: Number(fTax.value) || 0,
-            target_margin_rate: fTarget.value === '' ? null : Number(fTarget.value),
-            waste_reserve_rate: Number(fWaste.value) || 0,
-            price_round_step: Number(fStep.value) || 0,
-          },
-        });
-        fillRowCells(d.result.rows || [], usable);
-        drawCalc(d);
-      } catch (e) {
-        calcBox.innerHTML = '';
-        calcBox.appendChild(el('div', { class: 'calc-msg err' }, e.message));
-      }
-    }
-
-    // Возвращаем серверные цифры в те же строки рецептуры.
-    function fillRowCells(serverRows, usable) {
-      usable.forEach((x, i) => {
-        const sr = serverRows[i]; if (!sr) return;
-        const host = rawBox.parentElement ? recipeBlock.querySelector('[data-rowkey="' + x.i + '"]') : null;
-        if (!host) return;
-        const q = host.querySelector('.calc-cell-qty');
-        const c = host.querySelector('.calc-cell-cost');
-        if (q) { q.textContent = qty(sr.qty_with_loss); q.style.color = ''; }
-        if (c) { c.textContent = sr.cost === null || sr.cost === undefined ? '—' : money(sr.cost); c.style.color = ''; }
-      });
-    }
-
-    function drawCalc(d) {
-      const r = d.result, L = r.layers, C = r.commercial;
-      calcBox.innerHTML = '';
-      // Сообщения: сначала блокирующие, потом предупреждения.
-      const msgs = el('div', { class: 'calc-msgs' });
-      (r.errors || []).forEach((x) => msgs.appendChild(el('div', { class: 'calc-msg err' }, '⛔ ' + x.message)));
-      (r.warnings || []).forEach((x) => msgs.appendChild(el('div', { class: 'calc-msg warn' }, '⚠️ ' + x.message)));
-      ((d.sources && d.sources.warnings) || []).forEach((x) => msgs.appendChild(el('div', { class: 'calc-msg warn' }, '⚠️ ' + x.message)));
-      if (msgs.children.length) calcBox.appendChild(msgs);
-
-      const card = (lbl, val, cls, src) => el('div', { class: 'calc-sum-card' + (cls ? ' ' + cls : '') }, [
-        el('div', { class: 'calc-sum-lbl' }, lbl),
-        el('div', { class: 'calc-sum-val' }, val),
-        src ? el('div', { class: 'calc-src' }, src) : null,
-      ]);
-      calcBox.appendChild(el('div', { class: 'calc-sum' }, [
-        card('Сырьё', money(L.raw)),
-        card('Упаковка', money(L.packaging)),
-        card('ФОТ с налогами', L.fot_per_unit ? money(L.fot_per_unit) : '—', null, 'Персонал · ' + d.period),
-        card('Производственные', money(L.production_per_unit), null, 'Касса · ' + d.period),
-        card('Административные', money(L.admin_per_unit), null, 'Касса · ' + d.period),
-        card('Полная себестоимость', money(L.full_cost), 'accent', 'резерв брака ' + pct(L.waste_reserve_rate)),
-      ]));
-      calcBox.appendChild(el('div', { class: 'calc-sum', style: 'margin-top:10px' }, [
-        card('НДС в цене', money(C.vat), null, C.includes_vat ? 'цена с НДС' : 'НДС сверху'),
-        card('Ретро', money(C.retro)),
-        card('Прибыль до налога', money(C.profit_before_tax), C.profit_before_tax < 0 ? 'bad' : null),
-        card('Налог на прибыль', money(C.profit_tax)),
-        card('Чистая прибыль', money(C.net_profit), C.net_profit < 0 ? 'bad' : null),
-        card('Чистая маржа', C.net_margin === null ? '—' : pct(C.net_margin), C.net_margin !== null && C.net_margin < 0 ? 'bad' : null),
-        card('Рекомендуемая цена', r.recommended && r.recommended.price ? money0(r.recommended.price) : '—', null,
-          r.recommended && r.recommended.error ? r.recommended.error : 'цель: сохранить маржу, вверх до ' + money0(r.inputs.commercial.price_round_step)),
-      ]));
-      const out = d.sources && d.sources.output;
-      calcBox.appendChild(el('div', { class: 'calc-sub', style: 'margin-top:10px' },
-        'ФОТ и накладные распределены поровну на одну произведённую единицу. Общий выпуск: '
-        + (out && out.total ? qty(out.total) + ' ед.' + (out.mode === 'planned' ? ' (план периода)' : out.mode === 'actual' ? ' (факт)' : '') : 'не задан')
-        + '. Коэффициенты трудоёмкости по изделиям в этой версии не применяются.'));
-    }
-
     const calcBlock = el('div', { class: 'calc-block' }, [
       el('div', { class: 'calc-block-h' }, 'Предварительный расчёт'),
-      el('div', { class: 'calc-block-b' }, calcBox),
+      el('div', { class: 'calc-block-b' }, calcHost),
     ]);
 
-    // --- Кнопки ---
-    const errBox = el('div');
-    const save = el('button', { class: 'calc-btn primary', onclick: async () => {
-      errBox.innerHTML = '';
-      const payload = {
-        name: fName.value.trim(), product_family: fFamily.value,
-        internal_code: fCode.value, barcode: fBarcode.value,
-        output_unit_id: fOutUnit.value || null, output_unit_name: fOutName.value,
-        net_weight: fWeight.value === '' ? null : Number(fWeight.value),
-        price: fPrice.value === '' ? null : Number(fPrice.value),
-        price_includes_vat: fIncl.value === 'yes',
-        vat_rate: fVat.value === '' ? null : Number(fVat.value),
-        retro_rate: Number(fRetro.value) || 0,
-        profit_tax_rate: fTax.value === '' ? null : Number(fTax.value),
-        target_margin_rate: fTarget.value === '' ? null : Number(fTarget.value),
-        price_round_step: Number(fStep.value) || 0,
-        waste_reserve_rate: Number(fWaste.value) || 0,
-        comment: fComment.value,
-      };
-      if (!payload.name) { errBox.appendChild(el('div', { class: 'calc-msg err' }, 'Укажите название изделия')); return; }
-      if (!payload.output_unit_id) { errBox.appendChild(el('div', { class: 'calc-msg err' }, 'Выберите единицу выхода')); return; }
-      try {
-        let pid = id;
-        if (isNew) {
-          const r = await post('/products', Object.assign({ batch_output_qty: Number(fBatch.value) || 1 }, payload));
-          pid = r.id;
-        } else {
-          await post('/products/' + id, payload, 'PATCH');
-        }
-        // Сохраняем состав в черновик рецептуры.
-        let rid = recipe ? recipe.id : null;
-        if (!rid) { const rr = await post('/recipes', { product_id: pid }); rid = rr.id; }
-        await post('/recipes/' + rid, {
-          batch_output_qty: Number(fBatch.value) || 1,
-          items: rows.filter((r) => r.item_id).map((r) => ({ item_kind: r.item_kind, item_id: r.item_id, qty_net: r.qty_net, loss_rate: r.loss_rate, comment: r.comment })),
-        }, 'PATCH');
-        toast('Сохранено');
-        closePanel(true);
-      } catch (e) {
-        errBox.appendChild(el('div', { class: 'calc-msg err' }, e.message));
-      }
-    } }, isNew ? 'Создать изделие' : 'Сохранить');
+    fGroup.addEventListener('change', () => { drawInherited(); drawPackaging(); scheduleCalc(); });
 
-    const foot = [];
-    if (!ro) foot.push(save);
-    if (!isNew && !ro) {
-      foot.unshift(el('button', { class: 'calc-btn', onclick: async () => {
-        try { const r = await post('/products/' + id + '/copy', {}); toast('Скопировано'); closePanel(true); openProduct(r.id); }
-        catch (e) { toast(e.message, true); }
-      } }, '⧉ Копировать'));
-      foot.unshift(el('button', { class: 'calc-btn' + (p.status === 'archived' ? '' : ' danger'), onclick: async () => {
-        const toArchive = p.status !== 'archived';
-        try { await post('/products/' + id, { status: toArchive ? 'archived' : 'active' }, 'PATCH');
-          toast(toArchive ? 'Изделие в архиве' : 'Изделие снова активно'); closePanel(true); }
-        catch (e) { toast(e.message, true); }
-      } }, p.status === 'archived' ? '↩ Вернуть из архива' : '🗄 В архив'));
+    function normalizeRecipeRow(item) {
+      return {
+        item_kind: item.item_kind, item_id: item.item_id, name: item.name, code: item.code, unit: item.unit,
+        qty_net: Number(item.qty_net), loss_rate: Number(item.loss_rate), comment: item.comment || '',
+        price: item.price, price_date: item.price_date, price_source: item.price_source,
+        supplier_name: item.supplier_name, nomenclature_missing: item.nomenclature_missing,
+      };
     }
 
-    openPanel(isNew ? 'Новое изделие' : p.name, [errBox, passport, recipeBlock, calcBlock], foot);
-    drawRows();
-  }
+    function selectedGroup() { return groupById(fGroup.value); }
 
-  // ---------------------------------------------------------------------------
-  // Выбор позиции номенклатуры (поиск с 2 символов, задержка ввода)
-  // ---------------------------------------------------------------------------
-  function pickNomenclature(kind, onPick) {
-    const search = inp('', { type: 'search', placeholder: kind === 'raw' ? 'Название или код сырья…' : 'Название или код упаковки…', autofocus: 'autofocus' });
-    const listBox = el('div', { style: 'margin-top:10px;min-height:120px' });
-    let t = null;
-    search.addEventListener('input', () => { clearTimeout(t); t = setTimeout(run, 280); });
-    async function run() {
-      const q = search.value.trim();
-      listBox.innerHTML = '';
-      if (q.length < 2) { listBox.appendChild(el('div', { class: 'calc-sub', style: 'margin:0' }, 'Введите минимум 2 символа.')); return; }
-      listBox.appendChild(el('div', { class: 'calc-skel' }));
-      let d; try { d = await api('/nomenclature?kind=' + kind + '&q=' + encodeURIComponent(q)); }
-      catch (e) { listBox.innerHTML = ''; listBox.appendChild(el('div', { class: 'calc-msg err' }, e.message)); return; }
-      listBox.innerHTML = '';
-      if (!d.items.length) {
-        listBox.appendChild(el('div', { class: 'calc-empty' }, [
-          el('div', { class: 'calc-empty-t' }, 'Ничего не найдено. Позиции создаются в справочниках номенклатуры, здесь их завести нельзя.'),
+    function drawInherited() {
+      inherited.innerHTML = '';
+      const group = selectedGroup();
+      if (!group) {
+        inherited.appendChild(el('div', { class: 'calc-group-inherit warn' }, 'Выберите группу — она подставит НДС, ретро, налог, резерв брака и упаковку.'));
+        return;
+      }
+      inherited.appendChild(el('div', { class: 'calc-group-inherit' }, [
+        el('div', { class: 'calc-strong' }, 'Наследуется из «' + group.name + '»'),
+        el('div', { class: 'calc-src' }, groupRuleText(group)),
+        canEdit() ? el('button', { class: 'calc-btn tiny', onclick: () => openGroup(group.id) }, 'Изменить группу') : null,
+      ]));
+    }
+
+    function drawRaw() {
+      rawHost.innerHTML = '';
+      if (!rawRows.length) {
+        rawHost.appendChild(el('div', { class: 'calc-empty compact' }, 'Сырьё ещё не добавлено.'));
+        scheduleCalc();
+        return;
+      }
+      rawHost.appendChild(el('div', { class: 'calc-rrow head' },
+        ['Позиция', 'Количество', 'Потери, %', 'С потерями', 'Цена и источник', 'Стоимость', ''].map((text) => el('span', {}, text))));
+      rawRows.forEach((row, index) => rawHost.appendChild(rawRow(row, index)));
+      scheduleCalc();
+    }
+
+    function rawRow(row, index) {
+      const baseUnit = String(row.unit || '').toLowerCase();
+      const smallUnit = baseUnit === 'кг' ? 'г' : baseUnit === 'л' ? 'мл' : null;
+      const showUnit = row._show_unit || (smallUnit || baseUnit);
+      const factor = () => (smallUnit && (row._show_unit || smallUnit) === smallUnit ? 1000 : 1);
+      const amount = input(row.qty_net * factor(), {
+        type: 'number', step: 'any', class: 'calc-num-in', disabled: readOnly || null,
+        oninput: (event) => { row.qty_net = (Number(event.target.value) || 0) / factor(); scheduleCalc(); },
+      });
+      const unit = smallUnit ? select([
+        { v: smallUnit, t: smallUnit }, { v: baseUnit, t: baseUnit },
+      ], showUnit, {
+        disabled: readOnly || null,
+        onchange: (event) => { row._show_unit = event.target.value; drawRaw(); },
+      }) : el('span', { class: 'calc-src calc-unit-label' }, row.unit || '—');
+      const loss = input(row.loss_rate, {
+        type: 'number', step: '0.01', class: 'calc-num-in', disabled: readOnly || null,
+        oninput: (event) => { row.loss_rate = Number(event.target.value) || 0; scheduleCalc(); },
+      });
+      return el('div', { class: 'calc-rrow', 'data-raw-index': String(index) }, [
+        el('div', {}, [
+          el('div', { class: 'calc-rowname' }, row.name || '(не выбрано)'),
+          el('div', { class: 'calc-rowcode' }, [row.code, row.unit].filter(Boolean).join(' · ')),
+          row.nomenclature_missing ? el('div', { class: 'calc-err-inline' }, 'Позиции нет в справочнике') : null,
+        ]),
+        el('div', { class: 'calc-qty-control' }, [amount, unit]),
+        loss,
+        el('div', { class: 'calc-num calc-cell-qty calc-unit-label' }, '…'),
+        el('div', {}, row.price === null || row.price === undefined
+          ? el('span', { class: 'calc-pill bad' }, 'Нет закупочной цены')
+          : [
+              el('div', { class: 'calc-strong' }, money(row.price) + (row.unit ? ' / ' + row.unit : '')),
+              el('div', { class: 'calc-src' }, ['Закуп', ruDate(row.price_date), row.supplier_name].filter(Boolean).join(' · ')),
+            ]),
+        el('div', { class: 'calc-num calc-strong calc-cell-cost calc-unit-label' }, '…'),
+        readOnly ? el('span') : el('button', {
+          class: 'calc-rrow-del', title: 'Убрать', onclick: () => { rawRows.splice(index, 1); drawRaw(); },
+        }, '🗑'),
+      ]);
+    }
+
+    function addRaw() {
+      pickNomenclature('raw', (item) => {
+        if (rawRows.some((row) => Number(row.item_id) === Number(item.id))) return toast('Это сырьё уже добавлено', true);
+        rawRows.push({
+          item_kind: 'raw', item_id: item.id, name: item.name, code: item.code, unit: item.unit,
+          qty_net: 0, loss_rate: 0, comment: '', price: item.price,
+          price_date: item.price_date, price_source: item.price_source,
+        });
+        drawRaw();
+      });
+    }
+
+    function drawPackaging() {
+      packagingHost.innerHTML = '';
+      if (ownPackaging.length) {
+        packagingHost.appendChild(el('div', { class: 'calc-msg warn' },
+          'У изделия сохранена индивидуальная упаковка из прежней версии. Она используется вместо упаковки группы.'));
+        ownPackaging.forEach((item) => packagingHost.appendChild(el('div', { class: 'calc-pack-read' }, [
+          el('span', {}, item.name + ' × ' + qty(item.qty_net / recipeBatch) + (item.unit ? ' ' + item.unit : '')),
+          item.price === null || item.price === undefined ? el('span', { class: 'calc-pill bad' }, 'Нет цены') : el('strong', {}, money(item.price)),
+        ])));
+        if (!readOnly) packagingHost.appendChild(el('button', {
+          class: 'calc-btn tiny', onclick: () => { ownPackaging = []; drawPackaging(); scheduleCalc(); },
+        }, 'Использовать упаковку группы'));
+        return;
+      }
+      const group = selectedGroup();
+      if (!group) return packagingHost.appendChild(el('div', { class: 'calc-empty compact' }, 'Сначала выберите группу.'));
+      if (!(group.packaging || []).length) {
+        packagingHost.appendChild(el('div', { class: 'calc-empty compact' }, [
+          'У группы не задан комплект упаковки.',
+          canEdit() ? el('button', { class: 'calc-btn tiny', onclick: () => openGroup(group.id) }, 'Настроить') : null,
         ]));
         return;
       }
-      listBox.appendChild(el('div', { class: 'calc-pick-list', style: 'position:static;box-shadow:none' }, d.items.map((it) =>
-        el('div', { class: 'calc-pick-item', onclick: () => { onPick(it); close(); } }, [
-          el('div', { class: 'calc-pick-nm' }, it.name),
-          el('div', { class: 'calc-pick-meta' }, [it.code, it.unit, it.category,
-            it.price === null ? '⛔ нет цены' : money(it.price) + ' / ' + it.unit + ' · ' + ruDate(it.price_date)].filter(Boolean).join(' · ')),
-        ]))));
+      (group.packaging || []).forEach((item) => packagingHost.appendChild(el('div', { class: 'calc-pack-read' }, [
+        el('span', {}, item.name + ' × ' + qty(item.qty) + (item.unit ? ' ' + item.unit : '')),
+        item.price === null || item.price === undefined
+          ? el('span', { class: 'calc-pill bad' }, 'Нет цены')
+          : el('strong', {}, money(item.line_cost) + ' сум'),
+      ])));
+      packagingHost.appendChild(el('div', { class: 'calc-src', style: 'margin-top:7px' }, 'Источник: группа «' + group.name + '»'));
     }
-    // Отдельная панель ПОВЕРХ карточки изделия. Свой оверлей, PANEL не трогаем —
-    // карточка остаётся открытой, введённые данные не теряются (ТЗ 18).
-    const close = () => { ov.remove(); pickerOpen = null; };
+
+    let calcTimer = null;
+    function scheduleCalc() {
+      clearTimeout(calcTimer);
+      calcTimer = setTimeout(runCalc, 350);
+    }
+
+    async function runCalc() {
+      const usable = rawRows.filter((row) => row.item_id && Number(row.qty_net) > 0);
+      if (!fGroup.value || !usable.length) {
+        calcHost.innerHTML = '';
+        calcHost.appendChild(el('div', { class: 'calc-sub', style: 'margin:0' },
+          !fGroup.value ? 'Выберите группу калькуляции.' : 'Добавьте сырьё и укажите количество.'));
+        return;
+      }
+      calcHost.innerHTML = '';
+      calcHost.appendChild(el('div', { class: 'calc-skel', style: 'width:65%' }));
+      try {
+        const result = await post('/calculate', {
+          period: BOOT.period ? BOOT.period.period : undefined,
+          group_id: Number(fGroup.value),
+          batch_output_qty: recipeBatch,
+          use_group_packaging: !ownPackaging.length,
+          items: usable.concat(ownPackaging).map((row) => ({
+            item_kind: row.item_kind, item_id: row.item_id, qty_net: row.qty_net, loss_rate: row.loss_rate,
+          })),
+          commercial: { price: Number(fPrice.value) || 0 },
+        });
+        fillRawResults(result.result.rows || []);
+        drawCalculation(result);
+      } catch (error) {
+        calcHost.innerHTML = '';
+        calcHost.appendChild(el('div', { class: 'calc-msg err' }, error.message));
+      }
+    }
+
+    function fillRawResults(serverRows) {
+      const rows = serverRows.filter((row) => row.item_kind === 'raw');
+      rawRows.filter((row) => row.item_id && Number(row.qty_net) > 0).forEach((row, index) => {
+        const result = rows[index];
+        const host = rawHost.querySelector('[data-raw-index="' + rawRows.indexOf(row) + '"]');
+        if (!result || !host) return;
+        const amount = $('.calc-cell-qty', host);
+        const cost = $('.calc-cell-cost', host);
+        if (amount) amount.textContent = qty(result.qty_with_loss);
+        if (cost) cost.textContent = result.cost === null || result.cost === undefined ? '—' : money(result.cost);
+      });
+    }
+
+    function drawCalculation(data) {
+      const result = data.result;
+      const layers = result.layers;
+      const commercial = result.commercial;
+      calcHost.innerHTML = '';
+      const messages = el('div', { class: 'calc-msgs' });
+      (result.errors || []).forEach((item) => messages.appendChild(el('div', { class: 'calc-msg err' }, '⛔ ' + item.message)));
+      (result.warnings || []).forEach((item) => messages.appendChild(el('div', { class: 'calc-msg warn' }, '⚠️ ' + item.message)));
+      ((data.sources && data.sources.warnings) || []).forEach((item) => messages.appendChild(el('div', { class: 'calc-msg warn' }, '⚠️ ' + item.message)));
+      if (messages.children.length) calcHost.appendChild(messages);
+      const card = (label, value, cls, source) => el('div', { class: 'calc-sum-card' + (cls ? ' ' + cls : '') }, [
+        el('div', { class: 'calc-sum-lbl' }, label),
+        el('div', { class: 'calc-sum-val' }, value),
+        source ? el('div', { class: 'calc-src' }, source) : null,
+      ]);
+      calcHost.appendChild(el('div', { class: 'calc-sum' }, [
+        card('Сырьё', money(layers.raw)),
+        card('Упаковка', money(layers.packaging), null, data.group ? data.group.name : null),
+        card('ФОТ с налогами', layers.fot_per_unit ? money(layers.fot_per_unit) : '—', null, 'Персонал · ' + data.period),
+        card('Производственные', money(layers.production_per_unit), null, 'Касса · ' + data.period),
+        card('Полная себестоимость', money(layers.full_cost), 'accent', 'резерв брака ' + pct(layers.waste_reserve_rate)),
+      ]));
+      calcHost.appendChild(el('div', { class: 'calc-sum', style: 'margin-top:10px' }, [
+        card('Цена', money(commercial.price)),
+        card('Ретро', money(commercial.retro), null, data.group ? pct(data.group.retro_rate) : null),
+        card('НДС', money(commercial.vat), null, data.group ? pct(data.group.vat_rate) : null),
+        card('Прибыль до налога', money(commercial.profit_before_tax), commercial.profit_before_tax < 0 ? 'bad' : null),
+        card('Налог на прибыль', money(commercial.profit_tax), null, data.group ? pct(data.group.profit_tax_rate) : null),
+        card('Чистая прибыль', money(commercial.net_profit), commercial.net_profit < 0 ? 'bad' : null),
+        card('Чистая маржа', commercial.net_margin === null ? '—' : pct(commercial.net_margin), commercial.net_margin !== null && commercial.net_margin < 0 ? 'bad' : null),
+      ]));
+      const output = data.sources && data.sources.output;
+      calcHost.appendChild(el('div', { class: 'calc-sub', style: 'margin-top:10px' },
+        output && output.total
+          ? 'ФОТ и общие расходы распределены на ' + qty(output.total) + ' произведённых единиц.'
+          : 'Для добавления ФОТ и общих расходов заполните выпуск периода.'));
+    }
+
+    const errorBox = el('div');
+    const buttons = [];
+    if (!readOnly) buttons.push(el('button', { class: 'calc-btn primary', onclick: async () => {
+      errorBox.innerHTML = '';
+      if (!fName.value.trim()) return errorBox.appendChild(el('div', { class: 'calc-msg err' }, 'Укажите название изделия'));
+      if (!fGroup.value) return errorBox.appendChild(el('div', { class: 'calc-msg err' }, 'Выберите группу калькуляции'));
+      const payload = {
+        name: fName.value.trim(), group_id: Number(fGroup.value), barcode: fBarcode.value.trim(),
+        net_weight: fWeight.value === '' ? null : Number(fWeight.value),
+        price: fPrice.value === '' ? null : Number(fPrice.value), comment: fComment.value,
+      };
+      try {
+        let productId = id;
+        if (isNew) {
+          const created = await post('/products', { ...payload, batch_output_qty: 1 });
+          productId = created.id;
+        } else await post('/products/' + id, payload, 'PATCH');
+        let recipeId = recipe ? recipe.id : null;
+        if (!recipeId) recipeId = (await post('/recipes', { product_id: productId })).id;
+        await post('/recipes/' + recipeId, {
+          batch_output_qty: recipeBatch,
+          items: rawRows.concat(ownPackaging).filter((row) => row.item_id).map((row) => ({
+            item_kind: row.item_kind, item_id: row.item_id, qty_net: row.qty_net,
+            loss_rate: row.loss_rate, comment: row.comment || '',
+          })),
+        }, 'PATCH');
+        await refreshGroups(false).catch(() => {});
+        toast('Изделие сохранено');
+        closePanel(true);
+      } catch (error) { errorBox.appendChild(el('div', { class: 'calc-msg err' }, error.message)); }
+    } }, isNew ? 'Создать изделие' : 'Сохранить'));
+
+    if (!isNew && !readOnly) {
+      buttons.unshift(el('button', { class: 'calc-btn', onclick: async () => {
+        try {
+          const copy = await post('/products/' + id + '/copy', {});
+          await refreshGroups(false).catch(() => {});
+          toast('Изделие скопировано');
+          closePanel(false);
+          openProduct(copy.id);
+        } catch (error) { toast(error.message, true); }
+      } }, '⧉ Копировать'));
+      buttons.unshift(el('button', {
+        class: 'calc-btn' + (product.status === 'archived' ? '' : ' danger'),
+        onclick: async () => {
+          try {
+            const archived = product.status !== 'archived';
+            await post('/products/' + id, { status: archived ? 'archived' : 'active' }, 'PATCH');
+            await refreshGroups(false).catch(() => {});
+            toast(archived ? 'Изделие в архиве' : 'Изделие восстановлено');
+            closePanel(true);
+          } catch (error) { toast(error.message, true); }
+        },
+      }, product.status === 'archived' ? '↩ Вернуть из архива' : '🗄 В архив'));
+    }
+
+    openPanel(isNew ? 'Новое изделие' : product.name, [errorBox, passport, recipeBlock, calcBlock], buttons);
+    drawInherited();
+    drawRaw();
+    drawPackaging();
+  }
+
+  // -----------------------------------------------------------------------
+  // Выбор существующей номенклатуры
+  // -----------------------------------------------------------------------
+  function pickNomenclature(kind, onPick) {
+    const search = input('', {
+      type: 'search',
+      placeholder: kind === 'raw' ? 'Название или код сырья…' : 'Название или код упаковки…',
+      autofocus: 'autofocus',
+    });
+    const list = el('div', { style: 'margin-top:10px;min-height:120px' });
+    let timer = null;
+    search.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(run, 280); });
+    async function run() {
+      const query = search.value.trim();
+      list.innerHTML = '';
+      if (query.length < 2) return list.appendChild(el('div', { class: 'calc-sub' }, 'Введите минимум 2 символа.'));
+      list.appendChild(el('div', { class: 'calc-skel' }));
+      let data;
+      try { data = await api('/nomenclature?kind=' + kind + '&q=' + encodeURIComponent(query)); }
+      catch (error) { list.innerHTML = ''; list.appendChild(el('div', { class: 'calc-msg err' }, error.message)); return; }
+      list.innerHTML = '';
+      if (!data.items.length) return list.appendChild(el('div', { class: 'calc-empty compact' }, 'Ничего не найдено. Позиция создаётся в номенклатуре ERP.'));
+      list.appendChild(el('div', { class: 'calc-pick-list static' }, data.items.map((item) => el('div', {
+        class: 'calc-pick-item', onclick: () => { onPick(item); close(); },
+      }, [
+        el('div', { class: 'calc-pick-nm' }, item.name),
+        el('div', { class: 'calc-pick-meta' }, [item.code, item.unit, item.category,
+          item.price === null ? '⛔ нет цены' : money(item.price) + ' / ' + item.unit + ' · ' + ruDate(item.price_date)].filter(Boolean).join(' · ')),
+      ]))));
+    }
+    const close = () => { overlay.remove(); pickerOpen = null; };
     const panel = el('div', { class: 'calc-panel', style: 'max-width:560px' }, [
       el('div', { class: 'calc-panel-head' }, [
         el('div', { class: 'calc-panel-title' }, kind === 'raw' ? 'Выбор сырья' : 'Выбор упаковки'),
         el('button', { class: 'calc-x', title: 'Закрыть', onclick: close }, '×'),
       ]),
-      el('div', { class: 'calc-panel-body' }, [search, listBox]),
+      el('div', { class: 'calc-panel-body' }, [search, list]),
     ]);
-    const ov = el('div', { class: 'calc-ov', style: 'z-index:80', onclick: (e) => { if (e.target === ov) close(); } }, panel);
-    document.getElementById('calc-modal-root').appendChild(ov);
+    const overlay = el('div', {
+      class: 'calc-ov', style: 'z-index:80', onclick: (event) => { if (event.target === overlay) close(); },
+    }, panel);
+    $('#calc-modal-root').appendChild(overlay);
     pickerOpen = close;
     setTimeout(() => search.focus(), 50);
   }
 
-  document.addEventListener('keydown', (e) => {
-    if (e.key !== 'Escape') return;
-    if (pickerOpen) { pickerOpen(); return; }   // сначала закрываем выбор номенклатуры
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    if (pickerOpen) return pickerOpen();
     if (PANEL) closePanel(true);
   });
+
   boot();
 })();
