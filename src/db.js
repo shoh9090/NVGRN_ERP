@@ -740,15 +740,15 @@ async function seed() {
     );
   }
 
-  // Плитка «Калькуляция» — перезапуск по ТЗ: справочники → позже рецептуры/упаковка/матрица
+  // Плитка «Калькуляция себестоимости» (ТЗ TZ_CALCULATION.md)
   const calct = await pool.query("SELECT id FROM tiles WHERE url = '/calculation' LIMIT 1");
   if (calct.rows.length === 0) {
     await pool.query(
       `INSERT INTO tiles (title, description, icon, url, open_new_tab, sort_order)
-       VALUES ('Калькуляция', 'Периоды, статьи затрат, ставки и каналы — фундамент калькуляции', '🧮', '/calculation', FALSE, 52)`
+       VALUES ('Калькуляция себестоимости', 'Себестоимость изделий, рецептуры, модели и факт месяца', '🧮', '/calculation', FALSE, 52)`
     );
   }
-  await pool.query("UPDATE tiles SET description='Периоды, статьи затрат, ставки и каналы — фундамент калькуляции' WHERE url='/calculation'").catch(() => {});
+  await pool.query("UPDATE tiles SET title='Калькуляция себестоимости', description='Себестоимость изделий, рецептуры, модели и факт месяца' WHERE url='/calculation'").catch(() => {});
 
   // Старый модуль «Калькуляция себестоимости» (/costing) снят: скрываем его плитку из лаунчпада.
   // ВАЖНО (P0.3): НЕ выполняем DROP TABLE при старте приложения. Таблицы costing_* уже удалены

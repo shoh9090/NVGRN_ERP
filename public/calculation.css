@@ -1,69 +1,146 @@
-/* calculation.css — плитка «Калькуляция», вкладка «Справочники». Тема Hub. */
-:root { --ink:#14241b; --paper:#f4f2ea; --forest:#163a28; --lime:#8cc63f; --muted:#7c8579; --line:#e3e0d4; --soft:#fbfaf5; --danger:#c0392b; --warn:#b25b00; }
-#calc-main { max-width: var(--page-max); margin: 0 auto; padding: 14px; }
+/* calculation.css — плитка «Калькуляция себестоимости».
+   Дизайн-система Hub: Manrope для интерфейса, Lora для крупных цифр,
+   палитра ink/paper/forest/lime из style.css (ТЗ раздел 18). */
 
-/* ghost-кнопки читаемы на светлом фоне (глобальный .btn-ghost белый для тёмной шапки) */
-#calc-main .btn-ghost { background:#fff; border:1px solid var(--line); color:var(--forest); }
-#calc-main .btn-ghost:hover { background:#eef4e9; border-color:var(--forest); }
+#calc-main { max-width: var(--page-max); margin: 0 auto; padding: 16px 20px 80px; }
 
-.calc-topbar { margin-bottom:10px; }
-.calc-title { font-family:'Lora',Georgia,serif; font-size:24px; font-weight:600; color:var(--ink); }
-.calc-h2 { font-family:'Lora',Georgia,serif; font-size:19px; font-weight:600; color:var(--ink); }
-.calc-sub { color:var(--muted); font-size:13px; line-height:1.4; margin-top:2px; }
-.calc-btn { padding:8px 13px; border-radius:8px; font-weight:700; font-size:13px; cursor:pointer; }
-.calc-empty { padding:22px; text-align:center; color:var(--muted); }
-.calc-warn { color:var(--warn); font-weight:700; }
-.muted { color:var(--muted); }
-.tnum { text-align:right; font-variant-numeric:tabular-nums; }
-.strong { font-weight:800; color:var(--ink); }
+.calc-mode-badge { font-size: 12px; font-weight: 700; color: var(--ink-soft); background: var(--surface-2);
+  border: 1px solid var(--line); border-radius: 999px; padding: 4px 12px; white-space: nowrap; }
 
-.calc-tabs { display:flex; gap:4px; flex-wrap:wrap; margin:12px 0 4px; border-bottom:1px solid var(--line); }
-.calc-tab { background:none; border:0; padding:10px 15px; font-size:14px; font-weight:800; color:var(--muted); cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-1px; }
-.calc-tab.on { color:var(--forest); border-bottom-color:var(--lime); }
-.calc-tab.disabled { color:#c3c9bf; cursor:not-allowed; font-weight:600; }
+/* Вкладки */
+.calc-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 18px; border-bottom: 1px solid var(--line); }
+.calc-tab { background: none; border: none; padding: 10px 16px; font-size: 14px; font-weight: 700;
+  color: var(--ink-faint); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; min-height: 44px; }
+.calc-tab:hover { color: var(--ink); background: none; border-color: transparent; border-bottom-color: var(--line); }
+.calc-tab.on { color: var(--forest); border-bottom-color: var(--lime); }
 
-.calc-filters { display:flex; gap:8px; flex-wrap:wrap; margin:8px 0; }
+.calc-h2 { font-family: 'Lora', Georgia, serif; font-weight: 600; font-size: 23px; margin: 2px 0 4px; color: var(--ink); }
+.calc-sub { color: var(--ink-soft); font-size: 13px; margin-bottom: 14px; }
+.calc-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.calc-loading, .calc-empty { padding: 40px 20px; text-align: center; color: var(--ink-faint); }
+.calc-empty-h { font-size: 15px; font-weight: 700; color: var(--ink); margin-bottom: 6px; }
+.calc-empty-t { font-size: 13px; max-width: 520px; margin: 0 auto 14px; }
 
-.calc-list { display:flex; flex-direction:column; border:1px solid var(--line); border-radius:12px; overflow:hidden; background:#fff; }
-.calc-row { display:grid; gap:8px; align-items:center; padding:6px 10px; border-bottom:1px solid #f0f2ef; font-size:13px; }
-.calc-row:last-child { border-bottom:none; }
-.calc-row.head { background:#f2f5f1; font-weight:700; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.02em; }
-.calc-row.foot { background:#f8faf6; }
-.calc-row.sel { background:#f3f8ee; }
-.calc-row.dim { opacity:.55; }
+/* Кнопки модуля: читаемые на светлом фоне (глобальный .btn-ghost белый) */
+.calc-btn { min-height: 40px; padding: 9px 15px; border-radius: 10px; font-weight: 700; font-size: 13px;
+  cursor: pointer; background: var(--surface); border: 1px solid var(--line); color: var(--forest); white-space: nowrap; }
+.calc-btn:hover { background: var(--lime-soft); border-color: var(--lime-d); }
+.calc-btn.primary { background: linear-gradient(180deg, #9ad24f, var(--lime-d)); color: #10260a; border: none; }
+.calc-btn.primary:hover { filter: brightness(1.05); }
+.calc-btn.danger { color: var(--red); }
+.calc-btn.danger:hover { background: var(--red-soft); border-color: #e8c7bd; }
+.calc-btn.tiny { min-height: 32px; padding: 4px 9px; font-size: 12px; }
 
-/* сетки колонок */
-.calc-per { grid-template-columns:1.1fr 1.1fr 0.7fr 0.7fr 1fr 1.4fr 40px; }
-.calc-exp { grid-template-columns:1.2fr 1.6fr 1fr 1.1fr 0.9fr 0.9fr 1.1fr 1.3fr 40px; }
-.calc-rate { grid-template-columns:1.4fr 0.8fr 1.2fr 0.7fr 1.4fr 40px; }
-.calc-ch { grid-template-columns:1.4fr 0.7fr 0.7fr 0.8fr 0.7fr 1.4fr 40px; }
+/* Фильтры */
+.calc-filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+.calc-filters input, .calc-filters select { width: auto; min-width: 150px; }
+.calc-f-lbl { font-size: 12px; font-weight: 700; color: var(--ink-soft); }
 
-.calc-per-name { display:flex; align-items:center; gap:6px; cursor:pointer; }
-.calc-per-name:hover b { color:var(--forest); text-decoration:underline; }
-.calc-dot { width:8px; height:8px; border-radius:50%; background:var(--lime); display:inline-block; }
+/* Таблицы */
+.calc-table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+.calc-table { border-collapse: collapse; width: 100%; font-size: 13px; }
+.calc-table thead th { background: #f2f5f1; padding: 9px 11px; text-align: left; white-space: nowrap;
+  font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .02em; color: var(--ink-soft); }
+.calc-table td { padding: 8px 11px; border-bottom: 1px solid var(--line-soft); }
+.calc-table tbody tr:last-child td { border-bottom: none; }
+.calc-table tbody tr.clickable { cursor: pointer; }
+.calc-table tbody tr.clickable:hover { background: var(--lime-soft); }
+.calc-num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.calc-strong { font-weight: 800; }
 
-.calc-cell { padding:6px 8px; font-size:13px; width:100%; box-sizing:border-box; background:#fff; border:1px solid #e7e9e3; border-radius:6px; }
-.calc-cell:hover { border-color:#cfd4cb; }
-.calc-cell:focus { border-color:var(--forest); outline:none; }
-select.calc-cell { cursor:pointer; }
-.calc-cell.tnum { text-align:right; }
-.calc-ro { color:var(--ink); font-weight:600; padding-right:8px; }
+/* Значки состояния: спокойный зелёный — норма, жёлтый — предупреждение, красный — ошибка */
+.calc-pill { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 700;
+  padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
+.calc-pill.ok { background: var(--lime-soft); color: #3f6a16; }
+.calc-pill.warn { background: var(--amber-soft); color: #8a5a00; }
+.calc-pill.bad { background: var(--red-soft); color: var(--red); }
+.calc-pill.plain { background: var(--surface-2); color: var(--ink-soft); border: 1px solid var(--line); }
 
-.calc-icon-btn { border:1px solid var(--line); background:#fff; border-radius:6px; padding:4px 7px; cursor:pointer; font-size:13px; line-height:1; color:var(--forest); }
-.calc-icon-btn:hover { background:#eef4e9; border-color:var(--forest); }
+/* Источник цифры: маленькая подпись под значением */
+.calc-src { font-size: 11px; color: var(--ink-faint); margin-top: 2px; font-weight: 400; }
 
-.calc-amt { display:flex; gap:4px; align-items:center; }
-.calc-amt .calc-cell { flex:1; }
+/* Боковая панель карточки изделия */
+.calc-ov { position: fixed; inset: 0; background: rgba(20,36,27,.45); z-index: 70; display: flex; justify-content: flex-end; }
+.calc-panel { background: var(--surface); width: 100%; max-width: 980px; height: 100%; overflow-y: auto;
+  box-shadow: -20px 0 60px rgba(0,0,0,.25); display: flex; flex-direction: column; }
+.calc-panel-head { position: sticky; top: 0; background: var(--surface); border-bottom: 1px solid var(--line);
+  padding: 14px 20px; display: flex; align-items: center; justify-content: space-between; gap: 12px; z-index: 2; }
+.calc-panel-title { font-family: 'Lora', Georgia, serif; font-size: 20px; font-weight: 600; }
+.calc-panel-body { padding: 18px 20px 30px; flex: 1; }
+.calc-panel-foot { position: sticky; bottom: 0; background: var(--surface); border-top: 1px solid var(--line);
+  padding: 12px 20px; display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.calc-x { background: none; border: none; font-size: 22px; line-height: 1; color: var(--ink-faint); cursor: pointer; padding: 4px 8px; }
+.calc-x:hover { color: var(--ink); background: none; }
 
-.calc-menu { position:absolute; z-index:120; background:#fff; border:1px solid var(--line); border-radius:10px; box-shadow:0 8px 24px rgba(20,36,27,.16); padding:5px; min-width:240px; max-width:340px; }
-.calc-menu-item { display:block; width:100%; text-align:left; background:none; border:0; padding:8px 10px; border-radius:7px; cursor:pointer; font-size:13px; color:var(--ink); }
-.calc-menu-item:hover { background:#eef4e9; }
+/* Блоки внутри карточки */
+.calc-block { border: 1px solid var(--line); border-radius: var(--radius); margin-bottom: 16px; overflow: hidden; }
+.calc-block-h { background: var(--surface-2); padding: 10px 14px; font-size: 13px; font-weight: 800;
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.calc-block-b { padding: 14px; }
 
-.calc-toast { position:fixed; bottom:22px; left:50%; transform:translateX(-50%) translateY(20px); background:var(--forest); color:#fff; padding:10px 18px; border-radius:10px; font-size:13px; opacity:0; transition:opacity .25s, transform .25s; z-index:80; }
-.calc-toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
-.calc-toast.err { background:var(--danger); }
+/* Сетка полей паспорта */
+.calc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.calc-field label { display: block; margin-bottom: 4px; }
+.calc-field .calc-hint { font-size: 11px; color: var(--ink-faint); margin-top: 3px; font-weight: 400; text-transform: none; letter-spacing: 0; }
+.calc-err-inline { font-size: 12px; color: var(--red); margin-top: 4px; font-weight: 600; }
 
-@media (max-width:900px) {
-  .calc-row { font-size:12px; }
-  .calc-exp, .calc-per, .calc-rate, .calc-ch { overflow-x:auto; }
+/* Редактор рецептуры */
+.calc-recipe-note { font-size: 12px; color: var(--ink-soft); background: var(--surface-2);
+  border: 1px solid var(--line); border-radius: 9px; padding: 7px 11px; margin-bottom: 10px; }
+.calc-rrow { display: grid; grid-template-columns: minmax(180px, 2fr) 108px 92px 96px minmax(120px, 1fr) 108px 36px;
+  gap: 8px; align-items: start; padding: 8px 0; border-bottom: 1px solid var(--line-soft); }
+.calc-rrow.head { border-bottom: 1px solid var(--line); padding-bottom: 6px; }
+.calc-rrow.head span { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .02em; color: var(--ink-soft); }
+.calc-rrow input, .calc-rrow select { padding: 7px 9px; font-size: 13px; }
+.calc-rrow .calc-num-in { text-align: right; font-variant-numeric: tabular-nums; }
+.calc-rrow-del { background: none; border: 1px solid transparent; color: var(--ink-faint); cursor: pointer;
+  border-radius: 8px; padding: 6px 8px; min-height: 36px; }
+.calc-rrow-del:hover { color: var(--red); background: var(--red-soft); border-color: #e8c7bd; }
+.calc-rowname { font-weight: 700; font-size: 13px; }
+.calc-rowcode { font-size: 11px; color: var(--ink-faint); }
+
+/* Поиск номенклатуры */
+.calc-pick { position: relative; }
+.calc-pick-list { position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 10;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 11px; box-shadow: var(--shadow-lg);
+  max-height: 280px; overflow-y: auto; }
+.calc-pick-item { padding: 9px 12px; cursor: pointer; border-bottom: 1px solid var(--line-soft); }
+.calc-pick-item:last-child { border-bottom: none; }
+.calc-pick-item:hover, .calc-pick-item.sel { background: var(--lime-soft); }
+.calc-pick-nm { font-size: 13px; font-weight: 700; }
+.calc-pick-meta { font-size: 11px; color: var(--ink-faint); margin-top: 2px; }
+
+/* Итоги расчёта в карточке */
+.calc-sum { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.calc-sum-card { background: var(--surface-2); border: 1px solid var(--line); border-radius: 12px; padding: 11px 13px; }
+.calc-sum-lbl { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .02em; color: var(--ink-soft); }
+.calc-sum-val { font-family: 'Lora', Georgia, serif; font-size: 20px; font-weight: 600; margin-top: 4px;
+  font-variant-numeric: tabular-nums; }
+.calc-sum-card.accent { background: var(--lime-soft); border-color: #d3e8b4; }
+.calc-sum-card.bad .calc-sum-val { color: var(--red); }
+
+/* Сообщения расчёта */
+.calc-msgs { margin-bottom: 12px; }
+.calc-msg { font-size: 13px; padding: 9px 12px; border-radius: 10px; margin-bottom: 6px; font-weight: 600; }
+.calc-msg.err { background: var(--red-soft); color: var(--red); border: 1px solid #e8c7bd; }
+.calc-msg.warn { background: var(--amber-soft); color: #8a5a00; border: 1px solid #eddcae; }
+
+/* Скелетон загрузки вместо пустого экрана */
+.calc-skel { height: 14px; border-radius: 7px; background: linear-gradient(90deg, #eeece2, #f6f4ec, #eeece2);
+  background-size: 200% 100%; animation: calcskel 1.2s linear infinite; margin: 9px 0; }
+@keyframes calcskel { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+
+/* Тосты */
+.calc-toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: 26px; z-index: 100;
+  background: var(--forest); color: #fff; padding: 11px 20px; border-radius: 11px; font-size: 13px; font-weight: 700;
+  box-shadow: var(--shadow-lg); }
+.calc-toast.bad { background: var(--red); }
+
+/* Мобильный вид (ТЗ 18.1): карточка изделия на весь экран, строки рецептуры вертикально */
+@media (max-width: 760px) {
+  #calc-main { padding: 12px 12px 70px; }
+  .calc-panel { max-width: 100%; }
+  .calc-rrow { grid-template-columns: 1fr 1fr; gap: 6px; }
+  .calc-rrow.head { display: none; }
+  .calc-rrow > * { min-width: 0; }
 }
