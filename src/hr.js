@@ -146,15 +146,12 @@ async function addEvent(empId, type, date, opts = {}) {
     [empId, type, date || new Date().toISOString().slice(0, 10), opts.date_to || null, opts.from_text || null, opts.to_text || null, opts.comment || null, opts.created_by || null]);
 }
 // Поля начислений/удержаний/выплат — для расчётов и сохранения.
+// Списки живут в общем src/hr-fields.js: тем же составом «Начислено» считает
+// Калькуляция себестоимости, иначе ФОТ в себестоимости разойдётся с Кадрами.
 // ВАЖНО: accr_salary (Фикса) — базовая ставка, НЕ входит в сумму «начислено».
-const ACCR_EXTRA = ['accr_sick', 'accr_vacation', 'accr_mataid', 'accr_comp_vac']; // больничные/отпускные/матпомощь/компенсация
-const ACCR_ALL = ['accr_salary', 'accr_fact', 'accr_bonus', 'accr_premium', 'accr_gsm', 'accr_company_debt', 'accr_other', ...ACCR_EXTRA];
-const ACCR = ['accr_fact', 'accr_bonus', 'accr_premium', 'accr_gsm', 'accr_other', ...ACCR_EXTRA]; // счётные начисления (без «долга компании» — он удержание)
-const DED = ['ded_fine', 'ded_advance_card', 'ded_advance_cash', 'ded_hold', 'ded_emp_debt', 'ded_other'];
 // «Долг компании» (accr_company_debt) в итоге считается удержанием и уменьшает «К выплате».
 // В список колонок вставки он идёт через ACCR_ALL, поэтому в DED его не кладём (иначе дубль колонки) — только в сумму.
-const DED_SUM = [...DED, 'accr_company_debt'];
-const PAID = ['paid_cash', 'paid_card'];
+const { ACCR_EXTRA, ACCR_ALL, ACCR_FIELDS: ACCR, DED, DED_SUM, PAID } = require('./hr-fields');
 const PAYROLL_NUM = [...ACCR_ALL, ...DED, ...PAID, 'plan_days', 'fact_days', 'plan_hours', 'fact_hours', 'amount_1c'];
 
 // Тип оплаты по графику: смена 2/2 — почасовая (табель); 5/6-дневка — по дням (оклад/план-дни × факт-дни).

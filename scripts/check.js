@@ -54,7 +54,10 @@ for (const f of files.filter((f) => f.endsWith('.ejs'))) {
 const read = (p) => (fs.existsSync(path.join(ROOT, p)) ? fs.readFileSync(path.join(ROOT, p), 'utf8') : '');
 
 // (а) Миграции при старте не должны удалять данные: никаких DROP TABLE / TRUNCATE.
-for (const p of ['src/db.js', 'tg-bot/schema.sql']) {
+// Проверяем db.js, схему бота и все модульные схемы src/*-schema.js.
+const schemaFiles = ['src/db.js', 'tg-bot/schema.sql']
+  .concat(files.filter((f) => /-schema\.js$/.test(rel(f))).map(rel));
+for (const p of schemaFiles) {
   const src = stripComments(read(p));
   if (!src.trim()) continue;
   const bad = src.match(/\b(DROP\s+TABLE|TRUNCATE|DROP\s+SCHEMA)\b/i);

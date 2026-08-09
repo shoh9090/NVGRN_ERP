@@ -1,8 +1,15 @@
-// calculation.js — плитка «Калькуляция» (перезапуск по ТЗ).
-// Этап 1: вкладка «Справочники» — периоды, статьи затрат, ставки, условия каналов.
-// Матрица/рецептуры/упаковка — позже, на этом фундаменте. Схема calculation_*.
+// calculation.js — плитка «Калькуляция себестоимости».
+//
+// Идёт перестройка по ТЗ (TZ_CALCULATION.md). Готово:
+//  • Этап 1 — расчётное ядро: схема (calculation-schema.js), источники
+//    (calculation-sources.js), формулы (calculation-engine.js) + тесты.
+// Старая вкладка «Справочники» (периоды/статьи/ставки/каналы) пока работает как
+// была; её интерфейс заменяется на Этапе 2. Таблицы старых сущностей не удаляем.
 const express = require('express');
 const db = require('./db');
+const engine = require('./calculation-engine');
+const sources = require('./calculation-sources');
+const { ensureCalculationSchema } = require('./calculation-schema');
 
 const router = express.Router();
 const J = express.json({ limit: '2mb' });
@@ -69,6 +76,10 @@ async function ensureSchema() {
   )`);
   await q(`CREATE INDEX IF NOT EXISTS idx_calc_exp_period ON calculation_expense_items(period_id)`);
   await q(`CREATE TABLE IF NOT EXISTS calculation_flags (key TEXT PRIMARY KEY, created_at TIMESTAMPTZ DEFAULT now())`);
+
+  // Схема нового модуля (изделия, рецептуры, версии, снимки, модели) — ТЗ раздел 20.
+  // Только добавочные миграции; старые таблицы выше не трогаются.
+  await ensureCalculationSchema(db.pool);
 
   await seedDefaults();
   // Разовая чистка: НДС и налог на прибыль живут в строке периода, в «Ставках» они дублировались.
@@ -276,5 +287,100 @@ router.delete('/api/channels/:id(\\d+)', async (req, res) => {
   await db.pool.query('DELETE FROM calculation_channels WHERE id=$1', [req.params.id]);
   res.json({ ok: true });
 });
+
+// ===========================================================================
+// Этап 1 (ядро): предварительный расчёт без сохранения — ТЗ 21.2 /api/calculate
+// ===========================================================================
+// Клиент присылает состав и коммерческие параметры. Цены, ФОТ и расходы читает
+// СЕРВЕР из источников: готовую себестоимость от клиента не принимаем (ТЗ 21.4).
+router.post('/api/calculate', J, async (req, res) => {
+  try {
+    const b = req.body || {};
+    const period = /^\d{4}-\d{2}$/.test(b.period || '') ? b.period : new Date().toISOString().slice(0, 7);
+    const items = Array.isArray(b.items) ? b.items : [];
+    if (!items.length) return res.status(400).json({ error: 'Не передан состав рецептуры' });
+
+    // 1. Названия/единицы номенклатуры и цены — из справочников и Закупа.
+    const names = await nomenclatureInfo(items);
+    const onDate = b.price_on_date || null;
+    const priceMap = await sources.lastAcceptedPricesMap(db.pool, items, onDate);
+
+    const rows = items.map((it, idx) => {
+      const kind = it.item_kind === 'packaging' ? 'packaging' : 'raw';
+      const key = kind + ':' + Number(it.item_id);
+      const info = names.get(key) || {};
+      // Модельная цена разрешена только как ЯВНО помеченная ручная цена (ТЗ 10.3).
+      const manual = b.mode === 'model' && it.manual_price !== undefined && it.manual_price !== null && it.manual_price !== '';
+      const p = manual ? { price: asNum(it.manual_price), price_date: null, source: 'model' } : priceMap.get(key) || null;
+      return {
+        item_kind: kind, item_id: Number(it.item_id), sort_order: idx,
+        name: info.name || '', code: info.code || '', unit: info.unit || '',
+        qty_net: asNum(it.qty_net), loss_rate: asNum(it.loss_rate),
+        price: p ? p.price : null,
+        price_unit: info.unit || '',
+        price_date: p ? p.price_date : null,
+        price_source: p ? p.source : null,
+        is_model_price: !!manual,
+      };
+    });
+
+    // 2. ФОТ, налоги и расходы месяца + выпуск.
+    const fot = await sources.monthlyFot(db.pool, period);
+    const cash = await sources.cashExpensesByBucket(db.pool, period);
+    let totalOutput = asNum(b.total_output);
+    let outputInfo = { mode: 'manual', total: totalOutput };
+    if (!totalOutput) {
+      const pr = (await db.pool.query('SELECT id FROM calculation_periods WHERE period=$1', [period])).rows[0];
+      if (pr) {
+        outputInfo = await sources.periodOutput(db.pool, pr.id, b.output_mode === 'actual' ? 'actual' : 'planned');
+        totalOutput = outputInfo.total;
+      }
+    }
+
+    // 3. Считаем единым двигателем.
+    const result = engine.calculateProduct({
+      today: new Date().toISOString().slice(0, 10),
+      recipe: { batch_output_qty: asNum(b.batch_output_qty) || 1, items: rows },
+      total_output: totalOutput,
+      fot: { accrued: fot.accrued, inps: fot.inps, ndfl: fot.ndfl, social: fot.social },
+      monthly_expenses: cash.buckets,
+      commercial: b.commercial || {},
+    });
+
+    res.json({
+      period,
+      result,
+      sources: {
+        fot,
+        cash: { buckets: cash.buckets, unclassified: cash.unclassified },
+        output: outputInfo,
+        warnings: [...fot.warnings, ...cash.warnings],
+      },
+    });
+  } catch (e) {
+    console.error('[КАЛЬКУЛЯЦИЯ] расчёт:', e.message);
+    res.status(400).json({ error: 'Не удалось выполнить расчёт: ' + e.message });
+  }
+});
+
+// Названия, коды и единицы существующей номенклатуры (сырьё и упаковка).
+async function nomenclatureInfo(items) {
+  const map = new Map();
+  const raw = items.filter((x) => x.item_kind !== 'packaging').map((x) => Number(x.item_id)).filter(Boolean);
+  const pack = items.filter((x) => x.item_kind === 'packaging').map((x) => Number(x.item_id)).filter(Boolean);
+  if (raw.length) {
+    const r = await db.pool.query(
+      `SELECT m.id, m.code, m.name, COALESCE(u.short_name, '') AS unit
+       FROM ref_raw_materials m LEFT JOIN ref_units u ON u.id = m.unit_id WHERE m.id = ANY($1)`, [raw]);
+    r.rows.forEach((x) => map.set('raw:' + x.id, x));
+  }
+  if (pack.length) {
+    const r = await db.pool.query(
+      `SELECT m.id, m.code, m.name, COALESCE(u.short_name, '') AS unit
+       FROM ref_packaging m LEFT JOIN ref_units u ON u.id = m.unit_id WHERE m.id = ANY($1)`, [pack]);
+    r.rows.forEach((x) => map.set('packaging:' + x.id, x));
+  }
+  return map;
+}
 
 module.exports = router;
