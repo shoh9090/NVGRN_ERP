@@ -988,18 +988,30 @@
       const fn = (n) => (n == null || n === '') ? '—' : new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(Number(n));
       const mo = monthLabel(salState.period);
       const esc = (s) => String(s == null ? '' : s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+      // Строки печатаем только ненулевые — карточка остаётся компактной, но видно всё, что реально есть.
+      const line = (label, val, cls) => (Math.round(Number(val) || 0) === 0) ? ''
+        : '<div class="row' + (cls ? ' ' + cls : '') + '"><span class="lbl">' + esc(label) + '</span><span>'
+          + (cls === 'd' ? '−' : cls === 'g' ? '+' : '') + f(val) + '</span></div>';
       const cards = emps.map((r) => {
-        const avans = (Number(r.ded_advance_card) || 0) + (Number(r.ded_advance_cash) || 0) + (Number(r.cash_advance) || 0);
-        const uderzh = (Number(r.deducted) || 0) - avans;
-        const bonus = (Number(r.accrued) || 0) - (Number(r.accr_fact) || 0);
+        // Начисления — по статьям (оклад по табелю, бонусы, премия, ГСМ, больничные, отпускные и т.д.).
+        const accrLines = ACCR_FIELDS.map(([k, label]) => line(label, r[k], 'g')).join('');
+        // Удержания — по статьям + аванс наличными из Кассы (он тоже уменьшает выплату).
+        const dedLines = DED_FIELDS.map(([k, label]) => line(label, r[k], 'd')).join('')
+          + line('Аванс наличными (касса)', r.cash_advance, 'd');
+        // Выплачено — обязательно раздельно: на карту и наличными.
+        const cashPaid = (Number(r.paid_cash) || 0) + (Number(r.cash_paid) || 0);
+        const payLines = line('На карту', r.paid_card) + line('Наличными', cashPaid);
+        const hasPay = Math.round((Number(r.paid_card) || 0) + cashPaid) !== 0;
         return '<div class="card">'
           + '<div class="ch"><span class="nm">' + esc(r.full_name) + '</span><span class="mo">' + mo + '</span></div>'
-          + '<div class="row"><span class="lbl">Оклад</span><span>' + f(r.base_salary) + '</span></div>'
+          + '<div class="row"><span class="lbl">Оклад / ставка</span><span>' + f(r.base_salary) + '</span></div>'
           + '<div class="sub">Дни ' + fn(r.plan_days) + '/' + fn(r.fact_days) + ' · Часы ' + fn(r.plan_hours) + '/' + fn(r.fact_hours) + '</div>'
-          + '<div class="row"><span class="lbl">Начислено (факт)</span><span>' + f(r.accr_fact) + '</span></div>'
-          + '<div class="row g"><span>Бонусы</span><span>+' + f(bonus) + '</span></div>'
-          + '<div class="row d"><span>Удержания</span><span>−' + f(uderzh) + '</span></div>'
-          + '<div class="row d"><span>Аванс</span><span>−' + f(avans) + '</span></div>'
+          + (accrLines ? '<div class="sec">Начислено</div>' + accrLines
+            + '<div class="row st"><span class="lbl">Итого начислено</span><span>' + f(r.accrued) + '</span></div>' : '')
+          + (dedLines ? '<div class="sec">Удержано</div>' + dedLines
+            + '<div class="row st"><span class="lbl">Итого удержано</span><span>−' + f(r.deducted) + '</span></div>' : '')
+          + (hasPay ? '<div class="sec">Выплачено</div>' + payLines
+            + '<div class="row st"><span class="lbl">Итого выплачено</span><span>' + f(r.paid) + '</span></div>' : '')
           + '<div class="tot"><span>К выплате</span><span>' + f(r.to_pay) + '</span></div>'
           + '</div>';
       }).join('');
@@ -1007,10 +1019,12 @@
         + '@page{size:A4;margin:8mm}*{box-sizing:border-box}'
         + 'body{font-family:Arial,sans-serif;margin:0;color:#14241b}'
         + '.sheet{display:grid;grid-template-columns:1fr 1fr;gap:6mm}'
-        + '.card{break-inside:avoid;border:0.4mm dashed #999;border-radius:2mm;padding:3mm 3.5mm;height:82mm;display:flex;flex-direction:column;gap:1.1mm}'
+        + '.card{break-inside:avoid;border:0.4mm dashed #999;border-radius:2mm;padding:3mm 3.5mm;min-height:82mm;display:flex;flex-direction:column;gap:.8mm}'
         + '.ch{display:flex;justify-content:space-between;align-items:baseline;border-bottom:0.3mm solid #ccc;padding-bottom:1.2mm;margin-bottom:.6mm}'
         + '.nm{font-size:12pt;font-weight:bold}.mo{font-size:8pt;color:#777}'
-        + '.row{display:flex;justify-content:space-between;font-size:10pt}.lbl{color:#777}.sub{font-size:8.5pt;color:#777}'
+        + '.row{display:flex;justify-content:space-between;font-size:9.5pt;gap:2mm}.lbl{color:#777}.sub{font-size:8.5pt;color:#777}'
+        + '.sec{font-size:8pt;font-weight:bold;text-transform:uppercase;letter-spacing:.3pt;color:#555;margin-top:1.2mm;border-bottom:0.2mm solid #e2e2e2}'
+        + '.st{font-weight:bold;border-top:0.2mm dotted #ccc;padding-top:.5mm}.st .lbl{color:#444}'
         + '.g{color:#2b6a0f}.d{color:#a32d2d}'
         + '.tot{display:flex;justify-content:space-between;align-items:baseline;border-top:0.3mm solid #ccc;padding-top:1.2mm;margin-top:auto}'
         + '.tot span:first-child{font-size:11pt;font-weight:bold}.tot span:last-child{font-size:14pt;font-weight:bold}'
