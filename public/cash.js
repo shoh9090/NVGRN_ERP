@@ -506,6 +506,7 @@
 
   // ---------- Возмещение затрат подотчётным лицам ----------
   let reimbRate = 0;
+  let reimbPerson = '', reimbMonth = '', reimbOnlyOpen = false;
   async function oblReimbursements(box) {
     box.innerHTML = '';
     box.appendChild(el('div', { style: 'display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px' }, [
@@ -513,23 +514,53 @@
       isAdmin() ? el('button', { class: 'btn-ghost cash-add', onclick: () => oblReimbForm(null) }, '+ Возмещение') : null,
     ]));
     let d; try { d = await api('/reimbursements'); } catch (e) { box.appendChild(el('div', { class: 'cash-empty' }, 'Ошибка: ' + e.message)); return; }
-    const items = d.items || [];
+    const all = d.items || [];
     const rate = d.rate || 0; reimbRate = rate;
-    if (!items.length) { box.appendChild(el('div', { class: 'cash-empty' }, 'Пока нет записей.' + (isAdmin() ? ' Нажмите «+ Возмещение».' : ''))); return; }
+    if (!all.length) { box.appendChild(el('div', { class: 'cash-empty' }, 'Пока нет записей.' + (isAdmin() ? ' Нажмите «+ Возмещение».' : ''))); return; }
+
+    // --- Фильтры: подотчётное лицо + месяц (+ только непогашенные) ---
+    const persons = [...new Set(all.map((x) => x.person).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ru'));
+    const months = [...new Set(all.map((x) => (x.reim_date ? String(x.reim_date).slice(0, 7) : '')).filter(Boolean))].sort().reverse();
+    const monthName = (m) => ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'][Number(m.slice(5, 7)) - 1] + ' ' + m.slice(0, 4);
+    const pSel = el('select', {}, [el('option', { value: '' }, 'Все лица'), ...persons.map((p) => el('option', { value: p }, p))]);
+    pSel.value = reimbPerson;
+    pSel.onchange = () => { reimbPerson = pSel.value; pgState('reimb').page = 1; oblReimbursements(box); };
+    const mSel = el('select', {}, [el('option', { value: '' }, 'Все месяцы'), ...months.map((m) => el('option', { value: m }, monthName(m)))]);
+    mSel.value = reimbMonth;
+    mSel.onchange = () => { reimbMonth = mSel.value; pgState('reimb').page = 1; oblReimbursements(box); };
+    const openChk = el('input', { type: 'checkbox' }); openChk.checked = reimbOnlyOpen;
+    openChk.onchange = () => { reimbOnlyOpen = openChk.checked; pgState('reimb').page = 1; oblReimbursements(box); };
+    const resetBtn = el('button', { class: 'btn-ghost cash-add', style: 'padding:5px 10px;font-size:12px',
+      onclick: () => { reimbPerson = ''; reimbMonth = ''; reimbOnlyOpen = false; pgState('reimb').page = 1; oblReimbursements(box); } }, 'Сбросить');
+    box.appendChild(el('div', { style: 'display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px' }, [
+      el('label', { style: 'display:flex;gap:6px;align-items:center;font-size:13px' }, ['Подотчётное лицо', pSel]),
+      el('label', { style: 'display:flex;gap:6px;align-items:center;font-size:13px' }, ['Месяц', mSel]),
+      el('label', { style: 'display:flex;gap:6px;align-items:center;font-size:13px' }, [openChk, 'Только непогашенные']),
+      resetBtn,
+    ]));
+
+    const items = all.filter((x) =>
+      (!reimbPerson || x.person === reimbPerson)
+      && (!reimbMonth || String(x.reim_date || '').slice(0, 7) === reimbMonth)
+      && (!reimbOnlyOpen || x.status !== 'reimbursed'));
+    if (!items.length) { box.appendChild(el('div', { class: 'cash-empty' }, 'По этим фильтрам записей нет.')); return; }
+
+    // Итог «к возмещению» — по остаткам (частичные выплаты уже вычтены), с учётом фильтров.
     const pend = items.filter((x) => x.status !== 'reimbursed');
-    const uzs = pend.filter((x) => x.currency !== 'USD').reduce((s, x) => s + Number(x.amount || 0), 0);
-    const usd = pend.filter((x) => x.currency === 'USD').reduce((s, x) => s + Number(x.amount || 0), 0);
+    const restOf = (x) => Number(x.remainder != null ? x.remainder : x.amount) || 0;
+    const uzs = pend.filter((x) => x.currency !== 'USD').reduce((s, x) => s + restOf(x), 0);
+    const usd = pend.filter((x) => x.currency === 'USD').reduce((s, x) => s + restOf(x), 0);
     // Сум-эквивалент долларов — по курсу каждой записи (если задан), иначе по текущему курсу ЦБ.
-    const usdUzs = pend.filter((x) => x.currency === 'USD').reduce((s, x) => s + Number(x.amount || 0) * (Number(x.fx_rate) || rate || 0), 0);
-    box.appendChild(el('div', { class: 'cash-note-info', style: 'margin-bottom:8px' }, 'К возмещению (не выплачено): ' + money(uzs) + ' сум' + (usd ? ' · $' + money(usd) : '') + ((usd && (usdUzs > 0)) ? ' · итого ≈ ' + money(Math.round(uzs + usdUzs)) + ' сум' : '')));
+    const usdUzs = pend.filter((x) => x.currency === 'USD').reduce((s, x) => s + restOf(x) * (Number(x.fx_rate) || rate || 0), 0);
+    box.appendChild(el('div', { class: 'cash-note-info', style: 'margin-bottom:8px' }, 'К возмещению (остаток): ' + money(uzs) + ' сум' + (usd ? ' · $' + money(usd) : '') + ((usd && (usdUzs > 0)) ? ' · итого ≈ ' + money(Math.round(uzs + usdUzs)) + ' сум' : '')));
     // Валюты — в отдельных столбцах; в ИТОГО сводим к общей сумме по курсу.
     const isUsd = (x) => x.currency === 'USD';
     const rowRate = (x) => Number(x.fx_rate) || rate || 0;
     const sumUsd = items.filter(isUsd).reduce((a, x) => a + (Number(x.amount) || 0), 0);
     const sumUzs = items.filter((x) => !isUsd(x)).reduce((a, x) => a + (Number(x.amount) || 0), 0);
     const sumUsdInUzs = items.filter(isUsd).reduce((a, x) => a + (Number(x.amount) || 0) * rowRate(x), 0);
-    const cols = ['Дата', 'Подотчётное лицо', 'Сумма, $', 'Сумма, сум', 'Назначение расхода', 'Примечание', 'Статус'].concat(isAdmin() ? [''] : []);
-    const numIdx = [2, 3];
+    const cols = ['Дата', 'Подотчётное лицо', 'Сумма, $', 'Сумма, сум', 'Выплачено', 'Остаток', 'Назначение расхода', 'Статус'].concat(isAdmin() ? [''] : []);
+    const numIdx = [2, 3, 4, 5];
     const tableBox = el('div'); box.appendChild(tableBox);
     const pgKey = 'reimb';
     const draw = () => {
@@ -546,21 +577,47 @@
             ? el('div', {}, [el('div', {}, '$' + curFmt(x.amount, 'USD')), (Number(x.fx_rate) > 0 ? el('div', { class: 'cash-sub', style: 'font-size:11px;font-weight:400' }, '≈ ' + money(Math.round(Number(x.amount) * Number(x.fx_rate))) + ' сум') : null)])
             : '—'),
           el('td', { style: numSt }, isUsd(x) ? '—' : money(x.amount)),
-          el('td', { style: 'padding:7px 10px' }, x.purpose || ''),
-          el('td', { style: 'padding:7px 10px;color:var(--muted)' }, x.comment || ''),
-          el('td', { style: 'padding:7px 10px;white-space:nowrap' }, el('span', { class: 'cash-flow', style: paid ? 'background:#e8f5e9;color:#2e7d32' : 'background:#fff3e0;color:#b25b00' }, paid ? ('Возмещено' + (x.reimbursed_date ? ' ' + ruDate(x.reimbursed_date) : '')) : 'Не возмещено')),
+          // Выплачено / Остаток — с учётом частичных возмещений (в валюте самой траты).
+          el('td', { style: numSt + ';color:#2e7d32' }, Number(x.paid) > 0 ? (isUsd(x) ? '$' + curFmt(x.paid, 'USD') : money(x.paid)) : '—'),
+          el('td', { style: numSt + (Number(x.remainder) > 0 ? ';color:#b25b00' : ';color:var(--muted)') },
+            Number(x.remainder) > 0 ? (isUsd(x) ? '$' + curFmt(x.remainder, 'USD') : money(x.remainder)) : '—'),
+          el('td', { style: 'padding:7px 10px' }, [
+            x.purpose || '',
+            x.comment ? el('div', { class: 'cash-sub', style: 'font-size:11px' }, x.comment) : null,
+          ]),
+          el('td', { style: 'padding:7px 10px;white-space:nowrap' }, [
+            el('span', { class: 'cash-flow', style: paid ? 'background:#e8f5e9;color:#2e7d32' : (Number(x.paid) > 0 ? 'background:#e3f2fd;color:#1565c0' : 'background:#fff3e0;color:#b25b00') },
+              paid ? ('Возмещено' + (x.reimbursed_date ? ' ' + ruDate(x.reimbursed_date) : '')) : (Number(x.paid) > 0 ? 'Частично' : 'Не возмещено')),
+            // История выплат по датам — раскрывается по клику.
+            (x.payments && x.payments.length) ? el('details', { style: 'margin-top:4px' }, [
+              el('summary', { class: 'cash-sub', style: 'font-size:11px;cursor:pointer' }, 'выплат: ' + x.payments.length),
+              el('div', { style: 'margin-top:3px' }, x.payments.map((p) => el('div', { class: 'cash-sub', style: 'font-size:11px;display:flex;gap:6px;align-items:center' }, [
+                el('span', {}, ruDate(p.pay_date) + ' · ' + (isUsd(x) ? '$' + curFmt(p.amount, 'USD') : money(p.amount))),
+                isAdmin() ? el('a', { href: 'javascript:void(0)', title: 'Удалить выплату', style: 'color:#c0392b;text-decoration:none', onclick: async () => {
+                  if (!confirm('Удалить выплату от ' + ruDate(p.pay_date) + ' на ' + money(p.amount) + '?')) return;
+                  try { await post('/reimbursements/payments/' + p.id + '/delete', {}); toast('Выплата удалена'); oblReimbursements(box); } catch (e) { toast(e.message, true); }
+                } }, '✕') : null,
+              ]))),
+            ]) : null,
+          ]),
         ];
         if (isAdmin()) cells.push(el('td', { style: 'padding:7px 10px;white-space:nowrap' }, el('div', { style: 'display:flex;gap:6px' }, [
+          // Одна кнопка «Возместить» — без захода в правку (полностью или частично).
+          !paid ? el('button', { class: 'btn-primary', style: 'padding:4px 10px;font-size:12px', title: 'Отметить возмещение', onclick: () => oblReimbPayForm(x, box) }, '✓ Возместить') : null,
           el('button', { class: 'btn-ghost cash-add', style: 'padding:4px 8px;font-size:12px', title: 'Изменить', onclick: () => oblReimbForm(x) }, '✎'),
           el('button', { class: 'btn-ghost cashf-del', style: 'padding:4px 8px;font-size:12px', title: 'Удалить', onclick: async () => { if (!confirm('Удалить возмещение «' + x.person + '»?')) return; try { await post('/reimbursements/' + x.id + '/delete', {}); toast('Удалено'); oblReimbursements(box); } catch (e) { toast(e.message, true); } } }, '🗑'),
         ])));
         return el('tr', {}, cells);
       }));
       const cell = (i, content) => el('td', { style: 'padding:8px 10px;' + (numIdx.includes(i) ? 'text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums' : '') }, content);
+      const sumRestUzs = items.filter((x) => !isUsd(x)).reduce((a, x) => a + (Number(x.remainder) || 0), 0);
+      const sumRestUsd = items.filter(isUsd).reduce((a, x) => a + (Number(x.remainder) || 0), 0);
       const foot1 = el('tr', { class: 'cash-foot-row' }, cols.map((c, i) =>
         i === 0 ? cell(i, 'ИТОГО (' + items.length + ')')
           : i === 2 ? cell(i, sumUsd ? '$' + curFmt(sumUsd, 'USD') : '—')
-            : i === 3 ? cell(i, sumUzs ? money(sumUzs) : '—') : cell(i, '')));
+            : i === 3 ? cell(i, sumUzs ? money(sumUzs) : '—')
+              : i === 5 ? cell(i, (sumRestUzs ? money(sumRestUzs) : '') + (sumRestUsd ? (sumRestUzs ? ' · ' : '') + '$' + curFmt(sumRestUsd, 'USD') : '') || '—')
+                : cell(i, '')));
       const foot2 = el('tr', { class: 'cash-foot-row2' }, cols.map((c, i) =>
         i === 0 ? cell(i, rate ? ('Всего в сумах (курс ЦБ ' + money(rate) + ')') : 'Всего в сумах')
           : i === 3 ? cell(i, money(Math.round(sumUzs + sumUsdInUzs))) : cell(i, '')));
@@ -570,6 +627,48 @@
     };
     draw();
   }
+  // Окно «Возместить»: одна кнопка вместо захода в правку. Сумма по умолчанию — весь остаток,
+  // но её можно уменьшить (частичное возмещение) — тогда остаток закроется следующей выплатой.
+  function oblReimbPayForm(x, box) {
+    const isUsd = x.currency === 'USD';
+    const rest = Number(x.remainder != null ? x.remainder : x.amount) || 0;
+    const fmtCur = (v) => isUsd ? '$' + curFmt(v, 'USD') : money(v) + ' сум';
+    const amount = fmoney(rest, { placeholder: 'сумма выплаты' });
+    const date = finp(todayStr(), { type: 'date' });
+    const comment = finp('', { placeholder: 'например: перевод на карту' });
+    const hint = el('div', { class: 'cash-sub', style: 'margin-top:4px' }, '');
+    const updHint = () => {
+      const v = Number(moneyVal(amount)) || 0;
+      const left = rest - v;
+      hint.textContent = v <= 0 ? '' : (left > 0.005 ? 'Частичное возмещение · останется ' + fmtCur(Math.round(left * 100) / 100)
+        : 'Закрывает трату полностью');
+      hint.style.color = left > 0.005 ? '#b25b00' : '#2e7d32';
+    };
+    amount.oninput = updHint; updHint();
+    const allBtn = el('button', { class: 'btn-ghost cash-add', style: 'padding:4px 10px;font-size:12px',
+      onclick: () => { amount.value = rest; updHint(); } }, 'Весь остаток');
+    const save = el('button', { class: 'btn-primary', onclick: async () => {
+      const v = Number(moneyVal(amount)) || 0;
+      if (!(v > 0)) return toast('Укажите сумму выплаты', true);
+      if (v > rest + 0.005) return toast('Сумма больше остатка (' + fmtCur(rest) + ')', true);
+      try {
+        await post('/reimbursements/' + x.id + '/pay', { amount: v, pay_date: date.value || null, comment: comment.value || null });
+        toast(v >= rest - 0.005 ? 'Возмещено полностью' : 'Записано частичное возмещение');
+        closeModal();
+        if (box) oblReimbursements(box); else renderObligations();
+      } catch (e) { toast(e.message, true); }
+    } }, 'Записать возмещение');
+    modal('Возмещение · ' + x.person, el('div', { class: 'cashf' }, [
+      el('div', { class: 'cash-note-info', style: 'margin-bottom:8px' },
+        (x.purpose || 'Трата') + ' · сумма ' + fmtCur(Number(x.amount) || 0)
+        + (Number(x.paid) > 0 ? ' · уже выплачено ' + fmtCur(Number(x.paid)) : '')
+        + ' · остаток ' + fmtCur(rest)),
+      frow('Сумма выплаты', el('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap' }, [amount, allBtn, hint])),
+      frow('Дата выплаты', date),
+      frow('Примечание', comment),
+    ]), [save]);
+  }
+
   function oblReimbForm(x) {
     x = x || {};
     const date = finp(x.reim_date ? String(x.reim_date).slice(0, 10) : todayStr(), { type: 'date' });
@@ -599,6 +698,13 @@
     rdateRow.style.display = status.value === 'reimbursed' ? '' : 'none';
     status.onchange = () => { rdateRow.style.display = status.value === 'reimbursed' ? '' : 'none'; };
     const rows = [frow('Дата', date), frow('Подотчётное лицо', person), frow('Сумма', amount), frow('Валюта', cur), rateRow, frow('Назначение расхода', purpose), frow('Примечание', comment), frow('Статус', status), rdateRow];
+    // Если по трате уже есть выплаты — статусом управляет кнопка «Возместить», а не эта форма.
+    if (x.payments && x.payments.length) {
+      const stRow = rows[rows.length - 2];
+      stRow.style.display = 'none'; rdateRow.style.display = 'none';
+      rows.splice(rows.length - 2, 0, el('div', { class: 'cash-note-info', style: 'margin:4px 0' },
+        'Статус считается по выплатам (' + x.payments.length + ' шт., выплачено ' + money(x.paid) + '). Меняйте его кнопкой «Возместить» в списке.'));
+    }
     const save = el('button', { class: 'btn-primary', onclick: async () => {
       if (!person.value.trim()) return toast('Укажите подотчётное лицо', true);
       const payload = { reim_date: date.value || null, person: person.value, amount: moneyVal(amount), currency: cur.value, fx_rate: cur.value === 'USD' ? moneyVal(rateInp) : null, purpose: purpose.value, comment: comment.value, status: status.value, reimbursed_date: rdate.value || null };

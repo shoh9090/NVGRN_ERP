@@ -422,6 +422,26 @@ async function migrate() {
     created_by INTEGER, created_at TIMESTAMPTZ DEFAULT now(), updated_at TIMESTAMPTZ DEFAULT now()
   )`).catch((e) => console.error('fin_reimb:', e.message));
   await pool.query('ALTER TABLE finance_reimbursements ADD COLUMN IF NOT EXISTS fx_rate NUMERIC').catch(() => {});
+  // Частичное возмещение: одна трата может закрываться несколькими выплатами (каждая со своей датой).
+  // Остаток = amount − сумма выплат; статус пересчитывается автоматически.
+  await pool.query(`CREATE TABLE IF NOT EXISTS finance_reimbursement_payments (
+    id SERIAL PRIMARY KEY,
+    reimbursement_id INTEGER NOT NULL REFERENCES finance_reimbursements(id) ON DELETE CASCADE,
+    pay_date DATE,
+    amount NUMERIC NOT NULL DEFAULT 0,
+    comment TEXT,
+    created_by INTEGER, created_at TIMESTAMPTZ DEFAULT now()
+  )`).catch((e) => console.error('fin_reimb_pay:', e.message));
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_reimb_pay_rid ON finance_reimbursement_payments (reimbursement_id)').catch(() => {});
+  // Бэкфилл: уже отмеченные «Возмещено» до появления частичных выплат — записываем одной выплатой,
+  // чтобы остаток считался единообразно. Идемпотентно (только если выплат ещё нет).
+  await pool.query(
+    `INSERT INTO finance_reimbursement_payments (reimbursement_id, pay_date, amount, comment)
+     SELECT r.id, COALESCE(r.reimbursed_date, r.reim_date), r.amount, 'Перенос: отмечено возмещённым'
+     FROM finance_reimbursements r
+     WHERE r.status = 'reimbursed' AND COALESCE(r.amount,0) > 0
+       AND NOT EXISTS (SELECT 1 FROM finance_reimbursement_payments p WHERE p.reimbursement_id = r.id)`
+  ).catch(() => {});
   // Разовая загрузка обязательств (Хикматов/Хабибуллаев/прочие) — идемпотентно, потом можно удалить.
   await require('./seed-obligations')(pool).catch((e) => console.error('[seed-obligations]', e.message));
   // Подотчёт закупщика (общий котёл): in = выдано под отчёт, out = потрачено наличными по заявкам.

@@ -3115,13 +3115,71 @@ router.get('/api/obligations/schedule-template.xlsx', async (req, res) => {
 });
 
 // ---------- Возмещение затрат подотчётным лицам (простой список, не займы/кредиты) ----------
+// Пересчёт статуса по выплатам: закрыто, когда выплачено >= суммы траты.
+async function reimbSync(id) {
+  const r = (await db.pool.query(
+    `SELECT r.amount, COALESCE(SUM(p.amount),0) AS paid, MAX(p.pay_date) AS last_date
+     FROM finance_reimbursements r LEFT JOIN finance_reimbursement_payments p ON p.reimbursement_id = r.id
+     WHERE r.id = $1 GROUP BY r.amount`, [id])).rows[0];
+  if (!r) return;
+  const done = Number(r.paid) >= Number(r.amount || 0) - 0.005 && Number(r.amount || 0) > 0;
+  await db.pool.query('UPDATE finance_reimbursements SET status=$1, reimbursed_date=$2, updated_at=now() WHERE id=$3',
+    [done ? 'reimbursed' : 'pending', done ? r.last_date : null, id]);
+}
+
 router.get('/api/reimbursements', async (req, res) => {
   try {
     const rows = (await db.pool.query(
-      "SELECT * FROM finance_reimbursements ORDER BY (status='reimbursed'), reim_date DESC NULLS LAST, id DESC")).rows;
+      `SELECT r.*, COALESCE(p.paid,0) AS paid
+       FROM finance_reimbursements r
+       LEFT JOIN (SELECT reimbursement_id, SUM(amount) AS paid FROM finance_reimbursement_payments GROUP BY reimbursement_id) p
+         ON p.reimbursement_id = r.id
+       ORDER BY (r.status='reimbursed'), r.reim_date DESC NULLS LAST, r.id DESC`)).rows;
+    const pays = (await db.pool.query(
+      `SELECT id, reimbursement_id, to_char(pay_date,'YYYY-MM-DD') AS pay_date, amount, comment
+       FROM finance_reimbursement_payments ORDER BY pay_date, id`)).rows;
+    const byId = {};
+    for (const p of pays) (byId[p.reimbursement_id] = byId[p.reimbursement_id] || []).push(p);
+    const items = rows.map((x) => Object.assign({}, x, {
+      paid: Number(x.paid) || 0,
+      remainder: Math.max(0, Number(x.amount || 0) - (Number(x.paid) || 0)),
+      payments: byId[x.id] || [],
+    }));
     let rate = null; try { rate = await getCbuUsdRate(new Date().toISOString().slice(0, 10)); } catch (e) { rate = null; }
-    res.json({ items: rows, rate });
+    res.json({ items, rate });
   } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Возмещение (полное или частичное): добавляет выплату с датой и пересчитывает статус.
+router.post('/api/reimbursements/:id(\\d+)/pay', J, async (req, res) => {
+  if (!canFin(req)) return res.status(403).json({ error: 'Только администратор/финансы' });
+  const id = parseInt(req.params.id, 10);
+  const b = req.body || {};
+  const amount = numOrNull(b.amount);
+  if (!(amount > 0)) return res.status(400).json({ error: 'Укажите сумму выплаты больше нуля' });
+  const cur = (await db.pool.query(
+    `SELECT r.amount, COALESCE(SUM(p.amount),0) AS paid FROM finance_reimbursements r
+     LEFT JOIN finance_reimbursement_payments p ON p.reimbursement_id = r.id
+     WHERE r.id = $1 GROUP BY r.amount`, [id])).rows[0];
+  if (!cur) return res.status(404).json({ error: 'Запись не найдена' });
+  const rest = Number(cur.amount || 0) - Number(cur.paid);
+  if (amount > rest + 0.005) return res.status(400).json({ error: `Сумма больше остатка (${Math.round(rest)}). Уменьшите выплату.` });
+  await db.pool.query(
+    'INSERT INTO finance_reimbursement_payments (reimbursement_id, pay_date, amount, comment, created_by) VALUES ($1,$2,$3,$4,$5)',
+    [id, b.pay_date || new Date().toISOString().slice(0, 10), amount, b.comment || null, req.user.id]);
+  await reimbSync(id);
+  await db.log(req.user.id, 'reimb_pay', `#${id} сумма=${amount}`);
+  res.json({ ok: true });
+});
+
+// Удаление ошибочной выплаты (откат частичного возмещения).
+router.post('/api/reimbursements/payments/:pid(\\d+)/delete', async (req, res) => {
+  if (!canFin(req)) return res.status(403).json({ error: 'Только администратор/финансы' });
+  const r = await db.pool.query('DELETE FROM finance_reimbursement_payments WHERE id=$1 RETURNING reimbursement_id', [req.params.pid]);
+  if (!r.rows.length) return res.status(404).json({ error: 'Выплата не найдена' });
+  await reimbSync(r.rows[0].reimbursement_id);
+  await db.log(req.user.id, 'reimb_pay_delete', '#' + req.params.pid);
+  res.json({ ok: true });
 });
 router.post('/api/reimbursements', J, async (req, res) => {
   if (!canFin(req)) return res.status(403).json({ error: 'Только администратор/финансы' });
@@ -3144,6 +3202,9 @@ router.post('/api/reimbursements/:id(\\d+)', J, async (req, res) => {
   await db.pool.query(
     `UPDATE finance_reimbursements SET reim_date=$1, person=$2, amount=$3, currency=$4, fx_rate=$5, purpose=$6, comment=$7, status=$8, reimbursed_date=$9, updated_at=now() WHERE id=$10`,
     [b.reim_date || null, String(b.person || '').trim(), numOrNull(b.amount) || 0, cur, cur === 'USD' ? numOrNull(b.fx_rate) : null, b.purpose || null, b.comment || null, status, status === 'reimbursed' ? (b.reimbursed_date || null) : null, req.params.id]);
+  // Если по трате уже есть выплаты — статус ведут они (ручной статус из формы не должен их перебивать).
+  const hasPays = await db.pool.query('SELECT 1 FROM finance_reimbursement_payments WHERE reimbursement_id=$1 LIMIT 1', [req.params.id]);
+  if (hasPays.rows.length) await reimbSync(parseInt(req.params.id, 10));
   await db.log(req.user.id, 'reimb_update', '#' + req.params.id);
   res.json({ ok: true });
 });
