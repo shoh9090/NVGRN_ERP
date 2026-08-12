@@ -365,11 +365,38 @@
         const body = el('div', {}, [
           el('div', { class: 'hr-note' }, r.full_name + ' · ' + monthLabel(payState.period)),
           el('div', { style: 'display:flex;gap:16px;margin:8px 0;font-size:13px;flex-wrap:wrap' }, [el('span', {}, 'К выплате: ' + money2(r.net)), el('span', {}, 'Выплачено: ' + money2(r.paid)), el('span', { style: 'font-weight:700' }, 'Остаток: ' + money2(r.remainder))]),
-          r.payouts.length ? el('table', { class: 'dict-table' }, [el('thead', {}, el('tr', {}, ['Дата', 'Способ', 'Сумма', 'Комментарий'].map((h) => el('th', {}, h)))), el('tbody', {}, r.payouts.map((x) => el('tr', {}, [el('td', {}, ruDate(x.pay_date)), el('td', {}, x.method === 'card' ? 'карта' : 'наличные'), el('td', { class: 'tnum', style: 'text-align:right;font-weight:700' }, money2(x.amount)), el('td', { class: 'muted' }, x.comment || '')])))]) : el('div', { class: 'hr-empty' }, 'Выплат пока нет.'),
+          r.payouts.length ? el('table', { class: 'dict-table' }, [
+            el('thead', {}, el('tr', {}, ['Дата', 'Способ', 'Сумма', 'Комментарий', ''].map((h) => el('th', {}, h)))),
+            el('tbody', {}, r.payouts.map((x) => el('tr', {}, [
+              el('td', {}, ruDate(x.pay_date)),
+              el('td', {}, x.method === 'card' ? 'карта' : 'наличные'),
+              el('td', { class: 'tnum', style: 'text-align:right;font-weight:700' }, money2(x.amount)),
+              el('td', { class: 'muted' }, x.comment || ''),
+              // Отмена выплаты: сумма вернётся в «К выплате», расход в Кассе уберётся/уменьшится.
+              el('td', { style: 'text-align:right;width:1%' }, el('button', {
+                class: 'btn-ghost hr-del', style: 'padding:3px 9px;font-size:12px', title: 'Отменить выплату',
+                onclick: () => cancelPayout(x, r),
+              }, '↩ Отменить')),
+            ])))]) : el('div', { class: 'hr-empty' }, 'Выплат пока нет.'),
         ]);
         const acts = [el('button', { onclick: closeModal }, 'Закрыть')];
         if (r.remainder > 0.5) acts.push(el('button', { class: 'btn-primary', onclick: () => { closeModal(); openPay([r]); } }, r.paid > 0.5 ? 'Доплатить' : 'Выплатить'));
         modal('История выплат — ' + r.full_name, body, acts);
+      }
+
+      async function cancelPayout(x, r) {
+        const how = x.method === 'card' ? 'на карту' : 'наличными';
+        if (!confirm('Отменить выплату ' + money2(x.amount) + ' (' + how + ') от ' + ruDate(x.pay_date) + '?\n\n'
+          + 'Сотрудник: ' + r.full_name + '\n'
+          + '• Сумма вернётся в «К выплате».\n'
+          + (x.method === 'card' ? '• Выплата на карту будет снята.' : '• Расход в Кассе будет удалён (или уменьшен, если в нём есть другие сотрудники).')
+          + '\n\nОтменить нельзя. Продолжить?')) return;
+        try {
+          const res = await post('/payouts/' + x.id + '/delete', {});
+          toast('Выплата отменена' + (res.cashNote ? ' · ' + res.cashNote : ''));
+          closeModal();
+          render();
+        } catch (e) { toast(e.message, true); }
       }
 
       function openPay(list) {

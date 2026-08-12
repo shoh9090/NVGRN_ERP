@@ -1098,6 +1098,45 @@ router.post('/api/payouts/pay', J, async (req, res) => {
   res.json({ ok: true, count: done, total, cashNote });
 });
 
+// Отмена (удаление) выплаты: убирает запись из журнала, возвращает сумму в «К выплате»
+// и синхронизирует Кассу. Наличные выплаты группируются в одну транзакцию Кассы на несколько
+// человек: если после отмены в группе ещё остались выплаты — уменьшаем сумму транзакции,
+// если это была последняя — транзакцию удаляем целиком.
+router.post('/api/payouts/:id(\\d+)/delete', async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    const p = (await client.query(
+      'SELECT employee_id, period, amount, method, cash_tx_id FROM hr_payouts WHERE id=$1 FOR UPDATE', [id])).rows[0];
+    if (!p) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Выплата не найдена' }); }
+    const amt = Number(p.amount) || 0;
+    const col = p.method === 'card' ? 'paid_card' : 'paid_cash';
+    // Возвращаем сумму в ведомость (не уводим в минус).
+    await client.query(
+      `UPDATE hr_payroll SET ${col} = GREATEST(COALESCE(${col},0) - $1, 0), updated_at = now()
+       WHERE employee_id = $2 AND period = $3`, [amt, p.employee_id, p.period]);
+    await client.query('DELETE FROM hr_payouts WHERE id=$1', [id]);
+    let cashNote = null;
+    if (p.cash_tx_id) {
+      const left = (await client.query('SELECT COUNT(*)::int AS n, COALESCE(SUM(amount),0) AS s FROM hr_payouts WHERE cash_tx_id=$1', [p.cash_tx_id])).rows[0];
+      if (!left.n) {
+        await client.query('DELETE FROM cash_transactions WHERE id=$1', [p.cash_tx_id]);
+        cashNote = 'Расход в Кассе удалён';
+      } else {
+        await client.query('UPDATE cash_transactions SET amount=$1 WHERE id=$2', [Number(left.s), p.cash_tx_id]);
+        cashNote = 'Сумма расхода в Кассе уменьшена';
+      }
+    }
+    await client.query('COMMIT');
+    await db.log(req.user.id, 'hr_payout_delete', `#${id} emp=${p.employee_id} ${p.period} ${p.method} ${Math.round(amt)}`);
+    res.json({ ok: true, cashNote });
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    res.status(400).json({ error: e.message });
+  } finally { client.release(); }
+});
+
 // Налоги на ФОТ за месяц (ИНПС/НДФЛ/соцналог) — ручной ввод.
 router.get('/api/fot-taxes', async (req, res) => {
   const period = /^\d{4}-\d{2}$/.test(req.query.period) ? req.query.period : new Date().toISOString().slice(0, 7);
