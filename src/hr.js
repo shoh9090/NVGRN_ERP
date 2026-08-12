@@ -115,6 +115,21 @@ async function ensureSchema() {
     created_by INT, created_at TIMESTAMPTZ NOT NULL DEFAULT now()
   )`);
   await q(`CREATE INDEX IF NOT EXISTS idx_hr_salhist ON hr_salary_history (employee_id, effective_from)`);
+  // Постоянные (фиксированные) надбавки/удержания сотрудника: закрепляются в карточке и
+  // подставляются в ведомость каждый месяц автоматически (бонус, ГСМ, удержание и т.п.).
+  // Действуют с месяца date_from по date_to включительно (пусто = бессрочно).
+  await q(`CREATE TABLE IF NOT EXISTS hr_employee_recurring (
+    id SERIAL PRIMARY KEY,
+    employee_id INT NOT NULL REFERENCES hr_employees(id) ON DELETE CASCADE,
+    field TEXT NOT NULL,                           -- колонка ведомости: accr_bonus | ded_hold | ...
+    amount NUMERIC NOT NULL DEFAULT 0,
+    date_from TEXT,                                -- YYYY-MM (с какого месяца), пусто = всегда
+    date_to TEXT,                                  -- YYYY-MM (по какой месяц), пусто = бессрочно
+    comment TEXT,
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_by INT, created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  await q(`CREATE INDEX IF NOT EXISTS idx_hr_recur_emp ON hr_employee_recurring (employee_id)`);
   // Налоги на ФОТ по месяцам (вписываются вручную, платятся позже начисления): ИНПС, НДФЛ, соцналог.
   await q(`CREATE TABLE IF NOT EXISTS hr_fot_taxes (
     period TEXT PRIMARY KEY,
@@ -207,6 +222,38 @@ async function recomputeAccrFact(empId, period) {
   return pay.base;
 }
 const sumF = (row, fields) => fields.reduce((s, f) => s + (Number(row[f]) || 0), 0);
+
+// Поля, которые можно закрепить в карточке как постоянные (фиксированные) суммы.
+const RECUR_FIELDS = [
+  ['accr_bonus', 'Бонус'], ['accr_premium', 'Премия'], ['accr_gsm', 'ГСМ'], ['accr_other', 'Прочее начисление'],
+  ['ded_hold', 'Удержание'], ['ded_fine', 'Штраф'], ['ded_emp_debt', 'Долг сотрудника'], ['ded_other', 'Прочее удержание'],
+];
+const RECUR_CODES = RECUR_FIELDS.map(([c]) => c);
+// Подставить постоянные надбавки/удержания сотрудника в ведомость за период.
+// Проставляем только в ПУСТЫЕ ячейки (NULL) — ручная правка за месяц всегда приоритетнее.
+async function applyRecurring(empId, period) {
+  const rows = (await db.pool.query(
+    `SELECT field, amount FROM hr_employee_recurring
+     WHERE employee_id = $1 AND active = TRUE
+       AND (date_from IS NULL OR date_from = '' OR date_from <= $2)
+       AND (date_to   IS NULL OR date_to   = '' OR date_to   >= $2)`, [empId, period])).rows;
+  if (!rows.length) return 0;
+  // Несколько правил на одно поле складываем.
+  const byField = {};
+  for (const r of rows) {
+    if (!RECUR_CODES.includes(r.field)) continue;
+    byField[r.field] = (byField[r.field] || 0) + (Number(r.amount) || 0);
+  }
+  const fields = Object.keys(byField);
+  if (!fields.length) return 0;
+  await db.pool.query(
+    `INSERT INTO hr_payroll (employee_id, period) VALUES ($1,$2) ON CONFLICT (employee_id, period) DO NOTHING`, [empId, period]);
+  const sets = fields.map((f, i) => `${f} = COALESCE(${f}, $${i + 3})`);
+  await db.pool.query(
+    `UPDATE hr_payroll SET ${sets.join(', ')}, updated_at = now() WHERE employee_id = $1 AND period = $2`,
+    [empId, period, ...fields.map((f) => byField[f])]);
+  return fields.length;
+}
 async function seedDepartments() {
   const D = ['АУП', 'Производство', 'Производство смена', 'Склад', 'Продажи', 'Маркетинг', 'Бухгалтерия', 'Закупки', 'Логистика', 'Другое'];
   let i = 0;
@@ -332,6 +379,51 @@ router.post('/api/employee', J, async (req, res) => {
     await db.log(req.user.id, 'hr_employee_save', name);
     res.json({ ok: true });
   } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// ===== Постоянные надбавки/удержания сотрудника (закреплены в карточке) =====
+router.get('/api/employee/:id(\\d+)/recurring', async (req, res) => {
+  const rows = (await db.pool.query(
+    'SELECT id, field, amount, date_from, date_to, comment, active FROM hr_employee_recurring WHERE employee_id=$1 ORDER BY id',
+    [req.params.id])).rows;
+  res.json({ items: rows, fields: RECUR_FIELDS.map(([code, label]) => ({ code, label })) });
+});
+router.post('/api/employee/:id(\\d+)/recurring', J, async (req, res) => {
+  const empId = parseInt(req.params.id, 10);
+  const b = req.body || {};
+  if (!RECUR_CODES.includes(b.field)) return res.status(400).json({ error: 'Неизвестный вид начисления/удержания' });
+  const amount = numOrNull(b.amount);
+  if (!(amount > 0)) return res.status(400).json({ error: 'Укажите сумму больше нуля' });
+  const mon = (v) => (/^\d{4}-\d{2}$/.test(String(v || '')) ? String(v) : null);
+  try {
+    if (b.id) {
+      await db.pool.query(
+        'UPDATE hr_employee_recurring SET field=$1, amount=$2, date_from=$3, date_to=$4, comment=$5, active=$6 WHERE id=$7 AND employee_id=$8',
+        [b.field, amount, mon(b.date_from), mon(b.date_to), b.comment || null, b.active !== false, b.id, empId]);
+    } else {
+      await db.pool.query(
+        'INSERT INTO hr_employee_recurring (employee_id, field, amount, date_from, date_to, comment, active, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
+        [empId, b.field, amount, mon(b.date_from), mon(b.date_to), b.comment || null, b.active !== false, req.user.id]);
+    }
+    await db.log(req.user.id, 'hr_recurring_save', `emp ${empId} ${b.field}=${amount}`);
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+router.post('/api/employee/:id(\\d+)/recurring/:rid(\\d+)/delete', async (req, res) => {
+  await db.pool.query('DELETE FROM hr_employee_recurring WHERE id=$1 AND employee_id=$2', [req.params.rid, req.params.id]);
+  await db.log(req.user.id, 'hr_recurring_delete', '#' + req.params.rid);
+  res.json({ ok: true });
+});
+// Ручная простановка постоянных сумм за месяц (кнопка в ведомости/массовых операциях).
+router.post('/api/payroll/apply-recurring', J, async (req, res) => {
+  const period = /^\d{4}-\d{2}$/.test(req.body.period) ? req.body.period : null;
+  if (!period) return res.status(400).json({ error: 'Не указан месяц' });
+  const emps = (await db.pool.query(
+    "SELECT DISTINCT employee_id AS id FROM hr_employee_recurring WHERE active = TRUE")).rows;
+  let done = 0;
+  for (const e of emps) { if (await applyRecurring(e.id, period)) done++; }
+  await db.log(req.user.id, 'hr_apply_recurring', `${period}: ${done}`);
+  res.json({ ok: true, done });
 });
 
 // Массовая простановка графика выбранным сотрудникам (в списке «Сотрудники»).
@@ -612,6 +704,7 @@ router.post('/api/fill-norms', J, async (req, res) => {
          ON CONFLICT (employee_id, period) DO UPDATE SET plan_days = COALESCE($3, hr_payroll.plan_days), plan_hours = COALESCE($4, hr_payroll.plan_hours), updated_at = now()`,
         [e.id, period, pd, ph, req.user.id]);
       await recomputeAccrFact(e.id, period);
+      await applyRecurring(e.id, period);   // постоянные надбавки/удержания из карточки
       count++;
     }
   }
@@ -756,6 +849,7 @@ router.post('/api/payroll/accrue', J, async (req, res) => {
     let done = 0, skipped = 0;
     for (const empId of ids) {
       const base = await recomputeAccrFact(empId, period);
+      await applyRecurring(empId, period);   // постоянные суммы из карточки — в пустые ячейки
       if (base > 0) {
         await db.pool.query(
           "UPDATE hr_payroll SET accrued_at=now(), status=CASE WHEN status='draft' THEN 'accrued' ELSE status END WHERE employee_id=$1 AND period=$2",

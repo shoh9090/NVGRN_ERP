@@ -662,6 +662,15 @@
       el('div', { class: 'hrf-sec' }, 'Контакты'),
       frow('Телефон', phone), frow('Номер карты', card), frow('Telegram ID', tg), frow('Комментарий', comment),
     ]);
+    // Постоянные надбавки/удержания — только у сохранённого сотрудника (нужен id).
+    if (e.id) {
+      body.appendChild(el('div', { class: 'hrf-sec' }, 'Постоянные надбавки и удержания'));
+      body.appendChild(el('div', { class: 'hr-sub', style: 'margin:-4px 0 8px' },
+        'Закреплённые суммы подставляются в ведомость каждый месяц автоматически (в пустые ячейки). Ручная правка за месяц всегда главнее.'));
+      const recurBox = el('div', { id: 'hr-recur-box' });
+      body.appendChild(recurBox);
+      loadRecurring(e.id, recurBox);
+    }
     const save = el('button', { class: 'btn-primary', onclick: async () => {
       try {
         await post('/employee', { id: e.id, full_name: name.value, department_id: dept.value, position: pos.value, schedule_type: sched.value, hire_date: hire.value, base_salary: mval(base), salary_official: mval(off), salary_unofficial: mval(unoff), phone: phone.value, card_number: card.value, telegram_id: tg.value, comment: comment.value, full_month: fullMonth.checked });
@@ -676,6 +685,64 @@
     }
     modal(e.id ? '✏️ ' + e.full_name : '+ Новый сотрудник', body, acts);
   }
+  // Список постоянных надбавок/удержаний внутри карточки сотрудника.
+  async function loadRecurring(empId, box) {
+    box.innerHTML = '';
+    let d;
+    try { d = await api('/employee/' + empId + '/recurring'); }
+    catch (err) { box.appendChild(el('div', { class: 'hr-sub' }, 'Ошибка: ' + err.message)); return; }
+    const labelOf = (code) => (d.fields.find((f) => f.code === code) || {}).label || code;
+    const isDed = (code) => String(code).startsWith('ded_');
+    const items = d.items || [];
+    if (!items.length) {
+      box.appendChild(el('div', { class: 'hr-sub', style: 'padding:6px 0' }, 'Пока не задано.'));
+    } else {
+      const rows = items.map((r) => el('div', { style: 'display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)' }, [
+        el('span', { style: 'flex:1;font-weight:600' + (r.active ? '' : ';opacity:.5;text-decoration:line-through') }, [
+          labelOf(r.field),
+          r.comment ? el('span', { class: 'hr-sub', style: 'font-weight:400' }, ' · ' + r.comment) : null,
+          (r.date_from || r.date_to) ? el('span', { class: 'hr-sub', style: 'font-weight:400' },
+            ' · ' + (r.date_from ? 'с ' + monthLabel(r.date_from) : '') + (r.date_to ? ' по ' + monthLabel(r.date_to) : '')) : null,
+        ]),
+        el('span', { style: 'font-weight:800;white-space:nowrap;color:' + (isDed(r.field) ? '#c0392b' : '#3f6a16') },
+          (isDed(r.field) ? '− ' : '+ ') + Number(r.amount).toLocaleString('ru-RU')),
+        el('button', { class: 'btn-ghost', style: 'padding:2px 8px', title: 'Изменить', onclick: () => openRecurForm(empId, box, d.fields, r) }, '✎'),
+        el('button', { class: 'btn-ghost hrf-warn', style: 'padding:2px 8px', title: 'Удалить', onclick: async () => {
+          if (!confirm('Удалить «' + labelOf(r.field) + '» ' + Number(r.amount).toLocaleString('ru-RU') + '?')) return;
+          try { await post('/employee/' + empId + '/recurring/' + r.id + '/delete', {}); toast('Удалено'); loadRecurring(empId, box); }
+          catch (err) { toast(err.message, true); }
+        } }, '🗑'),
+      ]));
+      rows.forEach((r) => box.appendChild(r));
+    }
+    box.appendChild(el('button', { class: 'btn-ghost hr-add', style: 'margin-top:8px',
+      onclick: () => openRecurForm(empId, box, d.fields, null) }, '+ Добавить постоянную сумму'));
+  }
+  // Форма одного правила: вид, сумма, период действия, примечание.
+  function openRecurForm(empId, box, fields, r) {
+    r = r || {};
+    const field = fsel(fields.map((f) => ({ v: f.code, t: f.label })), r.field || 'accr_bonus');
+    const amount = minp(r.amount, { placeholder: 'сумма в месяц' });
+    const from = finp(r.date_from || '', { type: 'month' });
+    const to = finp(r.date_to || '', { type: 'month' });
+    const comment = finp(r.comment, { placeholder: 'за что (например: доплата за наставничество)' });
+    const active = el('input', { type: 'checkbox' }); active.checked = r.active !== false;
+    const save = el('button', { class: 'btn-primary', onclick: async () => {
+      if (!(Number(mval(amount)) > 0)) return toast('Укажите сумму больше нуля', true);
+      try {
+        await post('/employee/' + empId + '/recurring', { id: r.id, field: field.value, amount: mval(amount), date_from: from.value, date_to: to.value, comment: comment.value, active: active.checked });
+        toast('Сохранено'); closeModal(); loadRecurring(empId, box);
+      } catch (err) { toast(err.message, true); }
+    } }, 'Сохранить');
+    modal(r.id ? 'Изменить постоянную сумму' : 'Постоянная надбавка / удержание', el('div', { class: 'hrf' }, [
+      frow('Вид', field), frow('Сумма в месяц *', amount),
+      frow('Действует с', from), frow('Действует по', to),
+      el('div', { class: 'hr-sub', style: 'margin:-4px 0 6px' }, 'Пусто = бессрочно. Сумма ставится каждый месяц в пустую ячейку ведомости.'),
+      frow('Примечание', comment),
+      frow('Активно', el('label', { style: 'display:flex;gap:8px;align-items:center;cursor:pointer;font-weight:400' }, [active, el('span', {}, 'подставлять в ведомость')])),
+    ]), [el('button', { class: 'btn-ghost', onclick: closeModal }, 'Отмена'), save]);
+  }
+
   async function changeStatus(e, st) {
     if (st === 'fired') return openFireForm(e);
     const labels = { archived: 'В архив', active: 'Вернуть в актив' };
@@ -883,6 +950,11 @@
       el('div', { style: 'display:flex;gap:8px;align-self:flex-start;flex-wrap:wrap' }, [
         el('button', { class: 'btn-ghost', onclick: openFillNorms }, '📋 Заполнить нормы'),
         el('button', { class: 'btn-ghost', onclick: openTimesheetImport }, '📥 Импорт табеля'),
+        el('button', { class: 'btn-ghost', title: 'Проставить постоянные надбавки/удержания из карточек сотрудников', onclick: async () => {
+          if (!confirm('Проставить постоянные надбавки и удержания за ' + monthLabel(salState.period) + '?\n\nСуммы из карточек сотрудников встанут в пустые ячейки. Уже заполненное вручную не тронем.')) return;
+          try { const r = await post('/payroll/apply-recurring', { period: salState.period }); toast('Проставлено сотрудникам: ' + r.done); load(); }
+          catch (e) { toast(e.message, true); }
+        } }, '📌 Постоянные суммы'),
         el('button', { class: 'btn-primary', onclick: () => { const ids = salItems.map((x) => x.emp_id); if (!ids.length) return toast('Нет сотрудников', true); if (!confirm('Начислить зарплату по факту всем показанным (' + ids.length + ')? У кого не заполнен факт — пропустятся.')) return; accrueEmps(ids, false); } }, '✅ Начислить всех'),
         el('button', { class: 'btn-ghost', onclick: () => openCardStatementImport(salState.period) }, '🏦 Ведомость на карту'),
         el('button', { class: 'btn-ghost', onclick: () => openPayrollImport(salState.period) }, '📊 Импорт зарплаты'),
