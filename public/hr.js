@@ -157,7 +157,7 @@
       el('button', { class: 'btn-primary', style: 'align-self:flex-start', onclick: () => openEventForm() }, '+ Событие'),
     ]));
     const typeSel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { evState.type = e.target.value; loadEv(); } }, [{ v: '', t: 'Все события' }].concat(Object.keys(EV).map((k) => ({ v: k, t: EV[k].t }))).map((o) => el('option', { value: o.v, selected: o.v === evState.type || null }, o.t)));
-    const dSel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { evState.department = e.target.value; loadEv(); } }, [el('option', { value: '' }, 'Все отделы'), ...DICTS.departments.map((d) => el('option', { value: d.id, selected: String(d.id) === evState.department || null }, d.name))]);
+    const dSel = deptMulti(evState, 'department', loadEv);
     const q = el('input', { class: 'hrf-inp hr-filt hr-filt-q', placeholder: 'Поиск по ФИО', value: evState.q, oninput: (e) => { evState.q = e.target.value; clearTimeout(window.__evS); window.__evS = setTimeout(loadEv, 300); } });
     const fromInp = el('input', { type: 'date', class: 'hrf-inp hr-filt', value: evState.from, onchange: (e) => { evState.from = e.target.value; loadEv(); } });
     const toInp = el('input', { type: 'date', class: 'hrf-inp hr-filt', value: evState.to, onchange: (e) => { evState.to = e.target.value; loadEv(); } });
@@ -311,7 +311,7 @@
     if (!payState.period) payState.period = curMonth();
     c.appendChild(el('div', { class: 'hr-head' }, [el('div', {}, [el('div', { class: 'hr-h2' }, 'Выплаты — ' + monthLabel(payState.period)), el('div', { class: 'hr-sub' }, 'Выдача зарплаты: остаток, статусы, частичные и массовые выплаты. Срок — до 10 числа следующего месяца.')])]));
     const mInp = el('input', { type: 'month', class: 'hrf-inp hr-filt', value: payState.period, onchange: (e) => { payState.period = e.target.value || curMonth(); render(); } });
-    const dSel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { payState.department = e.target.value; load(); } }, [el('option', { value: '' }, 'Все отделы'), ...DICTS.departments.map((d) => el('option', { value: d.id, selected: String(d.id) === payState.department || null }, d.name))]);
+    const dSel = deptMulti(payState, 'department', load);
     const stSel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { payState.status = e.target.value; load(); } }, [{ v: '', t: 'Все статусы' }, { v: 'pending', t: 'Ожидает' }, { v: 'partial', t: 'Частично' }, { v: 'overdue', t: 'Просрочено' }, { v: 'paid', t: 'Оплачено' }].map((o) => el('option', { value: o.v, selected: o.v === payState.status || null }, o.t)));
     const q = el('input', { class: 'hrf-inp hr-filt hr-filt-q', placeholder: 'Поиск по ФИО', value: payState.q, oninput: (e) => { payState.q = e.target.value; clearTimeout(window.__hrP); window.__hrP = setTimeout(load, 300); } });
     const exportBtn = el('button', { class: 'btn-ghost', onclick: () => { const sp = new URLSearchParams({ period: payState.period }); ['department', 'status', 'q'].forEach((k) => { if (payState[k]) sp.set(k, payState[k]); }); window.location = '/hr/api/payouts-export.xlsx?' + sp.toString(); }, title: 'Скачать «К выплате» в Excel (с учётом фильтров)' }, '📥 Excel');
@@ -447,7 +447,7 @@
       ]),
     ]));
     // Фильтры
-    const dSel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { empFilter.department = e.target.value; load(); } }, [el('option', { value: '' }, 'Все отделы'), el('option', { value: '__none__', selected: empFilter.department === '__none__' || null }, 'Без отдела'), ...DICTS.departments.map((d) => el('option', { value: d.id, selected: String(d.id) === empFilter.department || null }, d.name))]);
+    const dSel = deptMulti(empFilter, 'department', load, true);
     const stSel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { empFilter.status = e.target.value; load(); } }, [{ v: 'active', t: 'Активные' }, { v: 'fired', t: 'Уволенные' }, { v: 'archived', t: 'Архив' }, { v: '', t: 'Все (кроме архива)' }].map((o) => el('option', { value: o.v, selected: o.v === empFilter.status || null }, o.t)));
     const q = el('input', { class: 'hrf-inp hr-filt hr-filt-q', placeholder: 'Поиск по ФИО / должности / телефону', value: empFilter.q, oninput: (e) => { empFilter.q = e.target.value; clearTimeout(window.__hrT); window.__hrT = setTimeout(load, 300); } });
     c.appendChild(el('div', { class: 'hr-filters' }, [dSel, stSel, q]));
@@ -804,7 +804,7 @@
       ]),
     ]));
     const mInp = el('input', { type: 'month', class: 'hrf-inp hr-filt', value: tsState.period, onchange: (e) => { tsState.period = e.target.value || curMonth(); render(); } });
-    const dSel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { tsState.department = e.target.value; load(); } }, [el('option', { value: '' }, 'Все отделы'), ...DICTS.departments.map((d) => el('option', { value: d.id, selected: String(d.id) === tsState.department || null }, d.name))]);
+    const dSel = deptMulti(tsState, 'department', load);
     const q = el('input', { class: 'hrf-inp hr-filt hr-filt-q', placeholder: 'Поиск по ФИО', value: tsState.q, oninput: (e) => { tsState.q = e.target.value; clearTimeout(window.__hrT); window.__hrT = setTimeout(load, 300); } });
     c.appendChild(el('div', { class: 'hr-filters' }, [el('span', { class: 'hr-flab' }, 'Месяц:'), mInp, dSel, q]));
     const box = el('div', { id: 'hr-ts-box' }); c.appendChild(box);
@@ -877,6 +877,39 @@
   const PAYOUT_STATUS = { pending: 'Ожидает', partial: 'Частично', paid: 'Оплачено', overdue: 'Просрочено', none: 'Нет начисления' };
   const curMonth = () => new Date().toISOString().slice(0, 7);
   const monthLabel = (ym) => { const [y, m] = ym.split('-'); return ['', 'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'][Number(m)] + ' ' + y; };
+
+  // Мультивыбор отделов: кнопка + панель с галочками. Значение хранится строкой id через запятую
+  // («1,5»), поэтому совместимо со старыми фильтрами: пусто = все отделы, '__none__' = без отдела.
+  function deptMulti(state, key, onChange, withNone) {
+    const opts = (withNone ? [{ id: '__none__', name: 'Без отдела' }] : []).concat(DICTS.departments || []);
+    const selected = () => new Set(String(state[key] || '').split(',').filter(Boolean));
+    const btn = el('button', { type: 'button', class: 'hrf-inp hr-filt hr-dm-btn' }, '');
+    const panel = el('div', { class: 'hr-dm-panel' });
+    const wrap = el('div', { class: 'hr-dm' }, [btn, panel]);
+    const label = () => {
+      const s = selected();
+      if (!s.size) return 'Все отделы';
+      if (s.size === 1) { const o = opts.find((x) => String(x.id) === [...s][0]); return o ? o.name : '1 отдел'; }
+      return 'Отделов: ' + s.size;
+    };
+    const sync = () => { btn.textContent = label() + ' ▾'; btn.classList.toggle('on', selected().size > 0); };
+    const apply = (s) => { state[key] = [...s].join(','); sync(); onChange(); };
+    panel.appendChild(el('label', { class: 'hr-dm-item hr-dm-all', onclick: () => { apply(new Set()); build(); } }, 'Все отделы'));
+    function build() {
+      panel.querySelectorAll('.hr-dm-opt').forEach((n) => n.remove());
+      const s = selected();
+      opts.forEach((o) => {
+        const cb = el('input', { type: 'checkbox' });
+        cb.checked = s.has(String(o.id));
+        cb.onchange = () => { const cur = selected(); if (cb.checked) cur.add(String(o.id)); else cur.delete(String(o.id)); apply(cur); };
+        panel.appendChild(el('label', { class: 'hr-dm-item hr-dm-opt' }, [cb, el('span', {}, o.name)]));
+      });
+    }
+    build(); sync();
+    btn.onclick = (ev) => { ev.stopPropagation(); const open = panel.classList.toggle('open'); if (open) { build(); document.addEventListener('click', close, { once: true }); } };
+    function close() { panel.classList.remove('open'); }
+    return wrap;
+  }
 
   // Импорт зарплаты из Excel (все листы книги) — перезапись периода, с итогами для сверки.
   function openPayrollImport(period) {
@@ -988,8 +1021,13 @@
       ]),
     ]));
     const mInp = el('input', { type: 'month', class: 'hrf-inp hr-filt', value: salState.period, onchange: (e) => { salState.period = e.target.value || curMonth(); render(); } });
-    const dSel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { salState.department = e.target.value; load(); } }, [el('option', { value: '' }, 'Все отделы'), ...DICTS.departments.map((d) => el('option', { value: d.id, selected: String(d.id) === salState.department || null }, d.name))]);
-    const stSel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { salState.status = e.target.value; load(); } }, [{ v: '', t: 'Все статусы' }, { v: 'none', t: 'Без начисления' }, { v: 'draft', t: 'Черновик' }, { v: 'accrued', t: 'Начислено' }, { v: 'approved', t: 'Утверждено' }, { v: 'paid', t: 'Выплачено' }].map((o) => el('option', { value: o.v, selected: o.v === salState.status || null }, o.t)));
+    const dSel = deptMulti(salState, 'department', load);
+    // Состояние расчёта — по живым цифрам (не по служебной пометке строки):
+    // «К выплате» = мы ещё должны сотруднику, включая частично выплаченных.
+    const stSel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { salState.status = e.target.value; load(); } }, [
+      { v: '', t: 'Все' }, { v: 'accrued', t: 'Начислено' }, { v: 'none', t: 'Без начисления' },
+      { v: 'topay', t: 'К выплате' }, { v: 'paid', t: 'Выплачено' },
+    ].map((o) => el('option', { value: o.v, selected: o.v === salState.status || null }, o.t)));
     const q = el('input', { class: 'hrf-inp hr-filt hr-filt-q', placeholder: 'Поиск по ФИО', value: salState.q, oninput: (e) => { salState.q = e.target.value; clearTimeout(window.__hrS); window.__hrS = setTimeout(load, 300); } });
     c.appendChild(el('div', { class: 'hr-filters' }, [el('span', { class: 'hr-flab' }, 'Месяц:'), mInp, dSel, stSel, q]));
     const box = el('div', { id: 'hr-sal-box' }); c.appendChild(box);
@@ -1260,7 +1298,7 @@
     opSel.classList.add('hr-filt'); opSel.onchange = (e) => { massState.field = e.target.value; load(); };
     const modeSel = fsel([{ v: 'add', t: 'Добавить к текущему' }, { v: 'set', t: 'Заменить' }], massState.mode);
     modeSel.classList.add('hr-filt'); modeSel.onchange = (e) => { massState.mode = e.target.value; };
-    const dSel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { massState.department = e.target.value; load(); } }, [el('option', { value: '' }, 'Все отделы'), ...DICTS.departments.map((d) => el('option', { value: d.id, selected: String(d.id) === massState.department || null }, d.name))]);
+    const dSel = deptMulti(massState, 'department', load);
     const q = el('input', { class: 'hrf-inp hr-filt hr-filt-q', placeholder: 'Поиск по ФИО', value: massState.q, oninput: (e) => { massState.q = e.target.value; clearTimeout(window.__hrM); window.__hrM = setTimeout(load, 300); } });
     c.appendChild(el('div', { class: 'hr-filters' }, [el('span', { class: 'hr-flab' }, 'Операция:'), opSel, modeSel, el('span', { class: 'hr-flab' }, 'Месяц:'), mInp, dSel, q]));
     const box = el('div', { id: 'hr-mass-box' }); c.appendChild(box);

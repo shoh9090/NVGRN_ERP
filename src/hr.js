@@ -223,6 +223,27 @@ async function recomputeAccrFact(empId, period) {
 }
 const sumF = (row, fields) => fields.reduce((s, f) => s + (Number(row[f]) || 0), 0);
 
+// Фильтр по отделам: принимает один id, список через запятую («1,5,7») и «__none__» (без отдела).
+// Дописывает условие в WHERE-массив w и параметры в p. Пусто = все отделы.
+function deptFilter(raw, p, w, col = 'e.department_id') {
+  const parts = String(raw || '').split(',').map((s) => s.trim()).filter(Boolean);
+  if (!parts.length) return;
+  const noDept = parts.includes('__none__');
+  const ids = parts.map((x) => parseInt(x, 10)).filter((n) => Number.isInteger(n));
+  const conds = [];
+  if (ids.length) { p.push(ids); conds.push(`${col} = ANY($${p.length}::int[])`); }
+  if (noDept) conds.push(`${col} IS NULL`);
+  if (conds.length) w.push('(' + conds.join(' OR ') + ')');
+}
+// То же для списков, отфильтрованных в памяти (Выплаты). Пусто = все отделы.
+function deptFilterMem(raw, items) {
+  const parts = String(raw || '').split(',').map((s) => s.trim()).filter(Boolean);
+  if (!parts.length) return items;
+  const noDept = parts.includes('__none__');
+  const ids = new Set(parts.filter((x) => /^\d+$/.test(x)));
+  return items.filter((x) => (noDept && !x.department_id) || ids.has(String(x.department_id)));
+}
+
 // Поля, которые можно закрепить в карточке как постоянные (фиксированные) суммы.
 const RECUR_FIELDS = [
   ['accr_bonus', 'Бонус'], ['accr_premium', 'Премия'], ['accr_gsm', 'ГСМ'], ['accr_other', 'Прочее начисление'],
@@ -314,8 +335,7 @@ router.get('/api/dicts', async (req, res) => {
 // ---------- Сотрудники ----------
 router.get('/api/employees', async (req, res) => {
   const p = [], w = [];
-  if (req.query.department === '__none__') w.push('e.department_id IS NULL');
-  else if (req.query.department) { p.push(parseInt(req.query.department)); w.push(`e.department_id = $${p.length}`); }
+  deptFilter(req.query.department, p, w);
   if (req.query.schedule && SCHEDULE_CODES.includes(req.query.schedule)) { p.push(req.query.schedule); w.push(`e.schedule_type = $${p.length}`); }
   if (req.query.status && STATUSES.includes(req.query.status)) { p.push(req.query.status); w.push(`e.status = $${p.length}`); }
   else if (!req.query.status) w.push(`e.status <> 'archived'`); // по умолчанию скрываем архив
@@ -467,7 +487,7 @@ router.get('/api/events', async (req, res) => {
     const p = [], w = [];
     if (req.query.employee_id) { p.push(parseInt(req.query.employee_id)); w.push(`v.employee_id=$${p.length}`); }
     if (req.query.type && EVENT_TYPES.includes(req.query.type)) { p.push(req.query.type); w.push(`v.event_type=$${p.length}`); }
-    if (req.query.department) { p.push(parseInt(req.query.department)); w.push(`e.department_id=$${p.length}`); }
+    deptFilter(req.query.department, p, w);
     if (req.query.from) { p.push(req.query.from); w.push(`v.event_date >= $${p.length}`); }
     if (req.query.to) { p.push(req.query.to); w.push(`v.event_date <= $${p.length}`); }
     if (req.query.q) { p.push('%' + String(req.query.q).trim() + '%'); w.push(`e.full_name ILIKE $${p.length}`); }
@@ -618,8 +638,7 @@ async function computeCashSalary(period) {
 router.get('/api/payroll', async (req, res) => {
   const period = /^\d{4}-\d{2}$/.test(req.query.period) ? req.query.period : new Date().toISOString().slice(0, 7);
   const p = [period], w = ["e.status <> 'archived'"];
-  if (req.query.department === '__none__') w.push('e.department_id IS NULL');
-  else if (req.query.department) { p.push(parseInt(req.query.department)); w.push(`e.department_id = $${p.length}`); }
+  deptFilter(req.query.department, p, w);
   if (req.query.schedule && SCHEDULE_CODES.includes(req.query.schedule)) { p.push(req.query.schedule); w.push(`e.schedule_type = $${p.length}`); }
   if (req.query.q) { p.push('%' + String(req.query.q).trim() + '%'); w.push(`e.full_name ILIKE $${p.length}`); }
   const rows = (await db.pool.query(
@@ -629,10 +648,6 @@ router.get('/api/payroll', async (req, res) => {
      LEFT JOIN hr_payroll pr ON pr.employee_id = e.id AND pr.period = $1
      WHERE ${w.join(' AND ')} ORDER BY e.full_name`, p)).rows.map((r) => { const t = withTotals(r); t.overtime_pay = computePay(r).overtime; return t; });
   let items = rows;
-  if (req.query.status) {
-    if (req.query.status === 'none') items = rows.filter((r) => !r.id);
-    else items = rows.filter((r) => (r.status || 'draft') === req.query.status && r.id);
-  }
   // Выплаты из наличной кассы за период (производно) — добавляем к каждому сотруднику + список нераспознанных.
   let cashUnmatched = [];
   try {
@@ -660,6 +675,20 @@ router.get('/api/payroll', async (req, res) => {
     items = items.filter((r) => r.emp_status !== 'fired'
       || (r.fire_date && r.fire_date >= monthStart)
       || (Number(r.accrued) || 0) > 0 || (Number(r.paid) || 0) > 0 || (Number(r.deducted) || 0) > 0);
+  }
+  // Фильтр по состоянию расчёта — считается по живым цифрам (после учёта наличной кассы),
+  // поэтому всегда совпадает с тем, что видно в строке.
+  //   accrued — начисление есть; none — начисления нет;
+  //   topay   — мы ещё должны сотруднику (в т.ч. выплачено частично);
+  //   paid    — начислено и закрыто полностью.
+  const st = req.query.status;
+  if (st) {
+    const acc = (r) => Number(r.accrued) || 0;
+    const rest = (r) => Number(r.to_pay) || 0;
+    if (st === 'accrued') items = items.filter((r) => acc(r) > 0);
+    else if (st === 'none') items = items.filter((r) => acc(r) <= 0);
+    else if (st === 'topay') items = items.filter((r) => rest(r) > 0.5);
+    else if (st === 'paid') items = items.filter((r) => acc(r) > 0 && rest(r) <= 0.5);
   }
   const sum = (f) => items.reduce((s, r) => s + (Number(r[f]) || 0), 0);
   const summary = {
@@ -1013,8 +1042,7 @@ router.get('/api/payouts', async (req, res) => {
     let items = await computePayouts(period);
     // «Нет начисления» и уволенных без остатка к выплате в список выплат не показываем.
     items = items.filter((x) => x.status !== 'none' && !(x.emp_status === 'fired' && x.remainder <= 0.5));
-    if (req.query.department === '__none__') items = items.filter((x) => !x.department_id);
-    else if (req.query.department) items = items.filter((x) => String(x.department_id) === String(req.query.department));
+    items = deptFilterMem(req.query.department, items);
     if (req.query.q) { const q = String(req.query.q).trim().toLowerCase(); items = items.filter((x) => (x.full_name || '').toLowerCase().includes(q)); }
     const summary = items.reduce((s, x) => ({ net: s.net + x.net, paid: s.paid + x.paid, remainder: s.remainder + x.remainder, overdue: s.overdue + (x.status === 'overdue' ? x.remainder : 0) }), { net: 0, paid: 0, remainder: 0, overdue: 0 });
     if (req.query.status) items = items.filter((x) => x.status === req.query.status);
@@ -1027,8 +1055,7 @@ router.get('/api/payouts-export.xlsx', async (req, res) => {
     const period = /^\d{4}-\d{2}$/.test(req.query.period) ? req.query.period : new Date().toISOString().slice(0, 7);
     let items = await computePayouts(period);
     items = items.filter((x) => x.status !== 'none' && !(x.emp_status === 'fired' && x.remainder <= 0.5));
-    if (req.query.department === '__none__') items = items.filter((x) => !x.department_id);
-    else if (req.query.department) items = items.filter((x) => String(x.department_id) === String(req.query.department));
+    items = deptFilterMem(req.query.department, items);
     if (req.query.q) { const q = String(req.query.q).trim().toLowerCase(); items = items.filter((x) => (x.full_name || '').toLowerCase().includes(q)); }
     const ST = { pending: 'Ожидает', partial: 'Частично', overdue: 'Просрочено', paid: 'Выплачено' };
     const payDates = (x) => (x.payouts || []).map((p) => p.pay_date).filter(Boolean).join(', ');

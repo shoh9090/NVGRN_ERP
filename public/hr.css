@@ -21,6 +21,18 @@
 
 .hr-filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
 .hr-filt { width: auto; }
+/* Мультивыбор отделов: кнопка + выпадающая панель с галочками */
+.hr-dm { position: relative; display: inline-block; }
+.hr-dm-btn { cursor: pointer; text-align: left; background: #fff; white-space: nowrap; }
+.hr-dm-btn.on { border-color: var(--lime); font-weight: 700; }
+.hr-dm-panel { display: none; position: absolute; z-index: 60; top: calc(100% + 4px); left: 0; min-width: 220px;
+  max-height: 320px; overflow-y: auto; background: #fff; border: 1px solid var(--line);
+  border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.14); padding: 6px; }
+.hr-dm-panel.open { display: block; }
+.hr-dm-item { display: flex; gap: 8px; align-items: center; padding: 6px 8px; border-radius: 7px;
+  font-size: 13px; cursor: pointer; white-space: nowrap; }
+.hr-dm-item:hover { background: rgba(140,198,63,.16); }
+.hr-dm-all { font-weight: 700; border-bottom: 1px solid var(--line); border-radius: 7px 7px 0 0; margin-bottom: 3px; }
 .hr-filt-q { flex: 1; min-width: 200px; }
 .hrf-inp { padding: 8px 9px; border: 1px solid #d8dcd6; border-radius: 8px; font-size: 13px; background: #fff; box-sizing: border-box; }
 
