@@ -1211,7 +1211,9 @@ router.get('/api/dashboard', async (req, res) => {
     accrued: rows.reduce((s, r) => s + r.accrued, 0),
     // Остаток к выплате — как во вкладке «Выплаты»: по человеку не уходит в минус (переплата не гасит чужой долг).
     to_pay: rows.reduce((s, r) => s + Math.max(0, r.to_pay), 0),
-    overpay: rows.reduce((s, r) => s + Math.max(0, -r.to_pay), 0),
+    // Порог тот же, что у списка «кому переплачено» ниже (−0.5), иначе копеечный минус от
+    // округления давал «переплату» в итоге при пустом списке.
+    overpay: rows.reduce((s, r) => s + (r.to_pay < -0.5 ? -r.to_pay : 0), 0),
     paid: rows.reduce((s, r) => s + r.paid, 0), deducted: rows.reduce((s, r) => s + r.deducted, 0),
     advances: rows.reduce((s, r) => s + advOf(r), 0), count: rows.length,
   };
