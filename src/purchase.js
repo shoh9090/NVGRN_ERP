@@ -317,10 +317,9 @@ router.post('/api/payments', express.json(), async (req, res) => {
   if (currency === 'USD' && (!(fxAmount > 0) || !(fxRate > 0))) return res.status(400).json({ error: 'Для оплаты в долларах укажите сумму в $ и курс больше нуля' });
   const amount = currency === 'USD' ? Math.round(fxAmount * fxRate) : Number(req.body.amount);
   if (!supplierId || !amount || amount <= 0) return res.status(400).json({ error: 'Укажите поставщика и сумму больше нуля' });
-  // ТЗ 11.5: закупщик (не админ) может платить только по конкретной заявке — без свободных оплат.
-  if (!(req.user && req.user.isAdmin) && !orderId) {
-    return res.status(403).json({ error: 'Оплата разрешена только по конкретной заявке. Общий авторазнос и аванс — для админа/финансов.' });
-  }
+  // Раньше (ТЗ 11.5) не-админ мог платить только по конкретной заявке — ограничение было завязано
+  // на подотчёт закупщика (общий котёл). Подотчёт удалён, деньги ведутся в Кассе, поэтому по решению
+  // Шоха закупщику открыты все режимы: по заявке, авторазнос (FIFO) и аванс поставщику.
   const insertPay = (amt, ordId) => db.pool.query(
     `INSERT INTO supplier_payments (supplier_id, order_id, amount, payment_type, paid_at, comment, currency, fx_rate, fx_amount, created_by)
      VALUES ($1, $2, $3, $4, COALESCE($5::date, CURRENT_DATE), $6, $7, $8, $9, $10)`,
