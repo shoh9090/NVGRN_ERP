@@ -18,6 +18,37 @@ const intOrNull = (v) => (v === undefined || v === null || v === '' ? null : par
 const canFin = (req) => !!(req.user && (req.user.isAdmin || req.user.isFinance));
 const numOrNull = (v) => (v === undefined || v === null || v === '' ? null : Number(v));
 
+// ===== Закрытие месяца в Кассе =====
+// Одна дата: «всё по эту дату включительно закрыто». Ни добавить, ни изменить, ни удалить
+// операцию с датой <= закрытой. Импорт закрытые дни просто пропускает. Двигать замок —
+// только админ/финансы. Смысл: закрытые месяцы больше не «играют», цифрам можно верить.
+let _lockCache = { at: 0, val: null };
+async function lockedUntil() {
+  if (Date.now() - _lockCache.at < 5000) return _lockCache.val;              // мелкий кэш: замок читается часто
+  const r = await db.pool.query("SELECT value FROM settings WHERE key = 'cash_locked_until'");
+  const v = r.rows[0] && /^\d{4}-\d{2}-\d{2}$/.test(String(r.rows[0].value)) ? String(r.rows[0].value) : null;
+  _lockCache = { at: Date.now(), val: v };
+  return v;
+}
+const clearLockCache = () => { _lockCache = { at: 0, val: null }; };
+// true, если дата попадает в закрытый период.
+async function isLocked(date) {
+  if (!date) return false;
+  const lock = await lockedUntil();
+  return !!(lock && String(date).slice(0, 10) <= lock);
+}
+// Проверка перед записью/правкой/удалением. Возвращает текст ошибки или null.
+async function lockError(...dates) {
+  const lock = await lockedUntil();
+  if (!lock) return null;
+  for (const d of dates) {
+    if (d && String(d).slice(0, 10) <= lock) {
+      return `Период закрыт по ${lock.split('-').reverse().join('.')} — операции за закрытые месяцы менять нельзя. Откройте месяц в Кассе, если правка действительно нужна.`;
+    }
+  }
+  return null;
+}
+
 // Подбор статьи по ключевым словам для одной строки текста (Наличная касса, ввод в реальном времени) —
 // та же семантика фраз, что и в пакетном авто-разборе runRelink(), но синхронно для одного текста.
 async function guessCategoryByKeyword(text) {
@@ -920,6 +951,7 @@ router.post('/api/cash-opening', J, async (req, res) => {
   const date = b.date || new Date().toISOString().slice(0, 10);
   const uzs = numOrNull(b.uzs);
   const usd = numOrNull(b.usd);
+  { const err = await lockError(date); if (err) return res.status(423).json({ error: err }); }
   const client = await db.pool.connect();
   try {
     await client.query('BEGIN');
@@ -1221,8 +1253,13 @@ router.post('/api/cashbox/import/commit', J, async (req, res) => {
     (await db.pool.query("SELECT id, code FROM cash_categories WHERE status='active'")).rows.forEach((c) => { codeToCat[String(c.code)] = c.id; });
     const siryeSet = await siryeCatIdSet(); // расход «Сырьё» = по умолчанию выдача снабженцу под отчёт
     await client.query('BEGIN');
+    const lock = await lockedUntil();   // закрытые дни импорт пропускает
     // Начальный остаток (по желанию) — заменяем opening этой кассы.
     if (req.body.setOpening && data.opening && data.openingDate) {
+      if (lock && String(data.openingDate) <= lock) {
+        await client.query('ROLLBACK');
+        return res.status(423).json({ error: `Начальный остаток на ${String(data.openingDate).split('-').reverse().join('.')} попадает в закрытый период (по ${lock.split('-').reverse().join('.')}). Снимите галочку остатка или откройте месяц.` });
+      }
       await client.query("DELETE FROM cash_transactions WHERE source='opening' AND wallet_id=$1", [wallet_id]);
       await client.query(
         `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, purpose, source, is_classified, currency, created_by)
@@ -1234,8 +1271,10 @@ router.post('/api/cashbox/import/commit', J, async (req, res) => {
     const existing = new Set();
     (await client.query("SELECT to_char(tx_date,'YYYY-MM-DD') d, amount, tx_type, currency, COALESCE(purpose,'') p FROM cash_transactions WHERE wallet_id=$1 AND source='import'", [wallet_id])).rows
       .forEach((x) => existing.add(x.d + '|' + Number(x.amount) + '|' + x.tx_type + '|' + x.currency + '|' + x.p));
-    let ins = 0, skip = 0;
+    let ins = 0, skip = 0, lockedSkip = 0;
     for (const e of (data.entries || [])) {
+      // Закрытый период трогать нельзя — такие строки просто не заводим.
+      if (lock && e.date && String(e.date) <= lock) { lockedSkip++; continue; }
       // Дедуп только против уже существовавших строк (защита от повторной загрузки);
       // одинаковые строки внутри одного файла НЕ теряем.
       const key = e.date + '|' + Number(e.amount) + '|' + e.tx_type + '|' + e.currency + '|' + (e.purpose || '');
@@ -1250,8 +1289,8 @@ router.post('/api/cashbox/import/commit', J, async (req, res) => {
     }
     await client.query('UPDATE cash_import_batches SET count=$1 WHERE id=$2', [ins, batch]);
     await client.query('COMMIT');
-    await db.log(req.user.id, 'cashbox_import', `касса ${wallet_id}: +${ins}, пропущено ${skip}`);
-    res.json({ ok: true, inserted: ins, skipped: skip });
+    await db.log(req.user.id, 'cashbox_import', `касса ${wallet_id}: +${ins}, дублей ${skip}, закрытых ${lockedSkip}`);
+    res.json({ ok: true, inserted: ins, skipped: skip, lockedSkip, lockedUntil: lock });
   } catch (e) { await client.query('ROLLBACK').catch(() => {}); res.status(400).json({ error: e.message }); }
   finally { client.release(); }
 });
@@ -1267,6 +1306,7 @@ router.post('/api/cashbox/convert', J, async (req, res) => {
   const usd = Number(String(b.usd == null ? '' : b.usd).replace(',', '.'));
   const date = b.date || new Date().toISOString().slice(0, 10);
   if (!(usd > 0)) return res.status(400).json({ error: 'Укажите сумму в долларах' });
+  { const err = await lockError(date); if (err) return res.status(423).json({ error: err }); }
   let rate = Number(String(b.rate == null ? '' : b.rate).replace(',', '.'));
   if (!(rate > 0)) { try { rate = await getCbuUsdRate(date); } catch (e) { rate = null; } }
   if (!(rate > 0)) return res.status(400).json({ error: 'Нет курса — укажите вручную' });
@@ -1531,6 +1571,7 @@ router.post('/api/tx', J, async (req, res) => {
   const date = b.tx_date || new Date().toISOString().slice(0, 10);
   const wallet = intOrNull(b.wallet_id);
   if (!wallet) return res.status(400).json({ error: 'Выберите кошелёк' });
+  { const err = await lockError(date); if (err) return res.status(423).json({ error: err }); }
   if (type === 'transfer') {
     const to = intOrNull(b.wallet_to_id);
     if (!to) return res.status(400).json({ error: 'Выберите кошелёк-получатель' });
@@ -1608,8 +1649,10 @@ router.post('/api/tx/:id(\\d+)', J, async (req, res) => {
   const b = req.body || {};
   const cat = intOrNull(b.category_id);
   const walletTo = intOrNull(b.wallet_to_id);
-  const cur = (await db.pool.query('SELECT tx_type, wallet_id FROM cash_transactions WHERE id=$1', [req.params.id])).rows[0];
+  const cur = (await db.pool.query("SELECT tx_type, wallet_id, to_char(tx_date,'YYYY-MM-DD') AS d FROM cash_transactions WHERE id=$1", [req.params.id])).rows[0];
   if (!cur) return res.status(404).json({ error: 'Операция не найдена' });
+  // Закрытый период: нельзя ни править операцию из него, ни переносить операцию в него.
+  { const err = await lockError(cur.d, b.tx_date); if (err) return res.status(423).json({ error: err }); }
   let newType = null; // null = не менять
   let needsCashConfirm = null; // null = не менять
   if (walletTo && walletTo !== cur.wallet_id && cur.tx_type !== 'transfer' && cat) {
@@ -1706,6 +1749,8 @@ router.post('/api/tx/:id(\\d+)/confirm-cash', J, async (req, res) => {
   finally { client.release(); }
 });
 router.post('/api/tx/:id(\\d+)/delete', async (req, res) => {
+  const d = (await db.pool.query("SELECT to_char(tx_date,'YYYY-MM-DD') AS d FROM cash_transactions WHERE id=$1", [req.params.id])).rows[0];
+  if (d) { const err = await lockError(d.d); if (err) return res.status(423).json({ error: err }); }
   await db.pool.query('DELETE FROM cash_transactions WHERE id=$1', [req.params.id]);
   await db.log(req.user.id, 'cash_tx_delete', '#' + req.params.id);
   res.json({ ok: true });
@@ -1713,6 +1758,12 @@ router.post('/api/tx/:id(\\d+)/delete', async (req, res) => {
 router.post('/api/tx/bulk-delete', J, async (req, res) => {
   const ids = (req.body && Array.isArray(req.body.ids) ? req.body.ids : []).map((x) => parseInt(x, 10)).filter(Boolean);
   if (!ids.length) return res.status(400).json({ error: 'Ничего не выбрано' });
+  // Если среди выбранных есть операции закрытого месяца — не удаляем вообще ничего.
+  const lock = await lockedUntil();
+  if (lock) {
+    const n = (await db.pool.query('SELECT count(*)::int c FROM cash_transactions WHERE id = ANY($1) AND tx_date <= $2::date', [ids, lock])).rows[0].c;
+    if (n) return res.status(423).json({ error: `Среди выбранных ${n} операц. из закрытого периода (по ${lock.split('-').reverse().join('.')}). Удаление отменено.` });
+  }
   await db.pool.query('DELETE FROM cash_transactions WHERE id = ANY($1)', [ids]);
   await db.log(req.user.id, 'cash_tx_bulk_delete', ids.length + ' шт');
   res.json({ ok: true, deleted: ids.length });
@@ -1959,9 +2010,11 @@ router.post('/api/import/commit', J, async (req, res) => {
     const wallet_id = intOrNull(data.wallet_id);
     if (!wallet_id) return res.status(400).json({ error: 'Нет кошелька' });
     const batch = (await db.pool.query('INSERT INTO cash_import_batches (wallet_id, filename, count, created_by) VALUES ($1,$2,0,$3) RETURNING id', [wallet_id, req.body.filename || null, req.user.id])).rows[0].id;
-    let ins = 0, skip = 0;
+    let ins = 0, skip = 0, lockedSkip = 0;
+    const lock = await lockedUntil();
     for (const r of (data.rows || [])) {
       if (r.dup) { skip++; continue; }
+      if (lock && r.tx_date && String(r.tx_date) <= lock) { lockedSkip++; continue; }  // закрытый период не трогаем
       await db.pool.query(
         `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, counterparty_id, category_id, purpose, bank_doc_no, source, import_batch_id, is_classified, created_by)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'import',$9,$10,$11)`,
@@ -1969,8 +2022,8 @@ router.post('/api/import/commit', J, async (req, res) => {
       ins++;
     }
     await db.pool.query('UPDATE cash_import_batches SET count=$1 WHERE id=$2', [ins, batch]);
-    await db.log(req.user.id, 'cash_import', `+${ins}, пропущено ${skip}`);
-    res.json({ ok: true, inserted: ins, skipped: skip, batch });
+    await db.log(req.user.id, 'cash_import', `+${ins}, дублей ${skip}, закрытых ${lockedSkip}`);
+    res.json({ ok: true, inserted: ins, skipped: skip, lockedSkip, batch });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
@@ -2003,8 +2056,10 @@ router.post('/api/import/run', upload.single('file'), async (req, res) => {
     (await db.pool.query("SELECT to_char(tx_date,'YYYY-MM-DD') d, amount, COALESCE(bank_doc_no,'') doc FROM cash_transactions WHERE wallet_id=$1 AND source='import'", [wallet_id])).rows
       .forEach((x) => existing.add(x.d + '|' + Number(x.amount) + '|' + x.doc));
     const batch = (await db.pool.query('INSERT INTO cash_import_batches (wallet_id, filename, count, created_by) VALUES ($1,$2,0,$3) RETURNING id', [wallet_id, req.file.originalname || null, req.user.id])).rows[0].id;
-    let ins = 0, skip = 0, newcp = 0;
+    let ins = 0, skip = 0, newcp = 0, lockedSkip = 0;
+    const lock = await lockedUntil();
     for (const r of rows) {
+      if (lock && r.tx_date && String(r.tx_date) <= lock) { lockedSkip++; continue; }  // закрытый период
       // Дедуп ТОЛЬКО против ранее загруженных строк (защита от повторной загрузки файла).
       // Внутри одного файла одинаковые строки НЕ пропускаем: два клиента могут заплатить
       // одну сумму в один день — раньше второй платёж молча терялся.
@@ -2042,9 +2097,37 @@ router.post('/api/import/run', upload.single('file'), async (req, res) => {
     }
     await db.pool.query('UPDATE cash_import_batches SET count=$1 WHERE id=$2', [ins, batch]);
     try { await runRelink(); } catch (e) { /* авто-разбор не критичен */ }
-    await db.log(req.user.id, 'cash_import', `${bank}: +${ins}, пропущено ${skip}`);
-    res.json({ ok: true, bank, inserted: ins, skipped: skip, newcp });
+    await db.log(req.user.id, 'cash_import', `${bank}: +${ins}, дублей ${skip}, закрытых ${lockedSkip}`);
+    res.json({ ok: true, bank, inserted: ins, skipped: skip, lockedSkip, newcp });
   } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// ---------- Закрытие месяца ----------
+router.get('/api/period-lock', async (req, res) => {
+  const lock = await lockedUntil();
+  // Сколько операций попадёт под замок, если закрыть следующий месяц — для подсказки в интерфейсе.
+  res.json({ locked_until: lock, can_edit: canFin(req) });
+});
+router.post('/api/period-lock', J, async (req, res) => {
+  if (!canFin(req)) return res.status(403).json({ error: 'Закрывать и открывать месяц может администратор или финансы' });
+  const b = req.body || {};
+  // Закрыть по конец месяца: period='YYYY-MM'. Открыть: clear=true (или period пустой).
+  if (b.clear) {
+    await db.pool.query("DELETE FROM settings WHERE key = 'cash_locked_until'");
+    clearLockCache();
+    await db.log(req.user.id, 'cash_period_unlock', 'замок снят полностью');
+    return res.json({ ok: true, locked_until: null });
+  }
+  const period = String(b.period || '');
+  if (!/^\d{4}-\d{2}$/.test(period)) return res.status(400).json({ error: 'Укажите месяц в виде ГГГГ-ММ' });
+  const [y, m] = period.split('-').map(Number);
+  const last = new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10);        // последний день месяца
+  await db.pool.query(
+    `INSERT INTO settings (key, value) VALUES ('cash_locked_until', $1)
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`, [last]);
+  clearLockCache();
+  await db.log(req.user.id, 'cash_period_lock', `закрыто по ${last}`);
+  res.json({ ok: true, locked_until: last });
 });
 
 // Прошлые загрузки (партии импорта) — чтобы можно было откатить конкретную выгрузку,
@@ -2076,6 +2159,12 @@ router.post('/api/import-batches/:id(\\d+)/delete', async (req, res) => {
   try {
     await client.query('BEGIN');
     const id = parseInt(req.params.id, 10);
+    // Если в партии есть строки закрытого периода — откат запрещён (иначе закрытый месяц «поедет»).
+    const lock = await lockedUntil();
+    if (lock) {
+      const n = (await client.query('SELECT count(*)::int c FROM cash_transactions WHERE import_batch_id=$1 AND tx_date <= $2::date', [id, lock])).rows[0].c;
+      if (n) { await client.query('ROLLBACK'); return res.status(423).json({ error: `В этой загрузке ${n} операц. из закрытого периода (по ${lock.split('-').reverse().join('.')}). Откат отменён — сначала откройте месяц.` }); }
+    }
     // Снимаем ссылки из связанных модулей, чтобы не осталось «висячих» указателей.
     await client.query('UPDATE supplier_payments SET cash_transaction_id = NULL WHERE cash_transaction_id IN (SELECT id FROM cash_transactions WHERE import_batch_id = $1)', [id]).catch(() => {});
     await client.query('UPDATE hr_payouts SET cash_tx_id = NULL WHERE cash_tx_id IN (SELECT id FROM cash_transactions WHERE import_batch_id = $1)', [id]).catch(() => {});
@@ -2094,6 +2183,9 @@ router.post('/api/import-batches/:id(\\d+)/delete', async (req, res) => {
 router.post('/api/transactions/wipe', J, async (req, res) => {
   if (!req.user || !req.user.isAdmin) return res.status(403).json({ error: 'Только администратор' });
   try {
+    // Пока есть закрытый период — полная очистка запрещена (она уничтожила бы закрытые месяцы).
+    const lock = await lockedUntil();
+    if (lock) return res.status(423).json({ error: `Есть закрытый период (по ${lock.split('-').reverse().join('.')}). Сначала откройте месяцы в Кассе, если действительно нужна полная очистка.` });
     const n = (await db.pool.query('SELECT count(*)::int c FROM cash_transactions')).rows[0].c;
     await db.pool.query('DELETE FROM cash_transactions');
     await db.pool.query('DELETE FROM cash_import_batches');

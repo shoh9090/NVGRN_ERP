@@ -1627,6 +1627,46 @@
   const cbState = { type: 'in', wallet: '', from: '', to: '', q: '', category: '', classified: '', page: 1, pageSize: 50, lastAddedId: null, selected: {} };
   const SIRYE_GROUP = '1. Сырьё и переменные затраты'; // расход этой группы = по умолчанию выдача снабженцу
 
+  // ---------- Закрытие месяца: замок на прошлые периоды ----------
+  // Одна дата: всё по неё включительно закрыто. Ни ввод, ни правка, ни удаление, ни импорт
+  // закрытые дни не трогают. Смысл: закрытым месяцам можно верить, они больше не «играют».
+  let LOCK_UNTIL = null;
+  async function showLockBadge() {
+    try { const d = await api('/period-lock'); LOCK_UNTIL = d.locked_until || null; } catch (e) { return; }
+    const btn = $('#cash-lock-btn');
+    if (!btn) return;
+    btn.textContent = LOCK_UNTIL ? '🔒 Закрыто по ' + ruDate(LOCK_UNTIL) : '🔓 Закрытие месяца';
+    btn.style.fontWeight = LOCK_UNTIL ? '700' : '';
+    btn.title = LOCK_UNTIL ? 'Операции по ' + ruDate(LOCK_UNTIL) + ' защищены от изменений' : 'Месяцы не закрыты — данные можно менять задним числом';
+  }
+  function openPeriodLock() {
+    const nowM = new Date().toISOString().slice(0, 7);
+    const monthInp = finp(LOCK_UNTIL ? LOCK_UNTIL.slice(0, 7) : nowM, { type: 'month' });
+    const body = el('div', { class: 'cashf' }, [
+      el('div', { class: 'cash-note-info', style: 'margin-bottom:8px' },
+        LOCK_UNTIL ? ('Сейчас закрыто по ' + ruDate(LOCK_UNTIL) + '. Операции этих дней защищены.') : 'Сейчас ничего не закрыто — данные прошлых месяцев можно менять.'),
+      el('div', { class: 'cash-sub', style: 'margin-bottom:10px' },
+        'Закрытие защищает прошлые месяцы: нельзя добавить, изменить или удалить операцию, а импорт выписок и кассы такие дни пропускает. Закрывать нужно после того, как сверили сальдо.'),
+      frow('Закрыть включительно по месяц', monthInp),
+    ]);
+    const acts = [el('button', { class: 'btn-ghost', onclick: closeModal }, 'Отмена')];
+    if (LOCK_UNTIL) {
+      acts.push(el('button', { class: 'btn-ghost cashf-del', onclick: async () => {
+        if (!confirm('Открыть все месяцы?\n\nДанные снова можно будет менять задним числом — включая уже сверенные периоды. Обычно это нужно только для исправления ошибки.')) return;
+        try { await post('/period-lock', { clear: true }); toast('Замок снят'); closeModal(); renderCashbox(); }
+        catch (e) { toast(e.message, true); }
+      } }, '🔓 Открыть всё'));
+    }
+    acts.push(el('button', { class: 'btn-primary', onclick: async () => {
+      const p = monthInp.value;
+      if (!/^\d{4}-\d{2}$/.test(p)) return toast('Укажите месяц', true);
+      if (!confirm('Закрыть период по конец ' + p + '?\n\nПосле этого операции этих дней нельзя будет менять, а импорт их пропустит.')) return;
+      try { const r = await post('/period-lock', { period: p }); toast('Закрыто по ' + ruDate(r.locked_until)); closeModal(); renderCashbox(); }
+      catch (e) { toast(e.message, true); }
+    } }, '🔒 Закрыть'));
+    modal('Закрытие месяца', body, acts);
+  }
+
   // Импорт «Наличной кассы» из Excel: предпросмотр → запись.
   function openCashboxImport(walletId) {
     const cashWallets = (DICTS.wallets || []).filter((w) => w.kind === 'cash');
@@ -1707,7 +1747,7 @@
       commitBtn.disabled = true; commitBtn.textContent = 'Записываю…';
       try {
         const d = await post('/cashbox/import/commit', { payload, setOpening: setOpening.checked, filename: ((file.files[0] && file.files[0].name) || 'cashbox') + (sheetSel.value ? ' · ' + sheetSel.value : '') });
-        toast(`Записано ${d.inserted}, пропущено дублей ${d.skipped}`);
+        toast(`Записано ${d.inserted}, дублей ${d.skipped}` + (d.lockedSkip ? `, пропущено закрытых ${d.lockedSkip}` : ''));
         closeModal(); if (TAB === 'cashbox') renderCashbox();
       } catch (e) { toast(e.message, true); commitBtn.disabled = false; commitBtn.textContent = 'Записать в кассу'; }
     } }, 'Записать в кассу');
@@ -1815,8 +1855,10 @@
         el('button', { class: 'btn-ghost cash-add', onclick: () => openCashOpeningForm(cbState.wallet) }, '💼 Начальные остатки'),
         el('button', { class: 'btn-ghost cash-add', onclick: () => openConvertForm(cbState.wallet) }, '🔄 Конверсия'),
         el('button', { class: 'btn-ghost cash-add', onclick: () => openCashboxImport(cbState.wallet) }, '📥 Импорт из Excel'),
+        el('button', { id: 'cash-lock-btn', class: 'btn-ghost cash-add', onclick: openPeriodLock }, '🔒 Закрытие месяца'),
       ]),
     ]));
+    showLockBadge();
     if (!cashWallets.length) { c.appendChild(el('div', { class: 'cash-empty' }, 'Нет ни одного кошелька типа «Наличные». Заведите его на вкладке «Кошельки».')); return; }
     const typeBtn = (v, label) => el('button', { class: 'btn-ghost cash-add cb-typebtn cb-' + v + (cbState.type === v ? ' cb-on' : ''), onclick: () => { cbState.type = v; cbState.selected = {}; cbState.page = 1; renderCashbox(); } }, label);
     const walletSel = el('select', { class: 'cashf-inp', onchange: (e) => { cbState.wallet = e.target.value; cbState.page = 1; renderCashbox(); } },
