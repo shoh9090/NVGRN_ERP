@@ -1260,6 +1260,16 @@ router.post('/api/cashbox/import/commit', J, async (req, res) => {
         await client.query('ROLLBACK');
         return res.status(423).json({ error: `Начальный остаток на ${String(data.openingDate).split('-').reverse().join('.')} попадает в закрытый период (по ${lock.split('-').reverse().join('.')}). Снимите галочку остатка или откройте месяц.` });
       }
+      // Начальный остаток в кассе ОДИН — точка старта учёта. Если уже стоит остаток на более
+      // РАННЮЮ дату, молча затирать его нельзя: пропадёт настоящая точка старта (так пропал
+      // остаток на 01.06 при загрузке августа). В этом случае отказываем с объяснением.
+      const prev = (await client.query(
+        "SELECT to_char(tx_date,'YYYY-MM-DD') AS d FROM cash_transactions WHERE source='opening' AND wallet_id=$1 ORDER BY tx_date LIMIT 1", [wallet_id])).rows[0];
+      if (prev && prev.d < String(data.openingDate)) {
+        await client.query('ROLLBACK');
+        const ru = (s) => String(s).split('-').reverse().join('.');
+        return res.status(409).json({ error: `В кассе уже есть начальный остаток на ${ru(prev.d)} — он и есть точка старта учёта. Остаток на ${ru(data.openingDate)} ставить не нужно (он получится сам из движений). Снимите галочку «Начальный остаток» и загрузите снова.` });
+      }
       await client.query("DELETE FROM cash_transactions WHERE source='opening' AND wallet_id=$1", [wallet_id]);
       await client.query(
         `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, purpose, source, is_classified, currency, created_by)
