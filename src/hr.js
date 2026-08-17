@@ -1071,6 +1071,17 @@ router.get('/api/payouts-export.xlsx', async (req, res) => {
     res.send(buf);
   } catch (e) { res.status(400).send('Ошибка выгрузки: ' + e.message); }
 });
+// Назначение расхода в Кассе по выплате зарплаты: обязательно с ФИО, чтобы в Кассе было видно,
+// кому выдали. Один человек — фамилия целиком; несколько — до трёх фамилий и «и ещё N».
+function payoutPurpose(g, period) {
+  // period пустой — значит заголовок уже готов (пересборка назначения при отмене выплаты).
+  const head = period ? `${g.label} за ${period}` : String(g.label || 'Зарплата');
+  const names = (g.names || []).filter(Boolean);
+  if (!names.length) return `${head} (${g.ids.length} чел.)`;
+  if (names.length <= 3) return `${head} · ${names.join(', ')}`;
+  return `${head} · ${names.slice(0, 3).join(', ')} и ещё ${names.length - 3} (всего ${names.length} чел.)`;
+}
+
 // Провести выплату(ы): по каждому сотруднику — остаток (или заданная сумма для одного = частичная).
 router.post('/api/payouts/pay', J, async (req, res) => {
   const b = req.body || {};
@@ -1083,7 +1094,8 @@ router.post('/api/payouts/pay', J, async (req, res) => {
   if (!ids.length) return res.status(400).json({ error: 'Не выбраны сотрудники' });
   const fixed = (b.amount != null && b.amount !== '') ? Number(b.amount) : null;
   const rows = await computePayouts(period);
-  const remBy = {}, deptBy = {}; rows.forEach((r) => { remBy[r.emp_id] = r.remainder; deptBy[r.emp_id] = r.department_name || ''; });
+  const remBy = {}, deptBy = {}, nameBy = {};
+  rows.forEach((r) => { remBy[r.emp_id] = r.remainder; deptBy[r.emp_id] = r.department_name || ''; nameBy[r.emp_id] = r.full_name || ''; });
   const col = method === 'card' ? 'paid_card' : 'paid_cash';
   // Группа для статьи Кассы: АУП/Бухгалтерия/Продажи → «Зарплата офиса» (код 40), остальные → «ЗП производство» (код 20).
   const groupOf = (name) => (/ауп|бухгалт|продаж/i.test(name || '') ? 'office' : 'prod');
@@ -1091,7 +1103,7 @@ router.post('/api/payouts/pay', J, async (req, res) => {
   let done = 0, total = 0, cashNote = null;
   try {
     await client.query('BEGIN');
-    const groups = { office: { code: '40', label: 'Зарплата офис', ids: [], total: 0 }, prod: { code: '20', label: 'Зарплата производство', ids: [], total: 0 } };
+    const groups = { office: { code: '40', label: 'Зарплата офис', ids: [], total: 0, names: [] }, prod: { code: '20', label: 'Зарплата производство', ids: [], total: 0, names: [] } };
     for (const id of ids) {
       const rem = remBy[id] || 0;
       let amt = (fixed != null && ids.length === 1) ? fixed : rem;
@@ -1100,7 +1112,7 @@ router.post('/api/payouts/pay', J, async (req, res) => {
       const po = await client.query('INSERT INTO hr_payouts (employee_id, period, amount, method, pay_date, comment, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id', [id, period, amt, method, payDate, comment, req.user.id]);
       await client.query(`INSERT INTO hr_payroll (employee_id, period, ${col}, created_by) VALUES ($1,$2,$3,$4)
         ON CONFLICT (employee_id, period) DO UPDATE SET ${col} = COALESCE(hr_payroll.${col},0) + $3, updated_at = now()`, [id, period, amt, req.user.id]);
-      if (method === 'cash') { const g = groups[groupOf(deptBy[id])]; g.ids.push(po.rows[0].id); g.total += amt; }
+      if (method === 'cash') { const g = groups[groupOf(deptBy[id])]; g.ids.push(po.rows[0].id); g.total += amt; g.names.push(nameBy[id] || ('#' + id)); }
       done++; total += amt;
     }
     // Наличные → авто-расход в Кассе: отдельно офис (ст. 40) и производство (ст. 20), со связью на выплаты.
@@ -1114,7 +1126,7 @@ router.post('/api/payouts/pay', J, async (req, res) => {
         const tx = await client.query(
           `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, category_id, purpose, source, is_classified, created_by)
            VALUES ($1,$2,'out',$3,$4,$5,'hr_payout',$6,$7) RETURNING id`,
-          [payDate, Number(g.total.toFixed(2)), w.id, cat ? cat.id : null, `${g.label} за ${period} (${g.ids.length} чел.)`, !!cat, req.user.id]);
+          [payDate, Number(g.total.toFixed(2)), w.id, cat ? cat.id : null, payoutPurpose(g, period), !!cat, req.user.id]);
         await client.query('UPDATE hr_payouts SET cash_tx_id=$1 WHERE id = ANY($2)', [tx.rows[0].id, g.ids]);
       }
     }
@@ -1151,7 +1163,14 @@ router.post('/api/payouts/:id(\\d+)/delete', async (req, res) => {
         await client.query('DELETE FROM cash_transactions WHERE id=$1', [p.cash_tx_id]);
         cashNote = 'Расход в Кассе удалён';
       } else {
-        await client.query('UPDATE cash_transactions SET amount=$1 WHERE id=$2', [Number(left.s), p.cash_tx_id]);
+        // Пересобираем и назначение: в нём перечислены ФИО, а один человек из группы выбыл.
+        const rest = (await client.query(
+          `SELECT e.full_name FROM hr_payouts po JOIN hr_employees e ON e.id = po.employee_id
+            WHERE po.cash_tx_id = $1 ORDER BY e.full_name`, [p.cash_tx_id])).rows.map((x) => x.full_name);
+        const old = (await client.query('SELECT purpose FROM cash_transactions WHERE id=$1', [p.cash_tx_id])).rows[0];
+        const head = String((old && old.purpose) || '').split(' · ')[0].replace(/\s*\(\d+\s*чел\..*$/, '');
+        await client.query('UPDATE cash_transactions SET amount=$1, purpose=$2 WHERE id=$3',
+          [Number(left.s), payoutPurpose({ label: head, ids: rest, names: rest }, ''), p.cash_tx_id]);
         cashNote = 'Сумма расхода в Кассе уменьшена';
       }
     }
