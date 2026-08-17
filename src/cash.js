@@ -2047,6 +2047,49 @@ router.post('/api/import/run', upload.single('file'), async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
+// Прошлые загрузки (партии импорта) — чтобы можно было откатить конкретную выгрузку,
+// не трогая остальное. Начальный остаток (source='opening') в партии не входит и остаётся.
+router.get('/api/import-batches', async (req, res) => {
+  try {
+    const p = [], w = [];
+    if (intOrNull(req.query.wallet_id)) { p.push(intOrNull(req.query.wallet_id)); w.push(`b.wallet_id = $${p.length}`); }
+    const r = await db.pool.query(
+      `SELECT b.id, b.filename, b.created_at, w.name AS wallet_name,
+              COUNT(t.id)::int AS tx_count,
+              COALESCE(SUM(CASE WHEN t.tx_type='out' THEN t.amount ELSE 0 END),0) AS out_sum,
+              COALESCE(SUM(CASE WHEN t.tx_type='in'  THEN t.amount ELSE 0 END),0) AS in_sum,
+              to_char(MIN(t.tx_date),'YYYY-MM-DD') AS d_from, to_char(MAX(t.tx_date),'YYYY-MM-DD') AS d_to
+         FROM cash_import_batches b
+         LEFT JOIN cash_wallets w ON w.id = b.wallet_id
+         LEFT JOIN cash_transactions t ON t.import_batch_id = b.id
+        ${w.length ? 'WHERE ' + w.join(' AND ') : ''}
+        GROUP BY b.id, b.filename, b.created_at, w.name
+        ORDER BY b.id DESC LIMIT 30`, p);
+    res.json({ items: r.rows });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Откат одной загрузки: удаляем только её строки. Начальный остаток не трогаем.
+router.post('/api/import-batches/:id(\\d+)/delete', async (req, res) => {
+  if (!canFin(req)) return res.status(403).json({ error: 'Только администратор/финансы' });
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    const id = parseInt(req.params.id, 10);
+    // Снимаем ссылки из связанных модулей, чтобы не осталось «висячих» указателей.
+    await client.query('UPDATE supplier_payments SET cash_transaction_id = NULL WHERE cash_transaction_id IN (SELECT id FROM cash_transactions WHERE import_batch_id = $1)', [id]).catch(() => {});
+    await client.query('UPDATE hr_payouts SET cash_tx_id = NULL WHERE cash_tx_id IN (SELECT id FROM cash_transactions WHERE import_batch_id = $1)', [id]).catch(() => {});
+    const r = await client.query('DELETE FROM cash_transactions WHERE import_batch_id = $1', [id]);
+    await client.query('DELETE FROM cash_import_batches WHERE id = $1', [id]);
+    await client.query('COMMIT');
+    await db.log(req.user.id, 'cash_import_batch_delete', `партия ${id}: удалено ${r.rowCount}`);
+    res.json({ ok: true, deleted: r.rowCount });
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    res.status(400).json({ error: e.message });
+  } finally { client.release(); }
+});
+
 // Очистка транзакций (админ). Справочники/контрагенты/статьи НЕ трогаем.
 router.post('/api/transactions/wipe', J, async (req, res) => {
   if (!req.user || !req.user.isAdmin) return res.status(403).json({ error: 'Только администратор' });

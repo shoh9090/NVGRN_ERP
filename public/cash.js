@@ -1665,15 +1665,48 @@
     clampChk.onchange = recheck;
     const clampRow = frow('Даты вне месяца', el('label', { style: 'display:flex;gap:8px;align-items:center;cursor:pointer' },
       [clampChk, el('span', { class: 'cash-sub' }, 'подтянуть в месяц листа (иначе сальдо не сойдётся)')]));
+    // Прошлые загрузки этой кассы — с возможностью откатить конкретную выгрузку.
+    const batchesBox = el('div', { style: 'margin-top:14px;border-top:1px solid var(--line);padding-top:10px' });
+    async function loadBatches() {
+      batchesBox.innerHTML = '';
+      if (!wallet.value) return;
+      let d;
+      try { d = await api('/import-batches?wallet_id=' + wallet.value); }
+      catch (e) { return; }
+      const items = d.items || [];
+      batchesBox.appendChild(el('div', { style: 'font-weight:700;margin-bottom:4px' }, 'Прошлые загрузки'));
+      if (!items.length) { batchesBox.appendChild(el('div', { class: 'cash-sub' }, 'Загрузок ещё не было.')); return; }
+      batchesBox.appendChild(el('div', { class: 'cash-sub', style: 'margin-bottom:6px' }, 'Откат удалит строки только этой загрузки. Начальный остаток и внесённые вручную приходы останутся.'));
+      items.forEach((b) => batchesBox.appendChild(el('div', { style: 'display:flex;gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid var(--line);font-size:13px' }, [
+        el('span', { style: 'flex:1' }, [
+          el('div', {}, (b.filename || 'файл') + ' · ' + b.tx_count + ' стр.'),
+          el('div', { class: 'cash-sub' }, (b.d_from ? ruDate(b.d_from) + ' – ' + ruDate(b.d_to) : '—')
+            + (Number(b.out_sum) ? ' · расход ' + money(b.out_sum) : '') + (Number(b.in_sum) ? ' · приход ' + money(b.in_sum) : '')),
+        ]),
+        el('button', { class: 'btn-ghost cashf-del', style: 'padding:3px 9px;font-size:12px', onclick: async () => {
+          if (!confirm('Откатить загрузку «' + (b.filename || '') + '»?\n\nБудет удалено строк: ' + b.tx_count
+            + (Number(b.out_sum) ? '\nРасходы: ' + money(b.out_sum) : '') + (Number(b.in_sum) ? '\nПриходы: ' + money(b.in_sum) : '')
+            + '\n\nНачальный остаток и ручные операции не тронем. Отменить нельзя.')) return;
+          try {
+            const r = await post('/import-batches/' + b.id + '/delete', {});
+            toast('Откат выполнен, удалено строк: ' + r.deleted);
+            loadBatches();
+            if (TAB === 'cashbox') renderCashbox();
+          } catch (e) { toast(e.message, true); }
+        } }, '↩ Откатить'),
+      ])));
+    }
+    wallet.addEventListener('change', loadBatches);
     const body = el('div', { class: 'cashf' }, [
       el('div', { class: 'cash-sub' }, 'Понимает и подготовленный шаблон, и рабочий файл кассы (лист на месяц, слева приход — справа расход). Снятия наличных и приходы из банка пропускаются (это перевод, не доход), конверсия идёт статьёй 102, строки «сум+доллар» разбиваются на две, статьи у расходов берутся из кода в файле.'),
       frow('Касса', wallet), frow('Файл', file), sheetRow, frow('Что записывать', onlySel), clampRow, openingRow, info,
+      batchesBox,
     ]);
     const commitBtn = el('button', { class: 'btn-primary', style: 'display:none', onclick: async () => {
       if (!payload) return;
       commitBtn.disabled = true; commitBtn.textContent = 'Записываю…';
       try {
-        const d = await post('/cashbox/import/commit', { payload, setOpening: setOpening.checked, filename: (file.files[0] && file.files[0].name) || '' });
+        const d = await post('/cashbox/import/commit', { payload, setOpening: setOpening.checked, filename: ((file.files[0] && file.files[0].name) || 'cashbox') + (sheetSel.value ? ' · ' + sheetSel.value : '') });
         toast(`Записано ${d.inserted}, пропущено дублей ${d.skipped}`);
         closeModal(); if (TAB === 'cashbox') renderCashbox();
       } catch (e) { toast(e.message, true); commitBtn.disabled = false; commitBtn.textContent = 'Записать в кассу'; }
@@ -1732,6 +1765,7 @@
       } catch (e) { toast(e.message, true); checkBtn.disabled = false; checkBtn.textContent = 'Проверить'; }
     } }, 'Проверить');
     modal('Импорт наличной кассы', body, [checkBtn, commitBtn]);
+    loadBatches();
   }
   // Конверсия валюты внутри кассы: $↔сум, одной операцией, не доход/не расход.
   function openConvertForm(walletId) {
