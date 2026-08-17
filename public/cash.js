@@ -1654,9 +1654,13 @@
         else { sheetRow.style.display = 'none'; }
       } catch (e) { toast(e.message, true); }
     };
+    // По умолчанию — только расходы: приходы в кассу заводятся переводом из банка (обнал),
+    // и загружать их из файла значило бы задвоить деньги.
+    const onlySel = fsel([{ v: 'out', t: 'Только расходы' }, { v: 'all', t: 'Приходы и расходы' }], 'out');
+    onlySel.onchange = () => { payload = null; commitBtn.style.display = 'none'; info.innerHTML = ''; if (file.files[0] && (sheetRow.style.display === 'none' || sheetSel.value)) checkBtn.click(); };
     const body = el('div', { class: 'cashf' }, [
       el('div', { class: 'cash-sub' }, 'Понимает и подготовленный шаблон, и рабочий файл кассы (лист на месяц, слева приход — справа расход). Снятия наличных и приходы из банка пропускаются (это перевод, не доход), конверсия идёт статьёй 102, строки «сум+доллар» разбиваются на две, статьи у расходов берутся из кода в файле.'),
-      frow('Касса', wallet), frow('Файл', file), sheetRow, openingRow, info,
+      frow('Касса', wallet), frow('Файл', file), sheetRow, frow('Что записывать', onlySel), openingRow, info,
     ]);
     const commitBtn = el('button', { class: 'btn-primary', style: 'display:none', onclick: async () => {
       if (!payload) return;
@@ -1683,6 +1687,7 @@
       checkBtn.disabled = true; checkBtn.textContent = 'Проверяю…';
       const fd = new FormData(); fd.append('wallet_id', wallet.value); fd.append('file', file.files[0]);
       if (sheetSel.value) fd.append('sheet', sheetSel.value);
+      fd.append('only', onlySel.value);
       try {
         const res = await fetch('/cash/api/cashbox/import/preview', { method: 'POST', body: fd });
         const d = await res.json();
@@ -1700,7 +1705,8 @@
         info.appendChild(line(`Приходы (без снятий наличных): ${s.inCnt} · Расходы: ${s.outCnt}`));
         info.appendChild(line(`Пропущено переводов (обнал / приход из банка): ${s.skippedObnal} · Конверсия: ${s.konv}`));
         info.appendChild(line(`Строк «сум+доллар» разбито на 2: ${s.splitPairs}`));
-        info.appendChild(line(`Будет записано строк: ${s.entries}`));
+        if (s.only === 'out') info.appendChild(el('div', { class: 'cash-imp-sum', style: 'font-weight:700' }, 'Записываем ТОЛЬКО расходы — приходы из файла не заводим.'));
+        info.appendChild(el('div', { class: 'cash-imp-sum', style: 'font-weight:800' }, `Будет записано строк: ${s.entries}`));
         if (s.badCodes && s.badCodes.length) info.appendChild(el('div', { class: 'cash-imp-sum', style: 'color:#c0392b' }, `Неизвестные коды ДДС: ${s.badCodes.join(', ')} (запишутся без статьи)`));
         if (s.opening && s.openingDate) { openingRow.style.display = ''; openingRow.querySelector('.cb-open-lbl').textContent = ' ' + money(s.opening) + ' сум на ' + ruDate(s.openingDate); }
         commitBtn.style.display = '';

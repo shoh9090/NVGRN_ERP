@@ -1169,7 +1169,12 @@ router.post('/api/cashbox/import/preview', upload.single('file'), async (req, re
     if (!rows.length) {
       return res.status(400).json({ error: 'Не нашёл строк. Листы файла: ' + (parsed.sheets || []).join(', ') + '. Укажите нужный месяц.', sheets: parsed.sheets || [] });
     }
-    const { entries, skippedObnal, konv, splitPairs } = buildCashboxEntries(rows);
+    const built = buildCashboxEntries(rows);
+    const { skippedObnal, konv, splitPairs } = built;
+    // Что записывать: только расходы (по умолчанию — приходы в кассу заводятся переводами
+    // из банка и вручную, дублировать их из файла не нужно) или приходы и расходы.
+    const only = req.body.only === 'all' ? 'all' : req.body.only === 'in' ? 'in' : 'out';
+    const entries = only === 'all' ? built.entries : built.entries.filter((e) => e.tx_type === only);
     // неизвестные коды (только у расходов)
     const codeToCat = {};
     (await db.pool.query("SELECT id, code FROM cash_categories WHERE status='active'")).rows.forEach((c) => { codeToCat[String(c.code)] = c.id; });
@@ -1183,7 +1188,7 @@ router.post('/api/cashbox/import/preview', upload.single('file'), async (req, re
     const openingDate = parsed.openingDate || (minDate ? minDate.slice(0, 7) + '-01' : null);
     const payload = Buffer.from(JSON.stringify({ wallet_id, entries, opening, openingDate })).toString('base64');
     res.json({
-      summary: { fileRows: rows.length, inCnt, outCnt, skippedObnal, konv, splitPairs, entries: entries.length, badCodes: [...badCodes], opening, openingDate },
+      summary: { fileRows: rows.length, inCnt, outCnt, skippedObnal, konv, splitPairs, entries: entries.length, badCodes: [...badCodes], opening, openingDate, only },
       sheets: parsed.sheets || [], sheet: parsed.sheet || null, format: parsed.format,
       sample: entries.slice(0, 40), payload,
     });
