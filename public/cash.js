@@ -1636,11 +1636,24 @@
     const setOpening = el('input', { type: 'checkbox' }); setOpening.checked = true;
     const openingRow = el('label', { class: 'cashf-row', style: 'display:none' }, [el('span', {}, 'Начальный остаток'), el('span', {}, [setOpening, el('span', { class: 'cash-sub cb-open-lbl' }, '')])]);
     let payload = null;
-    // Рабочий файл кассы — по листу на месяц. Список листов подтягиваем после первой проверки.
-    const sheetSel = el('select', { class: 'cashf-inp' }, [el('option', { value: '' }, '— определить автоматически —')]);
-    const sheetRow = frow('Месяц (лист файла)', sheetSel);
+    // Рабочий файл кассы — по листу на месяц. Список месяцев спрашиваем сразу после выбора файла.
+    const sheetSel = el('select', { class: 'cashf-inp' }, [el('option', { value: '' }, '— выберите месяц —')]);
+    const sheetRow = frow('Какой месяц загружаем? *', sheetSel);
     sheetRow.style.display = 'none';
-    sheetSel.onchange = () => { payload = null; commitBtn.style.display = 'none'; checkBtn.click(); };
+    sheetSel.onchange = () => { payload = null; commitBtn.style.display = 'none'; info.innerHTML = ''; if (sheetSel.value) checkBtn.click(); };
+    // Как только выбран файл — читаем список листов и предлагаем выбрать месяц.
+    file.onchange = async () => {
+      payload = null; commitBtn.style.display = 'none'; info.innerHTML = ''; openingRow.style.display = 'none';
+      if (!file.files[0]) { sheetRow.style.display = 'none'; return; }
+      const fd = new FormData(); fd.append('file', file.files[0]);
+      try {
+        const res = await fetch('/cash/api/cashbox/import/sheets', { method: 'POST', body: fd });
+        const d = await res.json(); if (!res.ok) throw new Error(d.error || 'Ошибка чтения файла');
+        const list = d.sheets || [];
+        if (list.length > 1) { fillSheets(list, ''); info.appendChild(el('div', { class: 'cash-imp-sum' }, 'В файле ' + list.length + ' листов — выберите месяц.')); }
+        else { sheetRow.style.display = 'none'; }
+      } catch (e) { toast(e.message, true); }
+    };
     const body = el('div', { class: 'cashf' }, [
       el('div', { class: 'cash-sub' }, 'Понимает и подготовленный шаблон, и рабочий файл кассы (лист на месяц, слева приход — справа расход). Снятия наличных и приходы из банка пропускаются (это перевод, не доход), конверсия идёт статьёй 102, строки «сум+доллар» разбиваются на две, статьи у расходов берутся из кода в файле.'),
       frow('Касса', wallet), frow('Файл', file), sheetRow, openingRow, info,
@@ -1658,7 +1671,7 @@
     function fillSheets(sheets, current) {
       const keep = sheetSel.value;
       sheetSel.innerHTML = '';
-      sheetSel.appendChild(el('option', { value: '' }, '— определить автоматически —'));
+      sheetSel.appendChild(el('option', { value: '' }, '— выберите месяц —'));
       sheets.forEach((n) => sheetSel.appendChild(el('option', { value: n }, n)));
       sheetSel.value = keep || current || '';
       sheetRow.style.display = sheets.length > 1 ? '' : 'none';
@@ -1666,6 +1679,7 @@
     const checkBtn = el('button', { class: 'btn-primary', onclick: async () => {
       if (!wallet.value) return toast('Выберите кассу', true);
       if (!file.files[0]) return toast('Выберите файл', true);
+      if (sheetRow.style.display !== 'none' && !sheetSel.value) return toast('Выберите месяц (лист файла)', true);
       checkBtn.disabled = true; checkBtn.textContent = 'Проверяю…';
       const fd = new FormData(); fd.append('wallet_id', wallet.value); fd.append('file', file.files[0]);
       if (sheetSel.value) fd.append('sheet', sheetSel.value);

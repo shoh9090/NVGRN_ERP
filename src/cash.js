@@ -1067,7 +1067,10 @@ function parseCashboxLedger(buf, sheetName) {
       });
     }
   }
-  return { rows, opening, sheet: name, sheets: wb.SheetNames };
+  // Остаток «ост на 01.08.26» относится к 1-му числу месяца ЭТОГО листа. Брать самую раннюю дату
+  // операции нельзя: в августовский лист попадают июльские расходы, и остаток уехал бы на июль.
+  const openingDate = mon ? `${year}-${String(mon).padStart(2, '0')}-01` : null;
+  return { rows, opening, openingDate, sheet: name, sheets: wb.SheetNames };
 }
 
 function parseCashboxWorkbook(buf) {
@@ -1146,6 +1149,16 @@ function buildCashboxEntries(rows) {
   return { entries, skippedObnal, konv, splitPairs };
 }
 
+// Список листов файла — чтобы сразу спросить, какой месяц загружаем (до разбора).
+router.post('/api/cashbox/import/sheets', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'Файл не выбран' });
+    const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
+    const sheets = wb.SheetNames.map((n) => ({ name: n, month: sheetMonthNo(n) }));
+    res.json({ sheets: sheets.map((s) => s.name), months: sheets.filter((s) => s.month).map((s) => s.name) });
+  } catch (e) { res.status(400).json({ error: 'Не смог прочитать файл: ' + e.message }); }
+});
+
 router.post('/api/cashbox/import/preview', upload.single('file'), async (req, res) => {
   try {
     const wallet_id = intOrNull(req.body.wallet_id);
@@ -1165,7 +1178,9 @@ router.post('/api/cashbox/import/preview', upload.single('file'), async (req, re
     const inCnt = rows.filter((r) => r.tx_type === 'in' && !/обнал/i.test(r.purpose)).length;
     const outCnt = rows.filter((r) => r.tx_type === 'out').length;
     const minDate = entries.map((e) => e.date).filter(Boolean).sort()[0] || null;
-    const openingDate = minDate ? minDate.slice(0, 7) + '-01' : null;
+    // Для рабочего файла дата остатка — 1-е число месяца выбранного листа (из парсера),
+    // для подготовленного шаблона — как раньше, по самой ранней операции.
+    const openingDate = parsed.openingDate || (minDate ? minDate.slice(0, 7) + '-01' : null);
     const payload = Buffer.from(JSON.stringify({ wallet_id, entries, opening, openingDate })).toString('base64');
     res.json({
       summary: { fileRows: rows.length, inCnt, outCnt, skippedObnal, konv, splitPairs, entries: entries.length, badCodes: [...badCodes], opening, openingDate },
