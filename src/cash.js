@@ -1169,6 +1169,18 @@ router.post('/api/cashbox/import/preview', upload.single('file'), async (req, re
     if (!rows.length) {
       return res.status(400).json({ error: 'Не нашёл строк. Листы файла: ' + (parsed.sheets || []).join(', ') + '. Укажите нужный месяц.', sheets: parsed.sheets || [] });
     }
+    // Даты вне месяца листа. В рабочем файле в августовском листе встречаются июльские даты
+    // (это дата события — доставки/услуги, а не дата выдачи денег). Остаток «ост на 01.08» уже
+    // учитывает всё прошлое, поэтому такие строки нужно оставить внутри месяца листа, иначе
+    // сальдо на начало месяца ломается. По умолчанию подтягиваем к 1-му числу месяца листа.
+    const clamp = String(req.body.clampMonth || 'true') !== 'false';
+    let clamped = 0;
+    if (clamp && parsed.openingDate) {
+      const mStart = parsed.openingDate;                                   // YYYY-MM-01 месяца листа
+      for (const r of rows) {
+        if (r.date && r.date < mStart) { r.date = mStart; clamped++; }
+      }
+    }
     const built = buildCashboxEntries(rows);
     const { skippedObnal, konv, splitPairs } = built;
     // Что записывать: только расходы (по умолчанию — приходы в кассу заводятся переводами
@@ -1188,7 +1200,11 @@ router.post('/api/cashbox/import/preview', upload.single('file'), async (req, re
     const openingDate = parsed.openingDate || (minDate ? minDate.slice(0, 7) + '-01' : null);
     const payload = Buffer.from(JSON.stringify({ wallet_id, entries, opening, openingDate })).toString('base64');
     res.json({
-      summary: { fileRows: rows.length, inCnt, outCnt, skippedObnal, konv, splitPairs, entries: entries.length, badCodes: [...badCodes], opening, openingDate, only },
+      summary: { fileRows: rows.length, inCnt, outCnt, skippedObnal, konv, splitPairs, entries: entries.length, badCodes: [...badCodes], opening, openingDate, only, clamped },
+      // Начальный остаток в кассе должен быть ОДИН — за самый первый загружаемый месяц.
+      // Если он уже стоит, предупредим: второй остаток задвоит деньги.
+      hasOpening: (await db.pool.query(
+        "SELECT to_char(tx_date,'YYYY-MM-DD') AS d, amount FROM cash_transactions WHERE source='opening' AND wallet_id=$1 ORDER BY tx_date LIMIT 1", [wallet_id])).rows[0] || null,
       sheets: parsed.sheets || [], sheet: parsed.sheet || null, format: parsed.format,
       sample: entries.slice(0, 40), payload,
     });

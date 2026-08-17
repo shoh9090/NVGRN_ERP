@@ -1657,10 +1657,17 @@
     // По умолчанию — только расходы: приходы в кассу заводятся переводом из банка (обнал),
     // и загружать их из файла значило бы задвоить деньги.
     const onlySel = fsel([{ v: 'out', t: 'Только расходы' }, { v: 'all', t: 'Приходы и расходы' }], 'out');
-    onlySel.onchange = () => { payload = null; commitBtn.style.display = 'none'; info.innerHTML = ''; if (file.files[0] && (sheetRow.style.display === 'none' || sheetSel.value)) checkBtn.click(); };
+    const recheck = () => { payload = null; commitBtn.style.display = 'none'; info.innerHTML = ''; if (file.files[0] && (sheetRow.style.display === 'none' || sheetSel.value)) checkBtn.click(); };
+    onlySel.onchange = recheck;
+    // Даты вне месяца листа (в августе встречаются июльские) — подтянуть к 1-му числу месяца,
+    // иначе они уменьшат сальдо на начало и остаток не сойдётся.
+    const clampChk = el('input', { type: 'checkbox' }); clampChk.checked = true;
+    clampChk.onchange = recheck;
+    const clampRow = frow('Даты вне месяца', el('label', { style: 'display:flex;gap:8px;align-items:center;cursor:pointer' },
+      [clampChk, el('span', { class: 'cash-sub' }, 'подтянуть в месяц листа (иначе сальдо не сойдётся)')]));
     const body = el('div', { class: 'cashf' }, [
       el('div', { class: 'cash-sub' }, 'Понимает и подготовленный шаблон, и рабочий файл кассы (лист на месяц, слева приход — справа расход). Снятия наличных и приходы из банка пропускаются (это перевод, не доход), конверсия идёт статьёй 102, строки «сум+доллар» разбиваются на две, статьи у расходов берутся из кода в файле.'),
-      frow('Касса', wallet), frow('Файл', file), sheetRow, frow('Что записывать', onlySel), openingRow, info,
+      frow('Касса', wallet), frow('Файл', file), sheetRow, frow('Что записывать', onlySel), clampRow, openingRow, info,
     ]);
     const commitBtn = el('button', { class: 'btn-primary', style: 'display:none', onclick: async () => {
       if (!payload) return;
@@ -1688,6 +1695,7 @@
       const fd = new FormData(); fd.append('wallet_id', wallet.value); fd.append('file', file.files[0]);
       if (sheetSel.value) fd.append('sheet', sheetSel.value);
       fd.append('only', onlySel.value);
+      fd.append('clampMonth', clampChk.checked ? 'true' : 'false');
       try {
         const res = await fetch('/cash/api/cashbox/import/preview', { method: 'POST', body: fd });
         const d = await res.json();
@@ -1708,7 +1716,17 @@
         if (s.only === 'out') info.appendChild(el('div', { class: 'cash-imp-sum', style: 'font-weight:700' }, 'Записываем ТОЛЬКО расходы — приходы из файла не заводим.'));
         info.appendChild(el('div', { class: 'cash-imp-sum', style: 'font-weight:800' }, `Будет записано строк: ${s.entries}`));
         if (s.badCodes && s.badCodes.length) info.appendChild(el('div', { class: 'cash-imp-sum', style: 'color:#c0392b' }, `Неизвестные коды ДДС: ${s.badCodes.join(', ')} (запишутся без статьи)`));
-        if (s.opening && s.openingDate) { openingRow.style.display = ''; openingRow.querySelector('.cb-open-lbl').textContent = ' ' + money(s.opening) + ' сум на ' + ruDate(s.openingDate); }
+        if (s.clamped) info.appendChild(line(`Дат вне месяца подтянуто к ${ruDate(s.openingDate)}: ${s.clamped}`));
+        if (s.opening && s.openingDate) {
+          openingRow.style.display = '';
+          openingRow.querySelector('.cb-open-lbl').textContent = ' ' + money(s.opening) + ' сум на ' + ruDate(s.openingDate);
+          // Остаток в кассе должен быть ОДИН — за первый загружаемый месяц. Иначе деньги задвоятся.
+          if (d.hasOpening) {
+            setOpening.checked = false;
+            info.appendChild(el('div', { class: 'cash-imp-sum', style: 'color:#b25b00;font-weight:700' },
+              `В кассе уже есть начальный остаток ${money(d.hasOpening.amount)} на ${ruDate(d.hasOpening.d)} — галочка снята. Ставить остаток нужно только один раз, за самый первый загружаемый месяц.`));
+          } else setOpening.checked = true;
+        }
         commitBtn.style.display = '';
         checkBtn.textContent = 'Проверить снова'; checkBtn.disabled = false;
       } catch (e) { toast(e.message, true); checkBtn.disabled = false; checkBtn.textContent = 'Проверить'; }
