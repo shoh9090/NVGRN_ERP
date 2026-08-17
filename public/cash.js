@@ -1636,9 +1636,14 @@
     const setOpening = el('input', { type: 'checkbox' }); setOpening.checked = true;
     const openingRow = el('label', { class: 'cashf-row', style: 'display:none' }, [el('span', {}, 'Начальный остаток'), el('span', {}, [setOpening, el('span', { class: 'cash-sub cb-open-lbl' }, '')])]);
     let payload = null;
+    // Рабочий файл кассы — по листу на месяц. Список листов подтягиваем после первой проверки.
+    const sheetSel = el('select', { class: 'cashf-inp' }, [el('option', { value: '' }, '— определить автоматически —')]);
+    const sheetRow = frow('Месяц (лист файла)', sheetSel);
+    sheetRow.style.display = 'none';
+    sheetSel.onchange = () => { payload = null; commitBtn.style.display = 'none'; checkBtn.click(); };
     const body = el('div', { class: 'cashf' }, [
-      el('div', { class: 'cash-sub' }, 'Загрузите шаблон «Превью импорта». Приходы «снятие наличных» пропускаются; строки «сум+доллар» разбиваются на две; коды у расходов берутся из файла, приходы — без кодов.'),
-      frow('Касса', wallet), frow('Файл', file), openingRow, info,
+      el('div', { class: 'cash-sub' }, 'Понимает и подготовленный шаблон, и рабочий файл кассы (лист на месяц, слева приход — справа расход). Снятия наличных и приходы из банка пропускаются (это перевод, не доход), конверсия идёт статьёй 102, строки «сум+доллар» разбиваются на две, статьи у расходов берутся из кода в файле.'),
+      frow('Касса', wallet), frow('Файл', file), sheetRow, openingRow, info,
     ]);
     const commitBtn = el('button', { class: 'btn-primary', style: 'display:none', onclick: async () => {
       if (!payload) return;
@@ -1649,20 +1654,37 @@
         closeModal(); if (TAB === 'cashbox') renderCashbox();
       } catch (e) { toast(e.message, true); commitBtn.disabled = false; commitBtn.textContent = 'Записать в кассу'; }
     } }, 'Записать в кассу');
+    // Показать выбор месяца: список листов из файла, выделен тот, что разобрали.
+    function fillSheets(sheets, current) {
+      const keep = sheetSel.value;
+      sheetSel.innerHTML = '';
+      sheetSel.appendChild(el('option', { value: '' }, '— определить автоматически —'));
+      sheets.forEach((n) => sheetSel.appendChild(el('option', { value: n }, n)));
+      sheetSel.value = keep || current || '';
+      sheetRow.style.display = sheets.length > 1 ? '' : 'none';
+    }
     const checkBtn = el('button', { class: 'btn-primary', onclick: async () => {
       if (!wallet.value) return toast('Выберите кассу', true);
       if (!file.files[0]) return toast('Выберите файл', true);
       checkBtn.disabled = true; checkBtn.textContent = 'Проверяю…';
       const fd = new FormData(); fd.append('wallet_id', wallet.value); fd.append('file', file.files[0]);
+      if (sheetSel.value) fd.append('sheet', sheetSel.value);
       try {
         const res = await fetch('/cash/api/cashbox/import/preview', { method: 'POST', body: fd });
-        const d = await res.json(); if (!res.ok) throw new Error(d.error || 'Ошибка');
+        const d = await res.json();
+        if (!res.ok) {
+          // Не нашли строк — покажем список листов, чтобы выбрать месяц руками.
+          if (d.sheets && d.sheets.length) fillSheets(d.sheets, '');
+          throw new Error(d.error || 'Ошибка');
+        }
+        if (d.sheets && d.sheets.length) fillSheets(d.sheets, d.sheet || '');
         payload = d.payload; const s = d.summary;
         info.innerHTML = '';
         const line = (t) => el('div', { class: 'cash-imp-sum' }, t);
+        if (d.format === 'ledger' && d.sheet) info.appendChild(el('div', { class: 'cash-imp-sum', style: 'font-weight:700' }, `Читаю лист «${d.sheet}»`));
         info.appendChild(line(`Строк в файле: ${s.fileRows}`));
         info.appendChild(line(`Приходы (без снятий наличных): ${s.inCnt} · Расходы: ${s.outCnt}`));
-        info.appendChild(line(`Снятий наличных пропущено: ${s.skippedObnal} · Конверсия: ${s.konv}`));
+        info.appendChild(line(`Пропущено переводов (обнал / приход из банка): ${s.skippedObnal} · Конверсия: ${s.konv}`));
         info.appendChild(line(`Строк «сум+доллар» разбито на 2: ${s.splitPairs}`));
         info.appendChild(line(`Будет записано строк: ${s.entries}`));
         if (s.badCodes && s.badCodes.length) info.appendChild(el('div', { class: 'cash-imp-sum', style: 'color:#c0392b' }, `Неизвестные коды ДДС: ${s.badCodes.join(', ')} (запишутся без статьи)`));

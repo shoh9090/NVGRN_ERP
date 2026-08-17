@@ -963,6 +963,113 @@ const cbDate = (v) => {
 };
 const cbNum = (v) => { const t = String(v == null ? '' : v).replace(/ /g, '').replace(/\s/g, '').replace(',', '.'); const n = parseFloat(t); return isNaN(n) ? 0 : n; };
 
+// ===== Разбор РАБОЧЕГО файла наличной кассы (двусторонний реестр, лист на месяц) =====
+// Формат Шоха: слева приход (дата | пояснение | сум | курс | долл | общ), справа расход
+// (дата | примечания | код | сум | курс | долл | общий). Дата в стиле «03 Aug», «24July» —
+// без года, поэтому год берём из имени листа/файла. Пустая дата = та же, что строкой выше.
+const RU_MONTHS = ['январ', 'феврал', 'март', 'апрел', 'май', 'июн', 'июл', 'август', 'сентябр', 'октябр', 'ноябр', 'декабр'];
+const EN_MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+const sheetMonthNo = (name) => {
+  const n = String(name || '').toLowerCase();
+  const i = RU_MONTHS.findIndex((m) => n.includes(m));
+  if (i >= 0) return i + 1;
+  const j = EN_MONTHS.findIndex((m) => n.includes(m));
+  return j >= 0 ? j + 1 : 0;
+};
+// «03 Aug» / «4Aug» / «24July» / «28Jul» → YYYY-MM-DD. Год — из контекста листа.
+// Если месяц строки больше месяца листа (в январе встретился декабрь) — это прошлый год.
+function ledgerDate(raw, year, sheetMon) {
+  const iso = cbDate(raw); if (iso) return iso;                    // вдруг нормальная дата/серийник
+  const s = String(raw == null ? '' : raw).trim().toLowerCase();
+  if (!s) return null;
+  const m = s.match(/^(\d{1,2})\s*([a-zа-я]{3,})/i);
+  if (!m) return null;
+  const day = parseInt(m[1], 10);
+  const word = m[2];
+  let mon = EN_MONTHS.findIndex((x) => word.startsWith(x)) + 1;
+  if (!mon) mon = RU_MONTHS.findIndex((x) => word.startsWith(x.slice(0, 3))) + 1;
+  if (!mon || !(day >= 1 && day <= 31)) return null;
+  let y = year;
+  if (sheetMon && mon > sheetMon + 1) y -= 1;                      // январский лист с декабрьскими датами
+  return `${y}-${String(mon).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+// Числа в рабочем файле — в английском формате: запятая = разделитель тысяч, точка = дробная
+// (« 20,000,000.00 »). cbNum здесь не годится: он считает запятую десятичной.
+function ledgerNum(v) {
+  let s = String(v == null ? '' : v).replace(/\s| /g, '').trim();
+  if (!s || s === '-') return 0;
+  if (s.includes(',') && s.includes('.')) s = s.replace(/,/g, '');            // 20,000,000.00
+  else if (/^-?\d{1,3}(,\d{3})+$/.test(s)) s = s.replace(/,/g, '');           // 20,000,000
+  else s = s.replace(',', '.');                                              // 15,5 → 15.5
+  const n = parseFloat(s.replace(/[^\d.-]/g, ''));
+  return isNaN(n) ? 0 : n;
+}
+function parseCashboxLedger(buf, sheetName) {
+  const wb = XLSX.read(buf, { type: 'buffer' });
+  const name = wb.SheetNames.includes(sheetName) ? sheetName
+    : (wb.SheetNames.find((n) => sheetMonthNo(n) && sheetMonthNo(n) === sheetMonthNo(sheetName)) || wb.SheetNames[wb.SheetNames.length - 1]);
+  const aoa = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: false, defval: '' });
+  const low = (v) => String(v == null ? '' : v).toLowerCase().trim();
+  // Шапка реестра: строка, где есть и «приход», и «расход».
+  let hi = aoa.findIndex((r) => r.some((c) => /^приход/.test(low(c))) && r.some((c) => /^расход/.test(low(c))));
+  if (hi < 0) return { rows: [], opening: null, sheet: name, sheets: wb.SheetNames };
+  const head = aoa[hi].map(low), sub = (aoa[hi + 1] || []).map(low);
+  const inZone = head.findIndex((c) => /^приход/.test(c));
+  const outZone = head.findIndex((c) => /^расход/.test(c));
+  const findIn = (arr, re, from, to) => { for (let i = from; i < (to || arr.length); i++) if (re.test(arr[i])) return i; return -1; };
+  // Приходная часть — слева от «Расход», расходная — справа.
+  const ci = {
+    dateIn: findIn(head, /^дата$/, 0, outZone),
+    sumIn: findIn(sub, /^сум/, 0, outZone), rateIn: findIn(sub, /^курс/, 0, outZone), usdIn: findIn(sub, /^долл/, 0, outZone),
+    dateOut: findIn(head, /^дата$/, outZone >= 0 ? outZone - 4 : 0) >= 0 ? findIn(head, /^дата$/, Math.max(0, (inZone >= 0 ? inZone + 1 : 1))) : -1,
+    purposeOut: findIn(sub, /примечан/, 0), codeOut: findIn(sub, /^код/, 0),
+    sumOut: findIn(sub, /^сум/, outZone >= 0 ? outZone - 3 : 0), rateOut: -1, usdOut: -1,
+  };
+  if (ci.dateIn < 0) ci.dateIn = 0;
+  if (ci.purposeOut < 0) ci.purposeOut = 8;
+  if (ci.sumOut < 0 || ci.sumOut <= ci.sumIn) ci.sumOut = ci.purposeOut + 2;
+  if (ci.codeOut < 0) ci.codeOut = ci.purposeOut + 1;
+  ci.dateOut = ci.purposeOut - 1;                                  // дата расхода — слева от «примечания»
+  ci.rateOut = ci.sumOut + 1; ci.usdOut = ci.sumOut + 2;
+  const purposeIn = ci.dateIn + 1;
+  const year = Number((String(sheetName || '') + ' ' + name).match(/20(\d{2})/) ? '20' + (String(sheetName || '') + ' ' + name).match(/20(\d{2})/)[1] : 0)
+    || Number((name.match(/(\d{2})\s*$/) || [])[1] ? '20' + name.match(/(\d{2})\s*$/)[1] : 0)
+    || new Date().getFullYear();
+  const mon = sheetMonthNo(name);
+  const rows = [];
+  let opening = null, lastIn = null, lastOut = null;
+  for (let i = hi + 2; i < aoa.length; i++) {
+    const r = aoa[i] || [];
+    // Начальный остаток: строка «ост на 01.08.26» в пояснении прихода.
+    if (/ост\s*на/.test(low(r[purposeIn]))) {
+      const s = ledgerNum(r[ci.sumIn]), u = ledgerNum(r[ci.usdIn]), rt = ledgerNum(r[ci.rateIn]);
+      opening = Math.round(s + (u > 0 && rt > 0 ? u * rt : 0));
+      continue;
+    }
+    // «ИТОГО» / «ОБОРОТЫ» — конец реестра: дальше идут служебные строки, их не берём.
+    if (/итого|оборот/.test(low(r[purposeIn])) || /итого|оборот/.test(low(r[ci.purposeOut]))) break;
+    // приход
+    const dIn = ledgerDate(r[ci.dateIn], year, mon); if (dIn) lastIn = dIn;
+    const sIn = ledgerNum(r[ci.sumIn]), uIn = ci.usdIn >= 0 ? ledgerNum(r[ci.usdIn]) : 0, rIn = ci.rateIn >= 0 ? ledgerNum(r[ci.rateIn]) : 0;
+    const pIn = String(r[purposeIn] || '').trim();
+    if ((sIn > 0 || uIn > 0) && (lastIn || dIn)) {
+      rows.push({ tx_type: 'in', date: dIn || lastIn, purpose: pIn, code: '', sum: sIn || Math.round(uIn * rIn), usd: uIn, rate: rIn });
+    }
+    // расход
+    const dOut = ledgerDate(r[ci.dateOut], year, mon); if (dOut) lastOut = dOut;
+    const sOut = ledgerNum(r[ci.sumOut]), uOut = ci.usdOut >= 0 ? ledgerNum(r[ci.usdOut]) : 0, rOut = ci.rateOut >= 0 ? ledgerNum(r[ci.rateOut]) : 0;
+    const pOut = String(r[ci.purposeOut] || '').trim();
+    if ((sOut > 0 || uOut > 0) && (dOut || lastOut)) {
+      rows.push({
+        tx_type: 'out', date: dOut || lastOut, purpose: pOut,
+        code: String(r[ci.codeOut] || '').trim().split('.')[0],
+        sum: sOut || Math.round(uOut * rOut), usd: uOut, rate: rOut,
+      });
+    }
+  }
+  return { rows, opening, sheet: name, sheets: wb.SheetNames };
+}
+
 function parseCashboxWorkbook(buf) {
   const wb = XLSX.read(buf, { type: 'buffer' });
   const shName = wb.SheetNames.find((n) => /превью|импорт|касс/i.test(n)) || wb.SheetNames[0];
@@ -1002,16 +1109,36 @@ function parseCashboxWorkbook(buf) {
   return { rows, opening };
 }
 
+// Единая точка разбора файла кассы: сначала пробуем подготовленный шаблон («Тип/Дата/Сумма»),
+// если в нём строк нет — читаем рабочий двусторонний реестр по выбранному листу-месяцу.
+function parseCashboxAny(buf, sheetName) {
+  const wb = XLSX.read(buf, { type: 'buffer' });
+  const sheets = wb.SheetNames;
+  if (!sheetName) {
+    const tpl = parseCashboxWorkbook(buf);
+    if (tpl.rows.length) return Object.assign({ sheet: null, sheets, format: 'template' }, tpl);
+  }
+  const led = parseCashboxLedger(buf, sheetName || sheets[sheets.length - 1]);
+  if (led.rows.length) return Object.assign({ format: 'ledger' }, led);
+  const tpl = parseCashboxWorkbook(buf);
+  return Object.assign({ sheet: null, sheets, format: 'template' }, tpl);
+}
+
 // Разбивка на записи: обнал-приходы пропускаем; сум+доллар → две записи.
 function buildCashboxEntries(rows) {
   const entries = []; let skippedObnal = 0, konv = 0, splitPairs = 0;
   for (const r of rows) {
-    if (r.tx_type === 'in' && /обнал/i.test(r.purpose)) { skippedObnal++; continue; }
-    if (/конверси/i.test(r.purpose)) konv++;
+    // Приход «обнал» и «приход из банка» — это перемещение банк→касса, а не доход.
+    // Инвариант проекта: переводы между своими счетами классифицируем на входе, а не в отчётах.
+    // Сам перевод ведётся в Кассе (банковская нога + подтверждение факта), поэтому здесь пропускаем.
+    if (r.tx_type === 'in' && /обнал|из банка|с банка/i.test(r.purpose)) { skippedObnal++; continue; }
+    // Конверсия $↔сум — тоже не доход/не расход: ставим статью 102, чтобы не искажать ДДС.
+    if (/конверси/i.test(r.purpose)) { konv++; if (!r.code) r.code = '102'; }
     const dollarPart = (r.usd > 0 && r.rate > 0) ? Math.round(r.usd * r.rate) : 0;
     let sumPart = Math.round(r.sum - dollarPart);
     if (sumPart < 0) sumPart = 0;
-    const base = { tx_type: r.tx_type, date: r.date, purpose: r.purpose, code: r.tx_type === 'out' ? r.code : '' };
+    // У приходов статью из файла не берём (её там нет), кроме конверсии — ей нужна статья 102.
+    const base = { tx_type: r.tx_type, date: r.date, purpose: r.purpose, code: (r.tx_type === 'out' || r.code === '102') ? r.code : '' };
     if (dollarPart > 0 && sumPart > 0) splitPairs++;
     if (dollarPart === 0 || sumPart > 0) entries.push({ ...base, currency: 'UZS', amount: dollarPart === 0 ? Math.round(r.sum) : sumPart, fx_amount: null, fx_rate: null });
     if (dollarPart > 0) entries.push({ ...base, currency: 'USD', amount: dollarPart, fx_amount: r.usd, fx_rate: r.rate });
@@ -1024,8 +1151,11 @@ router.post('/api/cashbox/import/preview', upload.single('file'), async (req, re
     const wallet_id = intOrNull(req.body.wallet_id);
     if (!wallet_id) return res.status(400).json({ error: 'Выберите наличную кассу' });
     if (!req.file) return res.status(400).json({ error: 'Файл не выбран' });
-    const { rows, opening } = parseCashboxWorkbook(req.file.buffer);
-    if (!rows.length) return res.status(400).json({ error: 'Не нашёл строк в файле (проверьте шаблон).' });
+    const parsed = parseCashboxAny(req.file.buffer, String(req.body.sheet || '').trim() || null);
+    const { rows, opening } = parsed;
+    if (!rows.length) {
+      return res.status(400).json({ error: 'Не нашёл строк. Листы файла: ' + (parsed.sheets || []).join(', ') + '. Укажите нужный месяц.', sheets: parsed.sheets || [] });
+    }
     const { entries, skippedObnal, konv, splitPairs } = buildCashboxEntries(rows);
     // неизвестные коды (только у расходов)
     const codeToCat = {};
@@ -1039,6 +1169,7 @@ router.post('/api/cashbox/import/preview', upload.single('file'), async (req, re
     const payload = Buffer.from(JSON.stringify({ wallet_id, entries, opening, openingDate })).toString('base64');
     res.json({
       summary: { fileRows: rows.length, inCnt, outCnt, skippedObnal, konv, splitPairs, entries: entries.length, badCodes: [...badCodes], opening, openingDate },
+      sheets: parsed.sheets || [], sheet: parsed.sheet || null, format: parsed.format,
       sample: entries.slice(0, 40), payload,
     });
   } catch (e) { res.status(400).json({ error: e.message }); }
