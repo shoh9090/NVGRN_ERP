@@ -771,6 +771,122 @@
     ]);
   }
 
+  // Банковские оплаты, которые не привязались ни к одному поставщику: видно всё, что «висит»,
+  // и в один клик привязывается. При привязке система запоминает реквизит — дальше автоматом.
+  async function openBankUnmatched() {
+    const box = el('div', {});
+    const info = el('div', { class: 'muted', style: 'margin-bottom:8px' }, 'Загружаю…');
+    const search = el('input', { placeholder: '🔍 назначение, плательщик, ИНН…', style: 'width:100%;margin-bottom:8px' });
+    const m = modal('🔗 Неразобранные оплаты', el('div', {}, [
+      el('p', { class: 'muted', style: 'font-size:13px' },
+        'Расходы с банковских счетов (с 07.08.2026), которые не нашли поставщика по ИНН или правилам. Переводы между своими счетами не показываем.'),
+      search, info, box,
+    ]), [el('button', { onclick: () => m.close() }, 'Закрыть')]);
+    let suppliers = [];
+    try { suppliers = (await api('/suppliers')).items || []; } catch (e) { /* покажем ошибку ниже */ }
+    async function load() {
+      box.innerHTML = ''; info.textContent = 'Загружаю…';
+      let d;
+      try { d = await api('/bank-unmatched' + (search.value.trim() ? '?q=' + encodeURIComponent(search.value.trim()) : '')); }
+      catch (e) { info.textContent = 'Ошибка: ' + e.message; return; }
+      info.textContent = 'Не привязано: ' + d.count + ' оплат на ' + fmtMoney(d.total) + ' сум'
+        + (d.count > d.items.length ? ' · показаны первые ' + d.items.length : '');
+      if (!d.items.length) { box.appendChild(el('p', { class: 'dict-empty' }, 'Все банковские оплаты привязаны 👍')); return; }
+      box.appendChild(el('div', { class: 'oe-table-wrap', style: 'max-height:52vh' }, el('table', { class: 'dict-table' }, [
+        el('thead', {}, el('tr', {}, ['Дата', 'Сумма', 'Плательщик / ИНН', 'Назначение', 'Статья', ''].map((h, i) =>
+          el('th', { style: i === 1 ? 'text-align:right' : '' }, h)))),
+        el('tbody', {}, d.items.map((x) => el('tr', {}, [
+          el('td', { style: 'white-space:nowrap' }, dt(x.paid_at)),
+          el('td', { class: 'tnum', style: 'text-align:right;font-weight:700' }, fmtMoney(x.amount)),
+          el('td', {}, [
+            el('div', {}, x.payer_name || '—'),
+            x.payer_inn ? el('div', { class: 'muted', style: 'font-size:12px' }, 'ИНН ' + x.payer_inn) : null,
+          ]),
+          el('td', { class: 'muted', style: 'max-width:340px;font-size:12px' }, x.purpose || ''),
+          el('td', { class: 'muted', style: 'font-size:12px;white-space:nowrap' }, x.cat_code ? x.cat_code + ' · ' + x.cat_name : '—'),
+          el('td', { style: 'text-align:right;white-space:nowrap' },
+            el('button', { class: 'btn-primary', style: 'padding:4px 10px;font-size:12px', onclick: () => openBind(x, suppliers, load) }, 'Привязать')),
+        ]))),
+      ])));
+    }
+    search.oninput = debounce(load, 350);
+    await load();
+  }
+
+  const BANK_KEY_LABELS = { inn: 'Доп. ИНН', account: 'Расчётный счёт', name: 'Имя плательщика', keyword: 'Слово в назначении', tx: 'Разовая привязка' };
+  // Список реквизитов поставщика внутри его карточки: добавить/удалить.
+  async function loadBankKeys(supId, box) {
+    box.innerHTML = '';
+    let d;
+    try { d = await api('/suppliers/' + supId + '/bank-keys'); }
+    catch (e) { box.appendChild(el('div', { class: 'muted' }, 'Ошибка: ' + e.message)); return; }
+    const items = (d.items || []).filter((k) => k.key_type !== 'tx');
+    const txCount = (d.items || []).length - items.length;
+    if (!items.length) box.appendChild(el('div', { class: 'muted', style: 'font-size:13px;padding:4px 0' }, 'Пока не задано.'));
+    items.forEach((k) => box.appendChild(el('div', { style: 'display:flex;gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid var(--line)' }, [
+      el('span', { class: 'muted', style: 'font-size:12px;min-width:130px' }, BANK_KEY_LABELS[k.key_type] || k.key_type),
+      el('span', { style: 'flex:1;font-weight:600' }, k.key_value),
+      el('button', { style: 'color:#c0392b;padding:2px 8px', title: 'Удалить', onclick: async () => {
+        if (!confirm('Удалить реквизит «' + k.key_value + '»? Оплаты по нему перестанут привязываться автоматически.')) return;
+        try { await api('/suppliers/' + supId + '/bank-keys/' + k.id + '/delete', { method: 'POST' }); toast('Удалено'); loadBankKeys(supId, box); }
+        catch (e) { toast(e.message, true); }
+      } }, '✕'),
+    ])));
+    if (txCount) box.appendChild(el('div', { class: 'muted', style: 'font-size:12px;padding:4px 0' }, 'Плюс разовых привязок оплат: ' + txCount));
+    const typeSel = el('select', { style: 'min-width:150px' },
+      [['inn', 'Доп. ИНН'], ['account', 'Расчётный счёт'], ['name', 'Имя плательщика'], ['keyword', 'Слово в назначении']]
+        .map(([v, t]) => el('option', { value: v }, t)));
+    const valInp = el('input', { placeholder: 'значение', style: 'flex:1' });
+    const addBtn = el('button', { onclick: async () => {
+      if (!valInp.value.trim()) return toast('Укажите значение', true);
+      try {
+        await api('/suppliers/' + supId + '/bank-keys', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ key_type: typeSel.value, key_value: valInp.value.trim() }) });
+        toast('Добавлено'); valInp.value = ''; loadBankKeys(supId, box);
+      } catch (e) { toast(e.message, true); }
+    } }, '+ Добавить');
+    box.appendChild(el('div', { style: 'display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap' }, [typeSel, valInp, addBtn]));
+  }
+
+  // Привязка одной оплаты: выбираем поставщика и решаем, что запомнить на будущее.
+  function openBind(tx, suppliers, after) {
+    const supSel = el('select', {}, [el('option', { value: '' }, '— выберите поставщика —'),
+      ...suppliers.map((s) => el('option', { value: s.id }, s.name + (s.legal_name ? ' · ' + s.legal_name : '')))]);
+    const opts = [];
+    if (tx.payer_inn) opts.push(['inn', 'Запомнить ИНН ' + tx.payer_inn + ' — все оплаты с этим ИНН будут привязываться сами']);
+    if (tx.payer_name) opts.push(['name', 'Запомнить плательщика «' + tx.payer_name + '» — по точному совпадению имени']);
+    opts.push(['tx', 'Только эту оплату (ничего не запоминать)']);
+    let remember = opts[0][0];
+    const radios = opts.map(([v, label]) => {
+      const r = el('input', { type: 'radio', name: 'bindrem', value: v });
+      if (v === remember) r.checked = true;
+      r.onchange = () => { remember = v; };
+      return el('label', { style: 'display:flex;gap:8px;align-items:flex-start;margin:6px 0;cursor:pointer;font-size:13px' }, [r, el('span', {}, label)]);
+    });
+    const body = el('div', {}, [
+      el('div', { style: 'margin-bottom:10px;padding:8px 10px;background:rgba(140,198,63,.14);border-radius:8px;font-size:13px' },
+        dt(tx.paid_at) + ' · ' + fmtMoney(tx.amount) + ' сум' + (tx.purpose ? ' · ' + tx.purpose : '')),
+      el('label', {}, ['Поставщик', supSel]),
+      el('div', { style: 'margin-top:10px;font-weight:700;font-size:13px' }, 'Что запомнить:'),
+      ...radios,
+    ]);
+    // Модалка в Закупе одна на экран, поэтому «Отмена»/успех возвращают список неразобранных.
+    const mm = modal('Привязать оплату к поставщику', body, [
+      el('button', { onclick: () => { mm.close(); openBankUnmatched(); } }, 'Отмена'),
+      el('button', { class: 'btn-primary', onclick: async () => {
+        if (!supSel.value) return toast('Выберите поставщика', true);
+        try {
+          const r = await api('/bank-unmatched/bind', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tx_id: tx.id, supplier_id: supSel.value, remember }) });
+          toast(r.remembered === 'tx' ? 'Оплата привязана' : 'Привязано, реквизит запомнен — дальше автоматически');
+          mm.close();
+          openBankUnmatched();
+          if (currentTab === 'settlements') loadSettlements();
+        } catch (e) { toast(e.message, true); }
+      } }, 'Привязать'),
+    ]);
+  }
+
   async function openSupplierEdit(sup) {
     await ensureOpts();
     const f = {};
@@ -837,6 +953,15 @@
         ccList.length ? 'Расходы этому поставщику в Кассе будут авто-классифицироваться по этой статье.' : 'Откройте плитку «Касса» хотя бы раз, чтобы появились статьи ДДС.'),
     ]));
     const body = el('div', { class: 'form-col', style: 'max-width:100%' }, rows);
+    // Реквизиты для авто-привязки банковских оплат — только у сохранённого поставщика (нужен id).
+    if (sup && sup.id) {
+      body.appendChild(el('div', { style: 'margin-top:14px;font-weight:800;border-top:1px solid var(--line);padding-top:10px' }, 'Реквизиты для авто-привязки оплат'));
+      body.appendChild(el('div', { class: 'muted', style: 'font-size:12px;margin-bottom:6px' },
+        'Основной ИНН из поля выше работает всегда. Здесь — дополнительные: другой ИНН, расчётный счёт, имя плательщика или слово из назначения (для оплат на карту).'));
+      const keysBox = el('div');
+      body.appendChild(keysBox);
+      loadBankKeys(sup.id, keysBox);
+    }
     const m = modal(sup ? '✏️ ' + sup.name : '+ Новый поставщик', body, [
       el('button', { onclick: () => m.close() }, 'Отмена'),
       el('button', {
@@ -954,6 +1079,7 @@
       el('h2', {}, 'Взаиморасчёты'),
       el('div', { class: 'pur-toolbar-right' }, [
         el('button', { class: 'pur-tbtn', onclick: openColsMenu, title: 'Показать/скрыть столбцы' }, '⚙ Столбцы'),
+        el('button', { class: 'pur-tbtn', onclick: openBankUnmatched, title: 'Банковские оплаты, не привязанные к поставщику' }, '🔗 Неразобранные оплаты'),
         el('a', { class: 'pur-tbtn', href: '#', onclick: (e) => { e.preventDefault(); exportSettlements(); } }, '⬇ Excel'),
         el('button', { class: 'btn-primary', onclick: () => openPayment(null) }, '+ Оплата'),
       ]),

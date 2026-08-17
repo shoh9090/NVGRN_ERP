@@ -16,17 +16,67 @@ const SETTLE_START = '2026-08-07';
 // Дедуп: если та же оплата уже внесена вручную в Закуп (тот же поставщик, сумма, дата ±5 дней) —
 // НЕ считаем повторно (оплата вносится один раз, но видна и в Кассе, и во Взаиморасчётах).
 // Наличную кассу (kind='cash') и переводы между счетами сюда НЕ берём.
-async function wireSupplierPayments() {
-  const txs = (await db.pool.query(
-    `SELECT t.id, c.id AS supplier_id, to_char(t.tx_date,'YYYY-MM-DD') AS paid_at, t.amount, t.purpose
+const nrm = (s) => String(s == null ? '' : s).trim().toLowerCase();
+
+// Ключи привязки: основной ИНН из карточки поставщика + дополнительные реквизиты/правила
+// (supplier_bank_keys). Точные ключи (ИНН, имя, конкретная транзакция) — молча; счёт и
+// ключевое слово ищутся подстрокой в назначении и помечаются в интерфейсе.
+async function supplierKeys() {
+  const byInn = new Map(), byName = new Map(), byTx = new Map(), subs = [];
+  for (const s of (await db.pool.query(
+    "SELECT id, inn FROM ref_counterparties WHERE role_supplier = TRUE AND status = 'active'")).rows) {
+    const i = String(s.inn || '').trim();
+    if (i) byInn.set(i, { id: s.id, by: 'ИНН' });
+  }
+  for (const k of (await db.pool.query('SELECT supplier_id, key_type, key_value FROM supplier_bank_keys')).rows) {
+    const v = String(k.key_value || '').trim();
+    if (!v) continue;
+    if (k.key_type === 'inn') { if (!byInn.has(v)) byInn.set(v, { id: k.supplier_id, by: 'доп. ИНН' }); }
+    else if (k.key_type === 'name') byName.set(nrm(v), { id: k.supplier_id, by: 'имя плательщика' });
+    else if (k.key_type === 'tx') byTx.set(String(v), { id: k.supplier_id, by: 'привязано вручную' });
+    else if (k.key_type === 'account') subs.push({ id: k.supplier_id, v: nrm(v), by: 'расчётный счёт' });
+    else if (k.key_type === 'keyword') subs.push({ id: k.supplier_id, v: nrm(v), by: 'ключевое слово' });
+  }
+  return { byInn, byName, byTx, subs };
+}
+
+// Все банковские расходы с даты старта, разложенные на «привязанные к поставщику» и «неразобранные».
+// Порядок поиска: прямая привязка → ИНН → имя плательщика → счёт/ключевое слово в назначении.
+async function bankOutPayments() {
+  const rows = (await db.pool.query(
+    `SELECT t.id, to_char(t.tx_date,'YYYY-MM-DD') AS paid_at, t.amount, t.purpose, t.payer_name, t.payer_inn,
+            cc.code AS cat_code, cc.name AS cat_name
        FROM cash_transactions t
        JOIN cash_wallets w ON w.id = t.wallet_id AND w.kind = 'bank'
-       JOIN ref_counterparties c ON c.role_supplier = TRUE AND c.status = 'active'
-            AND NULLIF(TRIM(c.inn),'') = NULLIF(TRIM(t.payer_inn),'')
-      WHERE t.tx_type = 'out' AND t.source <> 'opening' AND COALESCE(TRIM(t.payer_inn),'') <> ''
+       LEFT JOIN cash_categories cc ON cc.id = t.category_id
+      WHERE t.tx_type = 'out' AND COALESCE(t.source,'') <> 'opening'
         AND t.tx_date >= '${SETTLE_START}'
-      ORDER BY t.tx_date, t.id`)).rows
-    .map((r) => ({ id: r.id, supplier_id: r.supplier_id, paid_at: r.paid_at, amount: Number(r.amount) || 0, purpose: r.purpose || '' }));
+      ORDER BY t.tx_date, t.id`)).rows;
+  const { byInn, byName, byTx, subs } = await supplierKeys();
+  const matched = [], unmatched = [];
+  for (const r of rows) {
+    const base = {
+      id: r.id, paid_at: r.paid_at, amount: Number(r.amount) || 0, purpose: r.purpose || '',
+      payer_name: r.payer_name || '', payer_inn: String(r.payer_inn || '').trim(),
+      cat_code: r.cat_code || '', cat_name: r.cat_name || '',
+    };
+    let hit = byTx.get(String(r.id)) || null;
+    if (!hit && base.payer_inn) hit = byInn.get(base.payer_inn) || null;
+    if (!hit && base.payer_name) hit = byName.get(nrm(base.payer_name)) || null;
+    if (!hit && subs.length) {
+      const hay = nrm(base.purpose + ' ' + base.payer_name);
+      const s = subs.find((x) => x.v && hay.includes(x.v));
+      if (s) hit = { id: s.id, by: s.by };
+    }
+    if (hit) matched.push(Object.assign({}, base, { supplier_id: hit.id, match_by: hit.by }));
+    else unmatched.push(base);
+  }
+  return { matched, unmatched };
+}
+
+async function wireSupplierPayments() {
+  const { matched } = await bankOutPayments();
+  const txs = matched;
   if (!txs.length) return [];
   const manual = (await db.pool.query("SELECT supplier_id, to_char(paid_at,'YYYY-MM-DD') AS paid_at, amount FROM supplier_payments")).rows
     .map((r) => ({ supplier_id: r.supplier_id, paid_at: r.paid_at, amount: Number(r.amount) || 0, used: false }));
@@ -230,4 +280,4 @@ async function supplyAdvance() {
   return { issued, spent, balance: issued - spent, issued_usd, spent_usd };
 }
 
-module.exports = { SETTLE_START, enrichOrderFinance, supplierBalances, openSupplierObligations, supplierDueAgg, settlements, supplyAdvance, wireSupplierPayments };
+module.exports = { SETTLE_START, enrichOrderFinance, supplierBalances, openSupplierObligations, supplierDueAgg, settlements, supplyAdvance, wireSupplierPayments, bankOutPayments };

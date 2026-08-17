@@ -322,6 +322,23 @@ async function migrate() {
   await pool.query("ALTER TABLE supplier_payments ADD COLUMN IF NOT EXISTS currency TEXT NOT NULL DEFAULT 'UZS'").catch(()=>{});
   await pool.query("ALTER TABLE supplier_payments ADD COLUMN IF NOT EXISTS fx_rate NUMERIC").catch(()=>{});
   await pool.query("ALTER TABLE supplier_payments ADD COLUMN IF NOT EXISTS fx_amount NUMERIC").catch(()=>{});
+  // Реквизиты/правила привязки банковских оплат к поставщику (кроме основного ИНН из карточки):
+  //   inn     — дополнительный ИНН (платим на другое юрлицо/ИП того же поставщика)
+  //   account — расчётный счёт (ищем как подстроку в назначении: номер длинный, ложных совпадений нет)
+  //   name    — точное имя плательщика из выписки
+  //   keyword — ключевое слово в назначении (для платежей на карту)
+  //   tx      — прямая привязка одной конкретной транзакции Кассы (когда ключа нет вообще)
+  await pool.query(`CREATE TABLE IF NOT EXISTS supplier_bank_keys (
+    id SERIAL PRIMARY KEY,
+    supplier_id INTEGER NOT NULL REFERENCES ref_counterparties(id) ON DELETE CASCADE,
+    key_type TEXT NOT NULL,
+    key_value TEXT NOT NULL,
+    comment TEXT,
+    created_by INTEGER, created_at TIMESTAMPTZ DEFAULT now()
+  )`).catch((e) => console.error('supplier_bank_keys:', e.message));
+  // Один реквизит не может указывать на двух поставщиков — иначе оплата «мигала» бы между ними.
+  await pool.query("CREATE UNIQUE INDEX IF NOT EXISTS uq_sup_bank_key ON supplier_bank_keys (key_type, lower(btrim(key_value)))").catch(() => {});
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_sup_bank_keys_sup ON supplier_bank_keys (supplier_id)').catch(() => {});
 
   // ===== Обязательства: банковские кредиты и займы (Касса → Обязательства, Этап 2) =====
   await pool.query(`CREATE TABLE IF NOT EXISTS finance_obligations (

@@ -83,6 +83,92 @@ router.put('/api/suppliers/:id(\\d+)', express.json(), async (req, res) => {
   res.json({ ok: true });
 });
 
+// ===== Привязка банковских оплат к поставщикам (реквизиты и правила) =====
+const BANK_KEY_TYPES = ['inn', 'account', 'name', 'keyword', 'tx'];
+// Статьи внутренних перемещений — это не оплаты поставщикам, в «неразобранных» не показываем.
+const NOT_SUPPLIER_CATS = ['100', '102', '110', '111'];
+
+router.get('/api/suppliers/:id(\\d+)/bank-keys', async (req, res) => {
+  const r = await db.pool.query(
+    'SELECT id, key_type, key_value, comment FROM supplier_bank_keys WHERE supplier_id=$1 ORDER BY key_type, id',
+    [req.params.id]);
+  res.json({ items: r.rows });
+});
+router.post('/api/suppliers/:id(\\d+)/bank-keys', express.json(), async (req, res) => {
+  const type = BANK_KEY_TYPES.includes(req.body.key_type) ? req.body.key_type : null;
+  const value = String(req.body.key_value || '').trim();
+  if (!type) return res.status(400).json({ error: 'Не указан вид реквизита' });
+  if (!value) return res.status(400).json({ error: 'Укажите значение' });
+  if (type === 'keyword' && value.length < 3) return res.status(400).json({ error: 'Ключевое слово — минимум 3 символа (иначе поймает лишние оплаты)' });
+  try {
+    await db.pool.query(
+      'INSERT INTO supplier_bank_keys (supplier_id, key_type, key_value, comment, created_by) VALUES ($1,$2,$3,$4,$5)',
+      [req.params.id, type, value, req.body.comment || null, req.user.id]);
+    await db.log(req.user.id, 'supplier_bank_key_add', `sup=${req.params.id} ${type}=${value}`);
+    res.json({ ok: true });
+  } catch (e) {
+    if (String(e.message).includes('uq_sup_bank_key')) {
+      const own = await db.pool.query(
+        `SELECT c.name FROM supplier_bank_keys k JOIN ref_counterparties c ON c.id = k.supplier_id
+          WHERE k.key_type=$1 AND lower(btrim(k.key_value))=lower(btrim($2)) LIMIT 1`, [type, value]);
+      return res.status(409).json({ error: `Этот реквизит уже привязан к поставщику «${own.rows[0] ? own.rows[0].name : '—'}»` });
+    }
+    res.status(400).json({ error: e.message });
+  }
+});
+router.post('/api/suppliers/:id(\\d+)/bank-keys/:kid(\\d+)/delete', async (req, res) => {
+  await db.pool.query('DELETE FROM supplier_bank_keys WHERE id=$1 AND supplier_id=$2', [req.params.kid, req.params.id]);
+  await db.log(req.user.id, 'supplier_bank_key_del', `#${req.params.kid}`);
+  res.json({ ok: true });
+});
+
+// Список банковских расходов, которые не привязались ни к одному поставщику.
+router.get('/api/bank-unmatched', async (req, res) => {
+  try {
+    const { unmatched } = await pfin.bankOutPayments();
+    const q = String(req.query.q || '').trim().toLowerCase();
+    let items = unmatched.filter((x) => !NOT_SUPPLIER_CATS.includes(x.cat_code));
+    if (q) items = items.filter((x) => (x.purpose + ' ' + x.payer_name + ' ' + x.payer_inn).toLowerCase().includes(q));
+    items.sort((a, b) => String(b.paid_at).localeCompare(String(a.paid_at)));
+    const total = items.reduce((s, x) => s + x.amount, 0);
+    res.json({ items: items.slice(0, 300), count: items.length, total });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Привязать конкретную оплату к поставщику. remember: inn | name | tx (что запомнить на будущее).
+router.post('/api/bank-unmatched/bind', express.json(), async (req, res) => {
+  const txId = parseInt(req.body.tx_id, 10);
+  const supId = parseInt(req.body.supplier_id, 10);
+  if (!txId || !supId) return res.status(400).json({ error: 'Укажите оплату и поставщика' });
+  const t = (await db.pool.query('SELECT payer_inn, payer_name FROM cash_transactions WHERE id=$1', [txId])).rows[0];
+  if (!t) return res.status(404).json({ error: 'Оплата не найдена' });
+  const inn = String(t.payer_inn || '').trim(), nm = String(t.payer_name || '').trim();
+  let type = req.body.remember, value = '';
+  if (type === 'inn' && inn) value = inn;
+  else if (type === 'name' && nm) value = nm;
+  else { type = 'tx'; value = String(txId); }   // ключа нет — привязываем только эту оплату
+  try {
+    const ex = (await db.pool.query(
+      'SELECT id, supplier_id FROM supplier_bank_keys WHERE key_type=$1 AND lower(btrim(key_value))=lower(btrim($2)) LIMIT 1',
+      [type, value])).rows[0];
+    if (ex && ex.supplier_id !== supId) {
+      // Привязку одной оплаты (tx) переносим на нового поставщика — это исправление ошибки.
+      // Реквизит (ИНН/имя) переносить молча нельзя: он утянет за собой все прошлые оплаты.
+      if (type === 'tx') await db.pool.query('UPDATE supplier_bank_keys SET supplier_id=$1 WHERE id=$2', [supId, ex.id]);
+      else {
+        const own = await db.pool.query('SELECT name FROM ref_counterparties WHERE id=$1', [ex.supplier_id]);
+        return res.status(409).json({ error: `Реквизит «${value}» уже привязан к поставщику «${own.rows[0] ? own.rows[0].name : '—'}». Уберите его там или привяжите только эту оплату.` });
+      }
+    } else if (!ex) {
+      await db.pool.query(
+        'INSERT INTO supplier_bank_keys (supplier_id, key_type, key_value, comment, created_by) VALUES ($1,$2,$3,$4,$5)',
+        [supId, type, value, 'Привязано из «неразобранных»', req.user.id]);
+    }
+    await db.log(req.user.id, 'bank_unmatched_bind', `tx=${txId} sup=${supId} ${type}=${value}`);
+    res.json({ ok: true, remembered: type });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 // Удаление поставщика (чистка ошибочно созданных карточек, напр. из неудачного импорта).
 // Разрешаем только если у поставщика НЕТ заявок и НЕТ оплат — иначе можно потерять историю.
 router.delete('/api/suppliers/:id(\\d+)', async (req, res) => {
