@@ -223,6 +223,37 @@ async function recomputeAccrFact(empId, period) {
 }
 const sumF = (row, fields) => fields.reduce((s, f) => s + (Number(row[f]) || 0), 0);
 
+// ===== Закрытие месяца в Кадрах =====
+// Хранится месяц «закрыто по» (YYYY-MM) в settings.hr_locked_until. Всё по этот месяц
+// включительно нельзя менять: ни начисления, ни табель, ни выплаты, ни импорт.
+// Смысл тот же, что в Кассе: сверенные месяцы больше не «играют».
+let _hrLock = { at: 0, val: null };
+async function hrLockedUntil() {
+  if (Date.now() - _hrLock.at < 5000) return _hrLock.val;
+  const r = await db.pool.query("SELECT value FROM settings WHERE key = 'hr_locked_until'");
+  const v = r.rows[0] && /^\d{4}-\d{2}$/.test(String(r.rows[0].value)) ? String(r.rows[0].value) : null;
+  _hrLock = { at: Date.now(), val: v };
+  return v;
+}
+const clearHrLock = () => { _hrLock = { at: 0, val: null }; };
+const ruMonth = (p) => { const [y, m] = String(p).split('-'); return ['', 'январь', 'февраль', 'март', 'апрель', 'май', 'июнь', 'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь'][Number(m)] + ' ' + y; };
+// Ошибка, если месяц закрыт. Принимает периоды 'YYYY-MM' (пустые игнорирует).
+async function hrLockError(...periods) {
+  const lock = await hrLockedUntil();
+  if (!lock) return null;
+  for (const p of periods) {
+    if (p && /^\d{4}-\d{2}/.test(String(p)) && String(p).slice(0, 7) <= lock) {
+      return `Месяц закрыт (по ${ruMonth(lock)}) — начисления и выплаты за закрытые месяцы менять нельзя. Откройте месяц в Кадрах, если правка действительно нужна.`;
+    }
+  }
+  return null;
+}
+// Периоды строк ведомости по их id — для проверок в массовых операциях.
+async function periodsOfPayrollIds(ids) {
+  if (!ids || !ids.length) return [];
+  return (await db.pool.query('SELECT DISTINCT period FROM hr_payroll WHERE id = ANY($1::int[])', [ids])).rows.map((r) => r.period);
+}
+
 // Фильтр по отделам: принимает один id, список через запятую («1,5,7») и «__none__» (без отдела).
 // Дописывает условие в WHERE-массив w и параметры в p. Пусто = все отделы.
 function deptFilter(raw, p, w, col = 'e.department_id') {
@@ -441,9 +472,32 @@ router.post('/api/employee/:id(\\d+)/recurring/:rid(\\d+)/delete', async (req, r
   res.json({ ok: true });
 });
 // Ручная простановка постоянных сумм за месяц (кнопка в ведомости/массовых операциях).
+// ---------- Закрытие месяца в Кадрах ----------
+router.get('/api/period-lock', async (req, res) => {
+  res.json({ locked_until: await hrLockedUntil() });
+});
+router.post('/api/period-lock', J, async (req, res) => {
+  const b = req.body || {};
+  if (b.clear) {
+    await db.pool.query("DELETE FROM settings WHERE key = 'hr_locked_until'");
+    clearHrLock();
+    await db.log(req.user.id, 'hr_period_unlock', 'замок снят');
+    return res.json({ ok: true, locked_until: null });
+  }
+  const period = String(b.period || '');
+  if (!/^\d{4}-\d{2}$/.test(period)) return res.status(400).json({ error: 'Укажите месяц в виде ГГГГ-ММ' });
+  await db.pool.query(
+    `INSERT INTO settings (key, value) VALUES ('hr_locked_until', $1)
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`, [period]);
+  clearHrLock();
+  await db.log(req.user.id, 'hr_period_lock', `закрыто по ${period}`);
+  res.json({ ok: true, locked_until: period });
+});
+
 router.post('/api/payroll/apply-recurring', J, async (req, res) => {
   const period = /^\d{4}-\d{2}$/.test(req.body.period) ? req.body.period : null;
   if (!period) return res.status(400).json({ error: 'Не указан месяц' });
+  { const _e = await hrLockError(period); if (_e) return res.status(423).json({ error: _e }); }
   const emps = (await db.pool.query(
     "SELECT DISTINCT employee_id AS id FROM hr_employee_recurring WHERE active = TRUE")).rows;
   let done = 0;
@@ -726,6 +780,7 @@ router.get('/api/norms', async (req, res) => {
 router.post('/api/fill-norms', J, async (req, res) => {
   const period = /^\d{4}-\d{2}$/.test(req.body.period) ? req.body.period : null;
   if (!period) return res.status(400).json({ error: 'Не указан месяц' });
+  { const _e = await hrLockError(period); if (_e) return res.status(423).json({ error: _e }); }
   const norms = req.body.norms || {};
   let count = 0;
   for (const [sched, v] of Object.entries(norms)) {
@@ -794,6 +849,7 @@ router.post('/api/timesheet-import', upload.single('file'), async (req, res) => 
   try {
     const period = /^\d{4}-\d{2}$/.test(req.body.period) ? req.body.period : null;
     if (!period) return res.status(400).json({ error: 'Не указан месяц' });
+  { const _e = await hrLockError(period); if (_e) return res.status(423).json({ error: _e }); }
     if (!req.file) return res.status(400).json({ error: 'Файл не выбран' });
     const parsed = parseProductionTimesheet(req.file.buffer);
     if (parsed.error) return res.status(400).json({ error: parsed.error });
@@ -831,6 +887,7 @@ router.post('/api/payroll/cell', J, async (req, res) => {
     const period = /^\d{4}-\d{2}$/.test(b.period) ? b.period : null;
     const field = String(b.field || '');
     if (!empId || !period) return res.status(400).json({ error: 'Нет сотрудника или периода' });
+    { const _e = await hrLockError(period); if (_e) return res.status(423).json({ error: _e }); }
     if (!CELL_FIELDS.has(field)) return res.status(400).json({ error: 'Это поле нельзя менять здесь' });
     const val = numOrNull(b.value);
     await db.pool.query(
@@ -850,6 +907,7 @@ router.post('/api/payroll', J, async (req, res) => {
   const empId = intOrNull(b.employee_id);
   const period = /^\d{4}-\d{2}$/.test(b.period) ? b.period : null;
   if (!empId || !period) return res.status(400).json({ error: 'Нет сотрудника или периода' });
+  { const _e = await hrLockError(period); if (_e) return res.status(423).json({ error: _e }); }
   const status = ['draft', 'accrued', 'approved', 'paid', 'cancelled'].includes(b.status) ? b.status : 'draft';
   const cols = ['plan_days', 'fact_days', 'plan_hours', 'fact_hours', ...ACCR_ALL, ...DED, ...PAID, 'amount_1c'];
   const vals = cols.map((c) => numOrNull(b[c]));
@@ -879,6 +937,7 @@ router.post('/api/payroll/accrue', J, async (req, res) => {
     const b = req.body || {};
     const period = /^\d{4}-\d{2}$/.test(b.period) ? b.period : null;
     if (!period) return res.status(400).json({ error: 'Не указан месяц' });
+  { const _e = await hrLockError(period); if (_e) return res.status(423).json({ error: _e }); }
     const ids = Array.isArray(b.employee_ids) ? b.employee_ids.map((x) => parseInt(x, 10)).filter(Boolean) : [];
     if (!ids.length) return res.status(400).json({ error: 'Не выбраны сотрудники' });
     let done = 0, skipped = 0;
@@ -903,6 +962,7 @@ router.post('/api/payroll/unaccrue', J, async (req, res) => {
     const b = req.body || {};
     const period = /^\d{4}-\d{2}$/.test(b.period) ? b.period : null;
     if (!period) return res.status(400).json({ error: 'Не указан месяц' });
+  { const _e = await hrLockError(period); if (_e) return res.status(423).json({ error: _e }); }
     const ids = Array.isArray(b.employee_ids) ? b.employee_ids.map((x) => parseInt(x, 10)).filter(Boolean) : [];
     if (!ids.length) return res.status(400).json({ error: 'Не выбраны сотрудники' });
     const r = await db.pool.query(
@@ -920,6 +980,7 @@ router.post('/api/payroll/fact-from-plan', J, async (req, res) => {
     const b = req.body || {};
     const period = /^\d{4}-\d{2}$/.test(b.period) ? b.period : null;
     if (!period) return res.status(400).json({ error: 'Не указан месяц' });
+  { const _e = await hrLockError(period); if (_e) return res.status(423).json({ error: _e }); }
     const ids = Array.isArray(b.employee_ids) ? b.employee_ids.map((x) => parseInt(x, 10)).filter(Boolean) : [];
     if (!ids.length) return res.status(400).json({ error: 'Не выбраны сотрудники' });
     const r = await db.pool.query(
@@ -937,6 +998,7 @@ router.post('/api/payroll/fact-from-plan', J, async (req, res) => {
 router.post('/api/timesheet', J, async (req, res) => {
   const period = /^\d{4}-\d{2}$/.test(req.body.period) ? req.body.period : null;
   if (!period) return res.status(400).json({ error: 'Нет периода' });
+  { const _e = await hrLockError(period); if (_e) return res.status(423).json({ error: _e }); }
   const rows = Array.isArray(req.body.rows) ? req.body.rows : [];
   if (!rows.length) return res.status(400).json({ error: 'Нет строк' });
   const client = await db.pool.connect();
@@ -966,6 +1028,8 @@ router.post('/api/timesheet', J, async (req, res) => {
 router.post('/api/payroll/bulk-delete', J, async (req, res) => {
   const ids = (Array.isArray(req.body.ids) ? req.body.ids : []).map((x) => parseInt(x)).filter(Boolean);
   if (!ids.length) return res.status(400).json({ error: 'Ничего не выбрано' });
+  // Среди выбранных не должно быть строк закрытого месяца.
+  { const _e = await hrLockError(...(await periodsOfPayrollIds(ids))); if (_e) return res.status(423).json({ error: _e }); }
   const r = await db.pool.query('DELETE FROM hr_payroll WHERE id = ANY($1)', [ids]);
   await db.log(req.user.id, 'hr_payroll_bulk_delete', String(ids.length));
   res.json({ ok: true, affected: r.rowCount });
@@ -990,6 +1054,7 @@ router.post('/api/mass-op', J, async (req, res) => {
   const period = /^\d{4}-\d{2}$/.test(req.body.period) ? req.body.period : null;
   const field = req.body.field;
   if (!period) return res.status(400).json({ error: 'Нет периода' });
+  { const _e = await hrLockError(period); if (_e) return res.status(423).json({ error: _e }); }
   if (!MASS_FIELDS.has(field)) return res.status(400).json({ error: 'Неверная операция' });
   const mode = req.body.mode === 'set' ? 'set' : 'add';
   const items = Array.isArray(req.body.items) ? req.body.items : [];
@@ -1093,6 +1158,7 @@ router.post('/api/payouts/pay', J, async (req, res) => {
   const b = req.body || {};
   const period = /^\d{4}-\d{2}$/.test(b.period) ? b.period : null;
   if (!period) return res.status(400).json({ error: 'Нет периода' });
+  { const _e = await hrLockError(period); if (_e) return res.status(423).json({ error: _e }); }
   const method = b.method === 'card' ? 'card' : 'cash';
   const payDate = b.pay_date || new Date().toISOString().slice(0, 10);
   const comment = b.comment || null;
@@ -1155,6 +1221,7 @@ router.post('/api/payouts/:id(\\d+)/delete', async (req, res) => {
     const p = (await client.query(
       'SELECT employee_id, period, amount, method, cash_tx_id FROM hr_payouts WHERE id=$1 FOR UPDATE', [id])).rows[0];
     if (!p) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Выплата не найдена' }); }
+    { const _e = await hrLockError(p.period); if (_e) { await client.query('ROLLBACK'); return res.status(423).json({ error: _e }); } }
     const amt = Number(p.amount) || 0;
     const col = p.method === 'card' ? 'paid_card' : 'paid_cash';
     // Возвращаем сумму в ведомость (не уводим в минус).
@@ -1200,6 +1267,7 @@ router.post('/api/fot-taxes', J, async (req, res) => {
   const b = req.body || {};
   const period = /^\d{4}-\d{2}$/.test(b.period) ? b.period : null;
   if (!period) return res.status(400).json({ error: 'Не указан месяц' });
+  { const _e = await hrLockError(period); if (_e) return res.status(423).json({ error: _e }); }
   const inps = numOrNull(b.inps) || 0, ndfl = numOrNull(b.ndfl) || 0, social = numOrNull(b.social) || 0;
   await db.pool.query(
     `INSERT INTO hr_fot_taxes (period, inps, ndfl, social, updated_by) VALUES ($1,$2,$3,$4,$5)
@@ -1396,6 +1464,7 @@ router.post('/api/cards/statement-import', upload.single('file'), async (req, re
   try {
     const period = /^\d{4}-\d{2}$/.test(req.body.period) ? req.body.period : null;
     if (!period) return res.status(400).json({ error: 'Нет периода' });
+  { const _e = await hrLockError(period); if (_e) return res.status(423).json({ error: _e }); }
     if (!req.file) return res.status(400).json({ error: 'Файл не выбран' });
     const mode = req.body.mode === 'advance' ? 'advance' : 'payout';
     const field = mode === 'advance' ? 'ded_advance_card' : 'paid_card';
@@ -1501,6 +1570,7 @@ router.post('/api/timesheet/import', upload.single('file'), async (req, res) => 
   try {
     const period = /^\d{4}-\d{2}$/.test(req.body.period) ? req.body.period : null;
     if (!period) return res.status(400).json({ error: 'Нет периода' });
+  { const _e = await hrLockError(period); if (_e) return res.status(423).json({ error: _e }); }
     if (!req.file) return res.status(400).json({ error: 'Файл не выбран' });
     const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
     const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: false, defval: '' });
@@ -1566,6 +1636,7 @@ router.post('/api/payroll/import', upload.single('file'), async (req, res) => {
   try {
     const period = /^\d{4}-\d{2}$/.test(req.body.period) ? req.body.period : null;
     if (!period) return res.status(400).json({ error: 'Нет периода' });
+  { const _e = await hrLockError(period); if (_e) return res.status(423).json({ error: _e }); }
     if (!req.file) return res.status(400).json({ error: 'Файл не выбран' });
     const clearFirst = String(req.body.clearFirst) === 'true' || req.body.clearFirst === true;
     const wb = XLSX.read(req.file.buffer, { type: 'buffer' });

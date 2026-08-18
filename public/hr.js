@@ -893,6 +893,41 @@
   const curMonth = () => new Date().toISOString().slice(0, 7);
   const monthLabel = (ym) => { const [y, m] = ym.split('-'); return ['', 'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'][Number(m)] + ' ' + y; };
 
+  // ---------- Закрытие месяца в Кадрах ----------
+  // Закрытые месяцы нельзя менять: ни начисления, ни табель, ни выплаты, ни импорт.
+  let HR_LOCK = null;
+  async function showHrLockBadge() {
+    try { const d = await api('/period-lock'); HR_LOCK = d.locked_until || null; } catch (e) { return; }
+    const btn = $('#hr-lock-btn');
+    if (!btn) return;
+    btn.textContent = HR_LOCK ? '🔒 Закрыто по ' + monthLabel(HR_LOCK) : '🔓 Закрытие месяца';
+    btn.style.fontWeight = HR_LOCK ? '700' : '';
+    btn.title = HR_LOCK ? 'Начисления и выплаты по ' + monthLabel(HR_LOCK) + ' защищены от изменений' : 'Месяцы не закрыты — данные можно менять задним числом';
+  }
+  function openHrPeriodLock() {
+    const monthInp = finp(HR_LOCK || salState.period || curMonth(), { type: 'month' });
+    const body = el('div', { class: 'hrf' }, [
+      el('div', { class: 'hr-note' }, HR_LOCK ? ('Сейчас закрыто по ' + monthLabel(HR_LOCK) + '. Эти месяцы защищены.') : 'Сейчас ничего не закрыто — данные прошлых месяцев можно менять.'),
+      el('div', { class: 'hr-sub', style: 'margin:6px 0 10px' },
+        'Закрытие защищает месяц целиком: начисления, табель, выплаты, импорт зарплаты и ведомости на карту. Закрывать после того, как сверили и выплатили.'),
+      frow('Закрыть включительно по месяц', monthInp),
+    ]);
+    const acts = [el('button', { class: 'btn-ghost', onclick: closeModal }, 'Отмена')];
+    if (HR_LOCK) {
+      acts.push(el('button', { class: 'btn-ghost hrf-warn', onclick: async () => {
+        if (!confirm('Открыть все месяцы?\n\nДанные снова можно будет менять задним числом. Обычно это нужно только для исправления ошибки.')) return;
+        try { await post('/period-lock', { clear: true }); toast('Замок снят'); closeModal(); render(); } catch (e) { toast(e.message, true); }
+      } }, '🔓 Открыть всё'));
+    }
+    acts.push(el('button', { class: 'btn-primary', onclick: async () => {
+      const p = monthInp.value;
+      if (!/^\d{4}-\d{2}$/.test(p)) return toast('Укажите месяц', true);
+      if (!confirm('Закрыть Кадры по ' + monthLabel(p) + ' включительно?\n\nПосле этого начисления и выплаты этих месяцев нельзя будет изменить, удалить или перезаписать импортом.')) return;
+      try { await post('/period-lock', { period: p }); toast('Закрыто по ' + monthLabel(p)); closeModal(); render(); } catch (e) { toast(e.message, true); }
+    } }, '🔒 Закрыть'));
+    modal('Закрытие месяца — Кадры', body, acts);
+  }
+
   // Мультивыбор отделов: кнопка + панель с галочками. Значение хранится строкой id через запятую
   // («1,5»), поэтому совместимо со старыми фильтрами: пусто = все отделы, '__none__' = без отдела.
   function deptMulti(state, key, onChange, withNone) {
@@ -1032,9 +1067,11 @@
         } }, '📌 Постоянные суммы'),
         el('button', { class: 'btn-primary', onclick: () => { const ids = salItems.map((x) => x.emp_id); if (!ids.length) return toast('Нет сотрудников', true); if (!confirm('Начислить зарплату по факту всем показанным (' + ids.length + ')? У кого не заполнен факт — пропустятся.')) return; accrueEmps(ids, false); } }, '✅ Начислить всех'),
         el('button', { class: 'btn-ghost', onclick: () => openCardStatementImport(salState.period) }, '🏦 Ведомость на карту'),
+        el('button', { id: 'hr-lock-btn', class: 'btn-ghost', onclick: openHrPeriodLock }, '🔒 Закрытие месяца'),
         el('button', { class: 'btn-ghost', onclick: () => openPayrollImport(salState.period) }, '📊 Импорт зарплаты'),
       ]),
     ]));
+    showHrLockBadge();
     const mInp = el('input', { type: 'month', class: 'hrf-inp hr-filt', value: salState.period, onchange: (e) => { salState.period = e.target.value || curMonth(); render(); } });
     const dSel = deptMulti(salState, 'department', load);
     // Состояние расчёта — по живым цифрам (не по служебной пометке строки):
