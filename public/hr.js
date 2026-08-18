@@ -446,6 +446,15 @@
       el('div', {}, [el('div', { class: 'hr-h2' }, 'Сотрудники'), el('div', { class: 'hr-sub' }, 'Единый справочник. Клик — карточка. Галочками — массовые действия.')]),
       el('div', { class: 'hr-head-btns' }, [
         el('button', { class: 'btn-ghost hr-add', onclick: () => openEmpImport() }, '📥 Импорт'),
+        // Восстановление карточек из справочного файла (июнь 2026) — после случайного удаления.
+        el('button', { class: 'btn-ghost hr-add', title: 'Вернуть сотрудников из справочного файла (июнь 2026). Существующие не тронет.', onclick: async () => {
+          if (!confirm('Восстановить сотрудников из справочного файла (июнь 2026)?\n\n• Вернутся только те, кого сейчас нет (по ФИО).\n• Вместе с их начислением за июнь 2026.\n• Существующие сотрудники не изменятся, дубли не создадутся.')) return;
+          try {
+            const r = await post('/employees/restore-seed', {});
+            toast(r.restored ? ('Восстановлено сотрудников: ' + r.restored) : 'Все сотрудники из файла уже есть — восстанавливать нечего');
+            await reloadDicts(); render();
+          } catch (e) { toast(e.message, true); }
+        } }, '♻️ Восстановить'),
         el('button', { class: 'btn-primary hr-add', onclick: () => openEmp(null) }, '+ Сотрудник'),
       ]),
     ]));
@@ -483,7 +492,10 @@
       bulk.appendChild(bulkN);
       bulk.appendChild(el('button', { class: 'btn-ghost hrf-warn', onclick: () => doBulk('archived', 'В архив') }, 'В архив'));
       bulk.appendChild(el('button', { class: 'btn-ghost hrf-warn', onclick: () => doBulk('fired', 'Уволить') }, 'Уволить'));
-      bulk.appendChild(el('button', { class: 'btn-ghost hr-del', onclick: () => doBulk('delete', 'УДАЛИТЬ безвозвратно') }, '🗑 Удалить'));
+      // Удаление стирает карточку вместе с зарплатной историей — предупреждаем прямо в тексте.
+      // Сервер не даст удалить тех, у кого есть начисления/выплаты (предложит «Уволить»/«В архив»).
+      bulk.appendChild(el('button', { class: 'btn-ghost hr-del', title: 'Только для пустых карточек, заведённых по ошибке',
+        onclick: () => doBulk('delete', 'УДАЛИТЬ безвозвратно карточку вместе с начислениями, выплатами и кадровой историей.\nДля работавших сотрудников используйте «Уволить» или «В архив».\n\nПродолжить') }, '🗑 Удалить'));
       // Массовая простановка графика выбранным.
       const schedSel = el('select', { class: 'hrf-inp', style: 'height:32px' }, (DICTS.schedules || []).map((s) => el('option', { value: s.code }, s.name)));
       bulk.appendChild(schedSel);

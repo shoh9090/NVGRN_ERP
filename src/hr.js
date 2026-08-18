@@ -282,13 +282,17 @@ async function seedDepartments() {
   await seedJune2026();
 }
 // Разовая загрузка сотрудников и начислений за июнь 2026 из файла Шоха.
-async function seedJune2026() {
+// force=true — перезапуск вручную (восстановление случайно удалённых карточек): флаг
+// игнорируется, существующие по ФИО пропускаются, создаются только недостающие.
+// Возвращает, сколько сотрудников восстановлено.
+async function seedJune2026(force) {
+  let restored = 0;
   try {
     const flag = (await db.pool.query("SELECT value FROM settings WHERE key='hr_seed_june2026'")).rows[0];
-    if (flag && flag.value === 'done') return;
-    let data; try { data = require('./data/hr_seed_june2026.json'); } catch (e) { return; }
+    if (!force && flag && flag.value === 'done') return restored;
+    let data; try { data = require('./data/hr_seed_june2026.json'); } catch (e) { return restored; }
     const emps = data.employees || [];
-    if (!emps.length) return;
+    if (!emps.length) return restored;
     const deptMap = {};
     (await db.pool.query('SELECT id, name FROM hr_departments')).rows.forEach((d) => { deptMap[d.name.toLowerCase()] = d.id; });
     for (const e of emps) {
@@ -307,10 +311,12 @@ async function seedJune2026() {
          VALUES ($1,$2,'draft',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
          ON CONFLICT (employee_id, period) DO NOTHING`,
         [ins.rows[0].id, data.period, e.plan_days, e.fact_days, e.fact_hours, e.accr_salary, e.accr_fact, e.accr_bonus, e.accr_premium, e.accr_gsm, e.accr_company_debt, e.ded_fine, e.ded_advance_card, e.ded_advance_cash, e.ded_hold, e.paid_cash, e.paid_card, e.amount_1c]);
+      restored++;
     }
     await db.setSetting('hr_seed_june2026', 'done');
-    console.log('[HR SEED] Загружено сотрудников за июнь 2026:', emps.length);
+    console.log('[HR SEED] Загружено сотрудников за июнь 2026:', restored);
   } catch (e) { console.warn('[HR SEED]', e.message); }
+  return restored;
 }
 
 router.use(async (req, res, next) => { try { await ensureSchema(); } catch (e) { /* не роняем модуль */ } next(); });
@@ -1626,11 +1632,38 @@ router.post('/api/payroll/import', upload.single('file'), async (req, res) => {
 // Оптовое удаление или архивирование выбранных.
 // Доступ к модулю «Персонал» уже проверен requireHrAccess (галочка плитки),
 // поэтому внутри — полные права: кому выдан доступ, тот может и удалять.
+// Восстановление сотрудников из справочного файла (июнь 2026): создаёт только тех, кого
+// сейчас нет по ФИО, вместе с их июньским начислением. Нужен после случайного удаления карточек.
+router.post('/api/employees/restore-seed', J, async (req, res) => {
+  try {
+    const before = (await db.pool.query('SELECT COUNT(*)::int c FROM hr_employees')).rows[0].c;
+    const restored = await seedJune2026(true);
+    const after = (await db.pool.query('SELECT COUNT(*)::int c FROM hr_employees')).rows[0].c;
+    await db.log(req.user.id, 'hr_employees_restore_seed', `восстановлено ${restored}`);
+    res.json({ ok: true, restored, before, after });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 router.post('/api/employees/bulk', J, async (req, res) => {
   const ids = (Array.isArray(req.body.ids) ? req.body.ids : []).map((x) => parseInt(x)).filter(Boolean);
   const action = req.body.action;
   if (!ids.length) return res.status(400).json({ error: 'Ничего не выбрано' });
   if (action === 'delete') {
+    // Удаление стирает карточку вместе с начислениями, выплатами и кадровой историей (каскад).
+    // Поэтому удалять разрешаем только ПУСТЫЕ карточки (заведённые по ошибке). У кого есть
+    // хоть одно начисление или выплата — предлагаем «Уволить» или «В архив».
+    const busy = (await db.pool.query(
+      `SELECT e.id, e.full_name,
+              (SELECT COUNT(*) FROM hr_payroll p WHERE p.employee_id = e.id) AS pr,
+              (SELECT COUNT(*) FROM hr_payouts o WHERE o.employee_id = e.id) AS po
+         FROM hr_employees e WHERE e.id = ANY($1)`, [ids])).rows
+      .filter((r) => Number(r.pr) > 0 || Number(r.po) > 0);
+    if (busy.length) {
+      const names = busy.slice(0, 5).map((r) => r.full_name).join(', ');
+      return res.status(409).json({
+        error: `Нельзя удалить: у ${busy.length} сотрудн. есть начисления или выплаты (${names}${busy.length > 5 ? ' и др.' : ''}). Удаление стёрло бы их зарплатную историю. Используйте «Уволить» (с датой) или «В архив» — карточка и история останутся.`,
+      });
+    }
     const r = await db.pool.query('DELETE FROM hr_employees WHERE id = ANY($1)', [ids]);
     await db.log(req.user.id, 'hr_employees_bulk_delete', String(ids.length));
     return res.json({ ok: true, affected: r.rowCount });
