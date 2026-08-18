@@ -1474,8 +1474,20 @@
     c.appendChild(el('div', { class: 'cash-wallets' }, w.map((x) => el('div', { class: 'cash-wallet', style: 'border-left-color:' + (x.color || '#163a28') + ';cursor:pointer', title: 'Открыть операции за текущий месяц', onclick: () => openWalletTxns(x) }, [
       el('div', { class: 'cash-wallet-nm' }, x.name),
       el('div', { class: 'cash-wallet-kind' }, KIND[x.kind] || x.kind),
-      el('div', { class: 'cash-wallet-bal' }, money(x.balance) + ' сум'),
-      (Number(x.usd) ? el('div', { style: 'font-size:11px;color:var(--muted);margin-top:-4px' }, 'в т.ч. $' + money(x.usd) + (x.rate ? ' по ' + money(x.rate) : '')) : null),
+      // Крупно — СУМОВАЯ часть (реальные сумы в кошельке), валюта отдельной строкой ниже.
+      // Раньше крупно показывался общий эквивалент, и казалось, что все деньги в сумах.
+      ...(() => {
+        const usd = Number(x.usd) || 0, rate = Number(x.rate) || 0;
+        const usdInUzs = usd && rate ? Math.round(usd * rate) : 0;
+        // uzs приходит с сервера (чистая сумовая часть); если вдруг нет — считаем из общего эквивалента.
+        const uzsPart = Math.round(x.uzs != null ? Number(x.uzs) : (Number(x.balance || 0) - usdInUzs));
+        return [
+          el('div', { class: 'cash-wallet-bal', style: uzsPart < 0 ? 'color:var(--red)' : '' }, money(uzsPart) + ' сум'),
+          usd ? el('div', { style: 'font-size:11px;color:var(--muted);margin-top:-4px' },
+            'в т.ч. валюта: $' + money(usd) + (rate ? ' по ' + money(rate) : '') + (usdInUzs ? ' ≈ ' + money(usdInUzs) + ' сум' : '')) : null,
+          usd ? el('div', { style: 'font-size:11px;color:var(--muted)' }, 'всего ≈ ' + money(x.balance) + ' сум') : null,
+        ];
+      })(),
       el('div', { style: 'display:flex;gap:10px;align-items:center' }, [
         el('a', { class: 'cash-wallet-exp', href: 'javascript:void(0)', title: 'Изменить кошелёк', onclick: (e) => { e.stopPropagation(); openWalletForm(x); } }, '✏️ Изменить'),
         el('a', { class: 'cash-wallet-exp', href: '/cash/api/wallet-export?wallet_id=' + x.id, title: 'Выгрузить операции в Excel (с остатком по строкам)', onclick: (e) => e.stopPropagation() }, '⬇ Excel'),
