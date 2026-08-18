@@ -312,7 +312,13 @@
   async function renderPayouts() {
     const c = $('#hr-content');
     if (!payState.period) payState.period = curMonth();
-    c.appendChild(el('div', { class: 'hr-head' }, [el('div', {}, [el('div', { class: 'hr-h2' }, 'Выплаты — ' + monthLabel(payState.period)), el('div', { class: 'hr-sub' }, 'Выдача зарплаты: остаток, статусы, частичные и массовые выплаты. Срок — до 10 числа следующего месяца.')])]));
+    c.appendChild(el('div', { class: 'hr-head' }, [
+      el('div', {}, [el('div', { class: 'hr-h2' }, 'Выплаты — ' + monthLabel(payState.period)), el('div', { class: 'hr-sub' }, 'Выдача зарплаты: остаток, статусы, частичные и массовые выплаты. Срок — до 10 числа следующего месяца.')]),
+      el('div', { class: 'hr-head-btns' }, [
+        el('button', { id: 'hr-lock-btn', class: 'btn-ghost', onclick: openHrPeriodLock }, '🔒 Закрытие месяца'),
+      ]),
+    ]));
+    showHrLockBadge();
     const mInp = el('input', { type: 'month', class: 'hrf-inp hr-filt', value: payState.period, onchange: (e) => { payState.period = e.target.value || curMonth(); render(); } });
     const dSel = deptMulti(payState, 'department', load);
     const stSel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { payState.status = e.target.value; load(); } }, [{ v: '', t: 'Все статусы' }, { v: 'pending', t: 'Ожидает' }, { v: 'partial', t: 'Частично' }, { v: 'overdue', t: 'Просрочено' }, { v: 'paid', t: 'Оплачено' }].map((o) => el('option', { value: o.v, selected: o.v === payState.status || null }, o.t)));
@@ -334,6 +340,9 @@
         kpi('К выплате (всего)', money(s.net), 'green'), kpi('Выплачено', money(s.paid), 'ink'),
         kpi('Остаток', money(s.remainder), 'green'), kpi('Просрочено', money(s.overdue), 'muted'),
       ]));
+      // Наличные выплаты из Кассы без привязки к сотруднику — разбираются здесь.
+      const unmatchedBox = cashUnmatchedBlock(d.cash_unmatched);
+      if (unmatchedBox) box.appendChild(unmatchedBox);
       const payable = d.items.filter((x) => x.remainder > 0.5);
       const bulk = el('div', { class: 'hr-bulkbar', style: 'display:none' });
       const bulkN = el('span', { class: 'hr-bulk-n' }, '');
@@ -886,6 +895,41 @@
   const curMonth = () => new Date().toISOString().slice(0, 7);
   const monthLabel = (ym) => { const [y, m] = ym.split('-'); return ['', 'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'][Number(m)] + ' ' + y; };
 
+  // Блок «Выплаты из кассы без сотрудника»: наличные расходы по зарплатным статьям, которые
+  // система не смогла привязать к сотруднику по ФИО из назначения. Свёрнут по умолчанию,
+  // строки можно скрывать (только визуально — Касса и суммы не меняются).
+  function cashUnmatchedBlock(list) {
+    if (!list || !list.length) return null;
+    let showHidden = false;
+    const listBox = el('div', { style: 'display:none;margin-top:8px' });
+    const cntSpan = el('span', {});
+    const rebuild = () => {
+      const shown = list.filter((u) => showHidden || !u.hidden);
+      const hiddenCnt = list.filter((u) => u.hidden).length;
+      listBox.innerHTML = '';
+      const bar = el('div', { style: 'display:flex;gap:14px;align-items:center;margin-bottom:6px' }, []);
+      const visIds = list.filter((u) => !u.hidden).map((u) => u.tx_id);
+      if (visIds.length) bar.appendChild(el('button', { class: 'btn-ghost', style: 'font-size:12px;padding:3px 9px', onclick: async () => { if (!confirm('Скрыть все показанные (' + visIds.length + ')? Касса и суммы не изменятся.')) return; try { await post('/salary/cash-hide', { ids: visIds, hidden: true }); list.forEach((u) => { if (visIds.includes(u.tx_id)) u.hidden = true; }); rebuild(); } catch (e) { toast(e.message, true); } } }, '🚫 Скрыть все показанные'));
+      if (hiddenCnt) bar.appendChild(el('a', { href: 'javascript:void(0)', class: 'muted', style: 'font-size:12px', onclick: () => { showHidden = !showHidden; rebuild(); } }, (showHidden ? '▾ Скрыть скрытые' : '▸ Показать скрытые') + ' (' + hiddenCnt + ')'));
+      if (bar.childNodes.length) listBox.appendChild(bar);
+      shown.forEach((u) => listBox.appendChild(el('div', { style: 'display:flex;gap:12px;font-size:13px;padding:2px 0;align-items:center' + (u.hidden ? ';opacity:.5' : '') }, [
+        el('span', { style: 'min-width:88px' }, String(u.date)),
+        el('span', { style: 'min-width:70px' }, u.kind === 'advance' ? 'аванс' : 'зарплата'),
+        el('span', { class: 'tnum', style: 'min-width:120px;font-weight:700' }, money(u.amount)),
+        el('span', { class: 'muted', style: 'flex:1' }, u.purpose || ''),
+        el('span', { style: 'cursor:pointer;opacity:.6', title: u.hidden ? 'Вернуть' : 'Скрыть навсегда', onclick: async () => { try { await post('/salary/cash-hide', { ids: [u.tx_id], hidden: !u.hidden }); u.hidden = !u.hidden; rebuild(); } catch (e) { toast(e.message, true); } } }, u.hidden ? '👁' : '🚫'),
+      ])));
+      cntSpan.textContent = '⚠ Выплаты из кассы без сотрудника (' + list.filter((u) => !u.hidden).length + ')';
+    };
+    const arrow = el('span', {}, '▸');
+    const head = el('div', { style: 'font-weight:700;color:#b25b00;cursor:pointer;display:flex;gap:6px;align-items:center', onclick: () => {
+      const open = listBox.style.display === 'none';
+      listBox.style.display = open ? '' : 'none'; arrow.textContent = open ? '▾' : '▸';
+    } }, [arrow, cntSpan, el('span', { class: 'muted', style: 'font-weight:400;font-size:12px' }, '— показать')]);
+    rebuild();
+    return el('div', { style: 'background:#fff3e0;border:1px solid #e6c98a;border-radius:10px;padding:8px 12px;margin-bottom:12px' }, [head, listBox]);
+  }
+
   // ---------- Наведение порядка: откат восстановления + дубли ----------
   // Справочный файл содержит короткие имена («Азиза»), в базе — полные («Мурадова Азиза»),
   // поэтому восстановление могло наплодить дублей. Здесь их видно и можно убрать.
@@ -1123,7 +1167,6 @@
         } }, '📌 Постоянные суммы'),
         el('button', { class: 'btn-primary', onclick: () => { const ids = salItems.map((x) => x.emp_id); if (!ids.length) return toast('Нет сотрудников', true); if (!confirm('Начислить зарплату по факту всем показанным (' + ids.length + ')? У кого не заполнен факт — пропустятся.')) return; accrueEmps(ids, false); } }, '✅ Начислить всех'),
         el('button', { class: 'btn-ghost', onclick: () => openCardStatementImport(salState.period) }, '🏦 Ведомость на карту'),
-        el('button', { id: 'hr-lock-btn', class: 'btn-ghost', onclick: openHrPeriodLock }, '🔒 Закрытие месяца'),
         el('button', { class: 'btn-ghost', onclick: () => openPayrollImport(salState.period) }, '📊 Импорт зарплаты'),
       ]),
     ]));
@@ -1231,38 +1274,8 @@
         kpi('К выплате', money(s.to_pay), 'green', bd('К выплате', (r) => r.to_pay)),
       ]));
       box.appendChild(el('div', { class: 'hr-kpis hr-kpis-2', style: 'margin-bottom:14px' }, [kpi('Сотрудников', s.count, 'ink')]));
-      // Выплаты из кассы без сотрудника — по умолчанию свёрнуто; можно скрывать строки (навсегда, только визуально).
-      if (d.cash_unmatched && d.cash_unmatched.length) {
-        let showHidden = false;
-        const listBox = el('div', { style: 'display:none;margin-top:8px' });
-        const cntSpan = el('span', {});
-        const rebuild = () => {
-          const shown = d.cash_unmatched.filter((u) => showHidden || !u.hidden);
-          const hiddenCnt = d.cash_unmatched.filter((u) => u.hidden).length;
-          listBox.innerHTML = '';
-          const bar = el('div', { style: 'display:flex;gap:14px;align-items:center;margin-bottom:6px' }, []);
-          const visIds = d.cash_unmatched.filter((u) => !u.hidden).map((u) => u.tx_id);
-          if (visIds.length) bar.appendChild(el('button', { class: 'btn-ghost', style: 'font-size:12px;padding:3px 9px', onclick: async () => { if (!confirm('Скрыть все показанные (' + visIds.length + ')? Касса и суммы не изменятся.')) return; try { await post('/salary/cash-hide', { ids: visIds, hidden: true }); d.cash_unmatched.forEach((u) => { if (visIds.includes(u.tx_id)) u.hidden = true; }); rebuild(); } catch (e) { toast(e.message, true); } } }, '🚫 Скрыть все показанные'));
-          if (hiddenCnt) bar.appendChild(el('a', { href: 'javascript:void(0)', class: 'muted', style: 'font-size:12px', onclick: () => { showHidden = !showHidden; rebuild(); } }, (showHidden ? '▾ Скрыть скрытые' : '▸ Показать скрытые') + ' (' + hiddenCnt + ')'));
-          if (bar.childNodes.length) listBox.appendChild(bar);
-          shown.forEach((u) => listBox.appendChild(el('div', { style: 'display:flex;gap:12px;font-size:13px;padding:2px 0;align-items:center' + (u.hidden ? ';opacity:.5' : '') }, [
-            el('span', { style: 'min-width:88px' }, String(u.date)),
-            el('span', { style: 'min-width:70px' }, u.kind === 'advance' ? 'аванс' : 'зарплата'),
-            el('span', { class: 'tnum', style: 'min-width:120px;font-weight:700' }, money(u.amount)),
-            el('span', { class: 'muted', style: 'flex:1' }, u.purpose || ''),
-            el('span', { style: 'cursor:pointer;opacity:.6', title: u.hidden ? 'Вернуть' : 'Скрыть навсегда', onclick: async () => { try { await post('/salary/cash-hide', { ids: [u.tx_id], hidden: !u.hidden }); u.hidden = !u.hidden; rebuild(); } catch (e) { toast(e.message, true); } } }, u.hidden ? '👁' : '🚫'),
-          ])));
-          const visCnt = d.cash_unmatched.filter((u) => !u.hidden).length;
-          cntSpan.textContent = '⚠ Выплаты из кассы без сотрудника (' + visCnt + ')';
-        };
-        const arrow = el('span', {}, '▸');
-        const head2 = el('div', { style: 'font-weight:700;color:#b25b00;cursor:pointer;display:flex;gap:6px;align-items:center', onclick: () => {
-          const open = listBox.style.display === 'none';
-          listBox.style.display = open ? '' : 'none'; arrow.textContent = open ? '▾' : '▸';
-        } }, [arrow, cntSpan, el('span', { class: 'muted', style: 'font-weight:400;font-size:12px' }, '— показать')]);
-        rebuild();
-        box.appendChild(el('div', { style: 'background:#fff3e0;border:1px solid #e6c98a;border-radius:10px;padding:8px 12px;margin-bottom:12px' }, [head2, listBox]));
-      }
+      // Блок «Выплаты из кассы без сотрудника» переехал во вкладку «Выплаты» — это про выдачу
+      // денег, а не про расчёт; Зарплату не перегружаем.
       if (!d.items.length) { box.appendChild(el('div', { class: 'hr-empty' }, 'Нет сотрудников по фильтру.')); return; }
       const bulk = el('div', { id: 'hr-sal-bulk', class: 'hr-bulkbar', style: 'display:none' });
       const bulkN = el('span', { class: 'hr-bulk-n' }, '');

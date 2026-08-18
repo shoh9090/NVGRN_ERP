@@ -1122,7 +1122,11 @@ router.get('/api/payouts', async (req, res) => {
     if (req.query.q) { const q = String(req.query.q).trim().toLowerCase(); items = items.filter((x) => (x.full_name || '').toLowerCase().includes(q)); }
     const summary = items.reduce((s, x) => ({ net: s.net + x.net, paid: s.paid + x.paid, remainder: s.remainder + x.remainder, overdue: s.overdue + (x.status === 'overdue' ? x.remainder : 0) }), { net: 0, paid: 0, remainder: 0, overdue: 0 });
     if (req.query.status) items = items.filter((x) => x.status === req.query.status);
-    res.json({ period, due: payoutDue(period), items, summary, count: items.length });
+    // Наличные выплаты из Кассы, которые не удалось привязать к сотруднику по ФИО —
+    // показываем во вкладке «Выплаты» (это про выдачу денег, а не про расчёт).
+    let cashUnmatched = [];
+    try { cashUnmatched = (await computeCashSalary(period)).unmatched; } catch (e) { /* не критично */ }
+    res.json({ period, due: payoutDue(period), items, summary, count: items.length, cash_unmatched: cashUnmatched });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 // Выгрузка «К выплате» в Excel (те же фильтры, что в списке; уволенных без остатка и «нет начисления» не берём).
