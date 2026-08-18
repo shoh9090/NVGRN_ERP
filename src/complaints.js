@@ -140,6 +140,7 @@ router.get('/api/list', async (req, res) => {
     // Фильтр «сеть (ИНН)» — по точкам сети из point_contacts, с запасным вариантом по названию фирмы.
     if (req.query.inn) add('(c.sd_id IN (SELECT sd_id FROM tgbot.point_contacts WHERE inn = $?) OR c.firm_name = $?)', req.query.inn, req.query.inn);
     if (req.query.point) add('c.point_name = $?', req.query.point);
+    if (req.query.agent) add("COALESCE(NULLIF(c.agent_name,''),'—') = $?", req.query.agent);
     if (q) { p.push('%' + String(q).trim() + '%'); const i = p.length;
       w.push(`(c.product_name ILIKE $${i} OR c.point_name ILIKE $${i} OR c.firm_name ILIKE $${i} OR c.agent_name ILIKE $${i})`); }
     return { params: p, whereSQL: w.length ? 'WHERE ' + w.join(' AND ') : '' };
@@ -230,6 +231,15 @@ router.get('/api/export.xlsx', async (req, res) => {
   if (req.query.status) add('c.status = $?', req.query.status);
   if (req.query.inn) add('(c.sd_id IN (SELECT sd_id FROM tgbot.point_contacts WHERE inn = $?) OR c.firm_name = $?)', req.query.inn, req.query.inn);
   if (req.query.point) add('c.point_name = $?', req.query.point);
+  if (req.query.agent) add("COALESCE(NULLIF(c.agent_name,''),'—') = $?", req.query.agent);
+  // Остальные фильтры экрана: раньше выгрузка их теряла и не совпадала со списком.
+  if (req.query.type) add('c.complaint_type = $?', req.query.type);
+  if (req.query.link) add('c.link_code = $?', req.query.link);
+  if (req.query.severity) add('c.severity = $?', req.query.severity);
+  if (req.query.q) {
+    p.push('%' + String(req.query.q).trim() + '%'); const i = p.length;
+    w.push(`(c.product_name ILIKE $${i} OR c.point_name ILIKE $${i} OR c.firm_name ILIKE $${i} OR c.agent_name ILIKE $${i})`);
+  }
   const whereSQL = w.length ? 'WHERE ' + w.join(' AND ') : '';
   const rows = (await db.pool.query(
     `SELECT c.*,
@@ -374,10 +384,12 @@ router.get('/api/stats', async (req, res) => {
   // {{scope}} подставляется в каждый запрос с корректной нумерацией параметров.
   const fInn = String(req.query.inn || '').trim() || null;
   const fPoint = String(req.query.point || '').trim() || null;
+  const fAgent = String(req.query.agent || '').trim() || null;
   const scoped = (baseSql, baseParams) => {
     const parts = [], extra = [];
     if (fInn) { extra.push(fInn); parts.push(`sd_id IN (SELECT sd_id FROM tgbot.point_contacts WHERE inn = $${baseParams.length + extra.length})`); }
     if (fPoint) { extra.push(fPoint); parts.push(`point_name = $${baseParams.length + extra.length}`); }
+    if (fAgent) { extra.push(fAgent); parts.push(`COALESCE(NULLIF(agent_name,''),'—') = $${baseParams.length + extra.length}`); }
     return { sql: baseSql.replace('{{scope}}', parts.length ? ' AND ' + parts.join(' AND ') : ''), params: [...baseParams, ...extra] };
   };
   const sOne = async (base, p) => { const { sql, params } = scoped(base, p); return one(sql, params); };
@@ -399,6 +411,7 @@ router.get('/api/stats', async (req, res) => {
   // Разбивка по СЕТЯМ (группировка по ИНН из point_contacts; подпись — фирма) и по ТОЧКАМ.
   const netParts = ['c.created_at >= $1', 'c.created_at < $2']; const netP = [from, to];
   if (fInn) { netP.push(fInn); netParts.push(`c.sd_id IN (SELECT sd_id FROM tgbot.point_contacts WHERE inn = $${netP.length})`); }
+  if (fAgent) { netP.push(fAgent); netParts.push(`COALESCE(NULLIF(c.agent_name,''),'—') = $${netP.length}`); }
   if (fPoint) { netP.push(fPoint); netParts.push(`c.point_name = $${netP.length}`); }
   const byNetwork = await one(
     `SELECT COALESCE(pc.inn, NULLIF(c.firm_name,''), '—') code,
@@ -474,7 +487,11 @@ router.get('/api/networks', async (req, res) => {
      FROM tgbot.complaints c LEFT JOIN tgbot.point_contacts pc ON pc.sd_id = c.sd_id
      WHERE COALESCE(NULLIF(c.point_name,''),'') <> ''
      GROUP BY 1,2 ORDER BY 2`)).rows;
-  res.json({ networks: nets, points });
+  // Агенты — для фильтра «Все агенты». Только те, по кому есть претензии.
+  const agents = (await db.pool.query(
+    `SELECT COALESCE(NULLIF(agent_name,''),'—') agent, count(*)::int n
+     FROM tgbot.complaints GROUP BY 1 ORDER BY n DESC, 1`)).rows;
+  res.json({ networks: nets, points, agents });
 });
 
 function monthLabel(ym) {

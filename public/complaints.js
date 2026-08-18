@@ -56,10 +56,11 @@
   function monthLabelRu(ym) { const n = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек']; const [y, m] = String(ym).split('-').map(Number); return n[(m || 1) - 1] + ' ' + y; }
 
   let TAB = 'dash';
-  const listState = { from: '', to: '', status: '', type: '', link: '', severity: '', q: '', inn: '', point: '' };
+  const listState = { from: '', to: '', status: '', type: '', link: '', severity: '', q: '', inn: '', point: '', agent: '' };
   let dashMonth = null;
   let dashInn = '';   // выбранный контрагент (ИНН/название)
   let dashPoint = ''; // выбранная точка
+  let dashAgent = ''; // выбранный агент
   let NETS = null;    // кэш справочника контрагентов/точек
   async function loadNets() { if (!NETS) { try { NETS = await api('/networks'); } catch (e) { NETS = { networks: [], points: [] }; } } return NETS; }
 
@@ -86,6 +87,7 @@
   }
   const netItems = () => ((NETS && NETS.networks) || []).map((n) => ({ value: n.inn, label: (n.name || n.inn) + ' (' + n.n + ')' }));
   const pointItems = (inn) => ((NETS && NETS.points) || []).filter((p) => !inn || String(p.inn) === String(inn)).map((p) => ({ value: p.point, label: p.point + ' (' + p.n + ')' }));
+  const agentItems = () => ((NETS && NETS.agents) || []).map((a) => ({ value: a.agent, label: a.agent + ' (' + a.n + ')' }));
 
   // ---------- Каркас с вкладками ----------
   function shell() {
@@ -107,6 +109,7 @@
     if (dashMonth) qp.set('month', dashMonth);
     if (dashInn) qp.set('inn', dashInn);
     if (dashPoint) qp.set('point', dashPoint);
+    if (dashAgent) qp.set('agent', dashAgent);
     let s;
     try { s = await api('/stats' + (qp.toString() ? '?' + qp.toString() : '')); }
     catch (e) { c.innerHTML = ''; c.appendChild(el('div', { class: 'cmp-empty' }, 'Не удалось загрузить дашборд: ' + e.message)); return; }
@@ -118,13 +121,14 @@
     // Фильтр по контрагенту (ИНН) → точке — с поиском по первым буквам.
     const netSel = searchSelect(netItems(), dashInn, 'Все контрагенты', (v) => { dashInn = v; dashPoint = ''; renderDashboard(); });
     const pointSel = searchSelect(pointItems(dashInn), dashPoint, dashInn ? 'Все точки контрагента' : 'Все точки', (v) => { dashPoint = v; renderDashboard(); });
+    const agentSel = searchSelect(agentItems(), dashAgent, 'Все агенты', (v) => { dashAgent = v; renderDashboard(); });
     c.appendChild(el('div', { class: 'cmp-dash-top' }, [
       el('div', {}, [el('div', { class: 'cmp-eyebrow' }, 'Контроль качества'), el('h2', { class: 'cmp-h2' }, 'Претензии — где течёт'), el('div', { class: 'cmp-dash-hint' }, 'Кликните по цифре, типу, звену, контрагенту или ячейке — покажу сами претензии')]),
       el('div', { class: 'cmp-month', style: 'flex-wrap:wrap;gap:8px' }, [
-        el('span', {}, 'Контрагент:'), netSel, pointSel,
+        el('span', {}, 'Контрагент:'), netSel, pointSel, agentSel,
         el('span', {}, 'Месяц:'), monthSel,
-        (dashInn || dashPoint) ? el('button', { class: 'cmp-f', style: 'cursor:pointer', onclick: () => { dashInn = ''; dashPoint = ''; renderDashboard(); } }, 'Сбросить') : null,
-        el('button', { class: 'cmp-f', style: 'cursor:pointer', title: 'Выгрузить отфильтрованные претензии в Excel', onclick: () => { const ep = new URLSearchParams(monthRange(s.month)); if (dashInn) ep.set('inn', dashInn); if (dashPoint) ep.set('point', dashPoint); window.location = '/complaints/api/export.xlsx?' + ep.toString(); } }, '📥 Excel'),
+        (dashInn || dashPoint || dashAgent) ? el('button', { class: 'cmp-f', style: 'cursor:pointer', onclick: () => { dashInn = ''; dashPoint = ''; dashAgent = ''; renderDashboard(); } }, 'Сбросить') : null,
+        el('button', { class: 'cmp-f', style: 'cursor:pointer', title: 'Выгрузить отфильтрованные претензии в Excel', onclick: () => { const ep = new URLSearchParams(monthRange(s.month)); if (dashInn) ep.set('inn', dashInn); if (dashPoint) ep.set('point', dashPoint); if (dashAgent) ep.set('agent', dashAgent); window.location = '/complaints/api/export.xlsx?' + ep.toString(); } }, '📥 Excel'),
       ]),
     ]));
 
@@ -367,7 +371,7 @@
     const max = Math.max(...byAgent.map((a) => a.n));
     const body = byAgent.map((a) => el('tr', {
       class: a.name && a.name !== '—' ? 'cmp-clk' : null,
-      onclick: a.name && a.name !== '—' ? () => drill('Агент: ' + a.name + ' · ' + monthLabelRu(dashMonth), Object.assign({ q: a.name }, monthRange(dashMonth))) : null,
+      onclick: a.name && a.name !== '—' ? () => drill('Агент: ' + a.name + ' · ' + monthLabelRu(dashMonth), Object.assign({ agent: a.name }, monthRange(dashMonth))) : null,
     }, [
       el('td', {}, a.name),
       el('td', { class: 'n' }, String(a.n)),
@@ -387,9 +391,10 @@
     // Фильтр по контрагенту (ИНН) → точке — с поиском по первым буквам.
     const netSel = searchSelect(netItems(), listState.inn, 'Все контрагенты', (v) => { listState.inn = v; listState.point = ''; loadList(); });
     const ptSel = searchSelect(pointItems(listState.inn), listState.point, listState.inn ? 'Все точки контрагента' : 'Все точки', (v) => { listState.point = v; loadList(); });
+    const agSel = searchSelect(agentItems(), listState.agent, 'Все агенты', (v) => { listState.agent = v; loadList(); });
     return el('div', { class: 'cmp-filters' }, [
       el('div', { class: 'cmp-f-grp' }, [el('label', {}, 'С'), dateInp('from'), el('label', {}, 'по'), dateInp('to')]),
-      netSel, ptSel,
+      netSel, ptSel, agSel,
       sel('status', DICTS.status, 'Все статусы'),
       sel('link', DICTS.link, 'Все звенья'),
       sel('type', DICTS.type, 'Все типы'),
@@ -431,7 +436,7 @@
     const wrap = $('#cmp-list-wrap'); if (!wrap) return;
     await loadNets();
     const params = new URLSearchParams();
-    for (const k of ['from', 'to', 'status', 'type', 'link', 'severity', 'q', 'inn', 'point']) if (listState[k]) params.set(k, listState[k]);
+    for (const k of ['from', 'to', 'status', 'type', 'link', 'severity', 'q', 'inn', 'point', 'agent']) if (listState[k]) params.set(k, listState[k]);
     let data;
     try { data = await api('/list?' + params.toString()); } catch (e) { toast(e.message, true); return; }
     wrap.innerHTML = '';
@@ -499,7 +504,7 @@
 
   function exportXlsx() {
     const p = new URLSearchParams();
-    for (const k of ['from', 'to', 'status', 'inn', 'point']) if (listState[k]) p.set(k, listState[k]);
+    for (const k of ['from', 'to', 'status', 'type', 'link', 'severity', 'q', 'inn', 'point', 'agent']) if (listState[k]) p.set(k, listState[k]);
     window.location = '/complaints/api/export.xlsx' + (p.toString() ? '?' + p.toString() : '');
   }
 
