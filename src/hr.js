@@ -674,7 +674,12 @@ async function computeCashSalary(period) {
   const txs = (await db.pool.query(
     `SELECT t.id, to_char(t.tx_date,'YYYY-MM-DD') d, t.tx_date, t.amount, t.purpose, COALESCE(t.report_hidden,false) AS hidden
      FROM cash_transactions t JOIN cash_wallets w ON w.id = t.wallet_id AND w.kind = 'cash'
-     WHERE t.tx_type = 'out' AND t.category_id = ANY($1) AND COALESCE(t.source,'') <> 'hr_payout'`, [cats])).rows;
+     WHERE t.tx_type = 'out' AND t.category_id = ANY($1)
+       -- Расходы, созданные кнопкой «Выплатить», обычно НЕ берём: они уже учтены журналом выплат.
+       -- Но если журнальная запись пропала (например, удалили сотрудника), расход остаётся
+       -- «осиротевшим» — тогда учитываем его по ФИО из назначения, иначе выплата нигде не видна.
+       AND (COALESCE(t.source,'') <> 'hr_payout'
+            OR NOT EXISTS (SELECT 1 FROM hr_payouts p WHERE p.cash_tx_id = t.id))`, [cats])).rows;
   for (const t of txs) {
     if (csPeriod(t.purpose, t.tx_date) !== period) continue;
     const kind = /аванс/i.test(t.purpose || '') ? 'advance' : 'salary';
