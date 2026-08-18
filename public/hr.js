@@ -446,15 +446,8 @@
       el('div', {}, [el('div', { class: 'hr-h2' }, 'Сотрудники'), el('div', { class: 'hr-sub' }, 'Единый справочник. Клик — карточка. Галочками — массовые действия.')]),
       el('div', { class: 'hr-head-btns' }, [
         el('button', { class: 'btn-ghost hr-add', onclick: () => openEmpImport() }, '📥 Импорт'),
-        // Восстановление карточек из справочного файла (июнь 2026) — после случайного удаления.
-        el('button', { class: 'btn-ghost hr-add', title: 'Вернуть сотрудников из справочного файла (июнь 2026). Существующие не тронет.', onclick: async () => {
-          if (!confirm('Восстановить сотрудников из справочного файла (июнь 2026)?\n\n• Вернутся только те, кого сейчас нет (по ФИО).\n• Вместе с их начислением за июнь 2026.\n• Существующие сотрудники не изменятся, дубли не создадутся.')) return;
-          try {
-            const r = await post('/employees/restore-seed', {});
-            toast(r.restored ? ('Восстановлено сотрудников: ' + r.restored) : 'Все сотрудники из файла уже есть — восстанавливать нечего');
-            await reloadDicts(); render();
-          } catch (e) { toast(e.message, true); }
-        } }, '♻️ Восстановить'),
+        // Наведение порядка: отмена восстановления и разбор дублей по ФИО.
+        el('button', { class: 'btn-ghost hr-add', title: 'Найти дубли и откатить неудачное восстановление', onclick: openCleanup }, '🧹 Дубли и откат'),
         el('button', { class: 'btn-primary hr-add', onclick: () => openEmp(null) }, '+ Сотрудник'),
       ]),
     ]));
@@ -892,6 +885,69 @@
   const PAYOUT_STATUS = { pending: 'Ожидает', partial: 'Частично', paid: 'Оплачено', overdue: 'Просрочено', none: 'Нет начисления' };
   const curMonth = () => new Date().toISOString().slice(0, 7);
   const monthLabel = (ym) => { const [y, m] = ym.split('-'); return ['', 'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'][Number(m)] + ' ' + y; };
+
+  // ---------- Наведение порядка: откат восстановления + дубли ----------
+  // Справочный файл содержит короткие имена («Азиза»), в базе — полные («Мурадова Азиза»),
+  // поэтому восстановление могло наплодить дублей. Здесь их видно и можно убрать.
+  async function openCleanup() {
+    const box = el('div', {});
+    const m = modal('🧹 Дубли и откат восстановления', box, [el('button', { class: 'btn-primary', onclick: closeModal }, 'Закрыть')]);
+    async function load() {
+      box.innerHTML = '';
+      box.appendChild(el('div', { class: 'hr-sub' }, 'Загружаю…'));
+      let rp = { items: [] }, dup = { groups: [] };
+      try { rp = await api('/employees/restore-preview'); } catch (e) { /* могло не быть восстановления */ }
+      try { dup = await api('/employees/duplicates'); } catch (e) { /* ок */ }
+      box.innerHTML = '';
+
+      // 1. Откат последнего восстановления
+      box.appendChild(el('div', { class: 'hr-h2', style: 'font-size:16px;margin:0 0 6px' }, 'Последнее восстановление'));
+      if (!rp.items || !rp.items.length) {
+        box.appendChild(el('div', { class: 'hr-sub', style: 'margin-bottom:12px' }, 'Восстановление не выполнялось или карточек от него не осталось.'));
+      } else {
+        const safe = rp.items.filter((x) => Number(x.payout_rows) === 0);
+        box.appendChild(el('div', { class: 'hr-note' }, 'Создано карточек: ' + rp.items.length + ' · можно удалить: ' + safe.length));
+        box.appendChild(el('div', { class: 'hr-sub', style: 'margin:4px 0 8px' }, 'Откат удалит только те, с которыми не работали (нет выплат и начислений за рабочие месяцы).'));
+        box.appendChild(el('div', { class: 'oe-table-wrap', style: 'max-height:26vh;margin-bottom:8px' }, el('table', { class: 'dict-table' }, [
+          el('thead', {}, el('tr', {}, ['ФИО', 'Отдел', 'Начисл.', 'Выплат'].map((h) => el('th', {}, h)))),
+          el('tbody', {}, rp.items.map((x) => el('tr', {}, [
+            el('td', {}, x.full_name), el('td', { class: 'muted' }, x.department_name || '—'),
+            el('td', { class: 'tnum' }, String(x.payroll_rows)), el('td', { class: 'tnum' }, String(x.payout_rows)),
+          ]))),
+        ])));
+        box.appendChild(el('button', { class: 'btn-ghost hrf-warn', style: 'margin-bottom:14px', onclick: async () => {
+          if (!confirm('Отменить восстановление?\n\nБудут удалены карточки, созданные последним «Восстановить» — только те, с которыми не работали.\nОтменить нельзя.')) return;
+          try { const r = await post('/employees/undo-restore', {}); toast('Удалено: ' + r.deleted + (r.kept ? ', оставлено (есть данные): ' + r.kept : '')); await reloadDicts(); load(); render(); }
+          catch (e) { toast(e.message, true); }
+        } }, '↩ Отменить восстановление'));
+      }
+
+      // 2. Дубли по ФИО
+      box.appendChild(el('div', { class: 'hr-h2', style: 'font-size:16px;margin:10px 0 6px' }, 'Похожие ФИО (возможные дубли)'));
+      if (!dup.groups || !dup.groups.length) {
+        box.appendChild(el('div', { class: 'hr-sub' }, 'Дублей не нашёл 👍'));
+        return;
+      }
+      box.appendChild(el('div', { class: 'hr-sub', style: 'margin-bottom:8px' }, 'Оставляйте карточку с историей (где больше начислений и выплат), лишнюю — удаляйте.'));
+      dup.groups.forEach((grp) => {
+        const g = el('div', { style: 'border:1px solid var(--line);border-radius:10px;padding:8px;margin-bottom:8px' });
+        grp.forEach((x) => g.appendChild(el('div', { style: 'display:flex;gap:10px;align-items:center;padding:4px 0' }, [
+          el('span', { style: 'flex:1;font-weight:600' }, [
+            x.full_name,
+            el('span', { class: 'hr-sub', style: 'font-weight:400' }, ' · ' + (x.department_name || 'без отдела') + ' · заведён ' + x.created),
+          ]),
+          el('span', { class: 'hr-sub' }, 'начисл. ' + x.payroll_rows + ' · выплат ' + x.payout_rows),
+          el('button', { class: 'btn-ghost hrf-warn', style: 'padding:3px 9px;font-size:12px', onclick: async () => {
+            if (!confirm('Удалить карточку «' + x.full_name + '»?\n\nНачислений: ' + x.payroll_rows + ', выплат: ' + x.payout_rows + '.\nУдалить можно только пустой дубль (без выплат и без начислений за рабочие месяцы).')) return;
+            try { await post('/employee/' + x.id + '/delete-duplicate', {}); toast('Удалено'); await reloadDicts(); load(); render(); }
+            catch (e) { toast(e.message, true); }
+          } }, '🗑'),
+        ])));
+        box.appendChild(g);
+      });
+    }
+    await load();
+  }
 
   // ---------- Закрытие месяца в Кадрах ----------
   // Закрытые месяцы нельзя менять: ни начисления, ни табель, ни выплаты, ни импорт.

@@ -1720,6 +1720,98 @@ router.post('/api/employees/restore-seed', J, async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
+// Что создало последнее «Восстановить»: карточки, заведённые в тот момент. Нужен, чтобы
+// откатить неудачное восстановление (справочный файл содержит короткие имена — «Азиза», —
+// а в базе полные, поэтому сравнение по точному ФИО наплодило дублей).
+router.get('/api/employees/restore-preview', async (req, res) => {
+  try {
+    const last = (await db.pool.query(
+      "SELECT to_char(created_at,'YYYY-MM-DD\"T\"HH24:MI:SS') AS ts FROM audit_log WHERE action='hr_employees_restore_seed' ORDER BY id DESC LIMIT 1")).rows[0];
+    if (!last) return res.json({ items: [], ts: null });
+    const items = (await db.pool.query(
+      `SELECT e.id, e.full_name, d.name AS department_name, e.position,
+              (SELECT COUNT(*) FROM hr_payroll p WHERE p.employee_id = e.id) AS payroll_rows,
+              (SELECT COUNT(*) FROM hr_payouts o WHERE o.employee_id = e.id) AS payout_rows,
+              (SELECT COUNT(*) FROM hr_events v WHERE v.employee_id = e.id) AS event_rows
+         FROM hr_employees e LEFT JOIN hr_departments d ON d.id = e.department_id
+        WHERE e.created_at >= $1::timestamptz
+        ORDER BY e.full_name`, [last.ts])).rows;
+    res.json({ ts: last.ts, items });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Откат восстановления: удаляет карточки, созданные последним «Восстановить».
+// Защита: не трогаем тех, у кого появились выплаты или начисления не за июнь (значит с ними уже работали).
+router.post('/api/employees/undo-restore', J, async (req, res) => {
+  try {
+    const last = (await db.pool.query(
+      "SELECT to_char(created_at,'YYYY-MM-DD\"T\"HH24:MI:SS') AS ts FROM audit_log WHERE action='hr_employees_restore_seed' ORDER BY id DESC LIMIT 1")).rows[0];
+    if (!last) return res.status(400).json({ error: 'Не нашёл записи о восстановлении — откатывать нечего' });
+    const cand = (await db.pool.query(
+      `SELECT e.id, e.full_name,
+              (SELECT COUNT(*) FROM hr_payouts o WHERE o.employee_id = e.id) AS po,
+              (SELECT COUNT(*) FROM hr_payroll p WHERE p.employee_id = e.id AND p.period <> '2026-06') AS pr
+         FROM hr_employees e WHERE e.created_at >= $1::timestamptz`, [last.ts])).rows;
+    const safe = cand.filter((r) => Number(r.po) === 0 && Number(r.pr) === 0).map((r) => r.id);
+    const kept = cand.length - safe.length;
+    if (safe.length) await db.pool.query('DELETE FROM hr_employees WHERE id = ANY($1)', [safe]);
+    await db.log(req.user.id, 'hr_employees_undo_restore', `удалено ${safe.length}, оставлено ${kept}`);
+    res.json({ ok: true, deleted: safe.length, kept });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Поиск дублей по ФИО: одно имя целиком входит в другое («Азиза» ↔ «Мурадова Азиза»).
+router.get('/api/employees/duplicates', async (req, res) => {
+  try {
+    const rows = (await db.pool.query(
+      `SELECT e.id, e.full_name, d.name AS department_name, to_char(e.created_at,'YYYY-MM-DD') AS created,
+              (SELECT COUNT(*) FROM hr_payroll p WHERE p.employee_id = e.id) AS payroll_rows,
+              (SELECT COUNT(*) FROM hr_payouts o WHERE o.employee_id = e.id) AS payout_rows
+         FROM hr_employees e LEFT JOIN hr_departments d ON d.id = e.department_id
+        WHERE e.status <> 'archived' ORDER BY e.full_name`)).rows;
+    const norm = (s) => String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/[^a-zа-я0-9 ]/gi, ' ').replace(/\s+/g, ' ').trim();
+    const words = (s) => new Set(norm(s).split(' ').filter((w) => w.length >= 3));
+    const groups = [];
+    const used = new Set();
+    for (let i = 0; i < rows.length; i++) {
+      if (used.has(rows[i].id)) continue;
+      const wi = words(rows[i].full_name);
+      const grp = [rows[i]];
+      for (let j = i + 1; j < rows.length; j++) {
+        if (used.has(rows[j].id)) continue;
+        const wj = words(rows[j].full_name);
+        if (!wi.size || !wj.size) continue;
+        // считаем дублем, если все слова короткого имени входят в длинное
+        const small = wi.size <= wj.size ? wi : wj, big = wi.size <= wj.size ? wj : wi;
+        let all = true; for (const w of small) if (!big.has(w)) { all = false; break; }
+        if (all) { grp.push(rows[j]); used.add(rows[j].id); }
+      }
+      if (grp.length > 1) { grp.forEach((g) => used.add(g.id)); groups.push(grp); }
+    }
+    res.json({ groups });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Удаление дубля-карточки. Разрешаем, только если с ней реально не работали:
+// нет выплат и нет начислений, кроме июньской строки из справочного файла.
+router.post('/api/employee/:id(\\d+)/delete-duplicate', J, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const r = (await db.pool.query(
+      `SELECT e.full_name,
+              (SELECT COUNT(*) FROM hr_payouts o WHERE o.employee_id = e.id) AS po,
+              (SELECT COUNT(*) FROM hr_payroll p WHERE p.employee_id = e.id AND p.period <> '2026-06') AS pr
+         FROM hr_employees e WHERE e.id = $1`, [id])).rows[0];
+    if (!r) return res.status(404).json({ error: 'Сотрудник не найден' });
+    if (Number(r.po) > 0 || Number(r.pr) > 0) {
+      return res.status(409).json({ error: `У «${r.full_name}» есть выплаты или начисления за рабочие месяцы — это не пустой дубль. Удалять нельзя, используйте «В архив».` });
+    }
+    await db.pool.query('DELETE FROM hr_employees WHERE id = $1', [id]);
+    await db.log(req.user.id, 'hr_employee_delete_duplicate', `${id} «${r.full_name}»`);
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 router.post('/api/employees/bulk', J, async (req, res) => {
   const ids = (Array.isArray(req.body.ids) ? req.body.ids : []).map((x) => parseInt(x)).filter(Boolean);
   const action = req.body.action;
