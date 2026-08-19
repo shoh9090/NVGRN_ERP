@@ -315,6 +315,8 @@
     c.appendChild(el('div', { class: 'hr-head' }, [
       el('div', {}, [el('div', { class: 'hr-h2' }, 'Выплаты — ' + monthLabel(payState.period)), el('div', { class: 'hr-sub' }, 'Выдача зарплаты: остаток, статусы, частичные и массовые выплаты. Срок — до 10 числа следующего месяца.')]),
       el('div', { class: 'hr-head-btns' }, [
+        // Импорт выписки по картам — отмечает, кому и сколько реально ушло на карту.
+        el('button', { class: 'btn-ghost', title: 'Загрузить выписку по картам и отметить выплаты', onclick: () => openCardStatementImport(payState.period) }, '🏦 Выписка по картам'),
         el('button', { id: 'hr-lock-btn', class: 'btn-ghost', onclick: openHrPeriodLock }, '🔒 Закрытие месяца'),
       ]),
     ]));
@@ -454,9 +456,6 @@
     c.appendChild(el('div', { class: 'hr-head' }, [
       el('div', {}, [el('div', { class: 'hr-h2' }, 'Сотрудники'), el('div', { class: 'hr-sub' }, 'Единый справочник. Клик — карточка. Галочками — массовые действия.')]),
       el('div', { class: 'hr-head-btns' }, [
-        el('button', { class: 'btn-ghost hr-add', onclick: () => openEmpImport() }, '📥 Импорт'),
-        // Наведение порядка: отмена восстановления и разбор дублей по ФИО.
-        el('button', { class: 'btn-ghost hr-add', title: 'Найти дубли и откатить неудачное восстановление', onclick: openCleanup }, '🧹 Дубли и откат'),
         el('button', { class: 'btn-primary hr-add', onclick: () => openEmp(null) }, '+ Сотрудник'),
       ]),
     ]));
@@ -1162,14 +1161,9 @@
       el('div', { style: 'display:flex;gap:8px;align-self:flex-start;flex-wrap:wrap' }, [
         el('button', { class: 'btn-ghost', onclick: openFillNorms }, '📋 Заполнить нормы'),
         el('button', { class: 'btn-ghost', onclick: openTimesheetImport }, '📥 Импорт табеля'),
-        el('button', { class: 'btn-ghost', title: 'Проставить постоянные надбавки/удержания из карточек сотрудников', onclick: async () => {
-          if (!confirm('Проставить постоянные надбавки и удержания за ' + monthLabel(salState.period) + '?\n\nСуммы из карточек сотрудников встанут в пустые ячейки. Уже заполненное вручную не тронем.')) return;
-          try { const r = await post('/payroll/apply-recurring', { period: salState.period }); toast('Проставлено сотрудникам: ' + r.done); load({ keep: true }); }
-          catch (e) { toast(e.message, true); }
-        } }, '📌 Постоянные суммы'),
         el('button', { class: 'btn-primary', onclick: () => { const ids = salItems.map((x) => x.emp_id); if (!ids.length) return toast('Нет сотрудников', true); if (!confirm('Начислить зарплату по факту всем показанным (' + ids.length + ')? У кого не заполнен факт — пропустятся.')) return; accrueEmps(ids, false); } }, '✅ Начислить всех'),
-        el('button', { class: 'btn-ghost', onclick: () => openCardStatementImport(salState.period) }, '🏦 Ведомость на карту'),
-        el('button', { class: 'btn-ghost', onclick: () => openPayrollImport(salState.period) }, '📊 Импорт зарплаты'),
+        // Выгрузка ведомости для банка: ФИО · номер карты · сумма «К выплате».
+        el('button', { class: 'btn-ghost', onclick: () => openCardPaysheetExport(salState.period) }, '📤 Выгрузка ведомости'),
       ]),
     ]));
     showHrLockBadge();
