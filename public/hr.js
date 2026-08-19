@@ -870,7 +870,9 @@
       async function save() {
         const rows = rowsModel.map((m) => ({ employee_id: m.employee_id, plan_days: m.inputs.plan_days.value, fact_days: m.inputs.fact_days.value, plan_hours: m.inputs.plan_hours.value, fact_hours: m.inputs.fact_hours.value }));
         saveBtn.disabled = true; saveBtn.textContent = 'Сохраняю…';
-        try { const rr = await post('/timesheet', { period: tsState.period, rows }); toast('Сохранено: ' + rr.saved); load(); }
+        // Табель сохраняется целиком — возвращаем прокрутку, чтобы не искать строку заново.
+        const sy = window.scrollY;
+        try { const rr = await post('/timesheet', { period: tsState.period, rows }); toast('Сохранено: ' + rr.saved); await load(); requestAnimationFrame(() => window.scrollTo(0, sy)); }
         catch (e) { toast(e.message, true); saveBtn.disabled = false; saveBtn.textContent = '💾 Сохранить табель'; }
       }
     }
@@ -1162,7 +1164,7 @@
         el('button', { class: 'btn-ghost', onclick: openTimesheetImport }, '📥 Импорт табеля'),
         el('button', { class: 'btn-ghost', title: 'Проставить постоянные надбавки/удержания из карточек сотрудников', onclick: async () => {
           if (!confirm('Проставить постоянные надбавки и удержания за ' + monthLabel(salState.period) + '?\n\nСуммы из карточек сотрудников встанут в пустые ячейки. Уже заполненное вручную не тронем.')) return;
-          try { const r = await post('/payroll/apply-recurring', { period: salState.period }); toast('Проставлено сотрудникам: ' + r.done); load(); }
+          try { const r = await post('/payroll/apply-recurring', { period: salState.period }); toast('Проставлено сотрудникам: ' + r.done); load({ keep: true }); }
           catch (e) { toast(e.message, true); }
         } }, '📌 Постоянные суммы'),
         el('button', { class: 'btn-primary', onclick: () => { const ids = salItems.map((x) => x.emp_id); if (!ids.length) return toast('Нет сотрудников', true); if (!confirm('Начислить зарплату по факту всем показанным (' + ids.length + ')? У кого не заполнен факт — пропустятся.')) return; accrueEmps(ids, false); } }, '✅ Начислить всех'),
@@ -1189,12 +1191,12 @@
       try {
         const r = await post(undo ? '/payroll/unaccrue' : '/payroll/accrue', { period: salState.period, employee_ids: empIds });
         toast(undo ? ('Начисление снято: ' + r.affected) : ('Начислено: ' + r.done + (r.skipped ? (' · без факта пропущено ' + r.skipped) : '')));
-        load();
+        load({ keep: true });
       } catch (e) { toast(e.message, true); }
     }
     async function factFromPlan(empIds) {
       if (!empIds || !empIds.length) return;
-      try { const r = await post('/payroll/fact-from-plan', { period: salState.period, employee_ids: empIds }); toast('Факт = план проставлен: ' + r.affected); load(); }
+      try { const r = await post('/payroll/fact-from-plan', { period: salState.period, employee_ids: empIds }); toast('Факт = план проставлен: ' + r.affected); load({ keep: true }); }
       catch (e) { toast(e.message, true); }
     }
     // Печать расчётных карточек (6 на A4, 2×3) — только выбранные галочками.
@@ -1251,13 +1253,32 @@
       w.document.write(html); w.document.close();
     }
 
-    async function load() {
+    // Правка ячейки перезагружает ведомость (итоги должны пересчитаться), но раньше страницу
+    // отбрасывало наверх и приходилось заново искать строку. Запоминаем прокрутку, выбор
+    // сотрудников и ячейку с курсором — и возвращаем всё на место после перерисовки.
+    let salRestore = null;
+    async function load(opts) {
+      const keep = opts && opts.keep;
+      const scrollY = keep ? window.scrollY : 0;
+      const keepSel = keep ? new Set(salSel) : null;
       box.innerHTML = '<div class="hr-loading">Считаю…</div>';
-      salSel = new Set();
+      salSel = keepSel || new Set();
       const p = new URLSearchParams({ period: salState.period });
       ['department', 'schedule', 'status', 'q'].forEach((k) => { if (salState[k]) p.set(k, salState[k]); });
       let d; try { d = await api('/payroll?' + p.toString()); } catch (e) { box.innerHTML = ''; box.appendChild(el('div', { class: 'hr-empty' }, 'Ошибка: ' + e.message)); return; }
       box.innerHTML = '';
+      if (keep) {
+        // Возвращаем позицию и курсор после того, как браузер отрисует новую таблицу.
+        requestAnimationFrame(() => {
+          window.scrollTo(0, scrollY);
+          if (salRestore) {
+            const sel = `.hr-cell[data-emp="${salRestore.emp}"][data-field="${salRestore.field}"]`;
+            const node = box.querySelector(sel);
+            if (node) { node.focus(); if (node.select) node.select(); }
+            salRestore = null;
+          }
+        });
+      }
       salItems = d.items || [];
       const s = d.summary;
       const bd = (title, fn) => () => openBreakdown(title, d.items, fn);
@@ -1314,7 +1335,8 @@
           ...fields.map(([k, label]) => {
             const i = minp(r[k] == null ? '' : Math.round(Number(r[k])), { placeholder: '0' });
             i.onchange = async () => {
-              try { await post('/payroll/cell', { employee_id: r.emp_id, period: salState.period, field: k, value: mval(i) }); load(); }
+              // Окно остаётся открытым, список под ним обновляется без прыжка наверх.
+              try { await post('/payroll/cell', { employee_id: r.emp_id, period: salState.period, field: k, value: mval(i) }); load({ keep: true }); }
               catch (e) { toast(e.message, true); }
             };
             return frow(label, i);
@@ -1327,9 +1349,10 @@
       // Правка прямо в строке: дни/часы меняются на месте, оклад пересчитывается сам.
       // Дни/часы показываем как есть, с дробной частью (15,5 не округляем). Формат — русский (запятая), чтобы mval корректно читал ввод.
       const cellNum = (r, field) => {
-        const inp = el('input', { class: 'hr-cell', value: (r[field] == null || r[field] === '') ? '' : Number(r[field]).toLocaleString('ru-RU', { maximumFractionDigits: 2 }), onclick: (ev) => ev.stopPropagation() });
+        const inp = el('input', { class: 'hr-cell', 'data-emp': r.emp_id, 'data-field': field, value: (r[field] == null || r[field] === '') ? '' : Number(r[field]).toLocaleString('ru-RU', { maximumFractionDigits: 2 }), onclick: (ev) => ev.stopPropagation() });
         inp.onchange = async () => {
-          try { await post('/payroll/cell', { employee_id: r.emp_id, period: salState.period, field, value: mval(inp) }); load(); }
+          salRestore = { emp: r.emp_id, field };   // вернём курсор в эту же ячейку
+          try { await post('/payroll/cell', { employee_id: r.emp_id, period: salState.period, field, value: mval(inp) }); load({ keep: true }); }
           catch (e) { toast(e.message, true); }
         };
         return inp;
