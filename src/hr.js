@@ -427,8 +427,14 @@ router.post('/api/employee', J, async (req, res) => {
           }
         }
         if ((old.status || '') !== status) {
-          if (status === 'fired') await addEvent(b.id, 'fire', b.fire_date || today, { created_by: uid });
+          if (status === 'fired') await addEvent(b.id, 'fire', fireDate || today, { created_by: uid });
           else if (old.status === 'fired' && status === 'active') await addEvent(b.id, 'hire', today, { comment: 'Восстановлен', created_by: uid });
+        } else if (status === 'fired' && fireDate && fireDate !== (prev ? prev.fire_date : null)) {
+          // Уволенному проставили/поправили дату в карточке — это тоже должно попасть в историю.
+          const ex = (await db.pool.query(
+            "SELECT id FROM hr_events WHERE employee_id=$1 AND event_type='fire' ORDER BY event_date DESC LIMIT 1", [b.id])).rows[0];
+          if (ex) await db.pool.query('UPDATE hr_events SET event_date=$1, comment=$2 WHERE id=$3', [fireDate, 'Дата уточнена', ex.id]);
+          else await addEvent(b.id, 'fire', fireDate, { created_by: uid, comment: 'Дата внесена' });
         }
       }
     } else {
@@ -1851,9 +1857,17 @@ router.post('/api/employees/bulk', J, async (req, res) => {
   if (st === 'fired') {
     const fireDate = String(req.body.fire_date || '').trim();
     if (!/^\d{4}-\d{2}-\d{2}$/.test(fireDate)) return res.status(400).json({ error: 'Укажите дату увольнения' });
-    const prev = (await db.pool.query("SELECT id FROM hr_employees WHERE id = ANY($1) AND status <> 'fired'", [ids])).rows.map((r) => r.id);
     const r = await db.pool.query('UPDATE hr_employees SET status=$1, fire_date=$2, updated_at=now() WHERE id = ANY($3)', [st, fireDate, ids]);
-    for (const id of prev) await addEvent(id, 'fire', fireDate, { created_by: req.user.id, comment: 'Массовое увольнение' });
+    // Событие пишем и тем, кто уже числился уволенным: обычно это как раз простановка даты,
+    // которой не хватало. Если событие с этой датой уже есть — ничего не делаем; если есть
+    // с другой датой — поправляем её, чтобы в истории не плодились дубли одного увольнения.
+    for (const id of ids) {
+      const ex = (await db.pool.query(
+        "SELECT id, to_char(event_date,'YYYY-MM-DD') AS d FROM hr_events WHERE employee_id=$1 AND event_type='fire' ORDER BY event_date DESC LIMIT 1", [id])).rows[0];
+      if (ex && ex.d === fireDate) continue;
+      if (ex) await db.pool.query('UPDATE hr_events SET event_date=$1, comment=$2 WHERE id=$3', [fireDate, 'Дата уточнена', ex.id]);
+      else await addEvent(id, 'fire', fireDate, { created_by: req.user.id, comment: 'Массовое увольнение' });
+    }
     await db.log(req.user.id, 'hr_employees_bulk_fire', `${ids.length} с ${fireDate}`);
     return res.json({ ok: true, affected: r.rowCount });
   }
