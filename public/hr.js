@@ -486,13 +486,30 @@
       const bulk = el('div', { id: 'hr-bulk', class: 'hr-bulkbar', style: 'display:none' });
       const bulkN = el('span', { class: 'hr-bulk-n' }, '');
       const updBulk = () => { bulk.style.display = empSel.size ? 'flex' : 'none'; bulkN.textContent = 'Выбрано: ' + empSel.size; };
-      async function doBulk(action, confirmMsg) {
+      async function doBulk(action, confirmMsg, extra) {
         if (!empSel.size) return; if (confirmMsg && !confirm(confirmMsg + ' (' + empSel.size + ')?')) return;
-        try { const r = await post('/employees/bulk', { ids: [...empSel], action }); toast('Готово: ' + r.affected); await reloadDicts(); load(); } catch (e) { toast(e.message, true); }
+        try { const r = await post('/employees/bulk', Object.assign({ ids: [...empSel], action }, extra || {})); toast('Готово: ' + r.affected); await reloadDicts(); load(); } catch (e) { toast(e.message, true); }
+      }
+      // Массовое увольнение — обязательно с датой (как и одиночное): от неё зависит начисление
+      // за месяц увольнения и запись в кадровой истории.
+      function bulkFire() {
+        if (!empSel.size) return;
+        const date = finp(new Date().toISOString().slice(0, 10), { type: 'date' });
+        const body = el('div', { class: 'hrf' }, [
+          el('div', { class: 'hr-note' }, 'Увольнение ' + empSel.size + ' сотрудн. Дата — одна на всех.'),
+          el('div', { class: 'hr-sub', style: 'margin:4px 0 8px' }, 'Дата попадёт в карточку и в кадровую историю. Месяц увольнения можно будет начислить по факту отработанных дней.'),
+          frow('Дата увольнения *', date),
+        ]);
+        const ok = el('button', { class: 'btn-primary hrf-warn', onclick: async () => {
+          if (!date.value) return toast('Укажите дату увольнения', true);
+          closeModal();
+          await doBulk('fired', null, { fire_date: date.value });
+        } }, 'Уволить');
+        modal('Массовое увольнение', body, [el('button', { class: 'btn-ghost', onclick: closeModal }, 'Отмена'), ok]);
       }
       bulk.appendChild(bulkN);
       bulk.appendChild(el('button', { class: 'btn-ghost hrf-warn', onclick: () => doBulk('archived', 'В архив') }, 'В архив'));
-      bulk.appendChild(el('button', { class: 'btn-ghost hrf-warn', onclick: () => doBulk('fired', 'Уволить') }, 'Уволить'));
+      bulk.appendChild(el('button', { class: 'btn-ghost hrf-warn', onclick: bulkFire }, 'Уволить'));
       // Удаление стирает карточку вместе с зарплатной историей — предупреждаем прямо в тексте.
       // Сервер не даст удалить тех, у кого есть начисления/выплаты (предложит «Уволить»/«В архив»).
       bulk.appendChild(el('button', { class: 'btn-ghost hr-del', title: 'Только для пустых карточек, заведённых по ошибке',

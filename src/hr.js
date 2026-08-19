@@ -1842,6 +1842,17 @@ router.post('/api/employees/bulk', J, async (req, res) => {
   }
   const st = ['active', 'fired', 'archived'].includes(action) ? action : null;
   if (!st) return res.status(400).json({ error: 'Неверное действие' });
+  // Массовое увольнение — с датой, как и одиночное: без неё непонятно, по какой день человек
+  // работал, и месяц увольнения нельзя правильно начислить. Пишем и в кадровую историю.
+  if (st === 'fired') {
+    const fireDate = String(req.body.fire_date || '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(fireDate)) return res.status(400).json({ error: 'Укажите дату увольнения' });
+    const prev = (await db.pool.query("SELECT id FROM hr_employees WHERE id = ANY($1) AND status <> 'fired'", [ids])).rows.map((r) => r.id);
+    const r = await db.pool.query('UPDATE hr_employees SET status=$1, fire_date=$2, updated_at=now() WHERE id = ANY($3)', [st, fireDate, ids]);
+    for (const id of prev) await addEvent(id, 'fire', fireDate, { created_by: req.user.id, comment: 'Массовое увольнение' });
+    await db.log(req.user.id, 'hr_employees_bulk_fire', `${ids.length} с ${fireDate}`);
+    return res.json({ ok: true, affected: r.rowCount });
+  }
   const r = await db.pool.query('UPDATE hr_employees SET status=$1, updated_at=now() WHERE id = ANY($2)', [st, ids]);
   await db.log(req.user.id, 'hr_employees_bulk_status', `${st}: ${ids.length}`);
   res.json({ ok: true, affected: r.rowCount });
