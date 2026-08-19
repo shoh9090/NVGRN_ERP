@@ -392,8 +392,12 @@ router.post('/api/employee', J, async (req, res) => {
   const name = String(b.full_name || '').trim();
   if (!name) return res.status(400).json({ error: 'Укажите ФИО' });
   const sched = SCHEDULE_CODES.includes(b.schedule_type) ? b.schedule_type : null;
-  const status = STATUSES.includes(b.status) ? b.status : 'active';
-  const args = [name, intOrNull(b.department_id), b.position || null, sched, b.hire_date || null, b.fire_date || null, status,
+  // При правке карточки статус и дату увольнения НЕ сбрасываем, если их не прислали:
+  // раньше сохранение карточки уволенного молча возвращало его в актив и стирало дату.
+  const prev = b.id ? (await db.pool.query("SELECT status, to_char(fire_date,'YYYY-MM-DD') AS fire_date FROM hr_employees WHERE id=$1", [b.id])).rows[0] : null;
+  const status = STATUSES.includes(b.status) ? b.status : (prev ? prev.status : 'active');
+  const fireDate = (b.fire_date !== undefined) ? (b.fire_date || null) : (prev ? prev.fire_date : null);
+  const args = [name, intOrNull(b.department_id), b.position || null, sched, b.hire_date || null, fireDate, status,
     numOrNull(b.base_salary), numOrNull(b.salary_official), numOrNull(b.salary_unofficial), b.phone || null, b.telegram_id || null, intOrNull(b.erp_user_id), b.comment || null,
     b.card_number || null, !!b.full_month];
   const today = new Date().toISOString().slice(0, 10);

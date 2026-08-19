@@ -704,6 +704,12 @@
     if (e.full_month) fullMonth.checked = true;
     const fullMonthRow = frow('Табель', el('label', { style: 'display:flex;gap:8px;align-items:center;cursor:pointer;font-weight:400' }, [fullMonth, el('span', {}, 'Факт = план (полный месяц, без табеля)')]));
     const hire = finp(e.hire_date ? String(e.hire_date).slice(0, 10) : '', { type: 'date' });
+    // Дата увольнения — показываем у уволенных (в т.ч. чтобы проставить её задним числом,
+    // если увольняли оптом без даты). У активных поле не нужно.
+    const fire = finp(e.fire_date ? String(e.fire_date).slice(0, 10) : '', { type: 'date' });
+    const fireRow = frow('Дата увольнения', el('div', {}, [fire,
+      el('div', { class: 'hr-sub', style: 'margin-top:3px' }, 'По какой день работал. Нужна для начисления за месяц увольнения.')]));
+    if (e.status !== 'fired') fireRow.style.display = 'none';
     const base = minp(e.base_salary, { placeholder: 'Оклад / ставка' });
     const off = minp(e.salary_official, { placeholder: 'Официальная часть' });
     const unoff = minp(e.salary_unofficial, { placeholder: 'Неофициальная часть' });
@@ -716,7 +722,7 @@
     const tg = finp(e.telegram_id, { placeholder: 'Telegram ID (если есть)' });
     const comment = finp(e.comment, { placeholder: 'Комментарий' });
     const body = el('div', { class: 'hrf' }, [
-      frow('ФИО *', name), frow('Отдел', dept), frow('Должность', pos), frow('График', sched), fullMonthRow, frow('Дата приёма', hire),
+      frow('ФИО *', name), frow('Отдел', dept), frow('Должность', pos), frow('График', sched), fullMonthRow, frow('Дата приёма', hire), fireRow,
       el('div', { class: 'hrf-sec' }, 'Зарплата'),
       frow('Оклад / ставка', base), frow('Официальная часть', off), frow('Неофициальная часть', unoff),
       el('div', { class: 'hrf-sec' }, 'Контакты'),
@@ -733,7 +739,10 @@
     }
     const save = el('button', { class: 'btn-primary', onclick: async () => {
       try {
-        await post('/employee', { id: e.id, full_name: name.value, department_id: dept.value, position: pos.value, schedule_type: sched.value, hire_date: hire.value, base_salary: mval(base), salary_official: mval(off), salary_unofficial: mval(unoff), phone: phone.value, card_number: card.value, telegram_id: tg.value, comment: comment.value, full_month: fullMonth.checked });
+        const payload = { id: e.id, full_name: name.value, department_id: dept.value, position: pos.value, schedule_type: sched.value, hire_date: hire.value, base_salary: mval(base), salary_official: mval(off), salary_unofficial: mval(unoff), phone: phone.value, card_number: card.value, telegram_id: tg.value, comment: comment.value, full_month: fullMonth.checked };
+        // Дату увольнения шлём только у уволенных — у активных поле скрыто и трогать его нечего.
+        if (e.status === 'fired') payload.fire_date = fire.value || null;
+        await post('/employee', payload);
         toast('Сохранено'); closeModal(); await reloadDicts(); render();
       } catch (err) { toast(err.message, true); }
     } }, 'Сохранить');

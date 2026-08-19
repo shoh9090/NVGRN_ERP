@@ -26,7 +26,13 @@ app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'src', 'views'));
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
-app.use('/static', express.static(path.join(__dirname, 'public')));
+// Версия статики: меняется при каждом деплое, поэтому браузер сам подхватывает новые
+// js/css и не нужно жать Ctrl+Shift+R. В шаблонах адреса пишем как /static/x.js?v=<%= V %>.
+const ASSET_V = process.env.RAILWAY_GIT_COMMIT_SHA
+  ? String(process.env.RAILWAY_GIT_COMMIT_SHA).slice(0, 8)
+  : String(Date.now());
+app.locals.V = ASSET_V;
+app.use('/static', express.static(path.join(__dirname, 'public'), { maxAge: '7d' }));
 
 // ---------- Аутентификация ----------
 
