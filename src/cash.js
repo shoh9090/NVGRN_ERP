@@ -2295,7 +2295,12 @@ router.post('/api/transactions/relink', J, async (req, res) => {
 // (банк может провести на следующий день), которые ещё не переводы, и предлагаем на подтверждение.
 router.get('/api/transactions/match-candidates', async (req, res) => {
   try {
-    const days = 1; // допуск по дате между списанием и зачислением (было 3 — давало много ложных пар)
+    // Допуск по дате: зачисление часто приходит не в тот же день (обнал, межбанк, выходные).
+    // 1 день ловил слишком мало — по умолчанию 5, при необходимости расширяется параметром.
+    const days = Math.min(Math.max(parseInt(req.query.days, 10) || 5, 1), 15);
+    // Допуск по сумме: при переводе часто удерживают комиссию, поэтому приход бывает меньше
+    // расхода. Разницу возвращаем как fee — при склейке она станет отдельным расходом «% банка».
+    const feePct = Math.min(Math.max(Number(req.query.fee_pct) || 3, 0), 10) / 100;
     // Признак реального перевода между своими счетами (защита от совпадения сумм у обычных операций).
     const transferRe = '(перевод|переброск|пополнени|между[[:space:]]+сч[её]т|на[[:space:]]+карт|корпоративн|перечисл|со[[:space:]]+сч[её]т|на[[:space:]]+сч[её]т|основн[[:alpha:]]*[[:space:]]+расч[её]т|novagreen|новагрин|a2a)';
     const rows = (await db.pool.query(
@@ -2303,20 +2308,21 @@ router.get('/api/transactions/match-candidates', async (req, res) => {
               o.purpose AS out_purpose, o.payer_name AS out_payer,
               i.id AS in_id, i.tx_date AS in_date, i.wallet_id AS in_wallet, wi.name AS in_wallet_name,
               i.purpose AS in_purpose, i.payer_name AS in_payer,
-              o.amount AS amount, ABS(i.tx_date - o.tx_date) AS gap_days
+              o.amount AS amount, i.amount AS in_amount, (o.amount - i.amount) AS fee,
+              wo.kind AS out_kind, wi.kind AS in_kind, ABS(i.tx_date - o.tx_date) AS gap_days
        FROM cash_transactions o
        JOIN cash_transactions i
          ON i.tx_type = 'in' AND o.tx_type = 'out'
         AND i.wallet_id <> o.wallet_id
-        AND i.amount = o.amount
+        -- Сумма совпадает точно ИЛИ приход меньше расхода на комиссию (в пределах допуска).
+        AND i.amount <= o.amount AND i.amount >= o.amount * (1 - $3::numeric)
         AND ABS(i.tx_date - o.tx_date) <= $1
        JOIN cash_wallets wo ON wo.id = o.wallet_id
        JOIN cash_wallets wi ON wi.id = i.wallet_id
        WHERE o.source <> 'opening' AND i.source <> 'opening'
-         -- Наличную кассу не склеиваем автоматически (обнал/внесение налички ведём вручную).
-         AND wo.kind <> 'cash' AND wi.kind <> 'cash'
-         -- У перевода между своими счетами нет внешнего контрагента.
-         AND o.counterparty_id IS NULL AND i.counterparty_id IS NULL
+         -- Наличную кассу теперь тоже показываем: обнал банк→касса — самый частый перевод.
+         -- Контрагент больше не отсекает пару: при переводе между своими юрлицами импорт
+         -- проставляет контрагента по ИНН, и раньше такие переводы вообще не находились.
          -- Защищаем строки с ОСМЫСЛЕННОЙ статьёй (кредит/зарплата/поставщик и т.п.) — их склейка бы перебила.
          -- Но выручку (200) разрешаем: переброски, ошибочно попавшие в выручку, нужно уметь склеить.
          -- В пары берём: без статьи, переводные (100/110/111) или выручку (200).
@@ -2326,7 +2332,7 @@ router.get('/api/transactions/match-candidates', async (req, res) => {
          AND (COALESCE(o.purpose,'') ~* $2 OR COALESCE(i.purpose,'') ~* $2
               OR COALESCE(o.payer_name,'') ~* $2 OR COALESCE(i.payer_name,'') ~* $2)
        ORDER BY gap_days, o.tx_date DESC
-       LIMIT 200`, [days, transferRe])).rows;
+       LIMIT 200`, [days, transferRe, feePct])).rows;
     // Каждую запись — только в одну пару (жадно, от самой близкой даты).
     const usedOut = new Set(), usedIn = new Set(), pairs = [];
     for (const r of rows) {
@@ -2334,6 +2340,8 @@ router.get('/api/transactions/match-candidates', async (req, res) => {
       usedOut.add(r.out_id); usedIn.add(r.in_id);
       pairs.push({
         out_id: r.out_id, in_id: r.in_id, amount: Number(r.amount),
+        in_amount: Number(r.in_amount), fee: Math.round(Number(r.fee) || 0),
+        out_kind: r.out_kind, in_kind: r.in_kind,
         out_date: r.out_date, in_date: r.in_date, gap_days: r.gap_days,
         out_wallet: r.out_wallet, out_wallet_name: r.out_wallet_name,
         in_wallet: r.in_wallet, in_wallet_name: r.in_wallet_name,
@@ -2363,7 +2371,21 @@ router.post('/api/transactions/match-confirm', J, async (req, res) => {
          WHERE id=$3 AND tx_type='out'`,
         [a2a ? a2a.id : null, inId, outId]);
       if (!r.rowCount) continue; // уже не 'out' — пропускаем, ничего не трогаем
+      // Если пришло меньше, чем ушло, — разница это комиссия. Переводом зачисляем всю сумму
+      // расхода, а комиссию проводим отдельным расходом на кошельке-получателе, иначе его
+      // остаток окажется завышенным на величину комиссии.
+      const inRow = (await client.query("SELECT wallet_id, amount, tx_date FROM cash_transactions WHERE id=$1 AND tx_type='in'", [inId])).rows[0];
+      if (!inRow) continue;
+      const outAmt = (await client.query('SELECT amount FROM cash_transactions WHERE id=$1', [outId])).rows[0];
+      const fee = Math.round(Number(outAmt.amount) - Number(inRow.amount));
       await client.query(`DELETE FROM cash_transactions WHERE id=$1 AND tx_type='in'`, [inId]);
+      if (fee > 0) {
+        const feeCat = (await client.query("SELECT id FROM cash_categories WHERE code='62' LIMIT 1")).rows[0];
+        await client.query(
+          `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, category_id, purpose, source, is_classified, parent_tx_id, created_by)
+           VALUES ($1,$2,'out',$3,$4,'Комиссия при переводе','manual',$5,$6,$7)`,
+          [inRow.tx_date, fee, inRow.wallet_id, feeCat ? feeCat.id : null, !!feeCat, outId, req.user.id]);
+      }
       done++;
     }
     await client.query('COMMIT');

@@ -165,7 +165,6 @@
     main.appendChild(el('div', { class: 'cash-tabs' }, [
       tab('cashbox', '🪙 Наличная касса'),
       tab('tx', '💸 Транзакции'),
-      tab('triage', '🧩 Разбор'),
       tab('cashflow', '📊 Кэш-флоу (ДДС)'),
       tab('pnl', '📈 P&L'),
       tab('obligations', '📌 Обязательства'),
@@ -1488,9 +1487,11 @@
           usd ? el('div', { style: 'font-size:11px;color:var(--muted)' }, 'всего ≈ ' + money(x.balance) + ' сум') : null,
         ];
       })(),
-      el('div', { style: 'display:flex;gap:10px;align-items:center' }, [
-        el('a', { class: 'cash-wallet-exp', href: 'javascript:void(0)', title: 'Изменить кошелёк', onclick: (e) => { e.stopPropagation(); openWalletForm(x); } }, '✏️ Изменить'),
-        el('a', { class: 'cash-wallet-exp', href: '/cash/api/wallet-export?wallet_id=' + x.id, title: 'Выгрузить операции в Excel (с остатком по строкам)', onclick: (e) => e.stopPropagation() }, '⬇ Excel'),
+      // Правка кошелька и выгрузка — иконками без подписей: карточка должна показывать деньги,
+      // а не кнопки. Сам клик по карточке открывает операции кошелька за месяц.
+      el('div', { style: 'display:flex;gap:12px;align-items:center' }, [
+        el('a', { class: 'cash-wallet-exp', href: 'javascript:void(0)', title: 'Изменить кошелёк', onclick: (e) => { e.stopPropagation(); openWalletForm(x); } }, '✏️'),
+        el('a', { class: 'cash-wallet-exp', href: '/cash/api/wallet-export?wallet_id=' + x.id, title: 'Выгрузить операции в Excel (с остатком по строкам)', onclick: (e) => e.stopPropagation() }, '⬇'),
       ]),
     ]))));
     const total = w.reduce((s, x) => s + Number(x.balance || 0), 0);
@@ -1508,13 +1509,11 @@
     c.appendChild(el('div', { class: 'cash-head' }, [
       el('div', {}, [el('div', { class: 'cash-h2' }, 'Транзакции'), el('div', { class: 'cash-sub' }, 'Журнал движения денег. Жёлтым — неразобранные (без статьи).')]),
       el('div', { class: 'cash-tx-btns' }, [
-        addBtn('+ Приход', () => openTxForm('in', null)),
-        el('button', { class: 'btn-primary cash-add cash-out', onclick: () => openTxForm('out', null) }, '+ Расход'),
-        el('button', { class: 'btn-ghost cash-add', onclick: () => openTransferForm(null) }, '↔ Перевод'),
+        // Одна кнопка на ввод операции — тип выбирается в окне (было две отдельные).
+        addBtn('+ Операция', openNewTxChoice),
         el('button', { class: 'btn-ghost cash-add', onclick: openMatchTransfers }, '🔗 Найти переводы'),
         el('button', { class: 'btn-ghost cash-add', onclick: openOpeningForm }, '💼 Начальные остатки'),
         el('button', { class: 'btn-ghost cash-add', onclick: openImport }, '📥 Импорт выписки'),
-        ...((window.HUB_USER && window.HUB_USER.isAdmin) ? [el('button', { class: 'btn-ghost cash-add cashf-del', onclick: doWipe }, '🧹 Очистить')] : []),
       ]),
     ]));
     const reload1 = () => { txState.page = 1; loadTx(); };
@@ -1638,6 +1637,20 @@
   // ---------- Наличная касса: построчный Приход/Расход, доллар + курс ЦБ, сальдо на начало/конец ----------
   const cbState = { type: 'in', wallet: '', from: '', to: '', q: '', category: '', classified: '', page: 1, pageSize: 50, lastAddedId: null, selected: {} };
   const SIRYE_GROUP = '1. Сырьё и переменные затраты'; // расход этой группы = по умолчанию выдача снабженцу
+
+  // Одна кнопка «+ Операция» вместо двух: сначала выбираем, что вносим.
+  // Перевод между своими счетами оставлен здесь же — отдельная кнопка в панели не нужна.
+  function openNewTxChoice() {
+    const pick = (label, hint, fn, cls) => el('button', {
+      class: 'btn-ghost cash-add', style: 'display:block;width:100%;text-align:left;padding:12px 14px;margin-bottom:8px' + (cls || ''),
+      onclick: () => { closeModal(); fn(); },
+    }, [el('div', { style: 'font-weight:700' }, label), el('div', { class: 'cash-sub' }, hint)]);
+    modal('Что вносим?', el('div', {}, [
+      pick('+ Приход', 'Деньги пришли в кассу или на счёт', () => openTxForm('in', null), ';border-color:#2e7d32'),
+      pick('− Расход', 'Деньги ушли: оплата, зарплата, закуп', () => openTxForm('out', null), ';border-color:#c0392b'),
+      pick('↔ Перевод', 'Между своими счетами — не доход и не расход', () => openTransferForm(null)),
+    ]), [el('button', { class: 'btn-ghost', onclick: closeModal }, 'Отмена')]);
+  }
 
   // ---------- Закрытие месяца: замок на прошлые периоды ----------
   // Одна дата: всё по неё включительно закрыто. Ни ввод, ни правка, ни удаление, ни импорт
@@ -1885,7 +1898,7 @@
     const classSel = el('select', { class: 'cashf-inp cash-filt', onchange: (e) => { cbState.classified = e.target.value; cbState.page = 1; loadCashbox(); } },
       [{ v: '', t: 'Все' }, { v: 'no', t: 'Не разобрано' }, { v: 'yes', t: 'Разобрано' }].map((o) => el('option', { value: o.v, selected: o.v === cbState.classified || null }, o.t)));
     c.appendChild(el('div', { class: 'cash-filters', style: 'margin-bottom:6px' }, [
-      typeBtn('in', '➕ Приход'), typeBtn('out', '➖ Расход'), typeBtn('pending', '🧾 К оплате'),
+      typeBtn('in', '➕ Приход'), typeBtn('out', '➖ Расход'),
       // Выбор кассы показываем только если наличных кошельков больше одного (иначе выбирать нечего).
       ...(cashWallets.length > 1 ? [el('span', { class: 'cash-flab' }, 'Касса'), walletSel] : []),
     ]));
@@ -2510,8 +2523,10 @@
           el('div', { class: 'cash-match-main' }, [
             el('span', {}, p.out_wallet_name + ' →'), el('span', {}, ' ' + p.in_wallet_name),
             el('span', { class: 'cash-match-amt' }, money(p.amount) + ' сум'),
+            // Комиссия: ушло больше, чем пришло — разница станет отдельным расходом «% банка».
+            p.fee > 0 ? el('span', { class: 'cash-sub', style: 'color:#b25b00;font-weight:700' }, ' · пришло ' + money(p.in_amount) + ', комиссия ' + money(p.fee)) : null,
           ]),
-          el('div', { class: 'cash-sub' }, String(p.out_date).slice(0, 10) + (p.gap_days > 0 ? ' → ' + String(p.in_date).slice(0, 10) : '')),
+          el('div', { class: 'cash-sub' }, String(p.out_date).slice(0, 10) + (p.gap_days > 0 ? ' → ' + String(p.in_date).slice(0, 10) + ' (+' + p.gap_days + ' дн.)' : '')),
           // Показываем ОБА назначения — чтобы было видно, если суммы совпали случайно (это не перевод).
           el('div', { class: 'cash-sub' }, 'расход: ' + (p.out_purpose || p.out_payer || '—')),
           el('div', { class: 'cash-sub' }, 'приход: ' + (p.in_purpose || p.in_payer || '—')),
@@ -2520,7 +2535,7 @@
       return { row, cb, p };
     });
     const body = el('div', { class: 'cashf' }, [
-      el('div', { class: 'cash-note-info' }, 'Возможные переводы между своими счетами (расход на одном кошельке + приход на другом, та же сумма). Проверьте оба назначения и отметьте только настоящие переводы: расход станет переводом, парный приход удалится. Наличная касса сюда не попадает — её ведите вручную кнопкой «↔ Перевод».'),
+      el('div', { class: 'cash-note-info' }, 'Возможные переводы между своими счетами: расход на одном кошельке и приход на другом. Ищем в пределах 5 дней, с учётом комиссии (если пришло меньше — разница проведётся расходом «% банка»). Наличная касса и обнал теперь тоже попадают сюда. Проверьте оба назначения и отметьте только настоящие переводы: расход станет переводом, парный приход удалится.'),
       el('div', { class: 'cash-match-list' }, boxes.map((b) => b.row)),
     ]);
     const save = el('button', { class: 'btn-primary', onclick: async () => {
