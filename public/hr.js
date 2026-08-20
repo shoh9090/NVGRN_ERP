@@ -574,15 +574,8 @@
     ]);
     modal('Кому переплачено', body, [el('button', { class: 'btn-primary', onclick: closeModal }, 'Закрыть')]);
   }
-  // Выгрузка ведомости для банка: ФИО · номер карты · сумма «К выплате».
-  // Отдельный режим «Аванс» убран — ведомость выгружается по сумме к выплате.
-  function openCardPaysheetExport(period) {
-    const body = el('div', { class: 'hrf' }, [
-      el('div', { class: 'hr-sub' }, 'Ведомость за ' + monthLabel(period) + ': ФИО · номер карты · сумма к выплате — для отправки в банк. Попадут только сотрудники с проставленным номером карты.'),
-    ]);
-    const dl = el('button', { class: 'btn-primary', onclick: () => { window.location = '/hr/api/cards/paysheet.xlsx?period=' + period + '&mode=payout'; closeModal(); } }, '⬇ Скачать');
-    modal('📤 Выгрузка ведомости — ' + monthLabel(period), body, [dl]);
-  }
+  // Выгрузка ведомости из Зарплаты убрана: выгрузка делается во вкладке «Выплаты» (кнопка Excel).
+  // Эндпоинт /api/cards/paysheet.xlsx оставлен рабочим на случай, если понадобится вернуть.
 
   function openEmpImport() {
     const file = el('input', { type: 'file', accept: '.xls,.xlsx', class: 'hrf-inp' });
@@ -1211,8 +1204,6 @@
         el('button', { class: 'btn-ghost', onclick: openFillNorms }, '📋 Заполнить нормы'),
         el('button', { class: 'btn-ghost', onclick: openTimesheetImport }, '📥 Импорт табеля'),
         el('button', { class: 'btn-primary', onclick: () => { const ids = salItems.map((x) => x.emp_id); if (!ids.length) return toast('Нет сотрудников', true); if (!confirm('Начислить зарплату по факту всем показанным (' + ids.length + ')? У кого не заполнен факт — пропустятся.')) return; accrueEmps(ids, false); } }, '✅ Начислить всех'),
-        // Выгрузка ведомости для банка: ФИО · номер карты · сумма «К выплате».
-        el('button', { class: 'btn-ghost', onclick: () => openCardPaysheetExport(salState.period) }, '📤 Выгрузка ведомости'),
       ]),
     ]));
     showHrLockBadge();
