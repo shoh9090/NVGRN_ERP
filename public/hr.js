@@ -225,8 +225,13 @@
       if (typeSel.value === 'transfer' && !deptSel.value) return toast('Выберите отдел, куда переводим', true);
       if (typeSel.value === 'salary' && !(Number(mval(salInp)) > 0)) return toast('Укажите новый оклад', true);
       try {
-        await post('/events', { employee_id: empSel.value, event_type: typeSel.value, event_date: dFrom.value, date_to: (dToRow.style.display !== 'none' ? dTo.value : null) || null, to_department_id: (typeSel.value === 'transfer' ? deptSel.value : null), to_position: (typeSel.value === 'transfer' ? posInp.value : null), to_schedule: (typeSel.value === 'transfer' ? schedSel.value : null), new_salary: (typeSel.value === 'salary' ? mval(salInp) : null), comment: comment.value });
-        toast(typeSel.value === 'transfer' ? 'Сотрудник переведён ✅' : (typeSel.value === 'salary' ? 'Оклад изменён ✅' : 'Событие добавлено')); closeModal(); if (TAB === 'events') loadEv();
+        const rr = await post('/events', { employee_id: empSel.value, event_type: typeSel.value, event_date: dFrom.value, date_to: (dToRow.style.display !== 'none' ? dTo.value : null) || null, to_department_id: (typeSel.value === 'transfer' ? deptSel.value : null), to_position: (typeSel.value === 'transfer' ? posInp.value : null), to_schedule: (typeSel.value === 'transfer' ? schedSel.value : null), new_salary: (typeSel.value === 'salary' ? mval(salInp) : null), comment: comment.value });
+        toast(typeSel.value === 'transfer' ? 'Сотрудник переведён ✅' : (typeSel.value === 'salary' ? 'Оклад изменён ✅' : 'Событие добавлено'));
+        // Смена оклада пересчитывает и уже начисленные месяцы — честно предупреждаем какие.
+        if (rr && rr.recalculated && rr.recalculated.length) {
+          toast('⚠ Пересчитаны уже начисленные месяцы: ' + rr.recalculated.map(monthLabel).join(', ') + ' — проверьте суммы', true);
+        }
+        closeModal(); if (TAB === 'events') loadEv();
       } catch (e) { toast(e.message, true); }
     } }, 'Добавить');
     modal('Кадровое событие', el('div', { class: 'hrf' }, [frow('Сотрудник', empSel), frow('Тип', typeSel), deptRow, posRow, schedRow, salRow, frow('Дата (с)', dFrom), dToRow, frow('Комментарий', comment)]), [save]);
@@ -569,16 +574,14 @@
     ]);
     modal('Кому переплачено', body, [el('button', { class: 'btn-primary', onclick: closeModal }, 'Закрыть')]);
   }
-  // Выгрузка ведомости на карту для банка (ФИО · карта · сумма); выбор Выплата / Аванс.
+  // Выгрузка ведомости для банка: ФИО · номер карты · сумма «К выплате».
+  // Отдельный режим «Аванс» убран — ведомость выгружается по сумме к выплате.
   function openCardPaysheetExport(period) {
-    let mode = 'payout';
-    const radio = (val, label) => { const r = el('input', { type: 'radio', name: 'psmode', value: val }); if (val === mode) r.checked = true; r.onchange = () => { mode = val; }; return el('label', { style: 'display:inline-flex;gap:6px;align-items:center;margin-right:16px;cursor:pointer' }, [r, label]); };
     const body = el('div', { class: 'hrf' }, [
-      el('div', { class: 'hr-sub' }, 'Ведомость на карту за ' + monthLabel(period) + ' (ФИО · номер карты · сумма) — для отправки в банк. Только сотрудники с проставленным номером карты.'),
-      el('div', {}, [radio('payout', 'Выплата (сумма = К выплате)'), radio('advance', 'Аванс (сумма из «Аванс на карту»)')]),
+      el('div', { class: 'hr-sub' }, 'Ведомость за ' + monthLabel(period) + ': ФИО · номер карты · сумма к выплате — для отправки в банк. Попадут только сотрудники с проставленным номером карты.'),
     ]);
-    const dl = el('button', { class: 'btn-primary', onclick: () => { window.location = '/hr/api/cards/paysheet.xlsx?period=' + period + '&mode=' + mode; closeModal(); } }, '⬇ Скачать');
-    modal('⬇ Ведомость на карту — ' + monthLabel(period), body, [dl]);
+    const dl = el('button', { class: 'btn-primary', onclick: () => { window.location = '/hr/api/cards/paysheet.xlsx?period=' + period + '&mode=payout'; closeModal(); } }, '⬇ Скачать');
+    modal('📤 Выгрузка ведомости — ' + monthLabel(period), body, [dl]);
   }
 
   function openEmpImport() {
@@ -1133,28 +1136,48 @@
     c.innerHTML = '';   // очищаем — иначе при повторных вызовах ведомость дорисовывается сверху (дубли)
     if (!salState.period) salState.period = curMonth();
     const NORM_DEFAULTS = { day5: { d: 22, h: 176 }, day6: { d: 26, h: 208 }, shift22: { d: 15, h: 180 } };
+    // Нормы хранятся ПО МЕСЯЦАМ: месяц выбирается прямо в окне, значения подтягиваются
+    // сохранённые за него (а не значения по умолчанию) и сохраняются при «Применить».
     async function openFillNorms() {
-      // Подгружаем УЖЕ применённые нормы за месяц — чтобы окно показывало их, а не значения по умолчанию.
-      let current = {};
-      try { current = (await api('/norms?period=' + salState.period)).norms || {}; } catch (e) { /* нет — покажем дефолт */ }
+      let period = salState.period;
       const rows = {};
-      const body = el('div', { class: 'hrf' }, [
-        el('div', { class: 'hr-sub' }, 'Плановые нормы на месяц по графикам. Показаны текущие значения (если уже проставляли). Проставятся всем активным сотрудникам графика; начисление пересчитается.'),
-        el('div', { style: 'display:grid;grid-template-columns:1fr 90px 90px;gap:8px;font-size:12px;color:#7c8579;font-weight:700' }, [el('span', {}, 'График'), el('span', {}, 'План дни'), el('span', {}, 'План часы')]),
-        ...(DICTS.schedules || []).map((s) => {
-          const cur = current[s.code] || {};
+      const grid = el('div', {});
+      const note = el('div', { class: 'hr-sub' }, '');
+      const monthInp = el('input', { type: 'month', class: 'hrf-inp', value: period });
+      monthInp.onchange = () => { period = monthInp.value || salState.period; fill(); };
+      async function fill() {
+        grid.innerHTML = ''; note.textContent = 'Загружаю…';
+        let d = { norms: {}, saved: false };
+        try { d = await api('/norms?period=' + period); } catch (e) { /* покажем дефолт */ }
+        note.textContent = d.saved
+          ? 'Показаны сохранённые нормы за ' + monthLabel(period) + '.'
+          : 'За ' + monthLabel(period) + ' нормы ещё не сохраняли — показаны значения по умолчанию, проверьте их.';
+        grid.appendChild(el('div', { style: 'display:grid;grid-template-columns:1fr 90px 90px;gap:8px;font-size:12px;color:#7c8579;font-weight:700' },
+          [el('span', {}, 'График'), el('span', {}, 'План дни'), el('span', {}, 'План часы')]));
+        (DICTS.schedules || []).forEach((s) => {
+          const cur = (d.norms || {})[s.code] || {};
           const def = NORM_DEFAULTS[s.code] || { d: '', h: '' };
           const pd = minp(cur.plan_days != null ? cur.plan_days : def.d, { placeholder: 'дни' });
           const ph = minp(cur.plan_hours != null ? cur.plan_hours : def.h, { placeholder: 'часы' });
           rows[s.code] = { pd, ph };
-          return el('div', { style: 'display:grid;grid-template-columns:1fr 90px 90px;gap:8px;align-items:center' }, [el('span', {}, s.name), pd, ph]);
-        }),
+          grid.appendChild(el('div', { style: 'display:grid;grid-template-columns:1fr 90px 90px;gap:8px;align-items:center;margin-top:6px' }, [el('span', {}, s.name), pd, ph]));
+        });
+      }
+      const body = el('div', { class: 'hrf' }, [
+        el('div', { class: 'hr-sub', style: 'margin-bottom:8px' }, 'Нормы сохраняются за выбранный месяц и проставляются активным сотрудникам этого графика.'),
+        frow('Месяц', monthInp), note, grid,
       ]);
       const save = el('button', { class: 'btn-primary', onclick: async () => {
         const norms = {}; Object.entries(rows).forEach(([c2, io]) => { norms[c2] = { plan_days: mval(io.pd), plan_hours: mval(io.ph) }; });
-        try { const r = await post('/fill-norms', { period: salState.period, norms }); toast('Нормы проставлены: ' + r.count); closeModal(); load(); } catch (e) { toast(e.message, true); }
-      } }, 'Применить');
-      modal('Заполнить нормы — ' + monthLabel(salState.period), body, [save]);
+        try {
+          const r = await post('/fill-norms', { period, norms });
+          toast('Нормы сохранены за ' + monthLabel(period) + ' · проставлено: ' + r.count + (r.skipped ? ' · уже начислено, не тронуто ' + r.skipped : ''));
+          closeModal();
+          if (period === salState.period) load({ keep: true });
+        } catch (e) { toast(e.message, true); }
+      } }, 'Сохранить и применить');
+      modal('Нормы по месяцам', body, [save]);
+      await fill();
     }
     function openTimesheetImport() {
       const file = el('input', { type: 'file', accept: '.xlsx,.xls', class: 'hrf-inp' });
@@ -1210,13 +1233,16 @@
       if (!empIds || !empIds.length) return;
       try {
         const r = await post(undo ? '/payroll/unaccrue' : '/payroll/accrue', { period: salState.period, employee_ids: empIds });
-        toast(undo ? ('Начисление снято: ' + r.affected) : ('Начислено: ' + r.done + (r.skipped ? (' · без факта пропущено ' + r.skipped) : '')));
+        toast(undo ? ('Начисление снято: ' + r.affected)
+          : ('Начислено: ' + r.done
+            + (r.skipped ? (' · без факта пропущено ' + r.skipped) : '')
+            + (r.already ? (' · уже начислено, не тронуто ' + r.already) : '')));
         load({ keep: true });
       } catch (e) { toast(e.message, true); }
     }
     async function factFromPlan(empIds) {
       if (!empIds || !empIds.length) return;
-      try { const r = await post('/payroll/fact-from-plan', { period: salState.period, employee_ids: empIds }); toast('Факт = план проставлен: ' + r.affected); load({ keep: true }); }
+      try { const r = await post('/payroll/fact-from-plan', { period: salState.period, employee_ids: empIds }); toast('Факт = план проставлен: ' + r.affected + (r.already ? ' · уже начислено, не тронуто ' + r.already : '')); load({ keep: true }); }
       catch (e) { toast(e.message, true); }
     }
     // Печать расчётных карточек (6 на A4, 2×3) — только выбранные галочками.

@@ -130,6 +130,24 @@ async function ensureSchema() {
     created_by INT, created_at TIMESTAMPTZ NOT NULL DEFAULT now()
   )`);
   await q(`CREATE INDEX IF NOT EXISTS idx_hr_recur_emp ON hr_employee_recurring (employee_id)`);
+  // Плановые нормы по месяцам и графикам. Раньше нигде не хранились — их «вычисляли» из строк
+  // сотрудников, поэтому до заполнения окно показывало значения по умолчанию, а история норм
+  // терялась. Теперь норма — самостоятельная запись: месяц + график → план дни/часы.
+  await q(`CREATE TABLE IF NOT EXISTS hr_norms (
+    period TEXT NOT NULL,                          -- YYYY-MM
+    schedule_type TEXT NOT NULL,                   -- day5 | day6 | shift22
+    plan_days NUMERIC, plan_hours NUMERIC,
+    updated_by INT, updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (period, schedule_type)
+  )`);
+  // Бэкфилл: переносим нормы, уже проставленные в ведомостях, чтобы прошлые месяцы не потерялись.
+  await q(`INSERT INTO hr_norms (period, schedule_type, plan_days, plan_hours)
+           SELECT pr.period, e.schedule_type, MAX(pr.plan_days), MAX(pr.plan_hours)
+             FROM hr_employees e JOIN hr_payroll pr ON pr.employee_id = e.id
+            WHERE e.schedule_type IS NOT NULL
+              AND (pr.plan_days IS NOT NULL OR pr.plan_hours IS NOT NULL)
+            GROUP BY pr.period, e.schedule_type
+           ON CONFLICT (period, schedule_type) DO NOTHING`).catch(() => {});
   // Налоги на ФОТ по месяцам (вписываются вручную, платятся позже начисления): ИНПС, НДФЛ, соцналог.
   await q(`CREATE TABLE IF NOT EXISTS hr_fot_taxes (
     period TEXT PRIMARY KEY,
@@ -577,6 +595,7 @@ router.post('/api/events', J, async (req, res) => {
   if (!empId || !type) return res.status(400).json({ error: 'Укажите сотрудника и тип события' });
   if (!b.event_date) return res.status(400).json({ error: 'Укажите дату' });
   let fromText = b.from_text || null, toText = b.to_text || null;
+  let recalcNote = [];   // месяцы, которые уже были начислены и пересчитались из-за смены оклада
   // Перемещение из кадровой истории РЕАЛЬНО переводит сотрудника в новый отдел (меняем department_id),
   // а не просто пишет запись в журнал — иначе в зарплате человек остаётся в старом отделе.
   if (type === 'transfer') {
@@ -610,14 +629,18 @@ router.post('/api/events', J, async (req, res) => {
     await db.pool.query('INSERT INTO hr_salary_history (employee_id, base_salary, effective_from, created_by) VALUES ($1,$2,$3,$4)', [empId, newSal, b.event_date, req.user.id]);
     await db.pool.query('UPDATE hr_employees SET base_salary=$1, updated_at=now() WHERE id=$2', [newSal, empId]);
     // Пересчитать начисление за месяц изменения и все последующие, где уже есть строки зарплаты.
+    // Уже начисленные месяцы ТОЖЕ пересчитываем (решение Шоха: иначе оклад изменён, а зарплата
+    // считается по-старому и это незаметно) — но возвращаем предупреждение, каких месяцев коснулись.
     const changePeriod = String(b.event_date).slice(0, 7);
-    for (const pr of (await db.pool.query('SELECT DISTINCT period FROM hr_payroll WHERE employee_id=$1 AND period >= $2', [empId, changePeriod])).rows) {
-      await recomputeAccrFact(empId, pr.period);
-    }
+    const affected = (await db.pool.query(
+      'SELECT DISTINCT period, (accrued_at IS NOT NULL) AS was_accrued FROM hr_payroll WHERE employee_id=$1 AND period >= $2 ORDER BY period',
+      [empId, changePeriod])).rows;
+    for (const pr of affected) await recomputeAccrFact(empId, pr.period);
+    recalcNote = affected.filter((p) => p.was_accrued).map((p) => p.period);
   }
   await addEvent(empId, type, b.event_date, { date_to: b.date_to || null, from_text: fromText, to_text: toText, comment: b.comment || null, created_by: req.user.id });
   await db.log(req.user.id, 'hr_event_add', `${type} emp#${empId}`);
-  res.json({ ok: true });
+  res.json({ ok: true, recalculated: recalcNote });
 });
 router.post('/api/events/:id(\\d+)/delete', async (req, res) => {
   await db.pool.query('DELETE FROM hr_events WHERE id=$1', [req.params.id]);
@@ -775,19 +798,33 @@ router.get('/api/payroll', async (req, res) => {
   res.json({ period, items, summary, cash_unmatched: cashUnmatched });
 });
 
-// Текущие применённые нормы по графикам за месяц (чтобы окно «Заполнить нормы» показывало
-// то, что уже стоит, а не значения по умолчанию).
+// Нормы месяца: сначала сохранённые (hr_norms), если их нет — то, что фактически стоит
+// в ведомостях этого месяца. Так окно всегда показывает правду по выбранному месяцу.
 router.get('/api/norms', async (req, res) => {
   const period = /^\d{4}-\d{2}$/.test(req.query.period) ? req.query.period : new Date().toISOString().slice(0, 7);
-  const rows = (await db.pool.query(
-    `SELECT e.schedule_type AS sched, MAX(pr.plan_days) AS plan_days, MAX(pr.plan_hours) AS plan_hours
-       FROM hr_employees e JOIN hr_payroll pr ON pr.employee_id = e.id AND pr.period = $1
-      WHERE e.status = 'active' AND e.schedule_type IS NOT NULL
-        AND (pr.plan_days IS NOT NULL OR pr.plan_hours IS NOT NULL)
-      GROUP BY e.schedule_type`, [period])).rows;
   const norms = {};
-  rows.forEach((r) => { norms[r.sched] = { plan_days: r.plan_days, plan_hours: r.plan_hours }; });
-  res.json({ period, norms });
+  let saved = false;
+  for (const r of (await db.pool.query(
+    'SELECT schedule_type AS sched, plan_days, plan_hours FROM hr_norms WHERE period = $1', [period])).rows) {
+    norms[r.sched] = { plan_days: r.plan_days, plan_hours: r.plan_hours };
+    saved = true;
+  }
+  if (!saved) {
+    const rows = (await db.pool.query(
+      `SELECT e.schedule_type AS sched, MAX(pr.plan_days) AS plan_days, MAX(pr.plan_hours) AS plan_hours
+         FROM hr_employees e JOIN hr_payroll pr ON pr.employee_id = e.id AND pr.period = $1
+        WHERE e.status = 'active' AND e.schedule_type IS NOT NULL
+          AND (pr.plan_days IS NOT NULL OR pr.plan_hours IS NOT NULL)
+        GROUP BY e.schedule_type`, [period])).rows;
+    rows.forEach((r) => { norms[r.sched] = { plan_days: r.plan_days, plan_hours: r.plan_hours }; });
+  }
+  res.json({ period, norms, saved });
+});
+// Нормы за все месяцы — чтобы видеть историю и не выдумывать цифры заново.
+router.get('/api/norms/history', async (req, res) => {
+  const rows = (await db.pool.query(
+    'SELECT period, schedule_type, plan_days, plan_hours FROM hr_norms ORDER BY period DESC, schedule_type')).rows;
+  res.json({ items: rows });
 });
 
 // Заполнить плановые нормы (дни/часы) по графикам за месяц — всем активным сотрудникам графика,
@@ -797,13 +834,25 @@ router.post('/api/fill-norms', J, async (req, res) => {
   if (!period) return res.status(400).json({ error: 'Не указан месяц' });
   { const _e = await hrLockError(period); if (_e) return res.status(423).json({ error: _e }); }
   const norms = req.body.norms || {};
-  let count = 0;
+  // Уже начисленные строки не трогаем: иначе повторное заполнение норм пересчитывало
+  // тех, кого ты посчитала раньше, и суммы уезжали. Чтобы пересчитать — снять начисление.
+  const locked = new Set((await db.pool.query(
+    'SELECT employee_id FROM hr_payroll WHERE period = $1 AND accrued_at IS NOT NULL', [period])).rows.map((r) => r.employee_id));
+  let count = 0, skipped = 0;
   for (const [sched, v] of Object.entries(norms)) {
     if (!SCHEDULE_CODES.includes(sched)) continue;
     const pd = numOrNull(v.plan_days), ph = numOrNull(v.plan_hours);
     if (pd == null && ph == null) continue;
+    // Норма сохраняется за месяц — в следующий раз окно покажет именно её, а не значения по умолчанию.
+    await db.pool.query(
+      `INSERT INTO hr_norms (period, schedule_type, plan_days, plan_hours, updated_by, updated_at)
+       VALUES ($1,$2,$3,$4,$5,now())
+       ON CONFLICT (period, schedule_type) DO UPDATE SET plan_days=EXCLUDED.plan_days,
+         plan_hours=EXCLUDED.plan_hours, updated_by=EXCLUDED.updated_by, updated_at=now()`,
+      [period, sched, pd, ph, req.user.id]);
     const emps = (await db.pool.query("SELECT id FROM hr_employees WHERE status = 'active' AND schedule_type = $1", [sched])).rows;
     for (const e of emps) {
+      if (locked.has(e.id)) { skipped++; continue; }   // строка уже начислена — не пересчитываем
       await db.pool.query(
         `INSERT INTO hr_payroll (employee_id, period, plan_days, plan_hours, created_by) VALUES ($1,$2,$3,$4,$5)
          ON CONFLICT (employee_id, period) DO UPDATE SET plan_days = COALESCE($3, hr_payroll.plan_days), plan_hours = COALESCE($4, hr_payroll.plan_hours), updated_at = now()`,
@@ -814,16 +863,18 @@ router.post('/api/fill-norms', J, async (req, res) => {
     }
   }
   // «Полный месяц» (full_month): факт = план — проставляем автоматически после заполнения норм.
+  // Начисленных пропускаем и здесь.
   const fm = await db.pool.query(
     `UPDATE hr_payroll SET fact_days = COALESCE(plan_days, fact_days), fact_hours = COALESCE(plan_hours, fact_hours), updated_at = now()
-       WHERE period = $1 AND (plan_days IS NOT NULL OR plan_hours IS NOT NULL)
+       WHERE period = $1 AND (plan_days IS NOT NULL OR plan_hours IS NOT NULL) AND accrued_at IS NULL
          AND employee_id IN (SELECT id FROM hr_employees WHERE full_month = true AND status = 'active')`, [period]);
   // Пересчитать начисление у «полного месяца» (факт только что проставили) — чтобы сумма появилась сразу.
   for (const e of (await db.pool.query("SELECT id FROM hr_employees WHERE full_month = true AND status = 'active'")).rows) {
+    if (locked.has(e.id)) continue;
     await recomputeAccrFact(e.id, period);
   }
-  await db.log(req.user.id, 'hr_fill_norms', `${period}: ${count}, факт=план ${fm.rowCount}`);
-  res.json({ ok: true, count, factFromPlan: fm.rowCount });
+  await db.log(req.user.id, 'hr_fill_norms', `${period}: ${count}, пропущено начисленных ${skipped}, факт=план ${fm.rowCount}`);
+  res.json({ ok: true, count, skipped, factFromPlan: fm.rowCount });
 });
 
 // Импорт табеля производства: 2 строки на сотрудника (1-я — факт дни/часы, 2-я — переработка дни/часы).
@@ -955,8 +1006,14 @@ router.post('/api/payroll/accrue', J, async (req, res) => {
   { const _e = await hrLockError(period); if (_e) return res.status(423).json({ error: _e }); }
     const ids = Array.isArray(b.employee_ids) ? b.employee_ids.map((x) => parseInt(x, 10)).filter(Boolean) : [];
     if (!ids.length) return res.status(400).json({ error: 'Не выбраны сотрудники' });
-    let done = 0, skipped = 0;
+    // Уже начисленных не пересчитываем — их суммы зафиксированы. Чтобы пересчитать,
+    // сначала «Отменить начисление» у нужных строк.
+    const locked = new Set((await db.pool.query(
+      'SELECT employee_id FROM hr_payroll WHERE period = $1 AND accrued_at IS NOT NULL AND employee_id = ANY($2::int[])',
+      [period, ids])).rows.map((r) => r.employee_id));
+    let done = 0, skipped = 0, already = 0;
     for (const empId of ids) {
+      if (locked.has(empId)) { already++; continue; }
       const base = await recomputeAccrFact(empId, period);
       await applyRecurring(empId, period);   // постоянные суммы из карточки — в пустые ячейки
       if (base > 0) {
@@ -966,8 +1023,8 @@ router.post('/api/payroll/accrue', J, async (req, res) => {
         done++;
       } else skipped++;   // нет факта — не начисляем
     }
-    await db.log(req.user.id, 'hr_payroll_accrue', `${period}: начислено ${done}, без факта ${skipped}`);
-    res.json({ ok: true, done, skipped });
+    await db.log(req.user.id, 'hr_payroll_accrue', `${period}: начислено ${done}, без факта ${skipped}, уже было ${already}`);
+    res.json({ ok: true, done, skipped, already });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
@@ -998,12 +1055,18 @@ router.post('/api/payroll/fact-from-plan', J, async (req, res) => {
   { const _e = await hrLockError(period); if (_e) return res.status(423).json({ error: _e }); }
     const ids = Array.isArray(b.employee_ids) ? b.employee_ids.map((x) => parseInt(x, 10)).filter(Boolean) : [];
     if (!ids.length) return res.status(400).json({ error: 'Не выбраны сотрудники' });
+    // Начисленные строки не трогаем — их суммы зафиксированы.
+    const locked = new Set((await db.pool.query(
+      'SELECT employee_id FROM hr_payroll WHERE period = $1 AND accrued_at IS NOT NULL AND employee_id = ANY($2::int[])',
+      [period, ids])).rows.map((r2) => r2.employee_id));
+    const open = ids.filter((id) => !locked.has(id));
+    if (!open.length) return res.json({ ok: true, affected: 0, already: locked.size });
     const r = await db.pool.query(
       `UPDATE hr_payroll SET fact_days = COALESCE(plan_days, fact_days), fact_hours = COALESCE(plan_hours, fact_hours), updated_at=now()
-       WHERE period=$1 AND employee_id = ANY($2::int[])`, [period, ids]);
-    for (const empId of ids) await recomputeAccrFact(empId, period);   // пересчитать начисление сразу
-    await db.log(req.user.id, 'hr_payroll_fact_from_plan', `${period}: ${r.rowCount}`);
-    res.json({ ok: true, affected: r.rowCount });
+       WHERE period=$1 AND employee_id = ANY($2::int[]) AND accrued_at IS NULL`, [period, open]);
+    for (const empId of open) await recomputeAccrFact(empId, period);   // пересчитать начисление сразу
+    await db.log(req.user.id, 'hr_payroll_fact_from_plan', `${period}: ${r.rowCount}, пропущено начисленных ${locked.size}`);
+    res.json({ ok: true, affected: r.rowCount, already: locked.size });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 

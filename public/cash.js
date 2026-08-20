@@ -2523,10 +2523,8 @@
           el('div', { class: 'cash-match-main' }, [
             el('span', {}, p.out_wallet_name + ' →'), el('span', {}, ' ' + p.in_wallet_name),
             el('span', { class: 'cash-match-amt' }, money(p.amount) + ' сум'),
-            // Комиссия: ушло больше, чем пришло — разница станет отдельным расходом «% банка».
-            p.fee > 0 ? el('span', { class: 'cash-sub', style: 'color:#b25b00;font-weight:700' }, ' · пришло ' + money(p.in_amount) + ', комиссия ' + money(p.fee)) : null,
           ]),
-          el('div', { class: 'cash-sub' }, String(p.out_date).slice(0, 10) + (p.gap_days > 0 ? ' → ' + String(p.in_date).slice(0, 10) + ' (+' + p.gap_days + ' дн.)' : '')),
+          el('div', { class: 'cash-sub' }, String(p.out_date).slice(0, 10) + (p.gap_days > 0 ? ' → ' + String(p.in_date).slice(0, 10) : '')),
           // Показываем ОБА назначения — чтобы было видно, если суммы совпали случайно (это не перевод).
           el('div', { class: 'cash-sub' }, 'расход: ' + (p.out_purpose || p.out_payer || '—')),
           el('div', { class: 'cash-sub' }, 'приход: ' + (p.in_purpose || p.in_payer || '—')),
@@ -2535,7 +2533,7 @@
       return { row, cb, p };
     });
     const body = el('div', { class: 'cashf' }, [
-      el('div', { class: 'cash-note-info' }, 'Возможные переводы между своими счетами: расход на одном кошельке и приход на другом. Ищем в пределах 5 дней, с учётом комиссии (если пришло меньше — разница проведётся расходом «% банка»). Наличная касса и обнал теперь тоже попадают сюда. Проверьте оба назначения и отметьте только настоящие переводы: расход станет переводом, парный приход удалится.'),
+      el('div', { class: 'cash-note-info' }, 'Переводы между счетами с выпиской: банк↔банк и карта↔банк. Ищем строго — та же сумма и разница дат не больше суток, иначе похожие платежи смешиваются. Наличная касса сюда не входит: её операции вносятся вручную при разборе выписки. Проверьте оба назначения и отметьте только настоящие переводы: расход станет переводом, парный приход удалится.'),
       el('div', { class: 'cash-match-list' }, boxes.map((b) => b.row)),
     ]);
     const save = el('button', { class: 'btn-primary', onclick: async () => {
