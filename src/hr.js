@@ -1181,7 +1181,15 @@ async function computePayouts(period) {
     const net = (Number(r.accrued) || 0) - (Number(r.deducted) || 0);   // на руки = начислено − удержания − авансы
     const paid = Number(r.paid) || 0;
     const remainder = Math.max(0, net - paid);
-    let status; if (remainder <= 0.5 && net > 0.5) status = 'paid'; else if (net <= 0.5) status = 'none'; else if (overdue) status = 'overdue'; else if (paid > 0.5) status = 'partial'; else status = 'pending';
+    let status;
+    if (remainder <= 0.5 && net > 0.5) status = 'paid';
+    // Начисления нет, но деньги выданы — это не «пусто», а выплата без начисления.
+    // Такую строку прятать нельзя: иначе выданные деньги пропадают из вкладки.
+    else if (net <= 0.5 && paid > 0.5) status = 'no_accrual';
+    else if (net <= 0.5) status = 'none';
+    else if (overdue) status = 'overdue';
+    else if (paid > 0.5) status = 'partial';
+    else status = 'pending';
     return { emp_id: r.emp_id, full_name: r.full_name, department_id: r.department_id, department_name: r.department_name || null, emp_status: r.emp_status, net, paid, remainder, status, payouts: byEmp[r.emp_id] || [] };
   });
 }
@@ -1190,7 +1198,10 @@ router.get('/api/payouts', async (req, res) => {
     const period = /^\d{4}-\d{2}$/.test(req.query.period) ? req.query.period : new Date().toISOString().slice(0, 7);
     let items = await computePayouts(period);
     // «Нет начисления» и уволенных без остатка к выплате в список выплат не показываем.
-    items = items.filter((x) => x.status !== 'none' && !(x.emp_status === 'fired' && x.remainder <= 0.5));
+    // Строку показываем всегда, если по ней есть выплаты — иначе выданные деньги исчезают
+    // из вкладки (так август показывал «Выплачено 0» при реально выплаченных 12 млн).
+    items = items.filter((x) => (Number(x.paid) || 0) > 0.5
+      || (x.status !== 'none' && !(x.emp_status === 'fired' && x.remainder <= 0.5)));
     items = deptFilterMem(req.query.department, items);
     if (req.query.q) { const q = String(req.query.q).trim().toLowerCase(); items = items.filter((x) => (x.full_name || '').toLowerCase().includes(q)); }
     const summary = items.reduce((s, x) => ({ net: s.net + x.net, paid: s.paid + x.paid, remainder: s.remainder + x.remainder, overdue: s.overdue + (x.status === 'overdue' ? x.remainder : 0) }), { net: 0, paid: 0, remainder: 0, overdue: 0 });
@@ -1207,7 +1218,10 @@ router.get('/api/payouts-export.xlsx', async (req, res) => {
   try {
     const period = /^\d{4}-\d{2}$/.test(req.query.period) ? req.query.period : new Date().toISOString().slice(0, 7);
     let items = await computePayouts(period);
-    items = items.filter((x) => x.status !== 'none' && !(x.emp_status === 'fired' && x.remainder <= 0.5));
+    // Строку показываем всегда, если по ней есть выплаты — иначе выданные деньги исчезают
+    // из вкладки (так август показывал «Выплачено 0» при реально выплаченных 12 млн).
+    items = items.filter((x) => (Number(x.paid) || 0) > 0.5
+      || (x.status !== 'none' && !(x.emp_status === 'fired' && x.remainder <= 0.5)));
     items = deptFilterMem(req.query.department, items);
     if (req.query.q) { const q = String(req.query.q).trim().toLowerCase(); items = items.filter((x) => (x.full_name || '').toLowerCase().includes(q)); }
     const ST = { pending: 'Ожидает', partial: 'Частично', overdue: 'Просрочено', paid: 'Выплачено' };

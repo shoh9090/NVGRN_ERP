@@ -130,6 +130,8 @@
 .hr-payst-paid { background: #e8f5e9; color: #2e7d32; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px; }
 .hr-payst-overdue { background: #fdecea; color: #c0392b; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px; }
 .hr-payst-none { background: #f1f4ee; color: var(--muted); font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px; }
+/* Деньги выданы, а начисления нет — требует внимания, поэтому оранжевый. */
+.hr-payst-no_accrual { background: #fff3e0; color: #b25b00; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px; }
 .hr-note { font-size: 13px; color: var(--forest); font-weight: 700; background: #eef4e9; border-radius: 8px; padding: 8px 12px; }
 .hr-formula { margin-top: 6px; background: #fbfaf5; border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; font-size: 13px; display: flex; flex-direction: column; gap: 4px; }
 .hr-formula-main { font-size: 15px; font-weight: 800; border-top: 1px solid var(--line); padding-top: 6px; margin-top: 2px; }

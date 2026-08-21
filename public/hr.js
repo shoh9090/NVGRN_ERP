@@ -328,7 +328,7 @@
     showHrLockBadge();
     const mInp = el('input', { type: 'month', class: 'hrf-inp hr-filt', value: payState.period, onchange: (e) => { payState.period = e.target.value || curMonth(); render(); } });
     const dSel = deptMulti(payState, 'department', load);
-    const stSel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { payState.status = e.target.value; load(); } }, [{ v: '', t: 'Все статусы' }, { v: 'pending', t: 'Ожидает' }, { v: 'partial', t: 'Частично' }, { v: 'overdue', t: 'Просрочено' }, { v: 'paid', t: 'Оплачено' }].map((o) => el('option', { value: o.v, selected: o.v === payState.status || null }, o.t)));
+    const stSel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { payState.status = e.target.value; load(); } }, [{ v: '', t: 'Все статусы' }, { v: 'pending', t: 'Ожидает' }, { v: 'partial', t: 'Частично' }, { v: 'overdue', t: 'Просрочено' }, { v: 'paid', t: 'Оплачено' }, { v: 'no_accrual', t: 'Без начисления' }].map((o) => el('option', { value: o.v, selected: o.v === payState.status || null }, o.t)));
     const q = el('input', { class: 'hrf-inp hr-filt hr-filt-q', placeholder: 'Поиск по ФИО', value: payState.q, oninput: (e) => { payState.q = e.target.value; clearTimeout(window.__hrP); window.__hrP = setTimeout(load, 300); } });
     const exportBtn = el('button', { class: 'btn-ghost', onclick: () => { const sp = new URLSearchParams({ period: payState.period }); ['department', 'status', 'q'].forEach((k) => { if (payState[k]) sp.set(k, payState[k]); }); window.location = '/hr/api/payouts-export.xlsx?' + sp.toString(); }, title: 'Скачать «К выплате» в Excel (с учётом фильтров)' }, '📥 Excel');
     c.appendChild(el('div', { class: 'hr-filters' }, [el('span', { class: 'hr-flab' }, 'Месяц:'), mInp, dSel, stSel, q, exportBtn]));
@@ -914,7 +914,7 @@
   let salSel = new Set();
   const payState = { period: '', department: '', status: '', q: '' };
   let paySel = new Set();
-  const PAYOUT_STATUS = { pending: 'Ожидает', partial: 'Частично', paid: 'Оплачено', overdue: 'Просрочено', none: 'Нет начисления' };
+  const PAYOUT_STATUS = { pending: 'Ожидает', partial: 'Частично', paid: 'Оплачено', overdue: 'Просрочено', none: 'Нет начисления', no_accrual: 'Выплачено без начисления' };
   const curMonth = () => new Date().toISOString().slice(0, 7);
   const monthLabel = (ym) => { const [y, m] = ym.split('-'); return ['', 'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'][Number(m)] + ' ' + y; };
 
