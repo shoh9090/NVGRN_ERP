@@ -675,8 +675,13 @@ async function syncCashClients() {
 // Статусы задаются явно: по умолчанию отгруженные и далее по цепочке, чтобы
 // в счёт не попали черновики и отменённые. Возвращаем и разбивку по статусам —
 // чтобы было видно, из чего сложилась цифра, и её можно было сверить с отчётом SD.
-async function getMonthlySalesUnits(period, statuses = [2, 3, 4]) {
+async function getMonthlySalesUnits(period, opts = {}) {
   if (!/^\d{4}-\d{2}$/.test(String(period || ''))) throw new Error('Период указывается как ГГГГ-ММ');
+  const statuses = opts.statuses || [2, 3, 4];
+  const maxMs = opts.maxMs || 20000;      // общий предел ожидания
+  const maxPages = opts.maxPages || 20;   // защита от бесконечной постраничной выгрузки
+  const started = Date.now();
+
   const cfg = await getSdConfig();
   if (!cfg.url || !cfg.login || !cfg.password) throw new Error('SalesDoctor не настроен: заполните адрес, логин и пароль в Интеграциях');
   const auth = await sdLogin(cfg);
@@ -685,24 +690,40 @@ async function getMonthlySalesUnits(period, statuses = [2, 3, 4]) {
   const d = new Date(from);
   const to = new Date(d.getFullYear(), d.getMonth() + 1, 0).toISOString().slice(0, 10);
 
-  const orders = await sdGetAll(cfg, auth, 'getOrder', 'order', {
-    filter: { period: { date: { from, to } }, status: statuses },
-  });
-
-  let units = 0, positions = 0;
+  let units = 0, positions = 0, orders = 0, page = 1, truncated = false;
   const byStatus = {};
-  for (const o of orders) {
-    const st = String(o.status === undefined || o.status === null ? '?' : o.status);
-    byStatus[st] = byStatus[st] || { orders: 0, units: 0 };
-    byStatus[st].orders++;
-    for (const op of (o.orderProducts || [])) {
-      const q = Number(op.quantity) || 0;
-      if (!(q > 0)) continue;
-      units += q; positions++;
-      byStatus[st].units += q;
+  const limit = 500;
+  for (;;) {
+    if (Date.now() - started > maxMs || page > maxPages) { truncated = true; break; }
+    const data = await sdRequest(cfg.url, {
+      method: 'getOrder',
+      auth: { userId: auth.userId, token: auth.token },
+      params: { limit, page, filter: { period: { date: { from, to } }, status: statuses } },
+    });
+    const items = (data.result && data.result.order) || [];
+    for (const o of items) {
+      orders++;
+      const st = String(o.status === undefined || o.status === null ? '?' : o.status);
+      byStatus[st] = byStatus[st] || { orders: 0, units: 0 };
+      byStatus[st].orders++;
+      for (const op of (o.orderProducts || [])) {
+        const q = Number(op.quantity) || 0;
+        if (!(q > 0)) continue;
+        units += q; positions++;
+        byStatus[st].units += q;
+      }
     }
+    const total = data.pagination ? data.pagination.total : 0;
+    if (!items.length || items.length < limit || page * limit >= total) break;
+    page++;
   }
-  return { period, from, to, statuses, orders: orders.length, positions, units, by_status: byStatus };
+
+  return {
+    period, from, to, statuses, orders, positions, units,
+    by_status: byStatus,
+    truncated,                                   // данные неполные: уперлись в предел
+    took_ms: Date.now() - started,
+  };
 }
 
 module.exports = { getMonthlySalesUnits, getSdConfig, saveSdConfig, testConnection, syncFinishedGoods, syncPrices, diagSD, getHorecaPoints, getAgentCoverage, syncCrmAgents, syncCrmExpeditors, syncClientsToContacts, getSdProducts, syncCashClients, probeContragent };

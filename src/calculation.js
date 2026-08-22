@@ -133,21 +133,15 @@ router.get('/api/production', async (req, res) => {
       id: c.id, label: (c.code ? c.code + ' · ' : '') + c.name, group: c.group_name,
     }));
 
-    // Факт выпуска — реализация за месяц из SalesDoctor. Если SD недоступен,
-    // экран обязан открыться: показываем прочерк и причину, а не падаем.
-    let sales = null, salesError = null;
-    try { sales = await integrations.getMonthlySalesUnits(period); }
-    catch (e) { salesError = e.message; }
-
+    // ВАЖНО: SalesDoctor здесь НЕ опрашиваем. Он отвечает медленно (постраничная
+    // выгрузка заказов), и если ждать его тут, экран не открывается вообще.
+    // Факт выпуска подтягивается отдельным запросом /api/sales-fact уже после
+    // того, как лист показан.
     res.json({
       period,
       output: {
         current: output,
-        fact: sales ? sales.units : null,
-        fact_hint: sales
-          ? ('SalesDoctor: ' + sales.orders + ' заказов за ' + period + ', статусы ' + sales.statuses.join(', '))
-          : ('SalesDoctor: ' + (salesError || 'нет данных')),
-        fact_error: salesError,
+        fact: null,
         plan: outputPlan,
       },
       blocks,
@@ -158,6 +152,27 @@ router.get('/api/production', async (req, res) => {
   } catch (e) {
     console.error('[КАЛЬКУЛЯЦИЯ] производство:', e.message);
     res.status(400).json({ error: e.message });
+  }
+});
+
+// Факт реализации из SalesDoctor — отдельно от листа, чтобы медленный внешний
+// сервис не задерживал открытие экрана.
+router.get('/api/sales-fact', async (req, res) => {
+  const period = /^\d{4}-\d{2}$/.test(req.query.period || '') ? req.query.period : curPeriod();
+  try {
+    const sales = await integrations.getMonthlySalesUnits(period);
+    res.json({
+      period,
+      units: sales.units,
+      orders: sales.orders,
+      truncated: sales.truncated,
+      hint: 'SalesDoctor: ' + sales.orders + ' заказов за ' + period
+        + ', статусы ' + sales.statuses.join(', ')
+        + (sales.truncated ? ' · данные неполные: слишком много заказов' : ''),
+    });
+  } catch (e) {
+    // Не 500: для экрана это не ошибка, а просто «источник недоступен».
+    res.json({ period, units: null, error: e.message, hint: 'SalesDoctor: ' + e.message });
   }
 });
 

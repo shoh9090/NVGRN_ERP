@@ -135,3 +135,12 @@ input.calc-cell:focus, input.calc-name:focus {
 
 /* Источник факта недоступен */
 .calc-src-bad { color: var(--red); }
+
+/* Скелетон загрузки — экран не должен быть пустым, пока идут данные */
+.calc-loading { padding: 20px 0; }
+.calc-skel {
+  height: 16px; border-radius: 8px; margin: 10px 0;
+  background: linear-gradient(90deg, #eeece2, #f6f4ec, #eeece2);
+  background-size: 200% 100%; animation: calcskel 1.2s linear infinite;
+}
+@keyframes calcskel { from { background-position: 200% 0; } to { background-position: -200% 0; } }

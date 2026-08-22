@@ -123,7 +123,20 @@
   }
 
   // ---------------------------------------------------------------------------
+  function showLoading() {
+    const main = $('#calc-main');
+    if (main.querySelector('.calc-t')) return;   // уже что-то показано — не мигаем
+    main.innerHTML = '';
+    main.appendChild(el('div', { class: 'calc-loading' }, [
+      el('div', { class: 'calc-skel', style: 'width:220px' }),
+      el('div', { class: 'calc-skel', style: 'width:100%' }),
+      el('div', { class: 'calc-skel', style: 'width:100%' }),
+      el('div', { class: 'calc-skel', style: 'width:70%' }),
+    ]));
+  }
+
   async function load() {
+    showLoading();
     let d;
     try { d = await api('/production?period=' + (DATA ? DATA.period : '')); }
     catch (e) {
@@ -133,6 +146,30 @@
     }
     DATA = d;
     render();
+    loadSalesFact();   // факт из SalesDoctor подтягиваем уже после показа листа
+  }
+
+  // Факт реализации из SD грузится отдельно: он медленный и не должен
+  // задерживать открытие экрана.
+  let salesLoading = false;
+  async function loadSalesFact() {
+    if (salesLoading || !DATA) return;
+    salesLoading = true;
+    const cell = $('#calc-fact-output');
+    if (cell) { cell.textContent = 'загружаем…'; cell.classList.add('calc-dim'); }
+    try {
+      const r = await api('/sales-fact?period=' + DATA.period);
+      DATA.output.fact = r.units;
+      DATA.output.fact_hint = r.hint;
+      DATA.output.fact_error = r.error || null;
+    } catch (e) {
+      DATA.output.fact = null;
+      DATA.output.fact_hint = 'SalesDoctor: ' + e.message;
+      DATA.output.fact_error = e.message;
+    } finally {
+      salesLoading = false;
+      render();
+    }
   }
 
   function render() {
@@ -199,7 +236,7 @@
         el('div', { class: 'calc-unit' }, 'шт'),
       ]),
       el('td', {}, cell(o.current, (v) => post('/output', { current: v }), { dec: 0 })),
-      el('td', {}, el('div', { class: 'calc-cell calc-ro calc-hintcell', title: o.fact_hint },
+      el('td', {}, el('div', { id: 'calc-fact-output', class: 'calc-cell calc-ro calc-hintcell', title: o.fact_hint || '' },
         o.fact === null ? '—' : money0(o.fact))),
       el('td', {}, cell(o.plan, (v) => post('/output', { plan: v }), { dec: 0, placeholder: 'план продаж' })),
       el('td', {}, el('div', { class: 'calc-src-cell' + (o.fact_error ? ' calc-src-bad' : '') },
