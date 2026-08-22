@@ -161,6 +161,12 @@
     const d = DATA;
     const box = el('div');
 
+    // Заголовок листа — фирменный вид Hub (Lora), как на остальных плитках.
+    box.appendChild(el('div', { class: 'calc-sheet-head' }, [
+      el('h1', { class: 'calc-h1' }, 'Производство'),
+      el('div', { class: 'calc-sub' }, 'Выпуск и затраты за месяц. «Текущее» участвует в себестоимости, «фактич» подтягивается сам, «план» — ваш ориентир.'),
+    ]));
+
     box.appendChild(el('table', { class: 'calc-t' }, [
       el('colgroup', {}, [
         el('col', { class: 'c-name' }), el('col', { class: 'c-num' }),
@@ -193,9 +199,11 @@
         el('div', { class: 'calc-unit' }, 'шт'),
       ]),
       el('td', {}, cell(o.current, (v) => post('/output', { current: v }), { dec: 0 })),
-      el('td', {}, el('div', { class: 'calc-cell calc-ro calc-hintcell', title: o.fact_hint }, o.fact === null ? '—' : money0(o.fact))),
+      el('td', {}, el('div', { class: 'calc-cell calc-ro calc-hintcell', title: o.fact_hint },
+        o.fact === null ? '—' : money0(o.fact))),
       el('td', {}, cell(o.plan, (v) => post('/output', { plan: v }), { dec: 0, placeholder: 'план продаж' })),
-      el('td', {}, el('div', { class: 'calc-src-cell' }, 'SalesDoctor')),
+      el('td', {}, el('div', { class: 'calc-src-cell' + (o.fact_error ? ' calc-src-bad' : '') },
+        o.fact_error ? 'SalesDoctor: не отвечает' : 'SalesDoctor')),
     ]);
   }
 

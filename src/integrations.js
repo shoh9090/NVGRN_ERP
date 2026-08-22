@@ -668,4 +668,41 @@ async function syncCashClients() {
   return { created, updated, total: created + updated };
 }
 
-module.exports = { getSdConfig, saveSdConfig, testConnection, syncFinishedGoods, syncPrices, diagSD, getHorecaPoints, getAgentCoverage, syncCrmAgents, syncCrmExpeditors, syncClientsToContacts, getSdProducts, syncCashClients, probeContragent };
+// ---------------------------------------------------------------------------
+// Реализация за месяц в штуках (для листа «Производство» калькуляции)
+// ---------------------------------------------------------------------------
+// Считаем сумму количеств по позициям заказов SalesDoctor за календарный месяц.
+// Статусы задаются явно: по умолчанию отгруженные и далее по цепочке, чтобы
+// в счёт не попали черновики и отменённые. Возвращаем и разбивку по статусам —
+// чтобы было видно, из чего сложилась цифра, и её можно было сверить с отчётом SD.
+async function getMonthlySalesUnits(period, statuses = [2, 3, 4]) {
+  if (!/^\d{4}-\d{2}$/.test(String(period || ''))) throw new Error('Период указывается как ГГГГ-ММ');
+  const cfg = await getSdConfig();
+  if (!cfg.url || !cfg.login || !cfg.password) throw new Error('SalesDoctor не настроен: заполните адрес, логин и пароль в Интеграциях');
+  const auth = await sdLogin(cfg);
+
+  const from = period + '-01';
+  const d = new Date(from);
+  const to = new Date(d.getFullYear(), d.getMonth() + 1, 0).toISOString().slice(0, 10);
+
+  const orders = await sdGetAll(cfg, auth, 'getOrder', 'order', {
+    filter: { period: { date: { from, to } }, status: statuses },
+  });
+
+  let units = 0, positions = 0;
+  const byStatus = {};
+  for (const o of orders) {
+    const st = String(o.status === undefined || o.status === null ? '?' : o.status);
+    byStatus[st] = byStatus[st] || { orders: 0, units: 0 };
+    byStatus[st].orders++;
+    for (const op of (o.orderProducts || [])) {
+      const q = Number(op.quantity) || 0;
+      if (!(q > 0)) continue;
+      units += q; positions++;
+      byStatus[st].units += q;
+    }
+  }
+  return { period, from, to, statuses, orders: orders.length, positions, units, by_status: byStatus };
+}
+
+module.exports = { getMonthlySalesUnits, getSdConfig, saveSdConfig, testConnection, syncFinishedGoods, syncPrices, diagSD, getHorecaPoints, getAgentCoverage, syncCrmAgents, syncCrmExpeditors, syncClientsToContacts, getSdProducts, syncCashClients, probeContragent };

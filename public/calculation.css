@@ -9,6 +9,14 @@
 .calc-sheet { flex: 1; }
 .calc-empty { padding: 44px 20px; text-align: center; color: var(--ink-faint); }
 
+/* ---------- Заголовок листа (фирменный вид Hub) ---------- */
+.calc-sheet-head { margin-bottom: 16px; }
+.calc-h1 {
+  font-family: 'Lora', Georgia, serif; font-weight: 600; font-size: 25px;
+  margin: 0 0 5px; color: var(--ink); letter-spacing: -.01em;
+}
+.calc-sub { color: var(--ink-soft); font-size: 13.5px; line-height: 1.5; max-width: 720px; }
+
 /* ---------- Таблица листа ---------- */
 .calc-t { border-collapse: collapse; width: 100%; font-size: 13.5px; background: var(--surface); }
 .calc-t col.c-name { width: auto; }
@@ -38,6 +46,10 @@
 .calc-r-total td { padding: 8px 10px; font-weight: 800; background: #f7f9f5; font-variant-numeric: tabular-nums; }
 .calc-r-per td {
   padding: 8px 10px; font-weight: 800; background: #f2f0c4; font-variant-numeric: tabular-nums;
+}
+/* Ключевые цифры — Lora, как принято в дизайн-системе Hub */
+.calc-r-per td.calc-num, .calc-r-output input.calc-cell, .calc-r-output .calc-cell {
+  font-family: 'Lora', Georgia, serif; font-weight: 600; font-size: 16px;
 }
 .calc-r-gap td { border: none; height: 14px; background: var(--paper); }
 .calc-r-add td { padding: 4px 8px; border-top: none; }
@@ -120,3 +132,6 @@ input.calc-cell:focus, input.calc-name:focus {
 
 /* Пометка, что «фактич» посчитан не по всем статьям */
 .calc-partial { font-size: 10.5px; font-weight: 700; color: #8a5a00; margin-top: 2px; cursor: help; }
+
+/* Источник факта недоступен */
+.calc-src-bad { color: var(--red); }

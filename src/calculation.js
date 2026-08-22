@@ -15,6 +15,7 @@
 const express = require('express');
 const db = require('./db');
 const engine = require('./calculation-engine');
+const integrations = require('./integrations');
 
 const router = express.Router();
 const J = express.json({ limit: '1mb' });
@@ -132,12 +133,21 @@ router.get('/api/production', async (req, res) => {
       id: c.id, label: (c.code ? c.code + ' · ' : '') + c.name, group: c.group_name,
     }));
 
+    // Факт выпуска — реализация за месяц из SalesDoctor. Если SD недоступен,
+    // экран обязан открыться: показываем прочерк и причину, а не падаем.
+    let sales = null, salesError = null;
+    try { sales = await integrations.getMonthlySalesUnits(period); }
+    catch (e) { salesError = e.message; }
+
     res.json({
       period,
       output: {
         current: output,
-        fact: null,          // общая реализация в штуках из SalesDoctor — подключим отдельно
-        fact_hint: 'Подтянем из SalesDoctor: общая реализация в штуках',
+        fact: sales ? sales.units : null,
+        fact_hint: sales
+          ? ('SalesDoctor: ' + sales.orders + ' заказов за ' + period + ', статусы ' + sales.statuses.join(', '))
+          : ('SalesDoctor: ' + (salesError || 'нет данных')),
+        fact_error: salesError,
         plan: outputPlan,
       },
       blocks,
