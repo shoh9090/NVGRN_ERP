@@ -14,6 +14,50 @@ router.use(async (req, res, next) => {
   catch (e) { next(e); }
 });
 
+// ---------------------------------------------------------------------------
+// Фильтр по агенту (ТЗ: список агентов берём из SalesDoctor, а не из текста)
+// ---------------------------------------------------------------------------
+// В претензиях есть agent_sd_id (подача из бота) и текстовый agent_name
+// (старый импорт истории). В SD один и тот же человек записан полным именем
+// («Lobar Mahmudova»), а в импорте встречается коротко («Lobar»). Поэтому:
+//   • новые записи сопоставляем строго по agent_sd_id;
+//   • старые (без sd_id) — по имени: точное совпадение или короткое имя как
+//     начало полного, чтобы «Lobar» и «Lobar Mahmudova» не были разными людьми.
+// Значение фильтра — sd_agent_id, либо служебные __none__ / __other__.
+const AGENT_NAME_MATCH = (alias) => `(
+  lower(trim(${alias}.agent_name)) = lower(trim(a.sd_agent_name))
+  OR (length(trim(${alias}.agent_name)) >= 3
+      AND lower(trim(a.sd_agent_name)) LIKE lower(trim(${alias}.agent_name)) || ' %')
+)`;
+
+// Возвращает SQL-условие и параметры. startIndex — номер следующего свободного $N.
+function agentFilterSQL(value, startIndex, alias = 'c') {
+  const v = String(value || '').trim();
+  if (!v) return null;
+  const noSd = `COALESCE(${alias}.agent_sd_id,'') = ''`;
+  if (v === '__none__') {
+    return { sql: `(${noSd} AND COALESCE(trim(${alias}.agent_name),'') = '')`, params: [] };
+  }
+  if (v === '__other__') {
+    return {
+      sql: `(${noSd} AND COALESCE(trim(${alias}.agent_name),'') <> '' AND NOT EXISTS (
+              SELECT 1 FROM tgbot.crm_agents a WHERE ${AGENT_NAME_MATCH(alias)}))`,
+      params: [],
+    };
+  }
+  const n = '$' + startIndex;
+  // Третья ветка — запасной режим, когда справочник SD пуст и фильтр присылает
+  // не идентификатор, а само имя агента. Для настоящего id она никогда не сработает.
+  return {
+    sql: `(${alias}.agent_sd_id = ${n}
+           OR (${noSd} AND EXISTS (
+                 SELECT 1 FROM tgbot.crm_agents a
+                  WHERE a.sd_agent_id = ${n} AND ${AGENT_NAME_MATCH(alias)}))
+           OR (${noSd} AND lower(trim(${alias}.agent_name)) = lower(trim(${n}))))`,
+    params: [v],
+  };
+}
+
 const STATUS = {
   new:           'Новая',
   agent_reacted: 'Агент отреагировал',
@@ -140,7 +184,10 @@ router.get('/api/list', async (req, res) => {
     // Фильтр «сеть (ИНН)» — по точкам сети из point_contacts, с запасным вариантом по названию фирмы.
     if (req.query.inn) add('(c.sd_id IN (SELECT sd_id FROM tgbot.point_contacts WHERE inn = $?) OR c.firm_name = $?)', req.query.inn, req.query.inn);
     if (req.query.point) add('c.point_name = $?', req.query.point);
-    if (req.query.agent) add("COALESCE(NULLIF(c.agent_name,''),'—') = $?", req.query.agent);
+    if (req.query.agent) {
+      const af = agentFilterSQL(req.query.agent, p.length + 1, 'c');
+      if (af) { p.push(...af.params); w.push(af.sql); }
+    }
     if (q) { p.push('%' + String(q).trim() + '%'); const i = p.length;
       w.push(`(c.product_name ILIKE $${i} OR c.point_name ILIKE $${i} OR c.firm_name ILIKE $${i} OR c.agent_name ILIKE $${i})`); }
     return { params: p, whereSQL: w.length ? 'WHERE ' + w.join(' AND ') : '' };
@@ -231,7 +278,10 @@ router.get('/api/export.xlsx', async (req, res) => {
   if (req.query.status) add('c.status = $?', req.query.status);
   if (req.query.inn) add('(c.sd_id IN (SELECT sd_id FROM tgbot.point_contacts WHERE inn = $?) OR c.firm_name = $?)', req.query.inn, req.query.inn);
   if (req.query.point) add('c.point_name = $?', req.query.point);
-  if (req.query.agent) add("COALESCE(NULLIF(c.agent_name,''),'—') = $?", req.query.agent);
+  if (req.query.agent) {
+    const af = agentFilterSQL(req.query.agent, p.length + 1, 'c');
+    if (af) { p.push(...af.params); w.push(af.sql); }
+  }
   // Остальные фильтры экрана: раньше выгрузка их теряла и не совпадала со списком.
   if (req.query.type) add('c.complaint_type = $?', req.query.type);
   if (req.query.link) add('c.link_code = $?', req.query.link);
@@ -389,7 +439,10 @@ router.get('/api/stats', async (req, res) => {
     const parts = [], extra = [];
     if (fInn) { extra.push(fInn); parts.push(`sd_id IN (SELECT sd_id FROM tgbot.point_contacts WHERE inn = $${baseParams.length + extra.length})`); }
     if (fPoint) { extra.push(fPoint); parts.push(`point_name = $${baseParams.length + extra.length}`); }
-    if (fAgent) { extra.push(fAgent); parts.push(`COALESCE(NULLIF(agent_name,''),'—') = $${baseParams.length + extra.length}`); }
+    if (fAgent) {
+      const af = agentFilterSQL(fAgent, baseParams.length + extra.length + 1, 'complaints');
+      if (af) { extra.push(...af.params); parts.push(af.sql); }
+    }
     return { sql: baseSql.replace('{{scope}}', parts.length ? ' AND ' + parts.join(' AND ') : ''), params: [...baseParams, ...extra] };
   };
   const sOne = async (base, p) => { const { sql, params } = scoped(base, p); return one(sql, params); };
@@ -411,7 +464,10 @@ router.get('/api/stats', async (req, res) => {
   // Разбивка по СЕТЯМ (группировка по ИНН из point_contacts; подпись — фирма) и по ТОЧКАМ.
   const netParts = ['c.created_at >= $1', 'c.created_at < $2']; const netP = [from, to];
   if (fInn) { netP.push(fInn); netParts.push(`c.sd_id IN (SELECT sd_id FROM tgbot.point_contacts WHERE inn = $${netP.length})`); }
-  if (fAgent) { netP.push(fAgent); netParts.push(`COALESCE(NULLIF(c.agent_name,''),'—') = $${netP.length}`); }
+  if (fAgent) {
+    const af = agentFilterSQL(fAgent, netP.length + 1, 'c');
+    if (af) { netP.push(...af.params); netParts.push(af.sql); }
+  }
   if (fPoint) { netP.push(fPoint); netParts.push(`c.point_name = $${netP.length}`); }
   const byNetwork = await one(
     `SELECT COALESCE(pc.inn, NULLIF(c.firm_name,''), '—') code,
@@ -487,11 +543,45 @@ router.get('/api/networks', async (req, res) => {
      FROM tgbot.complaints c LEFT JOIN tgbot.point_contacts pc ON pc.sd_id = c.sd_id
      WHERE COALESCE(NULLIF(c.point_name,''),'') <> ''
      GROUP BY 1,2 ORDER BY 2`)).rows;
-  // Агенты — для фильтра «Все агенты». Только те, по кому есть претензии.
+  // Агенты берём из SalesDoctor (tgbot.crm_agents), а не из свободного текста:
+  // в импорте один человек встречался как «Lobar» и «Lobar Mahmudova».
+  // Счётчик считается тем же правилом, что и фильтр, иначе цифры не сойдутся.
   const agents = (await db.pool.query(
-    `SELECT COALESCE(NULLIF(agent_name,''),'—') agent, count(*)::int n
-     FROM tgbot.complaints GROUP BY 1 ORDER BY n DESC, 1`)).rows;
-  res.json({ networks: nets, points, agents });
+    `SELECT a.sd_agent_id AS id, a.sd_agent_name AS name,
+            (SELECT count(*) FROM tgbot.complaints c
+              WHERE c.agent_sd_id = a.sd_agent_id
+                 OR (COALESCE(c.agent_sd_id,'') = '' AND ${AGENT_NAME_MATCH('c')}))::int AS n
+     FROM tgbot.crm_agents a
+     WHERE a.is_active
+     ORDER BY n DESC, a.sd_agent_name`)).rows.filter((x) => x.n > 0);
+
+  // Служебные пункты, чтобы ни одна претензия не осталась недостижимой фильтром.
+  const extra = (await db.pool.query(
+    `SELECT
+       count(*) FILTER (WHERE COALESCE(c.agent_sd_id,'') = ''
+                          AND COALESCE(trim(c.agent_name),'') = '')::int AS none_n,
+       count(*) FILTER (WHERE COALESCE(c.agent_sd_id,'') = ''
+                          AND COALESCE(trim(c.agent_name),'') <> ''
+                          AND NOT EXISTS (SELECT 1 FROM tgbot.crm_agents a WHERE ${AGENT_NAME_MATCH('c')}))::int AS other_n
+     FROM tgbot.complaints c`)).rows[0] || { none_n: 0, other_n: 0 };
+  if (extra.other_n > 0) agents.push({ id: '__other__', name: 'Прочие (нет в SalesDoctor)', n: extra.other_n });
+  if (extra.none_n > 0) agents.push({ id: '__none__', name: 'Без агента', n: extra.none_n });
+
+  // Страховка: если синхронизация с SalesDoctor ещё не проходила, справочник агентов
+  // пуст и фильтр стал бы бесполезным. Тогда возвращаемся к именам из претензий.
+  let agentsFromSd = true;
+  const sdCount = Number((await db.pool.query('SELECT count(*)::int n FROM tgbot.crm_agents WHERE is_active')).rows[0].n) || 0;
+  let agentList = agents;
+  if (!sdCount) {
+    agentsFromSd = false;
+    agentList = (await db.pool.query(
+      `SELECT NULLIF(trim(agent_name),'') AS id, COALESCE(NULLIF(trim(agent_name),''),'Без агента') AS name,
+              count(*)::int AS n
+       FROM tgbot.complaints GROUP BY 1, 2 ORDER BY n DESC, 2`)).rows
+      .map((x) => ({ id: x.id === null ? '__none__' : x.id, name: x.name, n: x.n }));
+  }
+
+  res.json({ networks: nets, points, agents: agentList, agents_from_sd: agentsFromSd });
 });
 
 function monthLabel(ym) {

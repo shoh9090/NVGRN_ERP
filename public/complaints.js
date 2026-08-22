@@ -87,7 +87,7 @@
   }
   const netItems = () => ((NETS && NETS.networks) || []).map((n) => ({ value: n.inn, label: (n.name || n.inn) + ' (' + n.n + ')' }));
   const pointItems = (inn) => ((NETS && NETS.points) || []).filter((p) => !inn || String(p.inn) === String(inn)).map((p) => ({ value: p.point, label: p.point + ' (' + p.n + ')' }));
-  const agentItems = () => ((NETS && NETS.agents) || []).map((a) => ({ value: a.agent, label: a.agent + ' (' + a.n + ')' }));
+  const agentItems = () => ((NETS && NETS.agents) || []).map((a) => ({ value: a.id, label: a.name + ' (' + a.n + ')' }));
 
   // ---------- Каркас с вкладками ----------
   function shell() {
@@ -366,12 +366,19 @@
     }));
   }
 
+  // Таблица на дашборде показывает имена, а фильтр работает по id агента SD.
+  // Если имени нет среди агентов SD (старый импорт) — оставляем поиск по тексту.
+  function agentDrillParam(name) {
+    const hit = ((NETS && NETS.agents) || []).find((a) => a.name === name);
+    return hit ? { agent: hit.id } : { q: name };
+  }
+
   function agentTable(byAgent) {
     if (!byAgent || !byAgent.length) return el('div', { class: 'cmp-empty' }, 'Нет данных за период.');
     const max = Math.max(...byAgent.map((a) => a.n));
     const body = byAgent.map((a) => el('tr', {
       class: a.name && a.name !== '—' ? 'cmp-clk' : null,
-      onclick: a.name && a.name !== '—' ? () => drill('Агент: ' + a.name + ' · ' + monthLabelRu(dashMonth), Object.assign({ agent: a.name }, monthRange(dashMonth))) : null,
+      onclick: a.name && a.name !== '—' ? () => drill('Агент: ' + a.name + ' · ' + monthLabelRu(dashMonth), Object.assign(agentDrillParam(a.name), monthRange(dashMonth))) : null,
     }, [
       el('td', {}, a.name),
       el('td', { class: 'n' }, String(a.n)),
