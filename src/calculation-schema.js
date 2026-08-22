@@ -259,7 +259,12 @@ async function ensureCalculationSchema(pool) {
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
   )`);
   // Поля, которых в старой таблице нет. Только добавление колонок.
-  for (const [col, type] of [['comment', "TEXT DEFAULT ''"], ['updated_by', 'INTEGER'], ['updated_at', 'TIMESTAMPTZ']]) {
+  // plan_amount — колонка «план» из Excel; cash_category_id — связь со статьёй
+  // ДДС Кассы, чтобы колонка «фактич» заполнялась сама, а не переписывалась руками.
+  for (const [col, type] of [
+    ['comment', "TEXT DEFAULT ''"], ['updated_by', 'INTEGER'], ['updated_at', 'TIMESTAMPTZ'],
+    ['plan_amount', 'NUMERIC'], ['cash_category_id', 'INTEGER'],
+  ]) {
     await q(`ALTER TABLE calc_cost_items ADD COLUMN IF NOT EXISTS ${col} ${type}`)
       .catch((e) => console.error('calc_cost_items ' + col + ':', e.message));
   }
