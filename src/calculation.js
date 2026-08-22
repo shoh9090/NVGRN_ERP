@@ -24,10 +24,23 @@ const curPeriod = () => new Date().toISOString().slice(0, 7);
 const canEdit = (req) => !!(req.user && (req.user.isAdmin || req.user.isFinance));
 const denyEdit = (res) => res.status(403).json({ error: 'Менять затраты может финансовый сотрудник или администратор' });
 
-// Ключи в общей таблице settings — заводить отдельную таблицу ради двух чисел не нужно.
-const K_OUTPUT = 'calc_monthly_output';   // среднемесячный выпуск, шт
-const K_FOT_MODE = 'calc_fot_mode';       // hr (из Кадров) | manual (ввожу сам)
-const K_FOT_MANUAL = 'calc_fot_manual';   // ручная сумма ФОТ с налогами
+// Настройки калькуляции лежат в calc_settings (таблица с июля, там уже есть выпуск).
+const K_OUTPUT = 'monthly_units';         // среднемесячный выпуск, шт
+const K_FOT_MODE = 'fot_mode';            // hr (из Кадров) | manual (ввожу сам)
+const K_FOT_MANUAL = 'fot_manual';        // ручная сумма ФОТ с налогами
+
+async function calcSettings() {
+  const r = await db.pool.query('SELECT key, value FROM calc_settings');
+  const out = {};
+  r.rows.forEach((x) => { out[x.key] = x.value; });
+  return out;
+}
+async function setCalcSetting(key, value, userId) {
+  await db.pool.query(
+    `INSERT INTO calc_settings (key, value, updated_at, updated_by) VALUES ($1, $2, now(), $3)
+     ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = now(), updated_by = $3`,
+    [key, String(value), userId || null]);
+}
 
 const BLOCKS = [
   { key: 'production', title: 'Производственные затраты', hint: 'Тратим, чтобы произвести: аренда цеха, электроэнергия, вода.' },
@@ -48,16 +61,16 @@ router.get('/', async (req, res) => {
 // ===========================================================================
 router.get('/api/costs', async (req, res) => {
   try {
-    const settings = await db.getSettings();
+    const settings = await calcSettings();
     const output = asNum(settings[K_OUTPUT]) || 0;
     const period = /^\d{4}-\d{2}$/.test(req.query.period || '') ? req.query.period : curPeriod();
 
     const rows = (await db.pool.query(
-      `SELECT id, block, name, amount, sort_order FROM calc_cost_items
-       WHERE status = 'active' ORDER BY block, sort_order, id`)).rows;
+      `SELECT id, kind, name, amount, sort FROM calc_cost_items
+       WHERE status = 'active' ORDER BY kind, sort, id`)).rows;
 
     const blocks = BLOCKS.map((b) => {
-      const items = rows.filter((r) => r.block === b.key).map((r) => ({
+      const items = rows.filter((r) => r.kind === b.key).map((r) => ({
         id: r.id,
         name: r.name,
         amount: Number(r.amount) || 0,
@@ -102,7 +115,7 @@ router.post('/api/output', J, async (req, res) => {
   if (!canEdit(req)) return denyEdit(res);
   const v = asNum((req.body || {}).output);
   if (v < 0) return res.status(400).json({ error: 'Выпуск не может быть отрицательным' });
-  await db.setSetting(K_OUTPUT, String(v));
+  await setCalcSetting(K_OUTPUT, v, req.user.id);
   await db.log(req.user.id, 'calc_output_set', { output: v });
   res.json({ ok: true });
 });
@@ -111,11 +124,11 @@ router.post('/api/output', J, async (req, res) => {
 router.post('/api/fot', J, async (req, res) => {
   if (!canEdit(req)) return denyEdit(res);
   const b = req.body || {};
-  if (b.mode !== undefined) await db.setSetting(K_FOT_MODE, b.mode === 'manual' ? 'manual' : 'hr');
+  if (b.mode !== undefined) await setCalcSetting(K_FOT_MODE, b.mode === 'manual' ? 'manual' : 'hr', req.user.id);
   if (b.manual !== undefined) {
     const v = asNum(b.manual);
     if (v < 0) return res.status(400).json({ error: 'Сумма ФОТ не может быть отрицательной' });
-    await db.setSetting(K_FOT_MANUAL, String(v));
+    await setCalcSetting(K_FOT_MANUAL, v, req.user.id);
   }
   await db.log(req.user.id, 'calc_fot_set', { mode: b.mode, manual: b.manual });
   res.json({ ok: true });
@@ -125,16 +138,16 @@ router.post('/api/fot', J, async (req, res) => {
 router.post('/api/costs', J, async (req, res) => {
   if (!canEdit(req)) return denyEdit(res);
   const b = req.body || {};
-  const block = b.block === 'overhead' ? 'overhead' : 'production';
+  const kind = b.block === 'overhead' ? 'overhead' : 'production';
   const name = String(b.name || '').trim() || 'Новая статья';
   try {
     const next = (await db.pool.query(
-      'SELECT COALESCE(MAX(sort_order), 0) + 10 AS n FROM calc_cost_items WHERE block = $1', [block])).rows[0].n;
+      'SELECT COALESCE(MAX(sort), 0) + 10 AS n FROM calc_cost_items WHERE kind = $1', [kind])).rows[0].n;
     const r = await db.pool.query(
-      `INSERT INTO calc_cost_items (block, name, amount, sort_order, updated_by)
-       VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-      [block, name, asNum(b.amount), next, req.user.id]);
-    await db.log(req.user.id, 'calc_cost_add', { id: r.rows[0].id, block, name });
+      `INSERT INTO calc_cost_items (kind, name, amount, sort, updated_by, updated_at)
+       VALUES ($1, $2, $3, $4, $5, now()) RETURNING id`,
+      [kind, name, asNum(b.amount), next, req.user.id]);
+    await db.log(req.user.id, 'calc_cost_add', { id: r.rows[0].id, kind, name });
     res.json({ ok: true, id: r.rows[0].id });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });

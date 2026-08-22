@@ -244,24 +244,42 @@ async function ensureCalculationSchema(pool) {
   )`);
 
   // --- Статьи затрат (экран «Затраты», аналог листа «Произодство» в Excel) ---
-  // Простая таблица: блок, название, сумма в месяц. Правится прямо в таблице.
+  // ВНИМАНИЕ: таблица calc_cost_items существует в базе с июля (прежняя версия
+  // модуля) и содержит рабочие данные Шоха. Колонки там называются kind и sort.
+  // Используем их КАК ЕСТЬ: переименование потеряло бы связь с существующими
+  // строками, а CREATE TABLE IF NOT EXISTS с другими именами молча ничего не
+  // создаёт — именно на этом расчёт и падал.
   await q(`CREATE TABLE IF NOT EXISTS calc_cost_items (
     id SERIAL PRIMARY KEY,
-    block TEXT NOT NULL DEFAULT 'production',   -- production (производственные) | overhead (накладные)
+    kind TEXT NOT NULL,                          -- production (производственные) | overhead (накладные)
     name TEXT NOT NULL,
-    amount NUMERIC NOT NULL DEFAULT 0,
-    sort_order INTEGER NOT NULL DEFAULT 100,
-    status TEXT NOT NULL DEFAULT 'active',      -- active | archived
-    comment TEXT DEFAULT '',
-    updated_by INTEGER, updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    amount NUMERIC NOT NULL DEFAULT 0,           -- сумма в месяц
+    sort INT NOT NULL DEFAULT 100,
+    status TEXT NOT NULL DEFAULT 'active',       -- active | archived
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
   )`);
-  await q(`CREATE INDEX IF NOT EXISTS idx_calc_cost_items ON calc_cost_items (block, sort_order, id)`);
+  // Поля, которых в старой таблице нет. Только добавление колонок.
+  for (const [col, type] of [['comment', "TEXT DEFAULT ''"], ['updated_by', 'INTEGER'], ['updated_at', 'TIMESTAMPTZ']]) {
+    await q(`ALTER TABLE calc_cost_items ADD COLUMN IF NOT EXISTS ${col} ${type}`)
+      .catch((e) => console.error('calc_cost_items ' + col + ':', e.message));
+  }
+  await q(`CREATE INDEX IF NOT EXISTS idx_calc_cost_items ON calc_cost_items (kind, sort, id)`);
 
-  // Первое наполнение — статьи из Excel Шоха. Только если таблица пустая:
-  // дальше строки живут в базе и правятся пользователем, в коде их нет.
+  // Настройки калькуляции тоже живут с июля в calc_settings — там уже лежит
+  // среднемесячный выпуск. Свою таблицу ради этого не заводим.
+  await q(`CREATE TABLE IF NOT EXISTS calc_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by INT
+  )`);
+  await q(`INSERT INTO calc_settings (key, value) VALUES ('monthly_units', '55000') ON CONFLICT (key) DO NOTHING`);
+
+  // Первое наполнение статьями из Excel — только если таблица пустая.
+  // В рабочей базе строки уже есть, поэтому сид не сработает и ничего не затрёт.
   const has = await q('SELECT count(*)::int AS n FROM calc_cost_items');
   if (!Number(has.rows[0].n)) {
-    await q(`INSERT INTO calc_cost_items (block, name, amount, sort_order) VALUES
+    await q(`INSERT INTO calc_cost_items (kind, name, amount, sort) VALUES
       ('production', 'Аренда', 11480800, 10),
       ('production', 'Электроэнергия и пр.', 4500000, 20),
       ('overhead', 'Сертификация и лаборатория', 1000000, 10),
