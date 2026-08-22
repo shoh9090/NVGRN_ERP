@@ -538,7 +538,11 @@
         });
         toast('Сохранено');
       }
-      delete state.refOptions[state.type]; // обновить кэш ссылок
+      // Кэш вариантов хранится по ключу «тип|фильтр», а не просто «тип», поэтому чистим все
+      // ключи этого справочника — иначе новая запись не появлялась в выпадашках других форм.
+      Object.keys(state.refOptions).forEach((k) => {
+        if (k === state.type || k.startsWith(state.type + '|')) delete state.refOptions[k];
+      });
       closeCard();
       loadList();
     } catch (e) {
@@ -626,7 +630,10 @@
             });
             toast(`Импорт: создано ${r.created}, обновлено ${r.updated}, пропущено ${r.skipped}`);
             overlay.remove();
-            delete state.refOptions[state.type + '|'];
+            // Чистим все варианты этого справочника (ключи «тип|фильтр»), а не только пустой фильтр.
+            Object.keys(state.refOptions).forEach((k) => {
+              if (k === state.type || k.startsWith(state.type + '|')) delete state.refOptions[k];
+            });
             loadList();
           } catch (err) {
             toast(err.message, true);
