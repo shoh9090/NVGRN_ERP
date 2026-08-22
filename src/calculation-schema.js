@@ -243,6 +243,37 @@ async function ensureCalculationSchema(pool) {
     PRIMARY KEY (item_kind, item_id)
   )`);
 
+  // --- Статьи затрат (экран «Затраты», аналог листа «Произодство» в Excel) ---
+  // Простая таблица: блок, название, сумма в месяц. Правится прямо в таблице.
+  await q(`CREATE TABLE IF NOT EXISTS calc_cost_items (
+    id SERIAL PRIMARY KEY,
+    block TEXT NOT NULL DEFAULT 'production',   -- production (производственные) | overhead (накладные)
+    name TEXT NOT NULL,
+    amount NUMERIC NOT NULL DEFAULT 0,
+    sort_order INTEGER NOT NULL DEFAULT 100,
+    status TEXT NOT NULL DEFAULT 'active',      -- active | archived
+    comment TEXT DEFAULT '',
+    updated_by INTEGER, updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  await q(`CREATE INDEX IF NOT EXISTS idx_calc_cost_items ON calc_cost_items (block, sort_order, id)`);
+
+  // Первое наполнение — статьи из Excel Шоха. Только если таблица пустая:
+  // дальше строки живут в базе и правятся пользователем, в коде их нет.
+  const has = await q('SELECT count(*)::int AS n FROM calc_cost_items');
+  if (!Number(has.rows[0].n)) {
+    await q(`INSERT INTO calc_cost_items (block, name, amount, sort_order) VALUES
+      ('production', 'Аренда', 11480800, 10),
+      ('production', 'Электроэнергия и пр.', 4500000, 20),
+      ('overhead', 'Сертификация и лаборатория', 1000000, 10),
+      ('overhead', 'Логистика', 3500000, 20),
+      ('overhead', 'Закупки для производства', 3000000, 30),
+      ('overhead', 'Банковские услуги', 1300000, 40),
+      ('overhead', 'Административные расходы', 7000000, 50),
+      ('overhead', 'Маркетинг', 1200000, 60),
+      ('overhead', 'Кредиты', 5227156, 70),
+      ('overhead', 'Прочие (вода, канализация)', 312000, 80)`);
+  }
+
   _ready = true;
 }
 

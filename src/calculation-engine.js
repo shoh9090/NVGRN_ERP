@@ -111,6 +111,13 @@ function calcFotPerUnit(fot, totalOutput) {
   };
 }
 
+// Затраты на единицу: сумма за месяц / выпуск.
+// Деление на ноль запрещено — возвращаем null, а не ноль (ТЗ 8.5, 23.1).
+function perUnit(amount, output) {
+  const out = num(output);
+  return out > 0 ? num(amount) / out : null;
+}
+
 // Распределённые расходы на единицу (ТЗ 14.4) — поровну на произведённую единицу.
 const OVERHEAD_KEYS = ['production', 'admin', 'commercial', 'logistics', 'finance'];
 function calcOverheadsPerUnit(monthly, totalOutput) {
@@ -363,6 +370,7 @@ function weightedAveragePrice(deliveries) {
 
 module.exports = {
   FORMULA_VERSION,
+  perUnit,
   STALE_PRICE_DAYS,
   calculateProduct,
   calcRecipeRow,

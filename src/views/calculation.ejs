@@ -18,7 +18,6 @@
         <% if (settings.logo_file_id) { %><img class="topbar-logo" src="/file/<%= settings.logo_file_id %>" alt=""><% } %>
         <span class="company">🧮 Калькуляция себестоимости</span>
       </a>
-      <span id="calc-mode-badge" class="calc-mode-badge"></span>
     </div>
     <div class="topbar-right">
       <div id="bell-root" class="bell-root"></div>
@@ -27,7 +26,6 @@
   </header>
 
   <main id="calc-main"></main>
-  <div id="calc-modal-root"></div>
 
   <script>window.HUB_USER = { isAdmin: <%= user.isAdmin ? "true" : "false" %>, isFinance: <%= user.isFinance ? "true" : "false" %>, name: "<%= user.name %>" };</script>
   <script src="/static/bell.js?v=<%= V %>"></script>
