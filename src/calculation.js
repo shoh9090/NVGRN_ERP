@@ -336,4 +336,173 @@ router.delete('/api/costs/:id(\\d+)', async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
+// ===========================================================================
+// Лист «Упаковка»
+// ===========================================================================
+// таб1 — цены упаковочных материалов: своя цена в калькуляции + цена из Закупа.
+// таб2 — комплекты упаковки: из чего складывается стоимость упаковки изделия.
+//
+// Как из цены получается стоимость на одну упаковку. В Excel это было спрятано
+// в формуле «цена/1000*10» — здесь поля видны и подписаны:
+//   основа «за штуку»     → стоимость = цена × расход
+//   основа «за килограмм» → стоимость = цена / 1000 × расход в граммах
+function packCostPerUnit(price, basis, consumption) {
+  const p = numOrNull(price);
+  if (p === null) return null;
+  const q = asNum(consumption);
+  return basis === 'kg' ? (p / 1000) * q : p * q;
+}
+
+router.get('/api/packaging', async (req, res) => {
+  try {
+    // таб1: номенклатура упаковки + цены калькуляции
+    const mats = (await db.pool.query(
+      `SELECT m.id, m.code, m.name, COALESCE(u.short_name, '') AS unit,
+              p.calc_price, p.market_price, p.market_price_at,
+              COALESCE(p.pack_basis, 'piece') AS pack_basis,
+              COALESCE(p.pack_consumption, 1) AS pack_consumption
+       FROM ref_packaging m
+       LEFT JOIN ref_units u ON u.id = m.unit_id
+       LEFT JOIN calc_material_prices p ON p.item_kind = 'packaging' AND p.item_id = m.id
+       WHERE m.status = 'active'
+       ORDER BY m.name`)).rows.map((m) => ({
+      id: m.id, code: m.code || '', name: m.name, unit: m.unit,
+      calc_price: numOrNull(m.calc_price),
+      market_price: numOrNull(m.market_price),
+      market_price_at: m.market_price_at,
+      pack_basis: m.pack_basis === 'kg' ? 'kg' : 'piece',
+      pack_consumption: Number(m.pack_consumption) || 0,
+      cost_per_unit: packCostPerUnit(m.calc_price, m.pack_basis, m.pack_consumption),
+    }));
+    const costById = new Map(mats.map((m) => [m.id, m.cost_per_unit]));
+
+    // таб2: комплекты и их состав
+    const tpls = (await db.pool.query(
+      `SELECT id, name, sort FROM calc_pack_templates WHERE status = 'active' ORDER BY sort, name`)).rows;
+    const lines = tpls.length ? (await db.pool.query(
+      `SELECT i.id, i.template_id, i.item_id, i.qty, i.sort, m.name, m.code
+       FROM calc_pack_template_items i
+       LEFT JOIN ref_packaging m ON m.id = i.item_id
+       WHERE i.template_id = ANY($1) ORDER BY i.template_id, i.sort, i.id`,
+      [tpls.map((t) => t.id)])).rows : [];
+
+    const templates = tpls.map((t) => {
+      const items = lines.filter((l) => l.template_id === t.id).map((l) => {
+        const per = costById.has(l.item_id) ? costById.get(l.item_id) : null;
+        const qty = Number(l.qty) || 0;
+        return {
+          id: l.id, item_id: l.item_id, name: l.name || '(позиция удалена)', code: l.code || '',
+          qty, cost_per_unit: per,
+          line_cost: per === null ? null : per * qty,
+        };
+      });
+      const known = items.filter((x) => x.line_cost !== null);
+      return {
+        id: t.id, name: t.name, items,
+        total: known.reduce((sum, x) => sum + x.line_cost, 0),
+        missing_prices: items.length - known.length,
+      };
+    });
+
+    res.json({ materials: mats, templates, can_edit: canEdit(req) });
+  } catch (e) {
+    console.error('[КАЛЬКУЛЯЦИЯ] упаковка:', e.message);
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Цена и расход материала упаковки
+router.post('/api/packaging/material/:id(\\d+)', J, async (req, res) => {
+  if (!canEdit(req)) return denyEdit(res);
+  const b = req.body || {};
+  const id = Number(req.params.id);
+  try {
+    const cur = (await db.pool.query(
+      "SELECT * FROM calc_material_prices WHERE item_kind='packaging' AND item_id=$1", [id])).rows[0] || {};
+    const price = b.calc_price !== undefined ? numOrNull(b.calc_price) : numOrNull(cur.calc_price);
+    const basis = b.pack_basis !== undefined ? (b.pack_basis === 'kg' ? 'kg' : 'piece') : (cur.pack_basis || 'piece');
+    const cons = b.pack_consumption !== undefined
+      ? asNum(b.pack_consumption)
+      : (cur.pack_consumption === undefined ? 1 : Number(cur.pack_consumption));
+    if (price !== null && price < 0) return res.status(400).json({ error: 'Цена не может быть отрицательной' });
+    if (cons < 0) return res.status(400).json({ error: 'Расход не может быть отрицательным' });
+
+    await db.pool.query(
+      `INSERT INTO calc_material_prices (item_kind, item_id, calc_price, pack_basis, pack_consumption, updated_at, updated_by)
+       VALUES ('packaging', $1, $2, $3, $4, now(), $5)
+       ON CONFLICT (item_kind, item_id) DO UPDATE SET
+         calc_price = $2, pack_basis = $3, pack_consumption = $4, updated_at = now(), updated_by = $5`,
+      [id, price, basis, cons, req.user.id]);
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Комплект упаковки: создать / переименовать / убрать
+router.post('/api/packaging/template', J, async (req, res) => {
+  if (!canEdit(req)) return denyEdit(res);
+  const name = String((req.body || {}).name || '').trim() || 'Новый комплект';
+  try {
+    const next = (await db.pool.query('SELECT COALESCE(MAX(sort),0)+10 AS n FROM calc_pack_templates')).rows[0].n;
+    const r = await db.pool.query(
+      'INSERT INTO calc_pack_templates (name, sort) VALUES ($1, $2) RETURNING id', [name, next]);
+    await db.log(req.user.id, 'calc_pack_template_add', { id: r.rows[0].id, name });
+    res.json({ ok: true, id: r.rows[0].id });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+router.post('/api/packaging/template/:id(\\d+)', J, async (req, res) => {
+  if (!canEdit(req)) return denyEdit(res);
+  const name = String((req.body || {}).name || '').trim();
+  if (!name) return res.status(400).json({ error: 'Название комплекта не может быть пустым' });
+  try {
+    await db.pool.query('UPDATE calc_pack_templates SET name = $1 WHERE id = $2', [name, req.params.id]);
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+router.delete('/api/packaging/template/:id(\\d+)', async (req, res) => {
+  if (!canEdit(req)) return denyEdit(res);
+  try {
+    await db.pool.query("UPDATE calc_pack_templates SET status='archived' WHERE id=$1", [req.params.id]);
+    await db.log(req.user.id, 'calc_pack_template_remove', { id: Number(req.params.id) });
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Состав комплекта: добавить материал, изменить количество, убрать строку
+router.post('/api/packaging/template/:id(\\d+)/line', J, async (req, res) => {
+  if (!canEdit(req)) return denyEdit(res);
+  const itemId = intOrNull((req.body || {}).item_id);
+  if (!itemId) return res.status(400).json({ error: 'Не выбран материал' });
+  try {
+    const exists = (await db.pool.query("SELECT id FROM ref_packaging WHERE id=$1 AND status='active'", [itemId])).rows[0];
+    if (!exists) return res.status(400).json({ error: 'Такого материала нет в справочнике упаковки' });
+    const next = (await db.pool.query(
+      'SELECT COALESCE(MAX(sort),0)+10 AS n FROM calc_pack_template_items WHERE template_id=$1',
+      [req.params.id])).rows[0].n;
+    await db.pool.query(
+      'INSERT INTO calc_pack_template_items (template_id, item_id, qty, sort) VALUES ($1,$2,$3,$4)',
+      [req.params.id, itemId, asNum((req.body || {}).qty) || 1, next]);
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+router.post('/api/packaging/line/:id(\\d+)', J, async (req, res) => {
+  if (!canEdit(req)) return denyEdit(res);
+  const qty = asNum((req.body || {}).qty);
+  if (qty < 0) return res.status(400).json({ error: 'Количество не может быть отрицательным' });
+  try {
+    await db.pool.query('UPDATE calc_pack_template_items SET qty = $1 WHERE id = $2', [qty, req.params.id]);
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+router.delete('/api/packaging/line/:id(\\d+)', async (req, res) => {
+  if (!canEdit(req)) return denyEdit(res);
+  try {
+    await db.pool.query('DELETE FROM calc_pack_template_items WHERE id = $1', [req.params.id]);
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 module.exports = router;

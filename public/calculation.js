@@ -46,8 +46,7 @@
   // Листы, как внизу в Excel. Готовые открываются, остальные пока недоступны.
   const SHEETS = [
     { key: 'production', title: 'Производство', ready: true },
-    { key: 'fot', title: 'ФОТ' },
-    { key: 'packaging', title: 'Упаковка' },
+    { key: 'packaging', title: 'Упаковка', ready: true },
     { key: 'raw', title: 'Зелень-сырьё' },
     { key: 'retail', title: 'Рознич. тара' },
     { key: 'horeca250', title: 'Хорека 250г' },
@@ -266,6 +265,7 @@
 
   async function load() {
     showLoading();
+    if (sheet === 'packaging') return loadPackaging();
     let d;
     try { d = await api('/production?period=' + (DATA ? DATA.period : '')); }
     catch (e) {
@@ -300,8 +300,9 @@
   function render() {
     const main = $('#calc-main');
     main.innerHTML = '';
-    main.appendChild(el('div', { class: 'calc-sheet' }, sheet === 'production' ? production() : el('div')));
-    main.appendChild(sheetTabs());
+    main.appendChild(sheetTabs());              // вкладки листов — сверху
+    const body = sheet === 'packaging' ? packagingSheet() : production();
+    main.appendChild(el('div', { class: 'calc-sheet' }, body));
   }
 
   // Вкладки листов — внизу, как в Excel
@@ -311,7 +312,7 @@
       title: s.ready ? s.title : 'Этот лист ещё не собран',
       onclick: () => {
         if (!s.ready) return toast('Лист «' + s.title + '» ещё не собран — идём по порядку');
-        sheet = s.key; render();
+        sheet = s.key; load();
       },
     }, s.title)));
   }
@@ -334,7 +335,7 @@
         el('col', { class: 'c-name' }), el('col', { class: 'c-num' }),
         el('col', { class: 'c-num' }), el('col', { class: 'c-src' }),
       ]),
-      el('tbody', {}, [colsRow(), outputRow(d.output), gapRow()].concat(
+      el('tbody', {}, [colsRow(false), outputRow(d.output), gapRow()].concat(
         ...d.blocks.map((b) => blockRows(b))
       )),
     ]));
@@ -349,12 +350,12 @@
 
   // Заголовки колонок повторяются в каждом блоке: так не приходится
   // возвращаться взглядом наверх, чтобы понять, что это за цифра.
-  function colsRow() {
+  function colsRow(withCats) {
     return el('tr', { class: 'calc-r-cols' }, [
       el('td', {}, ''),
       el('td', { class: 'calc-num' }, [el('div', {}, 'текущее в кальк.'), el('div', {}, 'расчётах')]),
       el('td', { class: 'calc-num' }, 'фактич'),
-      el('td', {}, 'статьи ДДС Кассы'),
+      el('td', {}, withCats === false ? '' : 'статьи ДДС Кассы'),
     ]);
   }
   const gapRow = () => el('tr', { class: 'calc-r-gap' }, el('td', { colspan: '4' }, ''));
@@ -449,6 +450,167 @@
     ]));
     rows.push(el('tr', { class: 'calc-r-gap' }, el('td', { colspan: '4' }, '')));
     return rows;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Лист «Упаковка» — две таблицы, как таб1 и таб2 в Excel
+  // ---------------------------------------------------------------------------
+  let PACK = null;
+
+  async function loadPackaging() {
+    let d;
+    try { d = await api('/packaging'); }
+    catch (e) {
+      const main = $('#calc-main'); main.innerHTML = '';
+      main.appendChild(sheetTabs());
+      main.appendChild(el('div', { class: 'calc-empty' }, 'Не удалось загрузить: ' + e.message));
+      return;
+    }
+    PACK = d;
+    DATA = { can_edit: d.can_edit };   // права нужны общим помощникам ячеек
+    render();
+  }
+
+  function packagingSheet() {
+    const box = el('div');
+    box.appendChild(el('div', { class: 'calc-sheet-head' }, [
+      el('h1', { class: 'calc-h1' }, 'Упаковка'),
+      el('div', { class: 'calc-sub' }, 'Сначала цены упаковочных материалов, затем комплекты — из чего складывается упаковка одного изделия.'),
+    ]));
+    box.appendChild(materialsTable());
+    box.appendChild(templatesBlock());
+    return box;
+  }
+
+  // --- таб1: цены материалов -------------------------------------------------
+  function materialsTable() {
+    const mats = (PACK && PACK.materials) || [];
+    const rows = mats.map((m) => {
+      const basisSel = canEdit()
+        ? el('select', { class: 'calc-basis', onchange: async (e) => {
+            try { await post('/packaging/material/' + m.id, { pack_basis: e.target.value }); await loadPackaging(); }
+            catch (err) { toast(err.message, true); }
+          } }, [
+          el('option', { value: 'piece', selected: m.pack_basis === 'piece' || null }, 'за штуку'),
+          el('option', { value: 'kg', selected: m.pack_basis === 'kg' || null }, 'за килограмм'),
+        ])
+        : el('div', { class: 'calc-src-cell' }, m.pack_basis === 'kg' ? 'за килограмм' : 'за штуку');
+
+      return el('tr', {}, [
+        el('td', {}, [
+          el('div', { class: 'calc-name calc-ro' }, m.name),
+          m.code ? el('div', { class: 'calc-unit' }, m.code) : null,
+        ]),
+        el('td', {}, cell(m.calc_price, (v) => post('/packaging/material/' + m.id, { calc_price: v }))),
+        el('td', {}, el('div', { class: 'calc-cell calc-ro calc-dim', title: 'Подключим из плитки «Закуп»' },
+          m.market_price === null ? 'из Закупа' : money(m.market_price))),
+        el('td', {}, basisSel),
+        el('td', {}, cell(m.pack_consumption, (v) => post('/packaging/material/' + m.id, { pack_consumption: v }),
+          { placeholder: m.pack_basis === 'kg' ? 'граммов' : 'штук' })),
+        el('td', { class: 'calc-num calc-strong' },
+          m.cost_per_unit === null ? el('span', { class: 'calc-dim' }, 'нет цены') : money(m.cost_per_unit)),
+      ]);
+    });
+
+    if (!rows.length) {
+      rows.push(el('tr', {}, el('td', { colspan: '6', class: 'calc-empty-row' },
+        'В справочнике упаковки нет активных позиций. Заведите их в «Справочниках» — здесь только цены.')));
+    }
+
+    return el('div', { class: 'calc-pack-block' }, [
+      el('div', { class: 'calc-r-head-solo' }, [
+        el('span', {}, 'Материалы упаковки'),
+        el('span', { class: 'calc-hint' }, 'Цена — ваша, в калькуляции. Столбец «из Закупа» подключим позже.'),
+      ]),
+      el('table', { class: 'calc-t calc-t-mats' }, [
+        el('thead', {}, el('tr', {}, [
+          el('th', {}, 'Наименование'),
+          el('th', { class: 'calc-num' }, 'цена'),
+          el('th', { class: 'calc-num' }, 'из Закупа'),
+          el('th', {}, 'цена указана'),
+          el('th', { class: 'calc-num' }, 'расход на 1 упак'),
+          el('th', { class: 'calc-num' }, 'на 1 упаковку'),
+        ])),
+        el('tbody', {}, rows),
+      ]),
+      el('div', { class: 'calc-note' },
+        'Если цена за килограмм, укажите расход в граммах — стоимость посчитается сама. '
+        + 'Пример: плёнка 77 400 сум/кг, расход 6 г → 464,40 сум на упаковку.'),
+    ]);
+  }
+
+  // --- таб2: комплекты упаковки ---------------------------------------------
+  function templatesBlock() {
+    const tpls = (PACK && PACK.templates) || [];
+    const cards = tpls.map((t) => templateCard(t));
+    if (!cards.length) {
+      cards.push(el('div', { class: 'calc-empty-row' }, 'Комплектов пока нет. Добавьте первый — например «вак.пакет».'));
+    }
+    return el('div', { class: 'calc-pack-block' }, [
+      el('div', { class: 'calc-r-head-solo' }, [
+        el('span', {}, 'Комплекты упаковки'),
+        canEdit() ? el('button', { class: 'calc-add', onclick: async () => {
+          try { await post('/packaging/template', { name: 'Новый комплект' }); await loadPackaging(); }
+          catch (e) { toast(e.message, true); }
+        } }, '+ комплект') : null,
+      ]),
+      el('div', { class: 'calc-tpls' }, cards),
+    ]);
+  }
+
+  function templateCard(t) {
+    const lines = t.items.map((line) => el('div', { class: 'calc-tpl-line' }, [
+      el('div', { class: 'calc-tpl-nm', title: line.name }, line.name),
+      canEdit()
+        ? cell(line.qty, (v) => post('/packaging/line/' + line.id, { qty: v }), { dec: 2 })
+        : el('div', { class: 'calc-cell calc-ro' }, money(line.qty)),
+      el('div', { class: 'calc-tpl-cost' },
+        line.line_cost === null ? el('span', { class: 'calc-dim' }, 'нет цены') : money(line.line_cost)),
+      canEdit() ? el('button', {
+        class: 'calc-del', title: 'Убрать из комплекта',
+        onclick: async () => {
+          try { await api('/packaging/line/' + line.id, { method: 'DELETE' }); await loadPackaging(); }
+          catch (e) { toast(e.message, true); }
+        },
+      }, '×') : null,
+    ]));
+
+    if (!lines.length) lines.push(el('div', { class: 'calc-tpl-empty' }, 'Пусто — добавьте материалы'));
+
+    const addSel = canEdit() ? el('select', { class: 'calc-tpl-add', onchange: async (e) => {
+      const id = e.target.value; e.target.value = '';
+      if (!id) return;
+      try { await post('/packaging/template/' + t.id + '/line', { item_id: id, qty: 1 }); await loadPackaging(); }
+      catch (err) { toast(err.message, true); }
+    } }, [el('option', { value: '' }, '+ добавить материал')].concat(
+      ((PACK && PACK.materials) || []).map((m) => el('option', { value: m.id }, m.name)))) : null;
+
+    return el('div', { class: 'calc-tpl' }, [
+      el('div', { class: 'calc-tpl-head' }, [
+        canEdit()
+          ? nameCell(t.name, (v) => post('/packaging/template/' + t.id, { name: v }))
+          : el('div', { class: 'calc-name calc-ro' }, t.name),
+        canEdit() ? el('button', {
+          class: 'calc-del', title: 'Убрать комплект',
+          onclick: async () => {
+            try { await api('/packaging/template/' + t.id, { method: 'DELETE' }); toast('Комплект убран'); await loadPackaging(); }
+            catch (e) { toast(e.message, true); }
+          },
+        }, '×') : null,
+      ]),
+      el('div', { class: 'calc-tpl-cols' }, [
+        el('span', {}, 'материал'), el('span', {}, 'кол-во'), el('span', {}, 'стоимость'), el('span', {}, ''),
+      ]),
+      el('div', {}, lines),
+      addSel,
+      el('div', { class: 'calc-tpl-total' }, [
+        el('span', {}, 'Стоимость комплекта'),
+        el('b', {}, money(t.total)),
+      ]),
+      t.missing_prices
+        ? el('div', { class: 'calc-partial' }, 'у ' + t.missing_prices + ' материалов нет цены — в сумму не вошли')
+        : null,
+    ]);
   }
 
   load();

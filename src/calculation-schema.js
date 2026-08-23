@@ -312,6 +312,51 @@ async function ensureCalculationSchema(pool) {
       ('overhead', 'Прочие (вода, канализация)', 312000, 80)`);
   }
 
+  // --- Лист «Упаковка» -----------------------------------------------------
+  // Обе таблицы существуют с июля, поэтому создаём их той же структурой и
+  // только ДОБАВЛЯЕМ недостающие колонки — иначе CREATE IF NOT EXISTS молча
+  // ничего не сделает, а запросы упадут (эту ошибку уже проходили).
+
+  // таб1 в Excel: цены упаковочных материалов.
+  // calc_price — цена в калькуляции (ручная), market_price — из Закупа.
+  await q(`CREATE TABLE IF NOT EXISTS calc_material_prices (
+    item_kind TEXT NOT NULL,
+    item_id INT NOT NULL,
+    calc_price NUMERIC,
+    market_price NUMERIC,
+    market_price_at DATE,
+    comment TEXT,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by INT,
+    PRIMARY KEY (item_kind, item_id)
+  )`);
+  // Как из цены закупки получается стоимость на одну упаковку.
+  // В Excel это было спрятано в формуле (цена/1000*10) — выносим в явные поля.
+  for (const [col, type] of [
+    ['pack_basis', "TEXT NOT NULL DEFAULT 'piece'"],   // piece — цена за штуку | kg — цена за килограмм
+    ['pack_consumption', 'NUMERIC NOT NULL DEFAULT 1'], // штук или граммов на одну упаковку
+  ]) {
+    await q(`ALTER TABLE calc_material_prices ADD COLUMN IF NOT EXISTS ${col} ${type}`)
+      .catch((e) => console.error('calc_material_prices ' + col + ':', e.message));
+  }
+
+  // таб2 в Excel: комплекты упаковки (вак.пакет, хорека, бокс лагмана…).
+  await q(`CREATE TABLE IF NOT EXISTS calc_pack_templates (
+    id SERIAL PRIMARY KEY, name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  await q(`ALTER TABLE calc_pack_templates ADD COLUMN IF NOT EXISTS sort INT NOT NULL DEFAULT 100`)
+    .catch((e) => console.error('calc_pack_templates sort:', e.message));
+  await q(`CREATE TABLE IF NOT EXISTS calc_pack_template_items (
+    id SERIAL PRIMARY KEY,
+    template_id INT NOT NULL REFERENCES calc_pack_templates(id) ON DELETE CASCADE,
+    item_id INT,
+    by_name BOOLEAN NOT NULL DEFAULT false,
+    qty NUMERIC NOT NULL DEFAULT 1,
+    sort INT NOT NULL DEFAULT 100
+  )`);
+  await q(`CREATE INDEX IF NOT EXISTS idx_calc_pack_items ON calc_pack_template_items (template_id, sort, id)`);
+
   _ready = true;
 }
 

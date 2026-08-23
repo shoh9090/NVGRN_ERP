@@ -94,14 +94,15 @@ input.calc-cell:focus, input.calc-name:focus {
 
 /* ---------- Вкладки листов (внизу, как в Excel) ---------- */
 .calc-tabs {
-  position: sticky; bottom: 0; display: flex; gap: 2px; align-items: flex-end;
-  padding: 10px 0 0; margin-top: 22px; overflow-x: auto;
-  background: var(--paper); border-top: 1px solid var(--line);
+  position: sticky; top: 0; z-index: 20; display: flex; gap: 2px; align-items: flex-end;
+  padding: 0 0 0; margin: 0 0 18px; overflow-x: auto;
+  background: var(--paper); border-bottom: 1px solid var(--line);
 }
 .calc-tab {
   border: 1px solid var(--line); border-bottom: none; background: var(--surface-2);
-  border-radius: 8px 8px 0 0; padding: 8px 14px; font-size: 12.5px; font-weight: 700;
-  color: var(--ink-soft); cursor: pointer; white-space: nowrap; min-height: 38px;
+  border-radius: 9px 9px 0 0; padding: 9px 15px; font-size: 12.5px; font-weight: 700;
+  color: var(--ink-soft); cursor: pointer; white-space: nowrap; min-height: 40px;
+  margin-bottom: -1px;
 }
 .calc-tab:hover { background: var(--surface); color: var(--ink); }
 .calc-tab.on {
@@ -247,3 +248,58 @@ input.calc-cell:focus, input.calc-name:focus {
   text-transform: uppercase; letter-spacing: .03em; background: #fbfaf4;
   border-bottom: 1px solid var(--line); vertical-align: bottom; line-height: 1.25;
 }
+
+/* ---------- Лист «Упаковка» ---------- */
+.calc-pack-block { margin-bottom: 26px; }
+.calc-r-head-solo {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  padding: 11px 12px; background: var(--surface-2);
+  border: 1px solid var(--line); border-bottom: none; border-radius: var(--radius) var(--radius) 0 0;
+  font-size: 15px; font-weight: 800; color: var(--ink);
+}
+.calc-r-head-solo .calc-hint { margin: 0; font-weight: 400; }
+.calc-t-mats { border-top: none; }
+.calc-t-mats thead th:first-child { width: auto; }
+.calc-basis {
+  width: 100%; border: 1px solid transparent; background: transparent;
+  font-size: 12.5px; padding: 7px 8px; color: var(--ink); font-family: inherit;
+}
+.calc-basis:hover { border-color: var(--line); background: #fbfaf4; }
+.calc-basis:focus { border-color: var(--lime-d); background: var(--surface); outline: none; }
+.calc-strong { font-weight: 800; }
+
+/* Комплекты — карточками, чтобы состав читался целиком */
+.calc-tpls { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px;
+  border: 1px solid var(--line); border-top: none; border-radius: 0 0 var(--radius) var(--radius);
+  padding: 12px; background: var(--surface); }
+.calc-tpl { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--surface); }
+.calc-tpl-head {
+  display: flex; align-items: center; gap: 6px; padding: 4px 6px 4px 4px;
+  background: var(--surface-2); border-bottom: 1px solid var(--line);
+}
+.calc-tpl-head .calc-name { font-size: 14px; font-weight: 800; }
+.calc-tpl-cols {
+  display: grid; grid-template-columns: 1fr 76px 96px 28px; gap: 4px;
+  padding: 6px 8px 3px; font-size: 10px; font-weight: 800; color: var(--ink-faint);
+  text-transform: uppercase; letter-spacing: .03em;
+}
+.calc-tpl-cols span:nth-child(2), .calc-tpl-cols span:nth-child(3) { text-align: right; }
+.calc-tpl-line {
+  display: grid; grid-template-columns: 1fr 76px 96px 28px; gap: 4px; align-items: center;
+  padding: 2px 8px; border-bottom: 1px solid var(--line-soft);
+}
+.calc-tpl-nm { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.calc-tpl-line .calc-cell { padding: 5px 6px; font-size: 12.5px; }
+.calc-tpl-cost { text-align: right; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.calc-tpl-empty { padding: 10px; font-size: 12px; color: var(--ink-faint); }
+.calc-tpl-add {
+  margin: 8px; width: calc(100% - 16px); font-size: 12px; padding: 6px 8px;
+  border: 1px dashed var(--line); background: none; color: var(--ink-soft); border-radius: 8px;
+}
+.calc-tpl-add:hover { border-color: var(--lime-d); color: var(--forest); }
+.calc-tpl-total {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 10px;
+  padding: 9px 12px; background: #f2f0c4; font-size: 12.5px; font-weight: 800;
+}
+.calc-tpl-total b { font-family: 'Lora', Georgia, serif; font-size: 16px; font-variant-numeric: tabular-nums; }
+.calc-tpl .calc-partial { padding: 0 12px 8px; }
