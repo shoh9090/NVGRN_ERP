@@ -129,6 +129,19 @@
     const selected = new Set((item.categories || []).map((c) => Number(c.id)));
     const all = DATA.cash_categories || [];
 
+    // Группируем статьи по группам ДДС. Сервер отдаёт их уже отсортированными,
+    // здесь только собираем в разделы, которые можно свернуть и раскрыть.
+    const groups = [];
+    const byName = new Map();
+    all.forEach((c) => {
+      const key = c.group || '—';
+      if (!byName.has(key)) { const g = { name: key, items: [] }; byName.set(key, g); groups.push(g); }
+      byName.get(key).items.push(c);
+    });
+
+    // По умолчанию раскрыты только группы, где уже что-то выбрано.
+    const open = new Set(groups.filter((g) => g.items.some((c) => selected.has(Number(c.id)))).map((g) => g.name));
+
     const list = el('div', { class: 'calc-pick-list' });
     const counter = el('div', { class: 'calc-pick-count' }, '');
     const refreshCount = () => { counter.textContent = 'выбрано: ' + selected.size; };
@@ -136,39 +149,67 @@
     const draw = (q) => {
       list.innerHTML = '';
       const qq = (q || '').trim().toLowerCase();
-      const shown = all.filter((c) => !qq || c.label.toLowerCase().includes(qq));
-      if (!shown.length) { list.appendChild(el('div', { class: 'calc-pick-empty' }, 'Ничего не найдено')); return; }
-      let lastGroup = null;
-      shown.forEach((c) => {
-        if (c.group !== lastGroup) {
-          lastGroup = c.group;
-          const groupIds = shown.filter((x) => x.group === c.group).map((x) => Number(x.id));
-          list.appendChild(el('div', { class: 'calc-pick-group' }, [
-            el('span', {}, 'Группа ' + (c.group || '—')),
-            el('button', {
-              class: 'calc-pick-all',
-              title: 'Отметить или снять всю группу',
-              onclick: (e) => {
-                e.stopPropagation();
-                const allOn = groupIds.every((id) => selected.has(id));
-                groupIds.forEach((id) => (allOn ? selected.delete(id) : selected.add(id)));
-                draw(q); refreshCount();
-              },
-            }, 'вся группа'),
-          ]));
-        }
-        const cb = el('input', { type: 'checkbox', checked: selected.has(Number(c.id)) ? 'checked' : null });
-        cb.addEventListener('change', () => {
-          if (cb.checked) selected.add(Number(c.id)); else selected.delete(Number(c.id));
-          refreshCount();
+      let shownAny = false;
+
+      groups.forEach((g) => {
+        const items = qq ? g.items.filter((c) => c.label.toLowerCase().includes(qq)) : g.items;
+        if (!items.length) return;
+        shownAny = true;
+        const ids = items.map((c) => Number(c.id));
+        const picked = ids.filter((id) => selected.has(id)).length;
+        // При поиске раскрываем всё, чтобы найденное было видно сразу.
+        const isOpen = qq ? true : open.has(g.name);
+
+        const head = el('div', { class: 'calc-pick-group' + (isOpen ? ' open' : ''), onclick: (e) => {
+          e.stopPropagation();
+          if (qq) return;                       // при поиске сворачивать нечего
+          if (open.has(g.name)) open.delete(g.name); else open.add(g.name);
+          draw(q);
+        } }, [
+          el('span', { class: 'calc-pick-caret' }, isOpen ? '▾' : '▸'),
+          el('span', { class: 'calc-pick-gname' }, g.name),
+          picked ? el('span', { class: 'calc-pick-badge' }, String(picked)) : null,
+          el('span', { class: 'calc-pick-gcount' }, items.length + ' шт'),
+          el('button', {
+            class: 'calc-pick-all',
+            title: 'Отметить или снять всю группу',
+            onclick: (e) => {
+              e.stopPropagation();
+              const allOn = ids.every((id) => selected.has(id));
+              ids.forEach((id) => (allOn ? selected.delete(id) : selected.add(id)));
+              open.add(g.name);
+              draw(q); refreshCount();
+            },
+          }, ids.every((id) => selected.has(id)) ? 'снять группу' : 'вся группа'),
+        ]);
+        list.appendChild(head);
+
+        if (!isOpen) return;
+        const box = el('div', { class: 'calc-pick-items' });
+        items.forEach((c) => {
+          const cb = el('input', { type: 'checkbox', checked: selected.has(Number(c.id)) ? 'checked' : null });
+          cb.addEventListener('change', (e) => {
+            e.stopPropagation();
+            if (cb.checked) selected.add(Number(c.id)); else selected.delete(Number(c.id));
+            refreshCount();
+            // Обновляем только счётчик группы, список не перерисовываем —
+            // иначе слетает фокус и прокрутка.
+            const badge = head.querySelector('.calc-pick-badge');
+            const n = ids.filter((id) => selected.has(id)).length;
+            if (badge) badge.textContent = String(n);
+            else if (n) head.insertBefore(el('span', { class: 'calc-pick-badge' }, String(n)), head.children[2]);
+          });
+          box.appendChild(el('label', { class: 'calc-pick-item', onclick: (e) => e.stopPropagation() }, [cb, el('span', {}, c.label)]));
         });
-        const row = el('label', { class: 'calc-pick-item' }, [cb, el('span', {}, c.label)]);
-        list.appendChild(row);
+        list.appendChild(box);
       });
+
+      if (!shownAny) list.appendChild(el('div', { class: 'calc-pick-empty' }, 'Ничего не найдено'));
     };
 
-    const search = el('input', { type: 'search', class: 'calc-pick-search', placeholder: 'Поиск статьи…' });
+    const search = el('input', { type: 'search', class: 'calc-pick-search', placeholder: 'Поиск статьи по названию или коду…' });
     search.addEventListener('input', () => draw(search.value));
+    search.addEventListener('click', (e) => e.stopPropagation());
 
     const save = el('button', { class: 'calc-pick-save', onclick: async (e) => {
       e.stopPropagation();
@@ -180,19 +221,32 @@
     } }, 'Сохранить');
 
     const panel = el('div', { class: 'calc-pick', onclick: (e) => e.stopPropagation() }, [
-      el('div', { class: 'calc-pick-head' }, [el('b', {}, item.name), counter]),
-      search, list,
+      el('div', { class: 'calc-pick-head' }, [
+        el('div', {}, [
+          el('b', {}, item.name),
+          el('div', { class: 'calc-pick-sub' }, 'Отметьте статьи ДДС — «фактич» сложится из них'),
+        ]),
+        counter,
+      ]),
+      search,
+      list,
       el('div', { class: 'calc-pick-foot' }, [
         el('button', { class: 'calc-pick-clear', onclick: (e) => { e.stopPropagation(); selected.clear(); draw(search.value); refreshCount(); } }, 'Снять все'),
-        save,
+        el('div', { style: 'display:flex;gap:8px' }, [
+          el('button', { class: 'calc-pick-cancel', onclick: (e) => { e.stopPropagation(); closeCatPicker(); } }, 'Отмена'),
+          save,
+        ]),
       ]),
     ]);
 
     draw(''); refreshCount();
     document.body.appendChild(panel);
+
+    // Ставим панель рядом с кнопкой, но не даём вылезти за экран.
     const r = anchor.getBoundingClientRect();
-    panel.style.top = Math.min(r.bottom + 6, window.innerHeight - 380) + 'px';
-    panel.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 360)) + 'px';
+    const h = Math.min(panel.offsetHeight || 480, window.innerHeight - 24);
+    panel.style.top = Math.max(12, Math.min(r.bottom + 6, window.innerHeight - h - 12)) + 'px';
+    panel.style.left = Math.max(12, Math.min(r.left, window.innerWidth - panel.offsetWidth - 12)) + 'px';
     pickerEl = panel;
     setTimeout(() => search.focus(), 40);
   }
@@ -280,13 +334,7 @@
         el('col', { class: 'c-name' }), el('col', { class: 'c-num' }),
         el('col', { class: 'c-num' }), el('col', { class: 'c-src' }),
       ]),
-      el('thead', {}, el('tr', {}, [
-        el('th', {}, ''),
-        el('th', { class: 'calc-num' }, [el('div', {}, 'текущее в кальк.'), el('div', {}, 'расчётах')]),
-        el('th', { class: 'calc-num' }, 'фактич'),
-        el('th', {}, 'статьи ДДС Кассы'),
-      ])),
-      el('tbody', {}, [outputRow(d.output)].concat(
+      el('tbody', {}, [colsRow(), outputRow(d.output), gapRow()].concat(
         ...d.blocks.map((b) => blockRows(b))
       )),
     ]));
@@ -298,6 +346,18 @@
       'Колонка «текущее» участвует в себестоимости. «Фактич» подтягивается из Кассы за месяц по связанной статье ДДС — свяжите статью в последнем столбце. «План» вводится вручную.'));
     return box;
   }
+
+  // Заголовки колонок повторяются в каждом блоке: так не приходится
+  // возвращаться взглядом наверх, чтобы понять, что это за цифра.
+  function colsRow() {
+    return el('tr', { class: 'calc-r-cols' }, [
+      el('td', {}, ''),
+      el('td', { class: 'calc-num' }, [el('div', {}, 'текущее в кальк.'), el('div', {}, 'расчётах')]),
+      el('td', { class: 'calc-num' }, 'фактич'),
+      el('td', {}, 'статьи ДДС Кассы'),
+    ]);
+  }
+  const gapRow = () => el('tr', { class: 'calc-r-gap' }, el('td', { colspan: '4' }, ''));
 
   function outputRow(o) {
     // Кнопки обновления факта. SalesDoctor медленный, поэтому только по нажатию.
@@ -329,10 +389,11 @@
 
   function blockRows(b) {
     const rows = [];
-    // Заголовок блока
+    // Заголовок блока и сразу под ним — названия колонок
     rows.push(el('tr', { class: 'calc-r-head' }, [
       el('td', { colspan: '4' }, b.title),
     ]));
+    rows.push(colsRow());
 
     b.items.forEach((item) => rows.push(el('tr', {}, [
       el('td', {}, nameCell(item.name, (v) => post('/costs/' + item.id, { name: v }))),

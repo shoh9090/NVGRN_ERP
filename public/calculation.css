@@ -171,45 +171,79 @@ input.calc-cell:focus, input.calc-name:focus {
 }
 .calc-pick-btn:hover { border-color: var(--lime-d); color: var(--forest); background: var(--lime-soft); }
 
-/* Панель выбора статей */
+/* Панель выбора статей — крупная, группы сворачиваются */
 .calc-pick {
-  position: fixed; z-index: 120; width: 350px; max-height: 370px;
+  position: fixed; z-index: 120; width: 480px; max-width: calc(100vw - 24px);
+  max-height: min(560px, calc(100vh - 40px));
   display: flex; flex-direction: column;
   background: var(--surface); border: 1px solid var(--line);
-  border-radius: 12px; box-shadow: var(--shadow-lg); overflow: hidden;
+  border-radius: 14px; box-shadow: var(--shadow-lg); overflow: hidden;
 }
 .calc-pick-head {
-  display: flex; justify-content: space-between; align-items: center; gap: 8px;
-  padding: 10px 12px; border-bottom: 1px solid var(--line); background: var(--surface-2); font-size: 13px;
+  display: flex; justify-content: space-between; align-items: flex-start; gap: 10px;
+  padding: 12px 14px; border-bottom: 1px solid var(--line); background: var(--surface-2); font-size: 14px;
 }
-.calc-pick-count { font-size: 11.5px; color: var(--ink-soft); font-weight: 700; white-space: nowrap; }
-.calc-pick-search { margin: 8px 10px; width: calc(100% - 20px); padding: 7px 10px; font-size: 13px; }
-.calc-pick-list { flex: 1; overflow-y: auto; padding: 0 4px 6px; }
+.calc-pick-sub { font-size: 11.5px; color: var(--ink-soft); font-weight: 400; margin-top: 3px; }
+.calc-pick-count {
+  font-size: 11.5px; color: var(--forest); font-weight: 800; white-space: nowrap;
+  background: var(--lime-soft); border: 1px solid #d3e8b4; border-radius: 999px; padding: 3px 10px;
+}
+.calc-pick-search { margin: 10px 12px; width: calc(100% - 24px); padding: 8px 11px; font-size: 13px; }
+.calc-pick-list { flex: 1; overflow-y: auto; padding: 0 8px 8px; }
+
+/* Шапка группы — кликается целиком, чтобы раскрыть или свернуть */
 .calc-pick-group {
-  display: flex; justify-content: space-between; align-items: center;
-  padding: 7px 8px 4px; font-size: 10.5px; font-weight: 800; color: var(--ink-faint); text-transform: uppercase;
+  display: flex; align-items: center; gap: 8px; cursor: pointer;
+  padding: 9px 10px; margin-top: 4px; border-radius: 9px;
+  background: var(--surface-2); border: 1px solid var(--line);
 }
+.calc-pick-group:hover { background: #f2f5f1; }
+.calc-pick-group.open { background: var(--lime-soft); border-color: #d3e8b4; }
+.calc-pick-caret { font-size: 11px; color: var(--ink-soft); width: 12px; }
+.calc-pick-gname {
+  flex: 1; min-width: 0; font-size: 12px; font-weight: 800; color: var(--ink);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.calc-pick-badge {
+  background: var(--forest); color: #fff; border-radius: 999px;
+  min-width: 20px; text-align: center; padding: 2px 7px; font-size: 10.5px; font-weight: 800;
+}
+.calc-pick-gcount { font-size: 10.5px; color: var(--ink-faint); white-space: nowrap; }
 .calc-pick-all {
-  border: none; background: none; color: var(--forest); font-size: 10.5px; font-weight: 700;
-  cursor: pointer; padding: 2px 5px; border-radius: 6px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--forest);
+  font-size: 10.5px; font-weight: 700; cursor: pointer; padding: 4px 9px; border-radius: 7px; white-space: nowrap;
 }
-.calc-pick-all:hover { background: var(--lime-soft); }
+.calc-pick-all:hover { background: var(--forest); color: #fff; border-color: var(--forest); }
+
+.calc-pick-items { padding: 4px 4px 6px 26px; }
 .calc-pick-item {
-  display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+  display: flex; align-items: center; gap: 9px; padding: 6px 8px;
   font-size: 12.5px; border-radius: 7px; cursor: pointer;
 }
 .calc-pick-item:hover { background: var(--surface-2); }
-.calc-pick-item input { width: 15px; height: 15px; margin: 0; accent-color: var(--lime-d); }
-.calc-pick-empty { padding: 16px; text-align: center; color: var(--ink-faint); font-size: 12.5px; }
+.calc-pick-item input { width: 15px; height: 15px; margin: 0; accent-color: var(--lime-d); flex: none; }
+.calc-pick-empty { padding: 20px; text-align: center; color: var(--ink-faint); font-size: 12.5px; }
 .calc-pick-foot {
   display: flex; justify-content: space-between; align-items: center; gap: 8px;
-  padding: 9px 12px; border-top: 1px solid var(--line); background: var(--surface-2);
+  padding: 10px 14px; border-top: 1px solid var(--line); background: var(--surface-2);
 }
 .calc-pick-clear {
   border: none; background: none; color: var(--ink-soft); font-size: 12px; font-weight: 700; cursor: pointer;
 }
 .calc-pick-clear:hover { color: var(--red); }
+.calc-pick-cancel {
+  border: 1px solid var(--line); background: var(--surface); color: var(--ink-soft);
+  border-radius: 9px; padding: 7px 13px; font-size: 12.5px; font-weight: 700; cursor: pointer;
+}
+.calc-pick-cancel:hover { background: #f2f5f1; color: var(--ink); }
 .calc-pick-save {
   background: linear-gradient(180deg, #9ad24f, var(--lime-d)); color: #10260a; border: none;
-  border-radius: 9px; padding: 7px 15px; font-size: 12.5px; font-weight: 800; cursor: pointer;
+  border-radius: 9px; padding: 7px 16px; font-size: 12.5px; font-weight: 800; cursor: pointer;
+}
+
+/* ---------- Заголовки колонок внутри каждого блока ---------- */
+.calc-r-cols td {
+  padding: 7px 10px; font-size: 11px; font-weight: 800; color: var(--ink-faint);
+  text-transform: uppercase; letter-spacing: .03em; background: #fbfaf4;
+  border-bottom: 1px solid var(--line); vertical-align: bottom; line-height: 1.25;
 }

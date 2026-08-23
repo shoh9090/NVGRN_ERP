@@ -150,11 +150,16 @@ router.get('/api/production', async (req, res) => {
       };
     });
 
-    // Статьи ДДС Кассы — для выпадашки «откуда берём факт».
+    // Статьи ДДС Кассы — для выбора «откуда берём факт».
+    // Сортируем по группе, а внутри — по ЧИСЛОВОМУ коду. Обычная сортировка по
+    // тексту давала 10, 100, 101, 11, 12 и рвала группы на куски.
     const cats = (await db.pool.query(
       `SELECT id, code, name, group_name FROM cash_categories
-       WHERE status = 'active' ORDER BY code`)).rows.map((c) => ({
-      id: c.id, label: (c.code ? c.code + ' · ' : '') + c.name, group: c.group_name,
+       WHERE status = 'active'
+       ORDER BY group_name NULLS LAST,
+                COALESCE(NULLIF(regexp_replace(code, '[^0-9]', '', 'g'), '')::int, 999999),
+                code`)).rows.map((c) => ({
+      id: c.id, label: (c.code ? c.code + ' · ' : '') + c.name, group: c.group_name || '—',
     }));
 
     // ВАЖНО: SalesDoctor здесь НЕ опрашиваем. Он отвечает медленно (постраничная
