@@ -144,3 +144,72 @@ input.calc-cell:focus, input.calc-name:focus {
   background-size: 200% 100%; animation: calcskel 1.2s linear infinite;
 }
 @keyframes calcskel { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+
+/* ---------- Факт производства: кнопки обновления из SalesDoctor ---------- */
+.calc-fact-wrap { padding: 6px 10px 8px; }
+.calc-fact-wrap .calc-cell { padding: 0; }
+.calc-fact-btns { display: flex; gap: 6px; justify-content: flex-end; margin-top: 6px; }
+.calc-fact-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--forest);
+  border-radius: 8px; padding: 5px 9px; font-size: 11.5px; font-weight: 700; cursor: pointer;
+}
+.calc-fact-btn:hover { background: var(--lime-soft); border-color: var(--lime-d); }
+.calc-fact-ico { font-size: 13px; line-height: 1; }
+.calc-fact-note { font-size: 10.5px; color: var(--ink-faint); margin-top: 5px; text-align: right; line-height: 1.35; }
+
+/* ---------- Статьи ДДС: несколько на строку ---------- */
+.calc-chips { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; padding: 5px 6px; }
+.calc-chip {
+  background: var(--lime-soft); color: #3f6a16; border: 1px solid #d3e8b4;
+  border-radius: 7px; padding: 3px 7px; font-size: 11px; font-weight: 700;
+  max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.calc-pick-btn {
+  border: 1px dashed var(--line); background: none; color: var(--ink-soft);
+  border-radius: 7px; padding: 4px 9px; font-size: 11.5px; font-weight: 700; cursor: pointer;
+}
+.calc-pick-btn:hover { border-color: var(--lime-d); color: var(--forest); background: var(--lime-soft); }
+
+/* Панель выбора статей */
+.calc-pick {
+  position: fixed; z-index: 120; width: 350px; max-height: 370px;
+  display: flex; flex-direction: column;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: 12px; box-shadow: var(--shadow-lg); overflow: hidden;
+}
+.calc-pick-head {
+  display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  padding: 10px 12px; border-bottom: 1px solid var(--line); background: var(--surface-2); font-size: 13px;
+}
+.calc-pick-count { font-size: 11.5px; color: var(--ink-soft); font-weight: 700; white-space: nowrap; }
+.calc-pick-search { margin: 8px 10px; width: calc(100% - 20px); padding: 7px 10px; font-size: 13px; }
+.calc-pick-list { flex: 1; overflow-y: auto; padding: 0 4px 6px; }
+.calc-pick-group {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 7px 8px 4px; font-size: 10.5px; font-weight: 800; color: var(--ink-faint); text-transform: uppercase;
+}
+.calc-pick-all {
+  border: none; background: none; color: var(--forest); font-size: 10.5px; font-weight: 700;
+  cursor: pointer; padding: 2px 5px; border-radius: 6px;
+}
+.calc-pick-all:hover { background: var(--lime-soft); }
+.calc-pick-item {
+  display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+  font-size: 12.5px; border-radius: 7px; cursor: pointer;
+}
+.calc-pick-item:hover { background: var(--surface-2); }
+.calc-pick-item input { width: 15px; height: 15px; margin: 0; accent-color: var(--lime-d); }
+.calc-pick-empty { padding: 16px; text-align: center; color: var(--ink-faint); font-size: 12.5px; }
+.calc-pick-foot {
+  display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  padding: 9px 12px; border-top: 1px solid var(--line); background: var(--surface-2);
+}
+.calc-pick-clear {
+  border: none; background: none; color: var(--ink-soft); font-size: 12px; font-weight: 700; cursor: pointer;
+}
+.calc-pick-clear:hover { color: var(--red); }
+.calc-pick-save {
+  background: linear-gradient(180deg, #9ad24f, var(--lime-d)); color: #10260a; border: none;
+  border-radius: 9px; padding: 7px 15px; font-size: 12.5px; font-weight: 800; cursor: pointer;
+}

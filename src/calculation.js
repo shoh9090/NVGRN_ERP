@@ -31,7 +31,12 @@ const denyEdit = (res) => res.status(403).json({ error: 'Менять кальк
 
 // Настройки лежат в calc_settings — таблица с июля, там уже есть выпуск.
 const K_OUTPUT = 'monthly_units';        // среднемесячное производство, шт (колонка «текущее»)
-const K_OUTPUT_PLAN = 'monthly_units_plan'; // план продаж, шт
+const K_OUTPUT_PLAN = 'monthly_units_plan'; // план продаж, шт (появится позже)
+// Факт производства из SalesDoctor: тянем по кнопке и запоминаем, чтобы не
+// дёргать внешний сервис при каждом открытии экрана.
+const K_FACT_UNITS = 'output_fact_units';
+const K_FACT_NOTE = 'output_fact_note';
+const K_FACT_AT = 'output_fact_at';
 
 async function calcSettings() {
   const r = await db.pool.query('SELECT key, value FROM calc_settings');
@@ -83,9 +88,24 @@ router.get('/api/production', async (req, res) => {
       `SELECT id, kind, name, amount, plan_amount, cash_category_id, sort
        FROM calc_cost_items WHERE status = 'active' ORDER BY kind, sort, id`)).rows;
 
-    // «Фактич» — сумма исходящих операций Кассы за месяц по связанной статье ДДС.
-    // Считаем одним запросом на все статьи сразу.
-    const catIds = [...new Set(rows.map((r) => r.cash_category_id).filter(Boolean))];
+    // Связи «статья затрат → статьи ДДС Кассы». У одной строки их может быть много.
+    const linkRows = (await db.pool.query(
+      `SELECT l.item_id, l.category_id, c.code, c.name
+       FROM calc_cost_item_categories l
+       LEFT JOIN cash_categories c ON c.id = l.category_id
+       ORDER BY c.code NULLS LAST`)).rows;
+    const catsByItem = new Map();
+    linkRows.forEach((x) => {
+      if (!catsByItem.has(x.item_id)) catsByItem.set(x.item_id, []);
+      catsByItem.get(x.item_id).push({
+        id: x.category_id,
+        label: (x.code ? x.code + ' · ' : '') + (x.name || 'статья удалена'),
+      });
+    });
+
+    // «Фактич» — сумма исходящих операций Кассы за месяц по связанным статьям.
+    // Один запрос на все статьи сразу.
+    const catIds = [...new Set(linkRows.map((r) => r.category_id).filter(Boolean))];
     const factByCat = new Map();
     if (catIds.length) {
       const f = await db.pool.query(
@@ -98,14 +118,18 @@ router.get('/api/production', async (req, res) => {
     }
 
     const blocks = BLOCKS.map((b) => {
-      const items = rows.filter((r) => r.kind === b.key).map((r) => ({
-        id: r.id,
-        name: r.name,
-        current: Number(r.amount) || 0,
-        fact: r.cash_category_id ? (factByCat.get(Number(r.cash_category_id)) || 0) : null,
-        plan: r.plan_amount === null ? null : Number(r.plan_amount),
-        cash_category_id: r.cash_category_id,
-      }));
+      const items = rows.filter((r) => r.kind === b.key).map((r) => {
+        const cats = catsByItem.get(r.id) || [];
+        return {
+          id: r.id,
+          name: r.name,
+          current: Number(r.amount) || 0,
+          // Факт = сумма по всем связанным статьям ДДС. Нет связей — не ноль, а «не связано».
+          fact: cats.length ? cats.reduce((acc, c) => acc + (factByCat.get(Number(c.id)) || 0), 0) : null,
+          plan: r.plan_amount === null ? null : Number(r.plan_amount),
+          categories: cats,
+        };
+      });
       const sum = (f) => items.reduce((acc, x) => acc + (Number(x[f]) || 0), 0);
       const anyFact = items.some((x) => x.fact !== null);
       const anyPlan = items.some((x) => x.plan !== null);
@@ -141,7 +165,10 @@ router.get('/api/production', async (req, res) => {
       period,
       output: {
         current: output,
-        fact: null,
+        // Показываем ранее подтянутую цифру. Обновляется кнопкой, см. /api/sales-fact/refresh.
+        fact: numOrNull(settings[K_FACT_UNITS]),
+        fact_note: settings[K_FACT_NOTE] || '',
+        fact_at: settings[K_FACT_AT] || '',
         plan: outputPlan,
       },
       blocks,
@@ -155,25 +182,72 @@ router.get('/api/production', async (req, res) => {
   }
 });
 
-// Факт реализации из SalesDoctor — отдельно от листа, чтобы медленный внешний
-// сервис не задерживал открытие экрана.
-router.get('/api/sales-fact', async (req, res) => {
-  const period = /^\d{4}-\d{2}$/.test(req.query.period || '') ? req.query.period : curPeriod();
+// Обновление факта производства из SalesDoctor — ТОЛЬКО по кнопке.
+// months = 1: прошлый календарный месяц. months = 3: среднее за три прошлых месяца.
+// Внешний сервис медленный, поэтому при обычном открытии листа он не трогается.
+router.post('/api/sales-fact/refresh', J, async (req, res) => {
+  if (!canEdit(req)) return denyEdit(res);
+  const months = Number((req.body || {}).months) === 3 ? 3 : 1;
   try {
-    const sales = await integrations.getMonthlySalesUnits(period);
-    res.json({
-      period,
-      units: sales.units,
-      orders: sales.orders,
-      truncated: sales.truncated,
-      hint: 'SalesDoctor: ' + sales.orders + ' заказов за ' + period
-        + ', статусы ' + sales.statuses.join(', ')
-        + (sales.truncated ? ' · данные неполные: слишком много заказов' : ''),
-    });
+    const now = new Date();
+    const periods = [];
+    for (let i = 1; i <= months; i++) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      periods.push(d.toISOString().slice(0, 7));
+    }
+
+    let units = 0, orders = 0, truncated = false;
+    const parts = [];
+    for (const p of periods) {
+      const r = await integrations.getMonthlySalesUnits(p);
+      units += r.units; orders += r.orders;
+      if (r.truncated) truncated = true;
+      parts.push({ period: p, units: r.units, orders: r.orders });
+    }
+    // Для трёх месяцев нужна СРЕДНЕМЕСЯЧНАЯ величина, а не сумма.
+    const value = months === 3 ? units / 3 : units;
+
+    const label = months === 3
+      ? 'среднее за 3 месяца (' + periods.slice().reverse().join(', ') + ')'
+      : 'за ' + periods[0];
+    const note = 'SalesDoctor, ' + label + ' · заказов: ' + orders
+      + (truncated ? ' · данные неполные: слишком много заказов' : '');
+
+    await setCalcSetting(K_FACT_UNITS, Math.round(value), req.user.id);
+    await setCalcSetting(K_FACT_NOTE, note, req.user.id);
+    await setCalcSetting(K_FACT_AT, new Date().toISOString(), req.user.id);
+    await db.log(req.user.id, 'calc_sales_fact_refresh', { months, units: Math.round(value), periods });
+
+    res.json({ ok: true, units: Math.round(value), note, truncated, parts });
   } catch (e) {
-    // Не 500: для экрана это не ошибка, а просто «источник недоступен».
-    res.json({ period, units: null, error: e.message, hint: 'SalesDoctor: ' + e.message });
+    res.status(400).json({ error: 'SalesDoctor: ' + e.message });
   }
+});
+
+// Набор статей ДДС для строки затрат (может быть несколько)
+router.post('/api/costs/:id(\\d+)/categories', J, async (req, res) => {
+  if (!canEdit(req)) return denyEdit(res);
+  const ids = Array.isArray((req.body || {}).ids)
+    ? [...new Set(req.body.ids.map((x) => parseInt(x, 10)).filter(Boolean))] : [];
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('DELETE FROM calc_cost_item_categories WHERE item_id = $1', [req.params.id]);
+    for (const catId of ids) {
+      await client.query(
+        'INSERT INTO calc_cost_item_categories (item_id, category_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+        [req.params.id, catId]);
+    }
+    // Старую одиночную колонку держим в согласии с набором — для совместимости.
+    await client.query('UPDATE calc_cost_items SET cash_category_id = $1, updated_by = $2, updated_at = now() WHERE id = $3',
+      [ids.length === 1 ? ids[0] : null, req.user.id, req.params.id]);
+    await client.query('COMMIT');
+    await db.log(req.user.id, 'calc_cost_categories', { id: Number(req.params.id), count: ids.length });
+    res.json({ ok: true });
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    res.status(400).json({ error: e.message });
+  } finally { client.release(); }
 });
 
 // Среднемесячное производство: «текущее» и «план»

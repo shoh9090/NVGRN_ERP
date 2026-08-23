@@ -280,6 +280,21 @@ async function ensureCalculationSchema(pool) {
   )`);
   await q(`INSERT INTO calc_settings (key, value) VALUES ('monthly_units', '55000') ON CONFLICT (key) DO NOTHING`);
 
+  // Связь статьи затрат с НЕСКОЛЬКИМИ статьями ДДС Кассы.
+  // Пример из жизни: административные расходы — это статьи 41–48, но не 40.
+  // Одной колонки cash_category_id для этого мало, поэтому отдельная таблица.
+  await q(`CREATE TABLE IF NOT EXISTS calc_cost_item_categories (
+    item_id INTEGER NOT NULL REFERENCES calc_cost_items(id) ON DELETE CASCADE,
+    category_id INTEGER NOT NULL,
+    PRIMARY KEY (item_id, category_id)
+  )`);
+  await q(`CREATE INDEX IF NOT EXISTS idx_calc_cost_item_cat ON calc_cost_item_categories (item_id)`);
+  // Разовый перенос уже выбранных одиночных связей в новую таблицу.
+  await q(`INSERT INTO calc_cost_item_categories (item_id, category_id)
+           SELECT id, cash_category_id FROM calc_cost_items
+            WHERE cash_category_id IS NOT NULL
+           ON CONFLICT DO NOTHING`).catch((e) => console.error('calc cost cats migrate:', e.message));
+
   // Первое наполнение статьями из Excel — только если таблица пустая.
   // В рабочей базе строки уже есть, поэтому сид не сработает и ничего не затрёт.
   const has = await q('SELECT count(*)::int AS n FROM calc_cost_items');

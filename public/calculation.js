@@ -104,22 +104,97 @@
     return inp;
   }
 
-  // Выбор статьи ДДС Кассы — чтобы «фактич» заполнялся сам
+  // Выбор НЕСКОЛЬКИХ статей ДДС Кассы: «фактич» = сумма по всем выбранным.
+  // Пример: административные расходы — это статьи 41–48, но не 40.
   function cashPicker(item) {
+    const chips = (item.categories || []).map((c) => el('span', { class: 'calc-chip', title: c.label }, c.label));
     if (!canEdit()) {
-      const c = (DATA.cash_categories || []).find((x) => x.id === item.cash_category_id);
-      return el('div', { class: 'calc-src-cell' }, c ? c.label : '—');
+      return el('div', { class: 'calc-chips' }, chips.length ? chips : el('span', { class: 'calc-src-cell' }, '—'));
     }
-    const sel = el('select', { class: 'calc-src-sel' }, [
-      el('option', { value: '' }, '— не связано —'),
-      ...(DATA.cash_categories || []).map((c) =>
-        el('option', { value: c.id, selected: c.id === item.cash_category_id || null }, c.label)),
+    const btn = el('button', {
+      class: 'calc-pick-btn',
+      title: 'Выбрать статьи ДДС, из которых складывается факт',
+      onclick: (e) => { e.stopPropagation(); openCatPicker(item, btn); },
+    }, chips.length ? ('статей: ' + chips.length) : 'выбрать статьи');
+    return el('div', { class: 'calc-chips' }, chips.concat([btn]));
+  }
+
+  // Панель выбора: список статей с галочками, поиск, выбор группой.
+  let pickerEl = null;
+  function closeCatPicker() { if (pickerEl) { pickerEl.remove(); pickerEl = null; } }
+  document.addEventListener('click', () => closeCatPicker());
+
+  function openCatPicker(item, anchor) {
+    closeCatPicker();
+    const selected = new Set((item.categories || []).map((c) => Number(c.id)));
+    const all = DATA.cash_categories || [];
+
+    const list = el('div', { class: 'calc-pick-list' });
+    const counter = el('div', { class: 'calc-pick-count' }, '');
+    const refreshCount = () => { counter.textContent = 'выбрано: ' + selected.size; };
+
+    const draw = (q) => {
+      list.innerHTML = '';
+      const qq = (q || '').trim().toLowerCase();
+      const shown = all.filter((c) => !qq || c.label.toLowerCase().includes(qq));
+      if (!shown.length) { list.appendChild(el('div', { class: 'calc-pick-empty' }, 'Ничего не найдено')); return; }
+      let lastGroup = null;
+      shown.forEach((c) => {
+        if (c.group !== lastGroup) {
+          lastGroup = c.group;
+          const groupIds = shown.filter((x) => x.group === c.group).map((x) => Number(x.id));
+          list.appendChild(el('div', { class: 'calc-pick-group' }, [
+            el('span', {}, 'Группа ' + (c.group || '—')),
+            el('button', {
+              class: 'calc-pick-all',
+              title: 'Отметить или снять всю группу',
+              onclick: (e) => {
+                e.stopPropagation();
+                const allOn = groupIds.every((id) => selected.has(id));
+                groupIds.forEach((id) => (allOn ? selected.delete(id) : selected.add(id)));
+                draw(q); refreshCount();
+              },
+            }, 'вся группа'),
+          ]));
+        }
+        const cb = el('input', { type: 'checkbox', checked: selected.has(Number(c.id)) ? 'checked' : null });
+        cb.addEventListener('change', () => {
+          if (cb.checked) selected.add(Number(c.id)); else selected.delete(Number(c.id));
+          refreshCount();
+        });
+        const row = el('label', { class: 'calc-pick-item' }, [cb, el('span', {}, c.label)]);
+        list.appendChild(row);
+      });
+    };
+
+    const search = el('input', { type: 'search', class: 'calc-pick-search', placeholder: 'Поиск статьи…' });
+    search.addEventListener('input', () => draw(search.value));
+
+    const save = el('button', { class: 'calc-pick-save', onclick: async (e) => {
+      e.stopPropagation();
+      try {
+        await post('/costs/' + item.id + '/categories', { ids: [...selected] });
+        closeCatPicker();
+        await load();
+      } catch (err) { toast(err.message, true); }
+    } }, 'Сохранить');
+
+    const panel = el('div', { class: 'calc-pick', onclick: (e) => e.stopPropagation() }, [
+      el('div', { class: 'calc-pick-head' }, [el('b', {}, item.name), counter]),
+      search, list,
+      el('div', { class: 'calc-pick-foot' }, [
+        el('button', { class: 'calc-pick-clear', onclick: (e) => { e.stopPropagation(); selected.clear(); draw(search.value); refreshCount(); } }, 'Снять все'),
+        save,
+      ]),
     ]);
-    sel.addEventListener('change', async () => {
-      try { await post('/costs/' + item.id, { cash_category_id: sel.value || null }); await load(); }
-      catch (e) { toast(e.message, true); }
-    });
-    return sel;
+
+    draw(''); refreshCount();
+    document.body.appendChild(panel);
+    const r = anchor.getBoundingClientRect();
+    panel.style.top = Math.min(r.bottom + 6, window.innerHeight - 380) + 'px';
+    panel.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 360)) + 'px';
+    pickerEl = panel;
+    setTimeout(() => search.focus(), 40);
   }
 
   // ---------------------------------------------------------------------------
@@ -146,29 +221,25 @@
     }
     DATA = d;
     render();
-    loadSalesFact();   // факт из SalesDoctor подтягиваем уже после показа листа
   }
 
-  // Факт реализации из SD грузится отдельно: он медленный и не должен
-  // задерживать открытие экрана.
-  let salesLoading = false;
-  async function loadSalesFact() {
-    if (salesLoading || !DATA) return;
-    salesLoading = true;
+  // Факт производства обновляется ТОЛЬКО по кнопке: SalesDoctor отвечает
+  // медленно, и дёргать его при каждом открытии экрана незачем.
+  let factLoading = false;
+  async function refreshFact(months) {
+    if (factLoading) return;
+    factLoading = true;
     const cell = $('#calc-fact-output');
-    if (cell) { cell.textContent = 'загружаем…'; cell.classList.add('calc-dim'); }
+    if (cell) { cell.textContent = 'спрашиваем SalesDoctor…'; cell.classList.add('calc-dim'); }
     try {
-      const r = await api('/sales-fact?period=' + DATA.period);
-      DATA.output.fact = r.units;
-      DATA.output.fact_hint = r.hint;
-      DATA.output.fact_error = r.error || null;
+      const r = await post('/sales-fact/refresh', { months });
+      toast(months === 3 ? 'Обновлено: среднее за 3 месяца' : 'Обновлено за прошлый месяц');
+      if (r.truncated) toast('Данные неполные: слишком много заказов', true);
     } catch (e) {
-      DATA.output.fact = null;
-      DATA.output.fact_hint = 'SalesDoctor: ' + e.message;
-      DATA.output.fact_error = e.message;
+      toast(e.message, true);
     } finally {
-      salesLoading = false;
-      render();
+      factLoading = false;
+      await load();
     }
   }
 
@@ -207,14 +278,13 @@
     box.appendChild(el('table', { class: 'calc-t' }, [
       el('colgroup', {}, [
         el('col', { class: 'c-name' }), el('col', { class: 'c-num' }),
-        el('col', { class: 'c-num' }), el('col', { class: 'c-num' }), el('col', { class: 'c-src' }),
+        el('col', { class: 'c-num' }), el('col', { class: 'c-src' }),
       ]),
       el('thead', {}, el('tr', {}, [
         el('th', {}, ''),
         el('th', { class: 'calc-num' }, [el('div', {}, 'текущее в кальк.'), el('div', {}, 'расчётах')]),
         el('th', { class: 'calc-num' }, 'фактич'),
-        el('th', { class: 'calc-num' }, 'план'),
-        el('th', {}, 'откуда факт'),
+        el('th', {}, 'статьи ДДС Кассы'),
       ])),
       el('tbody', {}, [outputRow(d.output)].concat(
         ...d.blocks.map((b) => blockRows(b))
@@ -230,17 +300,30 @@
   }
 
   function outputRow(o) {
+    // Кнопки обновления факта. SalesDoctor медленный, поэтому только по нажатию.
+    const btn = (label, icon, months, hint) => el('button', {
+      class: 'calc-fact-btn', title: hint,
+      onclick: () => refreshFact(months),
+    }, [el('span', { class: 'calc-fact-ico' }, icon), label]);
+
+    const factCell = el('div', { class: 'calc-fact-wrap' }, [
+      el('div', { id: 'calc-fact-output', class: 'calc-cell calc-ro', title: o.fact_note || '' },
+        o.fact === null || o.fact === undefined ? '—' : money0(o.fact)),
+      canEdit() ? el('div', { class: 'calc-fact-btns' }, [
+        btn('месяц', '↻', 1, 'Взять из SalesDoctor за прошлый календарный месяц'),
+        btn('3 мес', '∑', 3, 'Среднее за три прошлых месяца по данным SalesDoctor'),
+      ]) : null,
+      o.fact_note ? el('div', { class: 'calc-fact-note' }, o.fact_note) : null,
+    ]);
+
     return el('tr', { class: 'calc-r-output' }, [
       el('td', {}, [
         el('div', { class: 'calc-name calc-ro calc-b' }, 'Среднемесячное производство'),
         el('div', { class: 'calc-unit' }, 'шт'),
       ]),
       el('td', {}, cell(o.current, (v) => post('/output', { current: v }), { dec: 0 })),
-      el('td', {}, el('div', { id: 'calc-fact-output', class: 'calc-cell calc-ro calc-hintcell', title: o.fact_hint || '' },
-        o.fact === null ? '—' : money0(o.fact))),
-      el('td', {}, cell(o.plan, (v) => post('/output', { plan: v }), { dec: 0, placeholder: 'план продаж' })),
-      el('td', {}, el('div', { class: 'calc-src-cell' + (o.fact_error ? ' calc-src-bad' : '') },
-        o.fact_error ? 'SalesDoctor: не отвечает' : 'SalesDoctor')),
+      el('td', {}, factCell),
+      el('td', {}, ''),
     ]);
   }
 
@@ -248,7 +331,7 @@
     const rows = [];
     // Заголовок блока
     rows.push(el('tr', { class: 'calc-r-head' }, [
-      el('td', { colspan: '5' }, b.title),
+      el('td', { colspan: '4' }, b.title),
     ]));
 
     b.items.forEach((item) => rows.push(el('tr', {}, [
@@ -256,7 +339,6 @@
       el('td', {}, cell(item.current, (v) => post('/costs/' + item.id, { current: v }))),
       el('td', {}, el('div', { class: 'calc-cell calc-ro' + (item.fact === null ? ' calc-dim' : '') },
         item.fact === null ? 'не связано' : money(item.fact))),
-      el('td', {}, cell(item.plan, (v) => post('/costs/' + item.id, { plan: v }), { placeholder: '—' })),
       el('td', {}, el('div', { class: 'calc-src-wrap' }, [
         cashPicker(item),
         canEdit() ? el('button', {
@@ -271,7 +353,7 @@
 
     if (canEdit()) {
       rows.push(el('tr', { class: 'calc-r-add' }, [
-        el('td', { colspan: '5' }, el('button', {
+        el('td', { colspan: '4' }, el('button', {
           class: 'calc-add',
           onclick: async () => {
             try { await post('/costs', { kind: b.key, name: 'Новая статья' }); await load(); }
@@ -296,17 +378,15 @@
       el('td', {}, b.total_label),
       el('td', { class: 'calc-num' }, money(b.total.current)),
       el('td', { class: 'calc-num' }, factNote(b.total.fact)),
-      el('td', { class: 'calc-num' }, b.total.plan === null ? '' : money(b.total.plan)),
       el('td', {}, ''),
     ]));
     rows.push(el('tr', { class: 'calc-r-per' }, [
       el('td', {}, 'Среднее на шт'),
       el('td', { class: 'calc-num' }, b.per_unit.current === null ? '—' : money(b.per_unit.current)),
       el('td', { class: 'calc-num' }, b.per_unit.fact === null ? '' : factNote(b.per_unit.fact)),
-      el('td', { class: 'calc-num' }, b.per_unit.plan === null ? '' : money(b.per_unit.plan)),
       el('td', {}, ''),
     ]));
-    rows.push(el('tr', { class: 'calc-r-gap' }, el('td', { colspan: '5' }, '')));
+    rows.push(el('tr', { class: 'calc-r-gap' }, el('td', { colspan: '4' }, '')));
     return rows;
   }
 
