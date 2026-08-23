@@ -356,6 +356,19 @@ async function ensureCalculationSchema(pool) {
     sort INT NOT NULL DEFAULT 100
   )`);
   await q(`CREATE INDEX IF NOT EXISTS idx_calc_pack_items ON calc_pack_template_items (template_id, sort, id)`);
+  // Строка комплекта задаётся вручную: название и цена. Привязка к номенклатуре
+  // (item_id) осталась для старых строк, но больше не обязательна — один и тот же
+  // «цветной пакет розница» стоит одинаково независимо от конкретного SKU.
+  for (const [col, type] of [['name', 'TEXT'], ['price', 'NUMERIC']]) {
+    await q(`ALTER TABLE calc_pack_template_items ADD COLUMN IF NOT EXISTS ${col} ${type}`)
+      .catch((e) => console.error('calc_pack_template_items ' + col + ':', e.message));
+  }
+  // У старых строк название берём из справочника, чтобы ничего не потерялось.
+  await q(`UPDATE calc_pack_template_items i
+              SET name = m.name
+             FROM ref_packaging m
+            WHERE i.item_id = m.id AND (i.name IS NULL OR i.name = '')`)
+    .catch((e) => console.error('calc pack names backfill:', e.message));
 
   _ready = true;
 }

@@ -339,48 +339,18 @@ router.delete('/api/costs/:id(\\d+)', async (req, res) => {
 // ===========================================================================
 // Лист «Упаковка»
 // ===========================================================================
-// таб1 — цены упаковочных материалов: своя цена в калькуляции + цена из Закупа.
-// таб2 — комплекты упаковки: из чего складывается стоимость упаковки изделия.
-//
-// Как из цены получается стоимость на одну упаковку. В Excel это было спрятано
-// в формуле «цена/1000*10» — здесь поля видны и подписаны:
-//   основа «за штуку»     → стоимость = цена × расход
-//   основа «за килограмм» → стоимость = цена / 1000 × расход в граммах
-function packCostPerUnit(price, basis, consumption) {
-  const p = numOrNull(price);
-  if (p === null) return null;
-  const q = asNum(consumption);
-  return basis === 'kg' ? (p / 1000) * q : p * q;
-}
+// Комплект упаковки собирается строками: название и цена вписываются вручную.
+// К номенклатуре не привязываемся намеренно: у всех цветных пакетов розницы
+// цена одна, и перечислять каждый SKU отдельно смысла нет.
+// Стоимость строки = цена × количество. Стоимость комплекта = сумма строк.
 
 router.get('/api/packaging', async (req, res) => {
   try {
-    // таб1: номенклатура упаковки + цены калькуляции
-    const mats = (await db.pool.query(
-      `SELECT m.id, m.code, m.name, COALESCE(u.short_name, '') AS unit,
-              p.calc_price, p.market_price, p.market_price_at,
-              COALESCE(p.pack_basis, 'piece') AS pack_basis,
-              COALESCE(p.pack_consumption, 1) AS pack_consumption
-       FROM ref_packaging m
-       LEFT JOIN ref_units u ON u.id = m.unit_id
-       LEFT JOIN calc_material_prices p ON p.item_kind = 'packaging' AND p.item_id = m.id
-       WHERE m.status = 'active'
-       ORDER BY m.name`)).rows.map((m) => ({
-      id: m.id, code: m.code || '', name: m.name, unit: m.unit,
-      calc_price: numOrNull(m.calc_price),
-      market_price: numOrNull(m.market_price),
-      market_price_at: m.market_price_at,
-      pack_basis: m.pack_basis === 'kg' ? 'kg' : 'piece',
-      pack_consumption: Number(m.pack_consumption) || 0,
-      cost_per_unit: packCostPerUnit(m.calc_price, m.pack_basis, m.pack_consumption),
-    }));
-    const costById = new Map(mats.map((m) => [m.id, m.cost_per_unit]));
-
-    // таб2: комплекты и их состав
     const tpls = (await db.pool.query(
       `SELECT id, name, sort FROM calc_pack_templates WHERE status = 'active' ORDER BY sort, name`)).rows;
     const lines = tpls.length ? (await db.pool.query(
-      `SELECT i.id, i.template_id, i.item_id, i.qty, i.sort, m.name, m.code
+      `SELECT i.id, i.template_id, i.item_id, i.qty, i.sort, i.price,
+              COALESCE(NULLIF(i.name, ''), m.name, 'Без названия') AS name
        FROM calc_pack_template_items i
        LEFT JOIN ref_packaging m ON m.id = i.item_id
        WHERE i.template_id = ANY($1) ORDER BY i.template_id, i.sort, i.id`,
@@ -388,12 +358,11 @@ router.get('/api/packaging', async (req, res) => {
 
     const templates = tpls.map((t) => {
       const items = lines.filter((l) => l.template_id === t.id).map((l) => {
-        const per = costById.has(l.item_id) ? costById.get(l.item_id) : null;
+        const price = numOrNull(l.price);
         const qty = Number(l.qty) || 0;
         return {
-          id: l.id, item_id: l.item_id, name: l.name || '(позиция удалена)', code: l.code || '',
-          qty, cost_per_unit: per,
-          line_cost: per === null ? null : per * qty,
+          id: l.id, name: l.name, qty, price,
+          line_cost: price === null ? null : price * qty,
         };
       });
       const known = items.filter((x) => x.line_cost !== null);
@@ -404,40 +373,14 @@ router.get('/api/packaging', async (req, res) => {
       };
     });
 
-    res.json({ materials: mats, templates, can_edit: canEdit(req) });
+    res.json({ templates, can_edit: canEdit(req) });
   } catch (e) {
     console.error('[КАЛЬКУЛЯЦИЯ] упаковка:', e.message);
     res.status(400).json({ error: e.message });
   }
 });
 
-// Цена и расход материала упаковки
-router.post('/api/packaging/material/:id(\\d+)', J, async (req, res) => {
-  if (!canEdit(req)) return denyEdit(res);
-  const b = req.body || {};
-  const id = Number(req.params.id);
-  try {
-    const cur = (await db.pool.query(
-      "SELECT * FROM calc_material_prices WHERE item_kind='packaging' AND item_id=$1", [id])).rows[0] || {};
-    const price = b.calc_price !== undefined ? numOrNull(b.calc_price) : numOrNull(cur.calc_price);
-    const basis = b.pack_basis !== undefined ? (b.pack_basis === 'kg' ? 'kg' : 'piece') : (cur.pack_basis || 'piece');
-    const cons = b.pack_consumption !== undefined
-      ? asNum(b.pack_consumption)
-      : (cur.pack_consumption === undefined ? 1 : Number(cur.pack_consumption));
-    if (price !== null && price < 0) return res.status(400).json({ error: 'Цена не может быть отрицательной' });
-    if (cons < 0) return res.status(400).json({ error: 'Расход не может быть отрицательным' });
-
-    await db.pool.query(
-      `INSERT INTO calc_material_prices (item_kind, item_id, calc_price, pack_basis, pack_consumption, updated_at, updated_by)
-       VALUES ('packaging', $1, $2, $3, $4, now(), $5)
-       ON CONFLICT (item_kind, item_id) DO UPDATE SET
-         calc_price = $2, pack_basis = $3, pack_consumption = $4, updated_at = now(), updated_by = $5`,
-      [id, price, basis, cons, req.user.id]);
-    res.json({ ok: true });
-  } catch (e) { res.status(400).json({ error: e.message }); }
-});
-
-// Комплект упаковки: создать / переименовать / убрать
+// Комплект: создать / переименовать / убрать
 router.post('/api/packaging/template', J, async (req, res) => {
   if (!canEdit(req)) return denyEdit(res);
   const name = String((req.body || {}).name || '').trim() || 'Новый комплект';
@@ -469,30 +412,45 @@ router.delete('/api/packaging/template/:id(\\d+)', async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
-// Состав комплекта: добавить материал, изменить количество, убрать строку
+// Строка комплекта: добавить, изменить, убрать
 router.post('/api/packaging/template/:id(\\d+)/line', J, async (req, res) => {
   if (!canEdit(req)) return denyEdit(res);
-  const itemId = intOrNull((req.body || {}).item_id);
-  if (!itemId) return res.status(400).json({ error: 'Не выбран материал' });
+  const b = req.body || {};
+  const name = String(b.name || '').trim() || 'Новая строка';
   try {
-    const exists = (await db.pool.query("SELECT id FROM ref_packaging WHERE id=$1 AND status='active'", [itemId])).rows[0];
-    if (!exists) return res.status(400).json({ error: 'Такого материала нет в справочнике упаковки' });
     const next = (await db.pool.query(
       'SELECT COALESCE(MAX(sort),0)+10 AS n FROM calc_pack_template_items WHERE template_id=$1',
       [req.params.id])).rows[0].n;
-    await db.pool.query(
-      'INSERT INTO calc_pack_template_items (template_id, item_id, qty, sort) VALUES ($1,$2,$3,$4)',
-      [req.params.id, itemId, asNum((req.body || {}).qty) || 1, next]);
-    res.json({ ok: true });
+    const r = await db.pool.query(
+      'INSERT INTO calc_pack_template_items (template_id, name, price, qty, sort) VALUES ($1,$2,$3,$4,$5) RETURNING id',
+      [req.params.id, name, numOrNull(b.price), asNum(b.qty) || 1, next]);
+    res.json({ ok: true, id: r.rows[0].id });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 router.post('/api/packaging/line/:id(\\d+)', J, async (req, res) => {
   if (!canEdit(req)) return denyEdit(res);
-  const qty = asNum((req.body || {}).qty);
-  if (qty < 0) return res.status(400).json({ error: 'Количество не может быть отрицательным' });
+  const b = req.body || {};
+  const sets = [], vals = [];
+  if (b.name !== undefined) {
+    const name = String(b.name).trim();
+    if (!name) return res.status(400).json({ error: 'Название строки не может быть пустым' });
+    vals.push(name); sets.push(`name = $${vals.length}`);
+  }
+  if (b.price !== undefined) {
+    const price = numOrNull(b.price);
+    if (price !== null && price < 0) return res.status(400).json({ error: 'Цена не может быть отрицательной' });
+    vals.push(price); sets.push(`price = $${vals.length}`);
+  }
+  if (b.qty !== undefined) {
+    const qty = asNum(b.qty);
+    if (qty < 0) return res.status(400).json({ error: 'Количество не может быть отрицательным' });
+    vals.push(qty); sets.push(`qty = $${vals.length}`);
+  }
+  if (!sets.length) return res.json({ ok: true });
+  vals.push(req.params.id);
   try {
-    await db.pool.query('UPDATE calc_pack_template_items SET qty = $1 WHERE id = $2', [qty, req.params.id]);
+    await db.pool.query(`UPDATE calc_pack_template_items SET ${sets.join(', ')} WHERE id = $${vals.length}`, vals);
     res.json({ ok: true });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });

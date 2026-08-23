@@ -453,7 +453,7 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Лист «Упаковка» — две таблицы, как таб1 и таб2 в Excel
+  // Лист «Упаковка»: комплекты, строки вписываются вручную
   // ---------------------------------------------------------------------------
   let PACK = null;
 
@@ -475,78 +475,17 @@
     const box = el('div');
     box.appendChild(el('div', { class: 'calc-sheet-head' }, [
       el('h1', { class: 'calc-h1' }, 'Упаковка'),
-      el('div', { class: 'calc-sub' }, 'Сначала цены упаковочных материалов, затем комплекты — из чего складывается упаковка одного изделия.'),
+      el('div', { class: 'calc-sub' }, 'Комплект — это то, во что упакован один товар. Строки вписываются вручную: название и цена. Привязка к конкретной позиции склада не нужна: у всех цветных пакетов розницы цена одна.'),
     ]));
-    box.appendChild(materialsTable());
-    box.appendChild(templatesBlock());
-    return box;
-  }
 
-  // --- таб1: цены материалов -------------------------------------------------
-  function materialsTable() {
-    const mats = (PACK && PACK.materials) || [];
-    const rows = mats.map((m) => {
-      const basisSel = canEdit()
-        ? el('select', { class: 'calc-basis', onchange: async (e) => {
-            try { await post('/packaging/material/' + m.id, { pack_basis: e.target.value }); await loadPackaging(); }
-            catch (err) { toast(err.message, true); }
-          } }, [
-          el('option', { value: 'piece', selected: m.pack_basis === 'piece' || null }, 'за штуку'),
-          el('option', { value: 'kg', selected: m.pack_basis === 'kg' || null }, 'за килограмм'),
-        ])
-        : el('div', { class: 'calc-src-cell' }, m.pack_basis === 'kg' ? 'за килограмм' : 'за штуку');
-
-      return el('tr', {}, [
-        el('td', {}, [
-          el('div', { class: 'calc-name calc-ro' }, m.name),
-          m.code ? el('div', { class: 'calc-unit' }, m.code) : null,
-        ]),
-        el('td', {}, cell(m.calc_price, (v) => post('/packaging/material/' + m.id, { calc_price: v }))),
-        el('td', {}, el('div', { class: 'calc-cell calc-ro calc-dim', title: 'Подключим из плитки «Закуп»' },
-          m.market_price === null ? 'из Закупа' : money(m.market_price))),
-        el('td', {}, basisSel),
-        el('td', {}, cell(m.pack_consumption, (v) => post('/packaging/material/' + m.id, { pack_consumption: v }),
-          { placeholder: m.pack_basis === 'kg' ? 'граммов' : 'штук' })),
-        el('td', { class: 'calc-num calc-strong' },
-          m.cost_per_unit === null ? el('span', { class: 'calc-dim' }, 'нет цены') : money(m.cost_per_unit)),
-      ]);
-    });
-
-    if (!rows.length) {
-      rows.push(el('tr', {}, el('td', { colspan: '6', class: 'calc-empty-row' },
-        'В справочнике упаковки нет активных позиций. Заведите их в «Справочниках» — здесь только цены.')));
-    }
-
-    return el('div', { class: 'calc-pack-block' }, [
-      el('div', { class: 'calc-r-head-solo' }, [
-        el('span', {}, 'Материалы упаковки'),
-        el('span', { class: 'calc-hint' }, 'Цена — ваша, в калькуляции. Столбец «из Закупа» подключим позже.'),
-      ]),
-      el('table', { class: 'calc-t calc-t-mats' }, [
-        el('thead', {}, el('tr', {}, [
-          el('th', {}, 'Наименование'),
-          el('th', { class: 'calc-num' }, 'цена'),
-          el('th', { class: 'calc-num' }, 'из Закупа'),
-          el('th', {}, 'цена указана'),
-          el('th', { class: 'calc-num' }, 'расход на 1 упак'),
-          el('th', { class: 'calc-num' }, 'на 1 упаковку'),
-        ])),
-        el('tbody', {}, rows),
-      ]),
-      el('div', { class: 'calc-note' },
-        'Если цена за килограмм, укажите расход в граммах — стоимость посчитается сама. '
-        + 'Пример: плёнка 77 400 сум/кг, расход 6 г → 464,40 сум на упаковку.'),
-    ]);
-  }
-
-  // --- таб2: комплекты упаковки ---------------------------------------------
-  function templatesBlock() {
     const tpls = (PACK && PACK.templates) || [];
     const cards = tpls.map((t) => templateCard(t));
     if (!cards.length) {
-      cards.push(el('div', { class: 'calc-empty-row' }, 'Комплектов пока нет. Добавьте первый — например «вак.пакет».'));
+      cards.push(el('div', { class: 'calc-tpl-empty-all' },
+        'Комплектов пока нет. Добавьте первый — например «вак.пакет розница».'));
     }
-    return el('div', { class: 'calc-pack-block' }, [
+
+    box.appendChild(el('div', { class: 'calc-pack-block' }, [
       el('div', { class: 'calc-r-head-solo' }, [
         el('span', {}, 'Комплекты упаковки'),
         canEdit() ? el('button', { class: 'calc-add', onclick: async () => {
@@ -555,19 +494,21 @@
         } }, '+ комплект') : null,
       ]),
       el('div', { class: 'calc-tpls' }, cards),
-    ]);
+    ]));
+    return box;
   }
 
   function templateCard(t) {
     const lines = t.items.map((line) => el('div', { class: 'calc-tpl-line' }, [
-      el('div', { class: 'calc-tpl-nm', title: line.name }, line.name),
       canEdit()
-        ? cell(line.qty, (v) => post('/packaging/line/' + line.id, { qty: v }), { dec: 2 })
-        : el('div', { class: 'calc-cell calc-ro' }, money(line.qty)),
+        ? nameCell(line.name, (v) => post('/packaging/line/' + line.id, { name: v }))
+        : el('div', { class: 'calc-tpl-nm' }, line.name),
+      cell(line.price, (v) => post('/packaging/line/' + line.id, { price: v }), { placeholder: 'цена' }),
+      cell(line.qty, (v) => post('/packaging/line/' + line.id, { qty: v }), { dec: 2 }),
       el('div', { class: 'calc-tpl-cost' },
-        line.line_cost === null ? el('span', { class: 'calc-dim' }, 'нет цены') : money(line.line_cost)),
+        line.line_cost === null ? el('span', { class: 'calc-dim' }, 'впишите цену') : money(line.line_cost)),
       canEdit() ? el('button', {
-        class: 'calc-del', title: 'Убрать из комплекта',
+        class: 'calc-del', title: 'Убрать строку',
         onclick: async () => {
           try { await api('/packaging/line/' + line.id, { method: 'DELETE' }); await loadPackaging(); }
           catch (e) { toast(e.message, true); }
@@ -575,15 +516,7 @@
       }, '×') : null,
     ]));
 
-    if (!lines.length) lines.push(el('div', { class: 'calc-tpl-empty' }, 'Пусто — добавьте материалы'));
-
-    const addSel = canEdit() ? el('select', { class: 'calc-tpl-add', onchange: async (e) => {
-      const id = e.target.value; e.target.value = '';
-      if (!id) return;
-      try { await post('/packaging/template/' + t.id + '/line', { item_id: id, qty: 1 }); await loadPackaging(); }
-      catch (err) { toast(err.message, true); }
-    } }, [el('option', { value: '' }, '+ добавить материал')].concat(
-      ((PACK && PACK.materials) || []).map((m) => el('option', { value: m.id }, m.name)))) : null;
+    if (!lines.length) lines.push(el('div', { class: 'calc-tpl-empty' }, 'Пусто — добавьте строку'));
 
     return el('div', { class: 'calc-tpl' }, [
       el('div', { class: 'calc-tpl-head' }, [
@@ -599,16 +532,20 @@
         }, '×') : null,
       ]),
       el('div', { class: 'calc-tpl-cols' }, [
-        el('span', {}, 'материал'), el('span', {}, 'кол-во'), el('span', {}, 'стоимость'), el('span', {}, ''),
+        el('span', {}, 'что входит'), el('span', {}, 'цена'), el('span', {}, 'кол-во'),
+        el('span', {}, 'стоимость'), el('span', {}, ''),
       ]),
       el('div', {}, lines),
-      addSel,
+      canEdit() ? el('button', { class: 'calc-tpl-add', onclick: async () => {
+        try { await post('/packaging/template/' + t.id + '/line', { name: 'Новая строка', qty: 1 }); await loadPackaging(); }
+        catch (e) { toast(e.message, true); }
+      } }, '+ строка') : null,
       el('div', { class: 'calc-tpl-total' }, [
         el('span', {}, 'Стоимость комплекта'),
         el('b', {}, money(t.total)),
       ]),
       t.missing_prices
-        ? el('div', { class: 'calc-partial' }, 'у ' + t.missing_prices + ' материалов нет цены — в сумму не вошли')
+        ? el('div', { class: 'calc-partial' }, 'строк без цены: ' + t.missing_prices + ' — в сумму не вошли')
         : null,
     ]);
   }
