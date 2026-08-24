@@ -408,55 +408,71 @@ async function ensureCalculationSchema(pool) {
            ON calc_sheet_products (sheet, status, sort, id)`);
 
 
-  // --- Одноразовое наполнение листа «Рознич. тара» ------------------------
-  // Товары из рабочего файла Шоха (00calc_NVGRN11.xlsx). Сидируется, только
-  // если лист ещё пуст — дальше товары редактируются в интерфейсе, а не тут.
+  // --- Наполнение листа «Рознич. тара» товарами из Excel Шоха -------------
+  // Комплект упаковки для розницы — «вак.пакет розница», если он уже создан
+  // на листе «Упаковка». Не найден — не страшно, товар просто останется
+  // без комплекта, и Шох выберет его сам в выпадашке.
+  const retailTpl = await q(
+    "SELECT id FROM calc_pack_templates WHERE status = 'active' AND name ILIKE '%вак%розниц%' ORDER BY id LIMIT 1");
+  const retailTplId = retailTpl.rows[0] ? retailTpl.rows[0].id : null;
+
+  const findRawMaterialId = async (name) => {
+    if (!name) return null;
+    const exact = await q(
+      "SELECT id FROM ref_raw_materials WHERE status = 'active' AND lower(trim(name)) = lower($1)", [name]);
+    if (exact.rows.length === 1) return exact.rows[0].id;
+    const loose = await q(
+      "SELECT id FROM ref_raw_materials WHERE status = 'active' AND name ILIKE $1", ['%' + name + '%']);
+    return loose.rows.length === 1 ? loose.rows[0].id : null;
+  };
+
+  // name, barcode, доля произв.затрат, граммаж, наименование сырья (для связи
+  // с Закупом — цена подтянется сама), брак %, цена 1, цена 2, сортировка.
+  // У Латука доля производственных затрат — 0: так у Шоха в файле, отдельно
+  // от остальных (проверено по сумме с/с 2 707,25 = зелень + упаковка, без
+  // производственных).
+  const RETAIL_ITEMS = [
+    ['Латук 100г', '4780114040111', 0, 100, 'латук', 50, 21000, 25760, 10],
+    ['романо 100г', '4780114040104', 1, 100, 'романо', 50, 24000, 29120, 20],
+    ['рукола 100г', '4780114040043', 0.5, 100, 'рукола', 50, 20800, 24640, 30],
+    ['шпинат 100г', '4780114040074', 1, 100, 'шпинат', 50, 29800, 33600, 40],
+    ['кейл 100г', '4780114040098', 1, 100, 'кейл', 50, 25500, 25500, 50],
+    ['мангольд 100г', '4780114040081', 1, 100, 'мангольд', 20, 22400, 24640, 60],
+    ['лоло-россо 100г', '4780114040128', 1, 100, 'лоло-россо', 50, 28600, 29120, 70],
+    ['айсберг 150г', '4780114040050', 1, 150, 'айсберг', 50, 20500, 24640, 80],
+  ];
   const retailCount = await q(
     "SELECT count(*)::int AS n FROM calc_sheet_products WHERE sheet = 'retail' AND status = 'active'");
   if (!Number(retailCount.rows[0].n)) {
-    // Комплект упаковки для розницы — «вак.пакет розница», если он уже создан
-    // на листе «Упаковка». Не найден — не страшно, товар просто останется
-    // без комплекта, и Шох выберет его сам в выпадашке.
-    const tpl = await q(
-      "SELECT id FROM calc_pack_templates WHERE status = 'active' AND name ILIKE '%вак%розниц%' ORDER BY id LIMIT 1");
-    const tplId = tpl.rows[0] ? tpl.rows[0].id : null;
-
-    const findRawMaterialId = async (name) => {
-      if (!name) return null;
-      const exact = await q(
-        "SELECT id FROM ref_raw_materials WHERE status = 'active' AND lower(trim(name)) = lower($1)", [name]);
-      if (exact.rows.length === 1) return exact.rows[0].id;
-      const loose = await q(
-        "SELECT id FROM ref_raw_materials WHERE status = 'active' AND name ILIKE $1", ['%' + name + '%']);
-      return loose.rows.length === 1 ? loose.rows[0].id : null;
-    };
-
-    // name, barcode, доля произв.затрат, граммаж, наименование сырья (для связи
-    // с Закупом), запасная ручная сумма зелени (когда граммаж/наименование
-    // ещё не проверены), брак %, цена 1, цена 2, сортировка.
-    const items = [
-      ['Латук 100г', '4780114040111', 1, 100, 'латук', null, 50, 21000, 25760, 10],
-      ['романо 100г', '4780114040104', 1, 100, 'романо', null, 50, 24000, 29120, 20],
-      ['рукола 100г', '4780114040043', 0.5, 100, 'рукола', null, 50, 20800, 24640, 30],
-      ['шпинат 100г', '4780114040074', 1, 100, 'шпинат', null, 50, 29800, 33600, 40],
-      ['кейл 100г', '4780114040098', 1, 100, 'кейл', null, 50, 25500, 25500, 50],
-      // У этих трёх граммаж/цена за кг из скриншота ещё не подтверждены —
-      // подставлена итоговая сумма зелени, которая уже сходится с Excel
-      // (проверено в test/calculation-sku.test.js). Когда Шох подтвердит
-      // граммаж и цену — переключит на «Наименование» в самом интерфейсе.
-      ['мангольд 100г', '4780114040081', 1, null, null, 5000, 20, 22400, 24640, 60],
-      ['лоло-россо 100г', '4780114040128', 1, null, null, 1700, 50, 28600, 29120, 70],
-      ['айсберг 150г', '4780114040050', 1, null, null, 1800, 50, 20500, 24640, 80],
-    ];
-    for (const [name, barcode, factor, weightG, rawName, rawCostManual, defect, price, price2, sort] of items) {
+    for (const [name, barcode, factor, weightG, rawName, defect, price, price2, sort] of RETAIL_ITEMS) {
       const rawMaterialId = await findRawMaterialId(rawName);
       await q(
         `INSERT INTO calc_sheet_products
-           (sheet, name, barcode, pack_template_id, prod_factor, net_weight_g, raw_material_id, raw_cost,
+           (sheet, name, barcode, pack_template_id, prod_factor, net_weight_g, raw_material_id,
             defect_pct, price, price2, retro_pct, vat_pct, profit_tax_pct, sort)
-         VALUES ('retail', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 21, 12, 15, $11)`,
-        [name, barcode, tplId, factor, weightG, rawMaterialId, rawCostManual, defect, price, price2, sort])
+         VALUES ('retail', $1, $2, $3, $4, $5, $6, $7, $8, $9, 21, 12, 15, $10)`,
+        [name, barcode, retailTplId, factor, weightG, rawMaterialId, defect, price, price2, sort])
         .catch((e) => console.error('calc retail seed ' + name + ':', e.message));
+    }
+  } else {
+    // Лист уже был засеян раньше — тогда ещё без граммажа/наименования
+    // сырья и с одинаковой долей затрат у всех товаров. Поправляем один раз
+    // по штрих-коду, не трогая то, что Шох мог успеть отредактировать сам
+    // (значит, если товар уже без исходного штрих-кода — его не находим и
+    // не трогаем).
+    const fixDone = await q("SELECT 1 FROM calc_settings WHERE key = 'calc_retail_seed_fix_1'");
+    if (!fixDone.rows.length) {
+      for (const [, barcode, factor, weightG, rawName] of RETAIL_ITEMS) {
+        const rawMaterialId = await findRawMaterialId(rawName);
+        await q(
+          `UPDATE calc_sheet_products
+              SET prod_factor = $1, net_weight_g = $2, raw_material_id = $3, raw_cost = NULL
+            WHERE sheet = 'retail' AND barcode = $4 AND status = 'active'`,
+          [factor, weightG, rawMaterialId, barcode])
+          .catch((e) => console.error('calc retail seed fix ' + barcode + ':', e.message));
+      }
+      await q(
+        "INSERT INTO calc_settings (key, value) VALUES ('calc_retail_seed_fix_1', '1') ON CONFLICT (key) DO NOTHING");
     }
   }
 
