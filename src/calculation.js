@@ -559,13 +559,19 @@ router.get('/api/sheet/:sheet', async (req, res) => {
       const factor = p.prod_factor === null ? 1 : Number(p.prod_factor);
       const scale = (v) => (v === null || v === undefined ? null : v * factor);
 
-      // Зелень-сырьё: если выбрана конкретная позиция — граммаж × цена из
-      // Закупа. Не выбрана (например, микс в салате) — вручную вписанная сумма.
+      // Зелень-сырьё считается так же, как в Excel: граммаж / 1000 × цена за кг.
+      // Цена за кг берётся из Закупа по связанной позиции, а если её там ещё
+      // нет — из вписанной вручную. Так лист всегда показывает цифру, и при
+      // этом видно, откуда она взялась.
       const weight = numOrNull(p.net_weight_g);
       const rawInfo = p.raw_material_id ? rawPrices.get(p.raw_material_id) : null;
-      const rawPricePerKg = rawInfo ? rawInfo.price : null;
-      const rawCost = p.raw_material_id
-        ? ((weight !== null && rawPricePerKg !== null) ? (weight / 1000) * rawPricePerKg : null)
+      const purchasePrice = rawInfo ? rawInfo.price : null;
+      const manualPrice = numOrNull(p.raw_price_per_kg);
+      const rawPricePerKg = purchasePrice !== null ? purchasePrice : manualPrice;
+      const rawPriceSource = purchasePrice !== null ? 'purchase'
+        : (manualPrice !== null ? 'manual' : 'none');
+      const rawCost = (weight !== null && rawPricePerKg !== null)
+        ? (weight / 1000) * rawPricePerKg
         : numOrNull(p.raw_cost);
 
       const calc = engine.skuEconomics({
@@ -578,7 +584,7 @@ router.get('/api/sheet/:sheet', async (req, res) => {
         retro_pct: p.retro_pct,
         vat_pct: p.vat_pct,
         profit_tax_pct: p.profit_tax_pct,
-      }, { components: ['pack', 'raw', 'production', 'labor'] });
+      }, { components: ['pack', 'raw', 'production'] });
 
       const rawMat = p.raw_material_id ? rawMats.find((m) => m.id === p.raw_material_id) : null;
 
@@ -595,8 +601,9 @@ router.get('/api/sheet/:sheet', async (req, res) => {
         raw_material_name: rawMat ? rawMat.name : '',
         net_weight_g: weight,
         raw_price_per_kg: rawPricePerKg,
+        raw_price_source: rawPriceSource,
         raw_price_at: rawInfo ? rawInfo.at : null,
-        raw_cost_manual: numOrNull(p.raw_cost),
+        raw_cost: rawCost,
         labor_cost: numOrNull(p.labor_cost),
         defect_pct: Number(p.defect_pct) || 0,
         price: numOrNull(p.price),
@@ -658,8 +665,8 @@ router.post('/api/sheet/:sheet/product', J, async (req, res) => {
 // Правка одного значения товара. Список полей закрытый: что не перечислено —
 // через этот маршрут не меняется.
 const SKU_TEXT_FIELDS = ['name', 'barcode'];
-const SKU_NUM_FIELDS = ['prod_factor', 'raw_cost', 'net_weight_g', 'labor_cost', 'defect_pct',
-  'price', 'price2', 'retro_pct', 'vat_pct', 'profit_tax_pct'];
+const SKU_NUM_FIELDS = ['prod_factor', 'raw_cost', 'net_weight_g', 'raw_price_per_kg', 'labor_cost',
+  'defect_pct', 'price', 'price2', 'retro_pct', 'vat_pct', 'profit_tax_pct'];
 
 router.post('/api/sheet-product/:id(\\d+)', J, async (req, res) => {
   if (!canEdit(req)) return denyEdit(res);

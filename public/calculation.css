@@ -385,6 +385,7 @@ input.calc-rate-inp:focus { border-color: var(--lime-d); background: var(--surfa
 .calc-sku-green td, .calc-sku-green th.calc-sku-h, .calc-sku-green th.calc-sku-u { background: var(--lime-soft); }
 .calc-sku-green td { font-weight: 700; }
 
+.calc-src-mini { font-size: 10px; color: var(--ink-faint); line-height: 1.2; margin-top: 1px; }
 .calc-warn-mini { font-size: 10.5px; color: var(--red); font-weight: 600; line-height: 1.2; margin-top: 2px; }
 .calc-bad { color: var(--red); }
 

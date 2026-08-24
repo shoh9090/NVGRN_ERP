@@ -668,7 +668,42 @@
       }, '×') : null,
     ])))));
 
-    // --- компоненты себестоимости ---
+    // --- Строки идут ровно в том же порядке, что на листе «0000_розница» ---
+    rows.push(skuRow('Граммаж', 'гр', (x) =>
+      cell(x.net_weight_g, (v) => save(x.id, { net_weight_g: v }), { dec: 0, placeholder: 'гр' })));
+
+    rows.push(skuRow('наименование', '', (x) => {
+      if (!canEdit()) return el('span', {}, x.raw_material_name || '—');
+      const sel = el('select', { class: 'calc-sel' }, [el('option', { value: '' }, '— не выбрано —')]
+        .concat(rawOptions.map((m) => {
+          const o = el('option', { value: String(m.id) }, m.name);
+          if (Number(x.raw_material_id) === m.id) o.setAttribute('selected', 'selected');
+          return o;
+        })));
+      sel.addEventListener('change', async () => {
+        try { await save(x.id, { raw_material_id: sel.value || null }); await load(); }
+        catch (e) { toast(e.message, true); }
+      });
+      return sel;
+    }));
+
+    // Цена за кг: из Закупа, если позиция связана и цена там есть. Иначе
+    // вписывается вручную — тогда поле открыто для ввода.
+    rows.push(skuRow('Стоимость зелени', 'сум/кг', (x) => {
+      if (x.raw_price_source === 'purchase') {
+        return el('div', {}, [
+          el('div', {}, money0(x.raw_price_per_kg)),
+          el('div', { class: 'calc-src-mini' }, 'из Закупа'),
+        ]);
+      }
+      return el('div', {}, [
+        cell(x.raw_price_per_kg, (v) => save(x.id, { raw_price_per_kg: v }), { dec: 0, placeholder: 'цена/кг' }),
+        x.raw_material_id ? el('div', { class: 'calc-src-mini' }, 'в Закупе цены нет') : null,
+      ]);
+    }));
+
+    rows.push(skuRow('зелень в упаковке', 'сум', (x) => auto(x.calc.components.raw)));
+
     rows.push(skuRow('Тип упаковки', '', (x) => {
       if (!canEdit()) return el('span', {}, x.pack_template_name || '—');
       const sel = el('select', { class: 'calc-sel' }, [el('option', { value: '' }, '— не выбран —')]
@@ -689,60 +724,28 @@
       x.pack_incomplete ? el('div', { class: 'calc-warn-mini' }, 'в комплекте есть строки без цены') : null,
     ]));
 
-    // Граммаж и наименование сырья: если выбрана конкретная зелень —
-    // цена тянется из Закупа (последняя принятая), сумма считается сама.
-    // Не выбрана (например, микс в салате) — сумма вписывается вручную.
-    rows.push(skuRow('Граммаж', 'гр', (x) =>
-      cell(x.net_weight_g, (v) => save(x.id, { net_weight_g: v }), { dec: 0, placeholder: 'гр' })));
-
-    rows.push(skuRow('Наименование', '', (x) => {
-      if (!canEdit()) return el('span', {}, x.raw_material_name || '— вручную —');
-      const sel = el('select', { class: 'calc-sel' }, [el('option', { value: '' }, '— вручную —')]
-        .concat(rawOptions.map((m) => {
-          const o = el('option', { value: String(m.id) }, m.name);
-          if (Number(x.raw_material_id) === m.id) o.setAttribute('selected', 'selected');
-          return o;
-        })));
-      sel.addEventListener('change', async () => {
-        try { await save(x.id, { raw_material_id: sel.value || null }); await load(); }
-        catch (e) { toast(e.message, true); }
-      });
-      return sel;
-    }));
-
-    rows.push(skuRow('Стоимость зелени', 'сум/кг', (x) => {
-      if (!x.raw_material_id) return el('span', { class: 'calc-dim' }, 'см. ниже');
-      if (x.raw_price_per_kg === null) return el('div', { class: 'calc-warn-mini' }, 'нет цены в Закупе');
-      return el('span', {}, money0(x.raw_price_per_kg));
-    }));
-
-    rows.push(skuRow('Зелень-сырьё', 'сум', (x) => {
-      if (!x.raw_material_id) {
-        return cell(x.raw_cost_manual, (v) => save(x.id, { raw_cost: v }), { placeholder: 'впишите' });
-      }
-      return auto(x.calc.components.raw);
-    }));
-
     rows.push(skuRow('Производ.затраты / накладные расходы', 'сум', (x) => [
       auto(x.calc.components.production),
       // Доля нужна руколе: с одной операции выходит вдвое больше упаковок,
-      // поэтому на штуку приходится половина затрат.
+      // поэтому на штуку приходится половина затрат. У Латука доля 0.
       canEdit() ? el('div', { class: 'calc-factor' }, [
         el('span', { class: 'calc-dim' }, 'доля '),
         cell(x.prod_factor, (v) => save(x.id, { prod_factor: v }), { cls: 'calc-rate-inp' }),
       ]) : (x.prod_factor === 1 ? null : el('div', { class: 'calc-factor' }, 'доля ' + money(x.prod_factor))),
     ]));
 
+    // ФОТ показан, но в себестоимость НЕ входит — так в файле Шоха:
+    // с/с = зелень в упаковке + упаковка + производ.затраты (E6;E8;E9).
     rows.push(skuRow('ФОТ', 'сум', (x) =>
       cell(x.labor_cost, (v) => save(x.id, { labor_cost: v }), { placeholder: 'впишите' })));
 
-    rows.push(skuRow('Себестоимость', 'сум', (x) => [
+    rows.push(skuRow('с\\с', 'сум', (x) => [
       auto(x.calc.cost),
       x.calc.missing ? el('div', { class: 'calc-warn-mini' },
         'нет: ' + (x.calc.missing_keys || []).map((k) => COMP_NAMES[k] || k).join(', ')) : null,
     ], 'calc-sku-sum'));
 
-    rows.push(skuRow('С/с с браком', 'сум', (x) => [
+    rows.push(skuRow('с\\с с браком', 'сум', (x) => [
       pctCell(x.defect_pct, (v) => save(x.id, { defect_pct: v })),
       auto(x.calc.cost_defect),
     ], 'calc-sku-accent'));
@@ -750,14 +753,13 @@
     rows.push(el('tr', { class: 'calc-r-gap' },
       el('td', { colspan: String(d.products.length + 2) }, '')));
 
-    // --- цены и результат ---
-    rows.push(skuRow('Наценка', '%', (x) => (x.calc.markup_pct === null ? dash()
+    rows.push(skuRow('Наценка %', '%', (x) => (x.calc.markup_pct === null ? dash()
       : el('span', {}, money(x.calc.markup_pct, 0) + '%')), 'calc-sku-green'));
 
-    rows.push(skuRow('Цена, прайс 1', 'сум', (x) =>
+    rows.push(skuRow('Цена нов прайс', 'сум', (x) =>
       cell(x.price, (v) => save(x.id, { price: v }), { dec: 0, placeholder: 'цена' }), 'calc-sku-green'));
 
-    rows.push(skuRow('Цена, прайс 2', 'сум', (x) =>
+    rows.push(skuRow('цена прайс2026(korz)', 'сум', (x) =>
       cell(x.price2, (v) => save(x.id, { price2: v }), { dec: 0, placeholder: 'цена' }), 'calc-sku-green'));
 
     rows.push(skuRow('Ретро бонусы', 'сум', (x) => [
@@ -776,7 +778,7 @@
 
     rows.push(skuRow('Чистая прибыль', 'сум', (x) => auto(x.calc.net_profit), 'calc-sku-accent'));
 
-    rows.push(skuRow('ЧП', '%', (x) => (x.calc.net_pct === null ? dash()
+    rows.push(skuRow('ЧП, %', '%', (x) => (x.calc.net_pct === null ? dash()
       : el('span', { class: x.calc.net_pct < 0 ? 'calc-bad' : '' }, money(x.calc.net_pct, 0) + '%'))));
 
     box.appendChild(el('div', { class: 'calc-sku-wrap' },
@@ -786,9 +788,9 @@
       box.appendChild(el('button', { class: 'calc-add', onclick: addProduct }, '+ товар'));
     }
     box.appendChild(el('div', { class: 'calc-note' },
-      'Упаковка берётся из выбранного комплекта на листе «Упаковка». Производственные и накладные затраты на штуку — с листа «Производство», делённые на среднемесячный выпуск'
+      'Зелень в упаковке = граммаж × стоимость зелени. Цена за кг берётся из Закупа по выбранному наименованию, а если её там нет — вписывается вручную. Упаковка — из выбранного комплекта на листе «Упаковка». Производственные и накладные затраты на штуку — с листа «Производство», делённые на среднемесячный выпуск'
       + (d.base.output ? ' (' + money0(d.base.output) + ' шт)' : '')
-      + '. Зелень-сырьё считается сама, если выбрано наименование, иначе — вручную. ФОТ пока вручную.'));
+      + '. ФОТ показан отдельно и в себестоимость не входит — так же, как в вашем файле.'));
     return box;
   }
 
