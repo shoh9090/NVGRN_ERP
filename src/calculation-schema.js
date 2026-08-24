@@ -406,6 +406,19 @@ async function ensureCalculationSchema(pool) {
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_by INT, updated_at TIMESTAMPTZ
   )`);
+  // Колонки, добавленные ПОСЛЕ первого создания таблицы. Их обязательно
+  // добавлять отдельным ALTER: CREATE TABLE IF NOT EXISTS на уже существующей
+  // таблице молча ничего не делает, новые поля из его текста не появляются, и
+  // все INSERT с ними падают. На этом уже обжигались с calc_cost_items —
+  // см. предупреждение выше.
+  for (const [col, type] of [
+    ['raw_material_id', 'INTEGER'],
+    ['net_weight_g', 'NUMERIC'],
+    ['raw_price_per_kg', 'NUMERIC'],
+  ]) {
+    await q(`ALTER TABLE calc_sheet_products ADD COLUMN IF NOT EXISTS ${col} ${type}`)
+      .catch((e) => console.error('calc_sheet_products ' + col + ':', e.message));
+  }
   await q(`CREATE INDEX IF NOT EXISTS idx_calc_sheet_products
            ON calc_sheet_products (sheet, status, sort, id)`);
 
