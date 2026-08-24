@@ -352,6 +352,19 @@ input.calc-cell:focus, input.calc-name:focus {
 /* Пунктир под названием строки — знак, что при наведении есть объяснение. */
 .calc-has-hint { border-bottom: 1px dotted var(--ink-faint); display: inline; cursor: help; }
 
+/* Своя подсказка: появляется сразу и видна даже над полем ввода */
+.calc-hint {
+  position: fixed; z-index: 9999; max-width: 340px; pointer-events: none;
+  background: var(--ink); color: #f4f2ea; border-radius: 10px;
+  padding: 9px 12px; font-size: 12.5px; line-height: 1.45;
+  box-shadow: 0 10px 28px rgba(20, 36, 27, .28);
+}
+.calc-hint-text { }
+.calc-hint-calc {
+  margin-top: 7px; padding-top: 7px; border-top: 1px solid rgba(244, 242, 234, .22);
+  font-variant-numeric: tabular-nums; color: #dfe8d4;
+}
+
 /* Шапка: название товара и штрих-код */
 .calc-sku-head th { background: var(--surface-2); padding: 7px 8px; text-align: left; vertical-align: top; }
 .calc-sku-head th { position: relative; }
