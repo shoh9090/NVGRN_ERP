@@ -487,6 +487,15 @@ const SHEETS = {
   bunches: 'Пучки и горшки',
 };
 
+// Фонд оплаты труда — та же цифра, что на плитке «Персонал» → «Сотрудники»,
+// плашка «ФОТ (оклады, актив.)»: сумма окладов активных сотрудников.
+// Считаем тем же запросом, что и там, чтобы цифры не разошлись.
+async function payrollFund() {
+  const r = await db.pool.query(
+    "SELECT COALESCE(SUM(base_salary), 0) AS fund, COUNT(*)::int AS people FROM hr_employees WHERE status = 'active'");
+  return { fund: Number(r.rows[0].fund) || 0, people: Number(r.rows[0].people) || 0 };
+}
+
 // «На штуку» по блокам листа «Производство» — колонка «текущее», та самая,
 // что участвует в себестоимости.
 async function perUnitByKind() {
@@ -499,10 +508,15 @@ async function perUnitByKind() {
   r.rows.forEach((x) => { byKind[x.kind] = Number(x.amount) || 0; });
   const production = engine.perUnit(byKind.production, output);
   const overhead = engine.perUnit(byKind.overhead, output);
+  // ФОТ на единицу = фонд окладов / среднемесячный выпуск.
+  const payroll = await payrollFund();
   return {
     output,
     production,
     overhead,
+    payroll_fund: payroll.fund,
+    payroll_people: payroll.people,
+    labor: engine.perUnit(payroll.fund, output),
     // На товарных листах Excel производственные и накладные — ОДНА строка
     // («Производ.затраты / накладные расходы»), поэтому считаем их вместе.
     combined: output > 0 ? (Number(production) || 0) + (Number(overhead) || 0) : null,
@@ -578,7 +592,9 @@ router.get('/api/sheet/:sheet', async (req, res) => {
         pack: tpl ? Number(tpl.total) : null,
         raw: rawCost,
         production: scale(base.combined),
-        labor: numOrNull(p.labor_cost),
+        // ФОТ на штуку одинаков для всех товаров листа: доля производственных
+        // затрат к нему не применяется — так описал Шох (ФОТ / выпуск).
+        labor: base.labor,
         defect_pct: p.defect_pct,
         price: numOrNull(p.price),
         retro_pct: p.retro_pct,
@@ -621,6 +637,11 @@ router.get('/api/sheet/:sheet', async (req, res) => {
       base: {
         output: base.output,
         production_overhead_per_unit: base.combined,
+        production_per_unit: base.production,
+        overhead_per_unit: base.overhead,
+        labor_per_unit: base.labor,
+        payroll_fund: base.payroll_fund,
+        payroll_people: base.payroll_people,
       },
       pack_templates: tplRows.map((t) => ({
         id: t.id, name: t.name, total: Number(t.total),
