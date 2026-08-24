@@ -380,21 +380,26 @@ function weightedAveragePrice(deliveries) {
 // здоровой. Пустая себестоимость (не заполнено вообще ничего) — это null.
 const SKU_COMPONENTS = ['pack', 'raw', 'production', 'overhead', 'labor'];
 
-function skuEconomics(input) {
+function skuEconomics(input, opts) {
   const i = input || {};
   const nOrNull = (v) => (v === undefined || v === null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
 
+  // Некоторые листы объединяют производственные и накладные в одну строку
+  // (см. лист «Рознич. тара» Excel) — тогда «накладные» как отдельный
+  // компонент не участвуют и не должны считаться незаполненными.
+  const activeKeys = (opts && Array.isArray(opts.components)) ? opts.components : SKU_COMPONENTS;
+
   const components = {};
   let filled = 0, sum = 0;
-  for (const key of SKU_COMPONENTS) {
+  for (const key of activeKeys) {
     const v = nOrNull(i[key]);
     components[key] = v;
     if (v !== null) { filled++; sum += v; }
   }
-  const missing = SKU_COMPONENTS.length - filled;
+  const missing = activeKeys.length - filled;
   // Не просто счётчик: показываем, ЧЕГО именно не хватает, — иначе непонятно,
   // куда идти дописывать.
-  const missingKeys = SKU_COMPONENTS.filter((k) => components[k] === null);
+  const missingKeys = activeKeys.filter((k) => components[k] === null);
   const cost = filled ? sum : null;
 
   const defectPct = num(i.defect_pct);

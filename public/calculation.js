@@ -642,6 +642,7 @@
     }
 
     const tplOptions = d.pack_templates;
+    const rawOptions = d.raw_materials || [];
     const rows = [];
 
     // --- шапка: название и штрих-код товара ---
@@ -687,10 +688,41 @@
       x.pack_incomplete ? el('div', { class: 'calc-warn-mini' }, 'в комплекте есть строки без цены') : null,
     ]));
 
-    rows.push(skuRow('Зелень-сырьё', 'сум', (x) =>
-      cell(x.raw_cost, (v) => save(x.id, { raw_cost: v }), { placeholder: 'впишите' })));
+    // Граммаж и наименование сырья: если выбрана конкретная зелень —
+    // цена тянется из Закупа (последняя принятая), сумма считается сама.
+    // Не выбрана (например, микс в салате) — сумма вписывается вручную.
+    rows.push(skuRow('Граммаж', 'гр', (x) =>
+      cell(x.net_weight_g, (v) => save(x.id, { net_weight_g: v }), { dec: 0, placeholder: 'гр' })));
 
-    rows.push(skuRow('Производ. затраты', 'сум', (x) => [
+    rows.push(skuRow('Наименование', '', (x) => {
+      if (!canEdit()) return el('span', {}, x.raw_material_name || '— вручную —');
+      const sel = el('select', { class: 'calc-sel' }, [el('option', { value: '' }, '— вручную —')]
+        .concat(rawOptions.map((m) => {
+          const o = el('option', { value: String(m.id) }, m.name);
+          if (Number(x.raw_material_id) === m.id) o.setAttribute('selected', 'selected');
+          return o;
+        })));
+      sel.addEventListener('change', async () => {
+        try { await save(x.id, { raw_material_id: sel.value || null }); await load(); }
+        catch (e) { toast(e.message, true); }
+      });
+      return sel;
+    }));
+
+    rows.push(skuRow('Стоимость зелени', 'сум/кг', (x) => {
+      if (!x.raw_material_id) return el('span', { class: 'calc-dim' }, 'см. ниже');
+      if (x.raw_price_per_kg === null) return el('div', { class: 'calc-warn-mini' }, 'нет цены в Закупе');
+      return el('span', {}, money0(x.raw_price_per_kg));
+    }));
+
+    rows.push(skuRow('Зелень-сырьё', 'сум', (x) => {
+      if (!x.raw_material_id) {
+        return cell(x.raw_cost_manual, (v) => save(x.id, { raw_cost: v }), { placeholder: 'впишите' });
+      }
+      return auto(x.calc.components.raw);
+    }));
+
+    rows.push(skuRow('Производ.затраты / накладные расходы', 'сум', (x) => [
       auto(x.calc.components.production),
       // Доля нужна руколе: с одной операции выходит вдвое больше упаковок,
       // поэтому на штуку приходится половина затрат.
@@ -699,8 +731,6 @@
         cell(x.prod_factor, (v) => save(x.id, { prod_factor: v }), { cls: 'calc-rate-inp' }),
       ]) : (x.prod_factor === 1 ? null : el('div', { class: 'calc-factor' }, 'доля ' + money(x.prod_factor))),
     ]));
-
-    rows.push(skuRow('Накладные расходы', 'сум', (x) => auto(x.calc.components.overhead)));
 
     rows.push(skuRow('ФОТ', 'сум', (x) =>
       cell(x.labor_cost, (v) => save(x.id, { labor_cost: v }), { placeholder: 'впишите' })));
@@ -757,7 +787,7 @@
     box.appendChild(el('div', { class: 'calc-note' },
       'Упаковка берётся из выбранного комплекта на листе «Упаковка». Производственные и накладные затраты на штуку — с листа «Производство», делённые на среднемесячный выпуск'
       + (d.base.output ? ' (' + money0(d.base.output) + ' шт)' : '')
-      + '. Сырьё и ФОТ пока вписываются вручную.'));
+      + '. Зелень-сырьё считается сама, если выбрано наименование, иначе — вручную. ФОТ пока вручную.'));
     return box;
   }
 

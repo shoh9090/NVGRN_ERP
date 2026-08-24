@@ -497,11 +497,33 @@ async function perUnitByKind() {
       WHERE status = 'active' GROUP BY kind`);
   const byKind = { production: 0, overhead: 0 };
   r.rows.forEach((x) => { byKind[x.kind] = Number(x.amount) || 0; });
+  const production = engine.perUnit(byKind.production, output);
+  const overhead = engine.perUnit(byKind.overhead, output);
   return {
     output,
-    production: engine.perUnit(byKind.production, output),
-    overhead: engine.perUnit(byKind.overhead, output),
+    production,
+    overhead,
+    // На товарных листах Excel производственные и накладные — ОДНА строка
+    // («Производ.затраты / накладные расходы»), поэтому считаем их вместе.
+    combined: output > 0 ? (Number(production) || 0) + (Number(overhead) || 0) : null,
   };
+}
+
+// Последняя принятая цена по сырью (кг) — из закупок, статус «получено».
+// Тот же источник, что и на плитке «Закуп» (динамика цен): один реестр,
+// своей копии цены здесь не заводим.
+async function lastRawPrices() {
+  const r = await db.pool.query(
+    `SELECT DISTINCT ON (i.item_id) i.item_id,
+            COALESCE(i.fact_price, i.price) AS price,
+            COALESCE(po.received_at::date, po.delivery_date) AS at
+       FROM purchase_order_items i
+       JOIN purchase_orders po ON po.id = i.order_id AND po.status = 'received'
+      WHERE i.item_kind = 'raw' AND COALESCE(i.fact_price, i.price) > 0
+      ORDER BY i.item_id, COALESCE(po.received_at::date, po.delivery_date) DESC`);
+  const byId = new Map();
+  r.rows.forEach((x) => byId.set(x.item_id, { price: Number(x.price), at: x.at }));
+  return byId;
 }
 
 router.get('/api/sheet/:sheet', async (req, res) => {
@@ -522,6 +544,12 @@ router.get('/api/sheet/:sheet', async (req, res) => {
         ORDER BY t.sort, t.name`)).rows;
     const tplById = new Map(tplRows.map((t) => [t.id, t]));
 
+    // Справочник сырья — для выпадашки «Наименование». Цена берётся из
+    // Закупа (последняя принятая), а не хранится тут отдельной колонкой.
+    const rawMats = (await db.pool.query(
+      "SELECT id, name FROM ref_raw_materials WHERE status = 'active' ORDER BY name")).rows;
+    const rawPrices = await lastRawPrices();
+
     const rows = (await db.pool.query(
       `SELECT * FROM calc_sheet_products
         WHERE sheet = $1 AND status = 'active' ORDER BY sort, id`, [sheet])).rows;
@@ -530,18 +558,30 @@ router.get('/api/sheet/:sheet', async (req, res) => {
       const tpl = p.pack_template_id ? tplById.get(p.pack_template_id) : null;
       const factor = p.prod_factor === null ? 1 : Number(p.prod_factor);
       const scale = (v) => (v === null || v === undefined ? null : v * factor);
+
+      // Зелень-сырьё: если выбрана конкретная позиция — граммаж × цена из
+      // Закупа. Не выбрана (например, микс в салате) — вручную вписанная сумма.
+      const weight = numOrNull(p.net_weight_g);
+      const rawInfo = p.raw_material_id ? rawPrices.get(p.raw_material_id) : null;
+      const rawPricePerKg = rawInfo ? rawInfo.price : null;
+      const rawCost = p.raw_material_id
+        ? ((weight !== null && rawPricePerKg !== null) ? (weight / 1000) * rawPricePerKg : null)
+        : numOrNull(p.raw_cost);
+
       const calc = engine.skuEconomics({
         pack: tpl ? Number(tpl.total) : null,
-        raw: numOrNull(p.raw_cost),
-        production: scale(base.production),
-        overhead: scale(base.overhead),
+        raw: rawCost,
+        production: scale(base.combined),
         labor: numOrNull(p.labor_cost),
         defect_pct: p.defect_pct,
         price: numOrNull(p.price),
         retro_pct: p.retro_pct,
         vat_pct: p.vat_pct,
         profit_tax_pct: p.profit_tax_pct,
-      });
+      }, { components: ['pack', 'raw', 'production', 'labor'] });
+
+      const rawMat = p.raw_material_id ? rawMats.find((m) => m.id === p.raw_material_id) : null;
+
       return {
         id: p.id,
         name: p.name,
@@ -551,7 +591,12 @@ router.get('/api/sheet/:sheet', async (req, res) => {
         // Комплект выбран, но в нём есть строки без цены — стоимость неполная.
         pack_incomplete: tpl ? Number(tpl.missing_prices) > 0 : false,
         prod_factor: factor,
-        raw_cost: numOrNull(p.raw_cost),
+        raw_material_id: p.raw_material_id,
+        raw_material_name: rawMat ? rawMat.name : '',
+        net_weight_g: weight,
+        raw_price_per_kg: rawPricePerKg,
+        raw_price_at: rawInfo ? rawInfo.at : null,
+        raw_cost_manual: numOrNull(p.raw_cost),
         labor_cost: numOrNull(p.labor_cost),
         defect_pct: Number(p.defect_pct) || 0,
         price: numOrNull(p.price),
@@ -568,12 +613,14 @@ router.get('/api/sheet/:sheet', async (req, res) => {
       sheet_title: SHEETS[sheet],
       base: {
         output: base.output,
-        production_per_unit: base.production,
-        overhead_per_unit: base.overhead,
+        production_overhead_per_unit: base.combined,
       },
       pack_templates: tplRows.map((t) => ({
         id: t.id, name: t.name, total: Number(t.total),
         missing_prices: Number(t.missing_prices),
+      })),
+      raw_materials: rawMats.map((m) => ({
+        id: m.id, name: m.name, price_per_kg: rawPrices.has(m.id) ? rawPrices.get(m.id).price : null,
       })),
       products,
       can_edit: canEdit(req),
@@ -586,8 +633,6 @@ router.get('/api/sheet/:sheet', async (req, res) => {
   }
 });
 
-// Добавить товар в лист. Условия по умолчанию берём с последнего товара листа:
-// ретро, НДС, налог и брак внутри листа почти всегда одинаковые.
 router.post('/api/sheet/:sheet/product', J, async (req, res) => {
   if (!canEdit(req)) return denyEdit(res);
   const sheet = String(req.params.sheet || '');
@@ -613,7 +658,7 @@ router.post('/api/sheet/:sheet/product', J, async (req, res) => {
 // Правка одного значения товара. Список полей закрытый: что не перечислено —
 // через этот маршрут не меняется.
 const SKU_TEXT_FIELDS = ['name', 'barcode'];
-const SKU_NUM_FIELDS = ['prod_factor', 'raw_cost', 'labor_cost', 'defect_pct',
+const SKU_NUM_FIELDS = ['prod_factor', 'raw_cost', 'net_weight_g', 'labor_cost', 'defect_pct',
   'price', 'price2', 'retro_pct', 'vat_pct', 'profit_tax_pct'];
 
 router.post('/api/sheet-product/:id(\\d+)', J, async (req, res) => {
@@ -642,6 +687,9 @@ router.post('/api/sheet-product/:id(\\d+)', J, async (req, res) => {
     }
     if (b.pack_template_id !== undefined) {
       vals.push(intOrNull(b.pack_template_id)); sets.push(`pack_template_id = $${vals.length}`);
+    }
+    if (b.raw_material_id !== undefined) {
+      vals.push(intOrNull(b.raw_material_id)); sets.push(`raw_material_id = $${vals.length}`);
     }
     if (!sets.length) return res.json({ ok: true });
     vals.push(req.user.id); sets.push(`updated_by = $${vals.length}`);

@@ -387,7 +387,10 @@ async function ensureCalculationSchema(pool) {
     barcode TEXT DEFAULT '',
     pack_template_id INT,                       -- комплект упаковки с листа «Упаковка»
     prod_factor NUMERIC NOT NULL DEFAULT 1,     -- доля производственных затрат (у руколы 0,5)
-    raw_cost NUMERIC,                           -- зелень-сырьё на единицу, вручную
+    raw_cost NUMERIC,                           -- зелень-сырьё на единицу, вручную (запасной вариант,
+                                                 -- если конкретное сырьё не выбрано — например, микс в салате)
+    raw_material_id INTEGER,                    -- ссылка на ref_raw_materials: тогда цена тянется из Закупа
+    net_weight_g NUMERIC,                       -- граммаж зелени на единицу, вручную
     labor_cost NUMERIC,                         -- ФОТ на единицу, вручную (позже из плитки «Персонал»)
     defect_pct NUMERIC NOT NULL DEFAULT 0,      -- накрутка на брак, вручную
     price NUMERIC,                              -- первый прайс-лист
