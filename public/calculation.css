@@ -329,14 +329,21 @@ input.calc-cell:focus, input.calc-name:focus {
 }
 .calc-sku-t td { min-width: 124px; text-align: right; padding: 6px 9px; font-variant-numeric: tabular-nums; }
 
-/* Первый столбец — названия строк расчёта, приклеен слева */
+/* Первые два столбца — названия строк расчёта и «ед.изм.», приклеены слева
+   (как в Excel: Компоненты | ед.изм | товары…), не уезжают при прокрутке. */
 .calc-sku-t th.calc-sku-h {
   position: sticky; left: 0; z-index: 2;
   background: var(--surface-2); text-align: left; padding: 7px 11px;
-  min-width: 178px; max-width: 178px;
+  min-width: 156px; max-width: 156px;
+}
+.calc-sku-t th.calc-sku-u {
+  position: sticky; left: 156px; z-index: 2;
+  background: var(--surface-2); text-align: center; padding: 7px 6px;
+  min-width: 56px; max-width: 56px;
+  font-size: 11px; font-weight: 600; color: var(--ink-faint);
+  border-left: 1px solid var(--line);
 }
 .calc-sku-lbl { font-weight: 700; color: var(--ink); font-size: 12.5px; line-height: 1.25; }
-.calc-sku-t .calc-unit { padding: 2px 0 0; }
 
 /* Шапка: название товара и штрих-код */
 .calc-sku-head th { background: var(--surface-2); padding: 7px 8px; text-align: left; vertical-align: top; }
@@ -373,16 +380,16 @@ input.calc-rate-inp:focus { border-color: var(--lime-d); background: var(--surfa
 .calc-factor .calc-cell { width: 44px; }
 
 /* Выделенные строки — как заливка в Excel */
-.calc-sku-sum td, .calc-sku-sum th.calc-sku-h { font-weight: 800; background: #f4f7f1; }
-.calc-sku-accent td { background: var(--amber-soft); font-weight: 800; }
-.calc-sku-accent th.calc-sku-h { background: var(--amber-soft); }
-.calc-sku-green td, .calc-sku-green th.calc-sku-h { background: var(--lime-soft); }
+.calc-sku-sum td, .calc-sku-sum th.calc-sku-h, .calc-sku-sum th.calc-sku-u { font-weight: 800; background: #f4f7f1; }
+.calc-sku-accent td, .calc-sku-accent th.calc-sku-h, .calc-sku-accent th.calc-sku-u { background: var(--amber-soft); font-weight: 800; }
+.calc-sku-green td, .calc-sku-green th.calc-sku-h, .calc-sku-green th.calc-sku-u { background: var(--lime-soft); }
 .calc-sku-green td { font-weight: 700; }
 
 .calc-warn-mini { font-size: 10.5px; color: var(--red); font-weight: 600; line-height: 1.2; margin-top: 2px; }
 .calc-bad { color: var(--red); }
 
 @media (max-width: 700px) {
-  .calc-sku-t th.calc-sku-h { min-width: 132px; max-width: 132px; }
-  .calc-sku-t td { min-width: 108px; }
+  .calc-sku-t th.calc-sku-h { min-width: 116px; max-width: 116px; }
+  .calc-sku-t th.calc-sku-u { left: 116px; min-width: 44px; max-width: 44px; font-size: 10px; }
+  .calc-sku-t td { min-width: 100px; }
 }

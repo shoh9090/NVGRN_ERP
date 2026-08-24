@@ -602,13 +602,13 @@
   }
 
   // Строка листа. cells — функция, которая по товару возвращает содержимое ячейки.
+  // «Ед.изм.» — отдельная колонка (как в Excel Шоха: Компоненты | ед.изм | товары…),
+  // а не подпись под названием строки.
   function skuRow(label, unit, cells, cls) {
     const p = SKU.products;
     return el('tr', { class: 'calc-sku-r' + (cls ? ' ' + cls : '') }, [
-      el('th', { class: 'calc-sku-h' }, [
-        el('div', { class: 'calc-sku-lbl' }, label),
-        unit ? el('div', { class: 'calc-unit' }, unit) : null,
-      ]),
+      el('th', { class: 'calc-sku-h' }, el('div', { class: 'calc-sku-lbl' }, label)),
+      el('th', { class: 'calc-sku-u' }, unit || ''),
     ].concat(p.map((x) => el('td', {}, cells(x)))));
   }
 
@@ -648,6 +648,7 @@
     // --- шапка: название и штрих-код товара ---
     rows.push(el('tr', { class: 'calc-sku-head' }, [
       el('th', { class: 'calc-sku-h' }, el('div', { class: 'calc-sku-lbl' }, 'Компоненты')),
+      el('th', { class: 'calc-sku-u' }, 'ед.изм'),
     ].concat(d.products.map((x) => el('th', {}, [
       canEdit() ? nameCell(x.name, (v) => save(x.id, { name: v }))
         : el('div', { class: 'calc-name calc-ro' }, x.name),
@@ -747,7 +748,7 @@
     ], 'calc-sku-accent'));
 
     rows.push(el('tr', { class: 'calc-r-gap' },
-      el('td', { colspan: String(d.products.length + 1) }, '')));
+      el('td', { colspan: String(d.products.length + 2) }, '')));
 
     // --- цены и результат ---
     rows.push(skuRow('Наценка', '%', (x) => (x.calc.markup_pct === null ? dash()
