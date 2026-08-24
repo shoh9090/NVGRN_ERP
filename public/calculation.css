@@ -3,7 +3,7 @@
    «Среднее на шт», вкладки листов внизу. Палитра и шрифты — из style.css. */
 
 #calc-main {
-  max-width: 1080px; margin: 0 auto; padding: 18px 20px 0;
+  max-width: 1720px; margin: 0 auto; padding: 18px 24px 0;
   display: flex; flex-direction: column; min-height: calc(100vh - 66px);
 }
 .calc-sheet { flex: 1; }
@@ -18,7 +18,9 @@
 .calc-sub { color: var(--ink-soft); font-size: 13.5px; line-height: 1.5; max-width: 720px; }
 
 /* ---------- Таблица листа ---------- */
-.calc-t { border-collapse: collapse; width: 100%; font-size: 13.5px; background: var(--surface); }
+/* Лист «Производство» узкий по своей природе — на широком экране его
+   растягивать незачем, читать длинные строки неудобно. */
+.calc-t { border-collapse: collapse; width: 100%; max-width: 1080px; font-size: 13.5px; background: var(--surface); }
 .calc-t col.c-name { width: auto; }
 .calc-t col.c-num { width: 150px; }
 .calc-t col.c-src { width: 230px; }
@@ -322,7 +324,7 @@ input.calc-cell:focus, input.calc-name:focus {
    неизбежна. Первый столбец при этом остаётся на месте — иначе, докрутив до
    айсберга, уже не понять, какая это строка расчёта. */
 .calc-sku-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
-.calc-sku-t { border-collapse: separate; border-spacing: 0; font-size: 13px; }
+.calc-sku-t { border-collapse: separate; border-spacing: 0; font-size: 13px; width: 100%; }
 .calc-sku-t th, .calc-sku-t td {
   border-right: 1px solid var(--line); border-bottom: 1px solid var(--line);
   vertical-align: middle; padding: 0;
