@@ -91,8 +91,10 @@
   }
 
   function nameCell(value, onSave) {
-    if (!canEdit()) return el('div', { class: 'calc-name calc-ro' }, value);
-    const inp = el('input', { type: 'text', class: 'calc-name', value: value || '' });
+    if (!canEdit()) return el('div', { class: 'calc-name calc-ro', title: value || '' }, value);
+    // Подсказка с полным названием — на случай, если поле уже текста.
+    const inp = el('input', { type: 'text', class: 'calc-name', value: value || '', title: value || '' });
+    inp.addEventListener('input', () => { inp.title = inp.value; });
     inp.addEventListener('blur', async () => {
       const v = inp.value.trim();
       if (!v) { inp.value = value; return; }

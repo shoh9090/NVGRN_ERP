@@ -269,7 +269,7 @@ input.calc-cell:focus, input.calc-name:focus {
 .calc-strong { font-weight: 800; }
 
 /* Комплекты — карточками, чтобы состав читался целиком */
-.calc-tpls { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px;
+.calc-tpls { display: grid; grid-template-columns: repeat(auto-fill, minmax(480px, 1fr)); gap: 12px;
   border: 1px solid var(--line); border-top: none; border-radius: 0 0 var(--radius) var(--radius);
   padding: 12px; background: var(--surface); }
 .calc-tpl { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--surface); }
@@ -279,13 +279,13 @@ input.calc-cell:focus, input.calc-name:focus {
 }
 .calc-tpl-head .calc-name { font-size: 14px; font-weight: 800; }
 .calc-tpl-cols {
-  display: grid; grid-template-columns: 1fr 92px 62px 92px 28px; gap: 4px;
+  display: grid; grid-template-columns: minmax(150px, 1fr) 86px 54px 88px 26px; gap: 6px;
   padding: 6px 8px 3px; font-size: 10px; font-weight: 800; color: var(--ink-faint);
   text-transform: uppercase; letter-spacing: .03em;
 }
 .calc-tpl-cols span:nth-child(2), .calc-tpl-cols span:nth-child(3), .calc-tpl-cols span:nth-child(4) { text-align: right; }
 .calc-tpl-line {
-  display: grid; grid-template-columns: 1fr 92px 62px 92px 28px; gap: 4px; align-items: center;
+  display: grid; grid-template-columns: minmax(150px, 1fr) 86px 54px 88px 26px; gap: 6px; align-items: center;
   padding: 2px 8px; border-bottom: 1px solid var(--line-soft);
 }
 .calc-tpl-nm { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -307,3 +307,12 @@ input.calc-cell:focus, input.calc-name:focus {
 /* Строка комплекта: название редактируется как обычный текст */
 .calc-tpl-line .calc-name { font-size: 12.5px; font-weight: 600; padding: 5px 6px; }
 .calc-tpl-empty-all { padding: 24px; text-align: center; color: var(--ink-faint); font-size: 13px; }
+
+/* Поле названия строки не должно сжиматься до пары букв */
+.calc-tpl-line > * { min-width: 0; }
+.calc-tpl-line .calc-name { width: 100%; min-width: 0; }
+@media (max-width: 620px) {
+  /* На узком экране — одна карточка в ряд, иначе название снова сожмётся */
+  .calc-tpls { grid-template-columns: 1fr; }
+  .calc-tpl-cols, .calc-tpl-line { grid-template-columns: minmax(110px, 1fr) 76px 48px 78px 24px; gap: 4px; }
+}
