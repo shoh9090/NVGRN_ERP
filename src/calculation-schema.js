@@ -450,10 +450,11 @@ async function ensureCalculationSchema(pool) {
 
   // name, barcode, доля производ.затрат, граммаж, наименование сырья,
   // цена зелени за кг, брак %, цена 1, цена 2, сортировка.
-  // Доля производственных затрат: у Латука 0, у руколы 0,5, у остальных 1 —
-  // ровно как в файле (строка «Производ.затраты»).
+  // Доля производственных затрат: у руколы 0,5 (с одной операции выходит вдвое
+  // больше упаковок), у остальных 1. В файле у Латука стоял 0 — это была
+  // случайность, затраты на него ложатся так же, как на прочие товары.
   const RETAIL_ITEMS = [
-    ['Латук 100г', '4780114040111', 0, 100, 'латук', 17000, 50, 21000, 25760, 10],
+    ['Латук 100г', '4780114040111', 1, 100, 'латук', 17000, 50, 21000, 25760, 10],
     ['романо 100г', '4780114040104', 1, 100, 'романо', 20000, 50, 24000, 29120, 20],
     ['рукола 100г', '4780114040043', 0.5, 100, 'рукола', 30000, 50, 20800, 24640, 30],
     ['шпинат 100г', '4780114040074', 1, 100, 'шпинат', 25000, 50, 29800, 33600, 40],
@@ -502,6 +503,20 @@ async function ensureCalculationSchema(pool) {
   if (!retailFixDone) {
     await q(
       "INSERT INTO calc_settings (key, value) VALUES ('calc_retail_seed_fix_3', '1') ON CONFLICT (key) DO NOTHING");
+  }
+
+  // Разовая правка: у Латука доля производственных затрат стояла 0, из-за чего
+  // в строке «Производ.затраты / накладные расходы» показывался ноль вместо
+  // готовой цифры с листа «Производство». Трогаем только его и только раз.
+  const latukFixed = (await q(
+    "SELECT 1 FROM calc_settings WHERE key = 'calc_retail_latuk_factor'")).rows.length > 0;
+  if (!latukFixed) {
+    await q(
+      `UPDATE calc_sheet_products SET prod_factor = 1
+        WHERE sheet = 'retail' AND barcode = '4780114040111' AND prod_factor = 0`)
+      .catch((e) => console.error('calc retail латук доля:', e.message));
+    await q(
+      "INSERT INTO calc_settings (key, value) VALUES ('calc_retail_latuk_factor', '1') ON CONFLICT (key) DO NOTHING");
   }
 
   _ready = true;

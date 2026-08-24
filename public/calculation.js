@@ -725,13 +725,9 @@
     ]));
 
     rows.push(skuRow('Производ.затраты / накладные расходы', 'сум', (x) => [
+      // Готовая цифра с листа «Производство»: «среднее на шт» по обоим блокам.
+      // Расшифровку слагаемых не показываем — она есть на самом листе.
       auto(x.calc.components.production),
-      // Из чего сложилась цифра: оба блока листа «Производство».
-      (d.base.production_per_unit !== null && d.base.overhead_per_unit !== null)
-        ? el('div', { class: 'calc-src-mini' },
-          money(d.base.production_per_unit * x.prod_factor, 0) + ' + '
-          + money(d.base.overhead_per_unit * x.prod_factor, 0))
-        : null,
       // Доля нужна руколе: с одной операции выходит вдвое больше упаковок,
       // поэтому на штуку приходится половина затрат. У Латука доля 0.
       canEdit() ? el('div', { class: 'calc-factor' }, [
@@ -744,12 +740,9 @@
     // делённый на среднемесячный выпуск. Руками не вводится.
     // В себестоимость НЕ входит — так в файле Шоха: с/с = зелень в упаковке
     // + упаковка + производ.затраты (сумма ячеек E6;E8;E9).
-    rows.push(skuRow('ФОТ', 'сум', () => [
-      auto(d.base.labor_per_unit),
-      d.base.payroll_fund
-        ? el('div', { class: 'calc-src-mini' }, 'из Персонала: ' + money0(d.base.payroll_fund))
-        : el('div', { class: 'calc-warn-mini' }, 'в Персонале нет окладов'),
-    ]));
+    rows.push(skuRow('ФОТ', 'сум', () => (d.base.payroll_fund
+      ? auto(d.base.labor_per_unit)
+      : el('div', { class: 'calc-warn-mini' }, 'в Персонале нет окладов'))));
 
     rows.push(skuRow('с\\с', 'сум', (x) => [
       auto(x.calc.cost),
