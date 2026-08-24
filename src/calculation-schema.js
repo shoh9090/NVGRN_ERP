@@ -433,7 +433,7 @@ async function ensureCalculationSchema(pool) {
   // добавляем, есть — не трогаем. Проверяем в любом статусе, поэтому удалённый
   // вручную товар не вернётся сам собой.
   const retailTpl = await q(
-    "SELECT id FROM calc_pack_templates WHERE status = 'active' AND name ILIKE '%вак%розниц%' ORDER BY id LIMIT 1");
+    "SELECT id FROM calc_pack_templates WHERE status = 'active' AND name ILIKE '%рознич%' ORDER BY id LIMIT 1");
   const retailTplId = retailTpl.rows[0] ? retailTpl.rows[0].id : null;
 
   // Связь с номенклатурой сырья ищем по названию. Не нашли — не беда:
@@ -503,6 +503,16 @@ async function ensureCalculationSchema(pool) {
   if (!retailFixDone) {
     await q(
       "INSERT INTO calc_settings (key, value) VALUES ('calc_retail_seed_fix_3', '1') ON CONFLICT (key) DO NOTHING");
+  }
+
+  // В рознице у всех товаров один и тот же комплект — «Розничный пакет».
+  // Проставляем тем, у кого он не выбран; уже выбранное не трогаем.
+  if (retailTplId) {
+    await q(
+      `UPDATE calc_sheet_products SET pack_template_id = $1
+        WHERE sheet = 'retail' AND status = 'active' AND pack_template_id IS NULL`,
+      [retailTplId])
+      .catch((e) => console.error('calc retail упаковка:', e.message));
   }
 
   // Разовая правка: у Латука доля производственных затрат стояла 0, из-за чего

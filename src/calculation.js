@@ -600,7 +600,11 @@ router.get('/api/sheet/:sheet', async (req, res) => {
         retro_pct: p.retro_pct,
         vat_pct: p.vat_pct,
         profit_tax_pct: p.profit_tax_pct,
-      }, { components: ['pack', 'raw', 'production'] });
+        // Себестоимость = сумма ВСЕХ строк листа, включая ФОТ. В исходном файле
+        // ФОТ формально стоял вне с/с, но в строке «Производ.затраты» там была
+        // скопирована та же формула ФОТ — то есть труд в себестоимость входил.
+        // Решение Шоха: считать сумму всех строк.
+      }, { components: engine.SKU_SHEET_COMPONENTS });
 
       const rawMat = p.raw_material_id ? rawMats.find((m) => m.id === p.raw_material_id) : null;
 

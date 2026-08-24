@@ -4,15 +4,17 @@
 // файлом, по которому Шох принимает решения о ценах.
 const test = require('node:test');
 const assert = require('node:assert');
-const { skuEconomics } = require('../src/calculation-engine');
+const { skuEconomics, SKU_SHEET_COMPONENTS } = require('../src/calculation-engine');
 
 const PACK = 1007.25;                       // комплект «вак.пакет розница»
 const PROD = 5594.0559440559446;            // производ.затраты на штуку
 
-// В себестоимость на товарных листах входят ТОЛЬКО эти три составляющие:
-// с/с = зелень в упаковке + упаковка + производ.затраты (в Excel — сумма
-// ячеек E6;E8;E9). ФОТ показан отдельной строкой и в с/с не входит.
-const COMPONENTS = { components: ['pack', 'raw', 'production'] };
+// Список составляющих берём ИЗ ДВИЖКА — тот же, по которому считает сервер.
+// Если его поменяют, тест это увидит, а не будет проверять свою копию правил.
+// Цифры Excel воспроизводятся при незаполненном ФОТ: в исходном файле он в
+// с/с не входил. Сейчас ФОТ входит (решение Шоха) — это проверено отдельно
+// последним тестом.
+const COMPONENTS = { components: SKU_SHEET_COMPONENTS };
 
 // name, граммаж, цена за кг, доля произв.затрат, брак %, цена 1
 const ITEMS = [
@@ -62,14 +64,24 @@ for (const [name, weightG, pricePerKg, factor, defect, price] of ITEMS) {
     near(r.net_profit, xNet, 'чистая прибыль');
     near(r.net_pct / 100, xNetPct, 'ЧП %');
 
-    // ФОТ в себестоимость не входит — его нет среди компонентов
-    assert.strictEqual(r.components.labor, undefined);
+    // ФОТ в этих проверках не заполнен, поэтому в сумму ничего не добавляет
+    assert.strictEqual(r.components.labor, null);
   });
 }
 
-test('ФОТ не влияет на себестоимость товарного листа', () => {
+test('ФОТ входит в себестоимость товарного листа', () => {
   const base = { pack: PACK, raw: 2000, production: PROD, defect_pct: 50, price: 24000 };
   const без = skuEconomics(base, COMPONENTS);
-  const с = skuEconomics({ ...base, labor: 5594.06 }, COMPONENTS);
-  assert.strictEqual(с.cost, без.cost);
+  const с = skuEconomics({ ...base, labor: 3938.46 }, COMPONENTS);
+  assert.strictEqual(Math.round((с.cost - без.cost) * 100) / 100, 3938.46);
+  // и с браком тоже растёт, а наценка падает
+  assert.ok(с.cost_defect > без.cost_defect);
+  assert.ok(с.markup_pct < без.markup_pct);
+});
+
+test('себестоимость товарного листа складывает ровно четыре строки', () => {
+  assert.deepStrictEqual(SKU_SHEET_COMPONENTS, ['pack', 'raw', 'production', 'labor']);
+  const r = skuEconomics({ pack: 1000, raw: 2000, production: 1500, labor: 3900 }, COMPONENTS);
+  assert.strictEqual(r.cost, 8400);
+  assert.strictEqual(r.missing, 0);
 });

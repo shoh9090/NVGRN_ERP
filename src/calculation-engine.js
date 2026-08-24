@@ -380,6 +380,13 @@ function weightedAveragePrice(deliveries) {
 // здоровой. Пустая себестоимость (не заполнено вообще ничего) — это null.
 const SKU_COMPONENTS = ['pack', 'raw', 'production', 'overhead', 'labor'];
 
+// Из чего складывается себестоимость на ТОВАРНЫХ листах (Рознич. тара и т. д.).
+// Один список на сервер и на тесты: если он разойдётся, себестоимость на экране
+// перестанет совпадать с той, что проверена по рабочему файлу.
+// «overhead» отдельной строкой не идёт: производственные и накладные затраты
+// приходят с листа «Производство» уже одной цифрой.
+const SKU_SHEET_COMPONENTS = ['pack', 'raw', 'production', 'labor'];
+
 function skuEconomics(input, opts) {
   const i = input || {};
   const nOrNull = (v) => (v === undefined || v === null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
@@ -444,6 +451,7 @@ module.exports = {
   FORMULA_VERSION,
   perUnit,
   SKU_COMPONENTS,
+  SKU_SHEET_COMPONENTS,
   skuEconomics,
   STALE_PRICE_DAYS,
   calculateProduct,

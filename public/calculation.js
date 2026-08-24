@@ -604,12 +604,92 @@
   // Строка листа. cells — функция, которая по товару возвращает содержимое ячейки.
   // «Ед.изм.» — отдельная колонка (как в Excel Шоха: Компоненты | ед.изм | товары…),
   // а не подпись под названием строки.
+  // Подсказки к строкам: наводишь мышку — видно, откуда цифра.
+  // Держим их одним списком рядом, а не размазанными по коду: так проще
+  // держать объяснение и формулу в согласии друг с другом.
+  const ROW_HINTS = {
+    'Граммаж': 'Сколько граммов зелени в одной упаковке. Вводится вручную.',
+    'наименование': 'Позиция сырья из справочника. Если выбрана — цена за килограмм подтянется из Закупа.',
+    'Стоимость зелени': 'Цена за килограмм. Берётся из последней принятой поставки в Закупе. Если там цены ещё нет — вписывается вручную.',
+    'зелень в упаковке': 'Граммаж ÷ 1000 × стоимость зелени за килограмм.',
+    'Тип упаковки': 'Комплект упаковки с листа «Упаковка».',
+    'Упаковка': 'Стоимость выбранного комплекта — сумма его строк на листе «Упаковка».',
+    'Производ.затраты / накладные расходы': 'С листа «Производство»: «среднее на шт» по производственным затратам плюс «среднее на шт» по накладным. Умножается на долю товара.',
+    'ФОТ': 'Из плитки «Персонал» → «Сотрудники»: фонд окладов активных сотрудников ÷ среднемесячное производство.',
+    'с\\с': 'Сумма всех строк выше: зелень в упаковке + упаковка + производ./накладные + ФОТ.',
+    'с\\с с браком': 'Себестоимость × (1 + процент брака). Процент правится в самой ячейке.',
+    'Наценка %': 'Цена ÷ себестоимость с браком − 1.',
+    'Цена нов прайс': 'Первый прайс-лист. Вводится вручную.',
+    'цена прайс2026(korz)': 'Второй прайс-лист. Вводится вручную.',
+    'Ретро бонусы': 'Цена × процент ретро-бонуса.',
+    'НДС': 'Цена × ставка НДС.',
+    'Прибыль': 'Цена − себестоимость с браком − ретро-бонусы − НДС.',
+    'Налог на прибыль': 'Прибыль × ставка налога. С убытка налог не берётся.',
+    'Чистая прибыль': 'Прибыль − налог на прибыль.',
+    'ЧП, %': 'Чистая прибыль ÷ цена.',
+  };
+
+  // Подсказки с настоящими числами товара — то же объяснение, но подставленное.
+  const num = (v, dec) => (v === null || v === undefined ? '?' : money(v, dec === undefined ? 2 : dec));
+  const CELL_HINTS = {
+    'зелень в упаковке': (x) => (x.net_weight_g && x.raw_price_per_kg
+      ? num(x.net_weight_g, 0) + ' г ÷ 1000 × ' + num(x.raw_price_per_kg, 0) + ' = ' + num(x.calc.components.raw)
+      : 'Укажите граммаж и стоимость зелени'),
+    'Стоимость зелени': (x) => (x.raw_price_source === 'purchase'
+      ? 'Последняя принятая цена в Закупе' + (x.raw_price_at ? ' от ' + x.raw_price_at : '')
+      : (x.raw_material_id ? 'В Закупе по этой позиции цены пока нет — цифра вписана вручную'
+        : 'Наименование не выбрано — цифра вписана вручную')),
+    'Упаковка': (x) => (x.pack_template_name
+      ? 'Комплект «' + x.pack_template_name + '» с листа «Упаковка»'
+      : 'Комплект не выбран'),
+    'Производ.затраты / накладные расходы': (x, d) => {
+      if (d.base.production_per_unit === null || d.base.overhead_per_unit === null) return 'Нет данных листа «Производство»';
+      const sum = d.base.production_per_unit + d.base.overhead_per_unit;
+      const base = num(d.base.production_per_unit) + ' + ' + num(d.base.overhead_per_unit) + ' = ' + num(sum);
+      return x.prod_factor === 1 ? base : base + ', × доля ' + num(x.prod_factor) + ' = ' + num(sum * x.prod_factor);
+    },
+    'ФОТ': (x, d) => (d.base.payroll_fund
+      ? num(d.base.payroll_fund, 0) + ' ÷ ' + num(d.base.output, 0) + ' шт = ' + num(d.base.labor_per_unit)
+      : 'В Персонале нет окладов активных сотрудников'),
+    'с\\с': (x) => {
+      const c = x.calc.components;
+      const parts = [];
+      if (c.raw !== null) parts.push('зелень ' + num(c.raw));
+      if (c.pack !== null) parts.push('упаковка ' + num(c.pack));
+      if (c.production !== null) parts.push('производ. ' + num(c.production));
+      if (c.labor !== null) parts.push('ФОТ ' + num(c.labor));
+      return parts.length ? parts.join(' + ') + ' = ' + num(x.calc.cost) : 'Нечего складывать';
+    },
+    'с\\с с браком': (x) => num(x.calc.cost) + ' × (1 + ' + num(x.defect_pct, 0) + '%) = ' + num(x.calc.cost_defect),
+    'Наценка %': (x) => (x.calc.markup_pct === null ? 'Нужны цена и себестоимость'
+      : num(x.price, 0) + ' ÷ ' + num(x.calc.cost_defect) + ' − 1 = ' + num(x.calc.markup_pct, 0) + '%'),
+    'Ретро бонусы': (x) => num(x.price, 0) + ' × ' + num(x.retro_pct, 0) + '% = ' + num(x.calc.retro),
+    'НДС': (x) => num(x.price, 0) + ' × ' + num(x.vat_pct, 0) + '% = ' + num(x.calc.vat),
+    'Прибыль': (x) => (x.calc.profit === null ? 'Нужны цена и себестоимость'
+      : num(x.price, 0) + ' − ' + num(x.calc.cost_defect) + ' − ' + num(x.calc.retro)
+        + ' − ' + num(x.calc.vat) + ' = ' + num(x.calc.profit)),
+    'Налог на прибыль': (x) => (x.calc.profit_tax === null ? 'Нужна прибыль'
+      : num(x.calc.profit) + ' × ' + num(x.profit_tax_pct, 0) + '% = ' + num(x.calc.profit_tax)),
+    'Чистая прибыль': (x) => (x.calc.net_profit === null ? 'Нужна прибыль'
+      : num(x.calc.profit) + ' − ' + num(x.calc.profit_tax) + ' = ' + num(x.calc.net_profit)),
+    'ЧП, %': (x) => (x.calc.net_pct === null ? 'Нужны прибыль и цена'
+      : num(x.calc.net_profit) + ' ÷ ' + num(x.price, 0) + ' = ' + num(x.calc.net_pct, 0) + '%'),
+  };
+
   function skuRow(label, unit, cells, cls) {
     const p = SKU.products;
+    const hint = ROW_HINTS[label] || '';
+    const cellHint = CELL_HINTS[label];
     return el('tr', { class: 'calc-sku-r' + (cls ? ' ' + cls : '') }, [
-      el('th', { class: 'calc-sku-h' }, el('div', { class: 'calc-sku-lbl' }, label)),
-      el('th', { class: 'calc-sku-u' }, unit || ''),
-    ].concat(p.map((x) => el('td', {}, cells(x)))));
+      el('th', { class: 'calc-sku-h', title: hint },
+        el('div', { class: 'calc-sku-lbl' + (hint ? ' calc-has-hint' : '') }, label)),
+      el('th', { class: 'calc-sku-u', title: hint }, unit || ''),
+    ].concat(p.map((x) => {
+      // У ячейки — та же подсказка, но с настоящими числами этого товара.
+      let t = hint;
+      if (cellHint) { try { t = cellHint(x, SKU); } catch (e) { t = hint; } }
+      return el('td', { title: t }, cells(x));
+    })));
   }
 
   // Понятные названия компонентов себестоимости — для подсказки «чего не хватает».
