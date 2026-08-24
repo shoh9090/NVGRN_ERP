@@ -85,8 +85,9 @@ router.put('/api/suppliers/:id(\\d+)', express.json(), async (req, res) => {
 
 // ===== Привязка банковских оплат к поставщикам (реквизиты и правила) =====
 const BANK_KEY_TYPES = ['inn', 'account', 'name', 'keyword', 'tx'];
-// Статьи внутренних перемещений — это не оплаты поставщикам, в «неразобранных» не показываем.
-const NOT_SUPPLIER_CATS = ['100', '102', '110', '111'];
+// В «неразобранных» показываем только закупочные статьи: 10 «Сырьё (зелень)» и 11 «Упаковка».
+// Остальное (комиссии банка, зарплата, налоги, переводы между счетами) — не оплаты поставщикам.
+const SUPPLIER_CATS = ['10', '11'];
 
 router.get('/api/suppliers/:id(\\d+)/bank-keys', async (req, res) => {
   const r = await db.pool.query(
@@ -127,7 +128,7 @@ router.get('/api/bank-unmatched', async (req, res) => {
   try {
     const { unmatched } = await pfin.bankOutPayments();
     const q = String(req.query.q || '').trim().toLowerCase();
-    let items = unmatched.filter((x) => !NOT_SUPPLIER_CATS.includes(x.cat_code));
+    let items = unmatched.filter((x) => SUPPLIER_CATS.includes(x.cat_code));
     if (q) items = items.filter((x) => (x.purpose + ' ' + x.payer_name + ' ' + x.payer_inn).toLowerCase().includes(q));
     items.sort((a, b) => String(b.paid_at).localeCompare(String(a.paid_at)));
     const total = items.reduce((s, x) => s + x.amount, 0);
@@ -233,7 +234,17 @@ router.post('/api/suppliers/:id(\\d+)/materials', express.json({ limit: '1mb' })
 // Выписка по поставщику: поставки с позициями + оплаты
 router.get('/api/suppliers/:id(\\d+)/statement', async (req, res) => {
   const sup = await db.pool.query(
-    'SELECT id, name, legal_name, phone, inn, supplies, payment_terms, parent_category_id, COALESCE(opening_balance,0) AS opening_balance FROM ref_counterparties WHERE id = $1',
+    // Карточка поставщика открывается из этой выписки, поэтому отдаём ВСЕ поля, которые она
+    // правит. Иначе они приходят пустыми и при сохранении затираются (так терялись статья ДДС,
+    // условия оплаты по умолчанию и комментарий).
+    `SELECT c.id, c.name, c.legal_name, c.phone, c.inn, c.supplies, c.payment_terms,
+            c.parent_category_id, c.cash_category_id, c.comment,
+            c.def_payment_type, c.def_pay_condition, c.def_defer_days,
+            cc.code AS cash_cat_code, cc.name AS cash_cat_name,
+            COALESCE(c.opening_balance,0) AS opening_balance
+       FROM ref_counterparties c
+       LEFT JOIN cash_categories cc ON cc.id = c.cash_category_id
+      WHERE c.id = $1`,
     [req.params.id]
   );
   if (!sup.rows.length) return res.status(404).json({ error: 'Поставщик не найден' });

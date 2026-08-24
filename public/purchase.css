@@ -57,6 +57,8 @@
 
 /* Модалки закупа (шире стандартных) */
 .pur-modal{width:920px}
+/* Широкое окно — для таблиц, которые не влезают в 920px (напр. неразобранные оплаты). */
+.pur-modal-wide{width:min(1680px,96vw)}
 .pur-modal-body{padding:16px 22px}
 .pur-card-meta{display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:10px;font-weight:700;font-size:13.5px}
 

@@ -36,11 +36,12 @@
     setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 300); }, 3500);
   }
 
-  function modal(title, bodyNode, actions) {
+  // opts.wide — окно во всю ширину экрана (для широких таблиц, чтобы не листать вбок).
+  function modal(title, bodyNode, actions, opts) {
     const root = $('#pur-modal-root');
     root.innerHTML = '';
     const overlay = el('div', { class: 'imp-overlay' });
-    const panel = el('div', { class: 'imp-panel pur-modal' }, [
+    const panel = el('div', { class: 'imp-panel pur-modal' + ((opts && opts.wide) ? ' pur-modal-wide' : '') }, [
       el('div', { class: 'imp-head' }, [el('h3', {}, title)]),
       el('div', { class: 'imp-body pur-modal-body' }, [bodyNode]),
       el('div', { class: 'imp-actions' }, actions),
@@ -779,9 +780,9 @@
     const search = el('input', { placeholder: '🔍 назначение, плательщик, ИНН…', style: 'width:100%;margin-bottom:8px' });
     const m = modal('🔗 Неразобранные оплаты', el('div', {}, [
       el('p', { class: 'muted', style: 'font-size:13px' },
-        'Расходы с банковских счетов (с 07.08.2026), которые не нашли поставщика по ИНН или правилам. Переводы между своими счетами не показываем.'),
+        'Оплаты поставщикам с банковских счетов (с 07.08.2026) по статьям «Сырьё (зелень)» и «Упаковка», которым не нашёлся поставщик. Комиссии банка, зарплата, налоги и переводы между своими счетами сюда не попадают.'),
       search, info, box,
-    ]), [el('button', { onclick: () => m.close() }, 'Закрыть')]);
+    ]), [el('button', { onclick: () => m.close() }, 'Закрыть')], { wide: true });
     let suppliers = [];
     try { suppliers = (await api('/suppliers')).items || []; } catch (e) { /* покажем ошибку ниже */ }
     async function load() {
@@ -804,7 +805,7 @@
             el('div', {}, x.payer_name || '—'),
             x.payer_inn ? el('div', { class: 'muted', style: 'font-size:12px' }, 'ИНН ' + x.payer_inn) : null,
           ]),
-          el('td', { class: 'muted', style: 'max-width:320px;font-size:12px' }, x.purpose || ''),
+          el('td', { class: 'muted', style: 'font-size:12px' }, x.purpose || ''),
           el('td', { class: 'muted', style: 'font-size:12px;white-space:nowrap' }, x.cat_code ? x.cat_code + ' · ' + x.cat_name : '—'),
           el('td', { style: 'text-align:right;white-space:nowrap;position:sticky;right:0;background:#fff;box-shadow:-6px 0 6px -6px rgba(0,0,0,.18)' },
             el('button', { class: 'btn-primary', style: 'padding:4px 10px;font-size:12px', onclick: () => openBind(x, suppliers, load) }, 'Привязать')),
