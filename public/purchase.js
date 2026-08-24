@@ -793,18 +793,20 @@
         + (d.count > d.items.length ? ' · показаны первые ' + d.items.length : '');
       if (!d.items.length) { box.appendChild(el('p', { class: 'dict-empty' }, 'Все банковские оплаты привязаны 👍')); return; }
       box.appendChild(el('div', { class: 'oe-table-wrap', style: 'max-height:52vh' }, el('table', { class: 'dict-table' }, [
+        // Колонку с кнопкой закрепляем справа — иначе при длинных назначениях она уезжает
+        // за край таблицы и до неё не докрутить.
         el('thead', {}, el('tr', {}, ['Дата', 'Сумма', 'Плательщик / ИНН', 'Назначение', 'Статья', ''].map((h, i) =>
-          el('th', { style: i === 1 ? 'text-align:right' : '' }, h)))),
+          el('th', { style: (i === 1 ? 'text-align:right;' : '') + (i === 5 ? 'position:sticky;right:0;background:#f2f5f1;z-index:2' : '') }, h)))),
         el('tbody', {}, d.items.map((x) => el('tr', {}, [
           el('td', { style: 'white-space:nowrap' }, dt(x.paid_at)),
-          el('td', { class: 'tnum', style: 'text-align:right;font-weight:700' }, fmtMoney(x.amount)),
-          el('td', {}, [
+          el('td', { class: 'tnum', style: 'text-align:right;font-weight:700;white-space:nowrap' }, fmtMoney(x.amount)),
+          el('td', { style: 'min-width:170px' }, [
             el('div', {}, x.payer_name || '—'),
             x.payer_inn ? el('div', { class: 'muted', style: 'font-size:12px' }, 'ИНН ' + x.payer_inn) : null,
           ]),
-          el('td', { class: 'muted', style: 'max-width:340px;font-size:12px' }, x.purpose || ''),
+          el('td', { class: 'muted', style: 'max-width:320px;font-size:12px' }, x.purpose || ''),
           el('td', { class: 'muted', style: 'font-size:12px;white-space:nowrap' }, x.cat_code ? x.cat_code + ' · ' + x.cat_name : '—'),
-          el('td', { style: 'text-align:right;white-space:nowrap' },
+          el('td', { style: 'text-align:right;white-space:nowrap;position:sticky;right:0;background:#fff;box-shadow:-6px 0 6px -6px rgba(0,0,0,.18)' },
             el('button', { class: 'btn-primary', style: 'padding:4px 10px;font-size:12px', onclick: () => openBind(x, suppliers, load) }, 'Привязать')),
         ]))),
       ])));
