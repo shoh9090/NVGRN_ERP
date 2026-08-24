@@ -370,6 +370,40 @@ async function ensureCalculationSchema(pool) {
             WHERE i.item_id = m.id AND (i.name IS NULL OR i.name = '')`)
     .catch((e) => console.error('calc pack names backfill:', e.message));
 
+
+  // --- Товарные листы (Рознич. тара, Хорека 250/500, Салаты, Пучки) --------
+  // В Excel это отдельные листы одинаковой структуры: строки — статьи расчёта,
+  // столбцы — товары. Поэтому таблица одна, лист задаётся колонкой sheet.
+  // Имя calc_sheet_products взято намеренно: calculation_products — это старая
+  // черновая таблица другой структуры, её не трогаем.
+  //
+  // Здесь хранятся ТОЛЬКО вводимые значения. Себестоимость, наценка, прибыль,
+  // налог и чистая прибыль считаются на сервере в calculation-engine и в базе
+  // не лежат — иначе цифры разошлись бы с формулой при первой же правке.
+  await q(`CREATE TABLE IF NOT EXISTS calc_sheet_products (
+    id SERIAL PRIMARY KEY,
+    sheet TEXT NOT NULL,                        -- retail | horeca250 | horeca500 | salads | bunches
+    name TEXT NOT NULL,
+    barcode TEXT DEFAULT '',
+    pack_template_id INT,                       -- комплект упаковки с листа «Упаковка»
+    prod_factor NUMERIC NOT NULL DEFAULT 1,     -- доля производственных затрат (у руколы 0,5)
+    raw_cost NUMERIC,                           -- зелень-сырьё на единицу, вручную
+    labor_cost NUMERIC,                         -- ФОТ на единицу, вручную (позже из плитки «Персонал»)
+    defect_pct NUMERIC NOT NULL DEFAULT 0,      -- накрутка на брак, вручную
+    price NUMERIC,                              -- первый прайс-лист
+    price2 NUMERIC,                             -- второй прайс-лист
+    retro_pct NUMERIC NOT NULL DEFAULT 0,
+    vat_pct NUMERIC NOT NULL DEFAULT 12,
+    profit_tax_pct NUMERIC NOT NULL DEFAULT 15,
+    sort INT NOT NULL DEFAULT 100,
+    status TEXT NOT NULL DEFAULT 'active',      -- active | archived
+    comment TEXT DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by INT, updated_at TIMESTAMPTZ
+  )`);
+  await q(`CREATE INDEX IF NOT EXISTS idx_calc_sheet_products
+           ON calc_sheet_products (sheet, status, sort, id)`);
+
   _ready = true;
 }
 

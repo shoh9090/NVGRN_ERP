@@ -316,3 +316,73 @@ input.calc-cell:focus, input.calc-name:focus {
   .calc-tpls { grid-template-columns: 1fr; }
   .calc-tpl-cols, .calc-tpl-line { grid-template-columns: minmax(110px, 1fr) 76px 48px 78px 24px; gap: 4px; }
 }
+
+/* ---------- Товарные листы: строки — расчёт, столбцы — товары ---------- */
+/* Столбцов бывает восемь и больше, поэтому прокрутка по горизонтали здесь
+   неизбежна. Первый столбец при этом остаётся на месте — иначе, докрутив до
+   айсберга, уже не понять, какая это строка расчёта. */
+.calc-sku-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.calc-sku-t { border-collapse: separate; border-spacing: 0; font-size: 13px; }
+.calc-sku-t th, .calc-sku-t td {
+  border-right: 1px solid var(--line); border-bottom: 1px solid var(--line);
+  vertical-align: middle; padding: 0;
+}
+.calc-sku-t td { min-width: 124px; text-align: right; padding: 6px 9px; font-variant-numeric: tabular-nums; }
+
+/* Первый столбец — названия строк расчёта, приклеен слева */
+.calc-sku-t th.calc-sku-h {
+  position: sticky; left: 0; z-index: 2;
+  background: var(--surface-2); text-align: left; padding: 7px 11px;
+  min-width: 178px; max-width: 178px;
+}
+.calc-sku-lbl { font-weight: 700; color: var(--ink); font-size: 12.5px; line-height: 1.25; }
+.calc-sku-t .calc-unit { padding: 2px 0 0; }
+
+/* Шапка: название товара и штрих-код */
+.calc-sku-head th { background: var(--surface-2); padding: 7px 8px; text-align: left; vertical-align: top; }
+.calc-sku-head th { position: relative; }
+.calc-sku-head input.calc-name { font-size: 12.5px; padding: 5px 6px; width: 100%; }
+.calc-sku-head .calc-del { position: absolute; top: 3px; right: 3px; }
+.calc-bar {
+  display: block; width: 100%; margin-top: 3px; border: 1px solid transparent; background: none;
+  font-family: inherit; font-size: 10.5px; color: var(--ink-faint); padding: 3px 6px; border-radius: 6px;
+  font-variant-numeric: tabular-nums;
+}
+input.calc-bar:hover { border-color: var(--line); background: #fbfaf4; }
+input.calc-bar:focus { border-color: var(--lime-d); background: var(--surface); outline: none; color: var(--ink); }
+
+/* Ячейки ввода внутри товарного столбца занимают всю ширину */
+.calc-sku-t input.calc-cell { width: 100%; padding: 5px 7px; font-size: 13px; }
+.calc-sel {
+  width: 100%; border: 1px solid transparent; background: none; font-family: inherit;
+  font-size: 12px; padding: 4px 5px; border-radius: 7px; color: var(--ink); cursor: pointer;
+}
+.calc-sel:hover { border-color: var(--line); background: #fbfaf4; }
+.calc-sel:focus { border-color: var(--lime-d); background: var(--surface); outline: none; }
+
+/* Ставка в процентах рядом с суммой: у мангольда брак 20%, у остальных 50% */
+.calc-rate { display: inline-flex; align-items: center; gap: 1px; float: left; font-size: 11px; color: var(--ink-faint); }
+.calc-rate-inp {
+  width: 34px; border: 1px solid transparent; background: none; font-family: inherit;
+  font-size: 11px; text-align: right; padding: 2px 3px; border-radius: 5px; color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+input.calc-rate-inp:hover { border-color: var(--line); background: #fbfaf4; }
+input.calc-rate-inp:focus { border-color: var(--lime-d); background: var(--surface); outline: none; color: var(--ink); }
+.calc-factor { display: flex; align-items: center; justify-content: flex-end; gap: 3px; font-size: 11px; }
+.calc-factor .calc-cell { width: 44px; }
+
+/* Выделенные строки — как заливка в Excel */
+.calc-sku-sum td, .calc-sku-sum th.calc-sku-h { font-weight: 800; background: #f4f7f1; }
+.calc-sku-accent td { background: var(--amber-soft); font-weight: 800; }
+.calc-sku-accent th.calc-sku-h { background: var(--amber-soft); }
+.calc-sku-green td, .calc-sku-green th.calc-sku-h { background: var(--lime-soft); }
+.calc-sku-green td { font-weight: 700; }
+
+.calc-warn-mini { font-size: 10.5px; color: var(--red); font-weight: 600; line-height: 1.2; margin-top: 2px; }
+.calc-bad { color: var(--red); }
+
+@media (max-width: 700px) {
+  .calc-sku-t th.calc-sku-h { min-width: 132px; max-width: 132px; }
+  .calc-sku-t td { min-width: 108px; }
+}

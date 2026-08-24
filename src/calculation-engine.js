@@ -368,9 +368,78 @@ function weightedAveragePrice(deliveries) {
   return { price: qtySum > 0 ? amountSum / qtySum : null, qty: qtySum, amount: amountSum, used_deliveries: used };
 }
 
+
+// ---------------------------------------------------------------------------
+// Экономика товарной позиции (товарные листы: Рознич. тара, Хорека, Салаты…)
+// ---------------------------------------------------------------------------
+// Строки повторяют рабочий Excel Шоха: компоненты себестоимости → с/с →
+// с/с с браком → цена → ретро, НДС, прибыль, налог, чистая прибыль.
+//
+// Незаполненный компонент остаётся НЕ ЗАПОЛНЕННЫМ и попадает в счётчик missing.
+// Превращать его в ноль нельзя: с/с молча занизилась бы, а наценка выглядела бы
+// здоровой. Пустая себестоимость (не заполнено вообще ничего) — это null.
+const SKU_COMPONENTS = ['pack', 'raw', 'production', 'overhead', 'labor'];
+
+function skuEconomics(input) {
+  const i = input || {};
+  const nOrNull = (v) => (v === undefined || v === null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
+
+  const components = {};
+  let filled = 0, sum = 0;
+  for (const key of SKU_COMPONENTS) {
+    const v = nOrNull(i[key]);
+    components[key] = v;
+    if (v !== null) { filled++; sum += v; }
+  }
+  const missing = SKU_COMPONENTS.length - filled;
+  // Не просто счётчик: показываем, ЧЕГО именно не хватает, — иначе непонятно,
+  // куда идти дописывать.
+  const missingKeys = SKU_COMPONENTS.filter((k) => components[k] === null);
+  const cost = filled ? sum : null;
+
+  const defectPct = num(i.defect_pct);
+  const costDefect = cost === null ? null : cost * (1 + defectPct / 100);
+
+  const price = nOrNull(i.price);
+  const retroPct = num(i.retro_pct);
+  const vatPct = num(i.vat_pct);
+  const taxPct = num(i.profit_tax_pct);
+
+  // Наценка считается от себестоимости с браком — именно её и покрывает цена.
+  const markupPct = (price !== null && costDefect !== null && costDefect > 0)
+    ? (price / costDefect - 1) * 100 : null;
+
+  const retro = price === null ? null : price * retroPct / 100;
+  const vat = price === null ? null : price * vatPct / 100;
+  const profit = (price === null || costDefect === null) ? null : price - costDefect - retro - vat;
+  // Убыток налогом не облагается, поэтому база налога не бывает отрицательной.
+  const profitTax = profit === null ? null : Math.max(0, profit) * taxPct / 100;
+  const netProfit = profit === null ? null : profit - profitTax;
+  const netPct = (netProfit === null || !(price > 0)) ? null : netProfit / price * 100;
+
+  return {
+    components,
+    missing,
+    missing_keys: missingKeys,
+    cost,
+    cost_defect: costDefect,
+    defect_pct: defectPct,
+    markup_pct: markupPct,
+    price,
+    retro,
+    vat,
+    profit,
+    profit_tax: profitTax,
+    net_profit: netProfit,
+    net_pct: netPct,
+  };
+}
+
 module.exports = {
   FORMULA_VERSION,
   perUnit,
+  SKU_COMPONENTS,
+  skuEconomics,
   STALE_PRICE_DAYS,
   calculateProduct,
   calcRecipeRow,

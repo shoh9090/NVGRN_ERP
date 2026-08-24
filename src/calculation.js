@@ -2,8 +2,9 @@
 //
 // ПЕРЕСБОРКА ПО ЭТАПАМ. Собираем по образцу рабочего Excel Шоха
 // (00calc_NVGRN11.xlsx): каждый лист Excel = отдельная вкладка модуля.
-// Готово: лист «Производство» — выпуск, производственные и накладные затраты.
-// Дальше: ФОТ → Упаковка → зелень-сырьё → товарные листы.
+// Готово: «Производство» (выпуск и затраты), «Упаковка» (комплекты),
+// товарные листы (Рознич. тара, Хорека 250/500, Салаты, Пучки и горшки).
+// Отдельного листа под цены на сырьё нет: цена зелени приходит из Закупа.
 //
 // Три колонки, как в Excel:
 //   • «текущее в кальк. расчётах» — то, что реально участвует в себестоимости (ручной ввод);
@@ -459,6 +460,206 @@ router.delete('/api/packaging/line/:id(\\d+)', async (req, res) => {
   if (!canEdit(req)) return denyEdit(res);
   try {
     await db.pool.query('DELETE FROM calc_pack_template_items WHERE id = $1', [req.params.id]);
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// ===========================================================================
+// Товарные листы: Рознич. тара, Хорека 250 г, Хорека 500, Салаты, Пучки и горшки
+// ===========================================================================
+// В Excel это отдельные листы одинаковой структуры: строки — статьи расчёта,
+// столбцы — товары. Код один на все листы, отличается только ключ листа.
+//
+// Что откуда берётся:
+//   • Упаковка          — стоимость выбранного комплекта с листа «Упаковка»;
+//   • Производ. затраты — «на штуку» с листа «Производство» × доля товара
+//                          (у руколы 0,5: с одной операции выходит вдвое больше);
+//   • Накладные         — «на штуку» с листа «Производство» × та же доля;
+//   • Сырьё и ФОТ       — пока вручную (ФОТ позже подключим к плитке «Персонал»);
+//   • брак, цены, ретро, НДС, налог — вручную.
+// Все производные цифры считает calculation-engine, в базе их нет.
+
+const SHEETS = {
+  retail: 'Рознич. тара',
+  horeca250: 'Хорека 250 г',
+  horeca500: 'Хорека 500',
+  salads: 'Салаты',
+  bunches: 'Пучки и горшки',
+};
+
+// «На штуку» по блокам листа «Производство» — колонка «текущее», та самая,
+// что участвует в себестоимости.
+async function perUnitByKind() {
+  const settings = await calcSettings();
+  const output = asNum(settings[K_OUTPUT]) || 0;
+  const r = await db.pool.query(
+    `SELECT kind, COALESCE(SUM(amount), 0) AS amount FROM calc_cost_items
+      WHERE status = 'active' GROUP BY kind`);
+  const byKind = { production: 0, overhead: 0 };
+  r.rows.forEach((x) => { byKind[x.kind] = Number(x.amount) || 0; });
+  return {
+    output,
+    production: engine.perUnit(byKind.production, output),
+    overhead: engine.perUnit(byKind.overhead, output),
+  };
+}
+
+router.get('/api/sheet/:sheet', async (req, res) => {
+  const sheet = String(req.params.sheet || '');
+  if (!SHEETS[sheet]) return res.status(404).json({ error: 'Такого листа нет' });
+  try {
+    const base = await perUnitByKind();
+
+    // Комплекты упаковки с листа «Упаковка» — вместе с их стоимостью.
+    const tplRows = (await db.pool.query(
+      `SELECT t.id, t.name,
+              COALESCE(SUM(CASE WHEN i.price IS NULL THEN 0 ELSE i.price * i.qty END), 0) AS total,
+              COUNT(i.id) FILTER (WHERE i.price IS NULL) AS missing_prices
+         FROM calc_pack_templates t
+         LEFT JOIN calc_pack_template_items i ON i.template_id = t.id
+        WHERE t.status = 'active'
+        GROUP BY t.id, t.name, t.sort
+        ORDER BY t.sort, t.name`)).rows;
+    const tplById = new Map(tplRows.map((t) => [t.id, t]));
+
+    const rows = (await db.pool.query(
+      `SELECT * FROM calc_sheet_products
+        WHERE sheet = $1 AND status = 'active' ORDER BY sort, id`, [sheet])).rows;
+
+    const products = rows.map((p) => {
+      const tpl = p.pack_template_id ? tplById.get(p.pack_template_id) : null;
+      const factor = p.prod_factor === null ? 1 : Number(p.prod_factor);
+      const scale = (v) => (v === null || v === undefined ? null : v * factor);
+      const calc = engine.skuEconomics({
+        pack: tpl ? Number(tpl.total) : null,
+        raw: numOrNull(p.raw_cost),
+        production: scale(base.production),
+        overhead: scale(base.overhead),
+        labor: numOrNull(p.labor_cost),
+        defect_pct: p.defect_pct,
+        price: numOrNull(p.price),
+        retro_pct: p.retro_pct,
+        vat_pct: p.vat_pct,
+        profit_tax_pct: p.profit_tax_pct,
+      });
+      return {
+        id: p.id,
+        name: p.name,
+        barcode: p.barcode || '',
+        pack_template_id: p.pack_template_id,
+        pack_template_name: tpl ? tpl.name : '',
+        // Комплект выбран, но в нём есть строки без цены — стоимость неполная.
+        pack_incomplete: tpl ? Number(tpl.missing_prices) > 0 : false,
+        prod_factor: factor,
+        raw_cost: numOrNull(p.raw_cost),
+        labor_cost: numOrNull(p.labor_cost),
+        defect_pct: Number(p.defect_pct) || 0,
+        price: numOrNull(p.price),
+        price2: numOrNull(p.price2),
+        retro_pct: Number(p.retro_pct) || 0,
+        vat_pct: Number(p.vat_pct) || 0,
+        profit_tax_pct: Number(p.profit_tax_pct) || 0,
+        calc,
+      };
+    });
+
+    res.json({
+      sheet,
+      sheet_title: SHEETS[sheet],
+      base: {
+        output: base.output,
+        production_per_unit: base.production,
+        overhead_per_unit: base.overhead,
+      },
+      pack_templates: tplRows.map((t) => ({
+        id: t.id, name: t.name, total: Number(t.total),
+        missing_prices: Number(t.missing_prices),
+      })),
+      products,
+      can_edit: canEdit(req),
+      no_output_reason: base.output > 0 ? null
+        : 'На листе «Производство» не указан среднемесячный выпуск — затраты на штуку посчитать не из чего.',
+    });
+  } catch (e) {
+    console.error('[КАЛЬКУЛЯЦИЯ] товарный лист:', e.message);
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Добавить товар в лист. Условия по умолчанию берём с последнего товара листа:
+// ретро, НДС, налог и брак внутри листа почти всегда одинаковые.
+router.post('/api/sheet/:sheet/product', J, async (req, res) => {
+  if (!canEdit(req)) return denyEdit(res);
+  const sheet = String(req.params.sheet || '');
+  if (!SHEETS[sheet]) return res.status(404).json({ error: 'Такого листа нет' });
+  const name = String((req.body || {}).name || '').trim() || 'Новый товар';
+  try {
+    const prev = (await db.pool.query(
+      `SELECT pack_template_id, defect_pct, retro_pct, vat_pct, profit_tax_pct, sort
+         FROM calc_sheet_products WHERE sheet = $1 AND status = 'active'
+        ORDER BY sort DESC, id DESC LIMIT 1`, [sheet])).rows[0];
+    const d = prev || { pack_template_id: null, defect_pct: 0, retro_pct: 0, vat_pct: 12, profit_tax_pct: 15, sort: 0 };
+    const r = await db.pool.query(
+      `INSERT INTO calc_sheet_products
+         (sheet, name, pack_template_id, defect_pct, retro_pct, vat_pct, profit_tax_pct, sort, updated_by, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,now()) RETURNING id`,
+      [sheet, name, d.pack_template_id, d.defect_pct, d.retro_pct, d.vat_pct, d.profit_tax_pct,
+        Number(d.sort || 0) + 10, req.user.id]);
+    await db.log(req.user.id, 'calc_sheet_product_add', { sheet, id: r.rows[0].id, name });
+    res.json({ ok: true, id: r.rows[0].id });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Правка одного значения товара. Список полей закрытый: что не перечислено —
+// через этот маршрут не меняется.
+const SKU_TEXT_FIELDS = ['name', 'barcode'];
+const SKU_NUM_FIELDS = ['prod_factor', 'raw_cost', 'labor_cost', 'defect_pct',
+  'price', 'price2', 'retro_pct', 'vat_pct', 'profit_tax_pct'];
+
+router.post('/api/sheet-product/:id(\\d+)', J, async (req, res) => {
+  if (!canEdit(req)) return denyEdit(res);
+  const b = req.body || {};
+  const sets = [], vals = [];
+  try {
+    for (const f of SKU_TEXT_FIELDS) {
+      if (b[f] === undefined) continue;
+      const v = String(b[f]).trim();
+      if (f === 'name' && !v) return res.status(400).json({ error: 'Название товара не может быть пустым' });
+      vals.push(v); sets.push(`${f} = $${vals.length}`);
+    }
+    for (const f of SKU_NUM_FIELDS) {
+      if (b[f] === undefined) continue;
+      const v = numOrNull(b[f]);
+      if (v !== null && v < 0) return res.status(400).json({ error: 'Отрицательное значение здесь не бывает' });
+      // Доля затрат и проценты в базе NOT NULL — пустыми их оставить нельзя,
+      // подставляем разумную единицу или ноль.
+      let out = v;
+      if (v === null) {
+        if (f === 'prod_factor') out = 1;
+        else if (['defect_pct', 'retro_pct', 'vat_pct', 'profit_tax_pct'].includes(f)) out = 0;
+      }
+      vals.push(out); sets.push(`${f} = $${vals.length}`);
+    }
+    if (b.pack_template_id !== undefined) {
+      vals.push(intOrNull(b.pack_template_id)); sets.push(`pack_template_id = $${vals.length}`);
+    }
+    if (!sets.length) return res.json({ ok: true });
+    vals.push(req.user.id); sets.push(`updated_by = $${vals.length}`);
+    sets.push('updated_at = now()');
+    vals.push(req.params.id);
+    await db.pool.query(
+      `UPDATE calc_sheet_products SET ${sets.join(', ')} WHERE id = $${vals.length}`, vals);
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+router.delete('/api/sheet-product/:id(\\d+)', async (req, res) => {
+  if (!canEdit(req)) return denyEdit(res);
+  try {
+    await db.pool.query(
+      "UPDATE calc_sheet_products SET status = 'archived', updated_by = $2, updated_at = now() WHERE id = $1",
+      [req.params.id, req.user.id]);
+    await db.log(req.user.id, 'calc_sheet_product_remove', { id: Number(req.params.id) });
     res.json({ ok: true });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });

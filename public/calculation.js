@@ -1,7 +1,8 @@
 // calculation.js — плитка «Калькуляция себестоимости».
 //
 // Собираем по образцу рабочего Excel: каждый лист Excel = вкладка внизу экрана.
-// Сейчас готов лист «Производство». Остальные вкладки появятся по мере сборки.
+// Готовы: «Производство», «Упаковка» и товарные листы (строки — расчёт,
+// столбцы — товары).
 //
 // Денежных формул здесь НЕТ: суммы, «среднее на шт» и итоги приходят с сервера.
 (function () {
@@ -47,12 +48,14 @@
   const SHEETS = [
     { key: 'production', title: 'Производство', ready: true },
     { key: 'packaging', title: 'Упаковка', ready: true },
-    { key: 'retail', title: 'Рознич. тара' },
-    { key: 'horeca250', title: 'Хорека 250г' },
-    { key: 'horeca500', title: 'Хорека 500' },
-    { key: 'salads', title: 'Салаты' },
-    { key: 'bunches', title: 'Пучки и горшки' },
+    { key: 'retail', title: 'Рознич. тара', ready: true },
+    { key: 'horeca250', title: 'Хорека 250г', ready: true },
+    { key: 'horeca500', title: 'Хорека 500', ready: true },
+    { key: 'salads', title: 'Салаты', ready: true },
+    { key: 'bunches', title: 'Пучки и горшки', ready: true },
   ];
+  // Товарные листы устроены одинаково, поэтому у них общий загрузчик и общий вид.
+  const SKU_SHEETS = ['retail', 'horeca250', 'horeca500', 'salads', 'bunches'];
   let sheet = 'production';
   let DATA = null;
   const canEdit = () => !!(DATA && DATA.can_edit);
@@ -62,10 +65,11 @@
   // ---------------------------------------------------------------------------
   function cell(value, onSave, opts = {}) {
     if (!canEdit() || !onSave) {
-      return el('div', { class: 'calc-cell calc-ro' }, opts.dec === 0 ? money0(value) : money(value));
+      return el('div', { class: 'calc-cell calc-ro' + (opts.cls ? ' ' + opts.cls : '') },
+        opts.dec === 0 ? money0(value) : money(value));
     }
     const inp = el('input', {
-      type: 'text', inputmode: 'numeric', class: 'calc-cell',
+      type: 'text', inputmode: 'numeric', class: 'calc-cell' + (opts.cls ? ' ' + opts.cls : ''),
       value: opts.dec === 0 ? money0(value) : money(value),
       placeholder: opts.placeholder || '',
     });
@@ -267,6 +271,7 @@
   async function load() {
     showLoading();
     if (sheet === 'packaging') return loadPackaging();
+    if (SKU_SHEETS.includes(sheet)) return loadSku();
     let d;
     try { d = await api('/production?period=' + (DATA ? DATA.period : '')); }
     catch (e) {
@@ -302,7 +307,8 @@
     const main = $('#calc-main');
     main.innerHTML = '';
     main.appendChild(sheetTabs());              // вкладки листов — сверху
-    const body = sheet === 'packaging' ? packagingSheet() : production();
+    const body = sheet === 'packaging' ? packagingSheet()
+      : SKU_SHEETS.includes(sheet) ? skuSheet() : production();
     main.appendChild(el('div', { class: 'calc-sheet' }, body));
   }
 
@@ -552,4 +558,212 @@
   }
 
   load();
+  // ---------------------------------------------------------------------------
+  // Товарные листы: Рознич. тара, Хорека, Салаты, Пучки
+  // ---------------------------------------------------------------------------
+  // Строки — статьи расчёта, столбцы — товары: ровно как в Excel.
+  // Считает всё сервер, здесь только показ и отправка правок.
+  let SKU = null;
+
+  async function loadSku() {
+    let d;
+    try { d = await api('/sheet/' + sheet); }
+    catch (e) {
+      const main = $('#calc-main'); main.innerHTML = '';
+      main.appendChild(sheetTabs());
+      main.appendChild(el('div', { class: 'calc-empty' }, 'Не удалось загрузить: ' + e.message));
+      return;
+    }
+    SKU = d;
+    DATA = { can_edit: d.can_edit };
+    render();
+  }
+
+  const save = (id, patch) => post('/sheet-product/' + id, patch);
+
+  // Ставка в процентах внутри ячейки товара: у мангольда брак 20%, у остальных 50%,
+  // поэтому ставка живёт у каждого товара, а не одна на строку.
+  function pctCell(value, onSave) {
+    if (!canEdit()) return el('span', { class: 'calc-rate' }, money(value, 0) + '%');
+    const inp = el('input', { type: 'text', inputmode: 'decimal', class: 'calc-rate-inp', value: money(value, 0) });
+    const clean = () => {
+      const raw = String(inp.value).replace(/[^\d.,-]/g, '').replace(',', '.').trim();
+      return raw === '' ? 0 : (Number(raw) || 0);
+    };
+    inp.addEventListener('focus', () => { inp.value = String(clean()); inp.select(); });
+    inp.addEventListener('blur', async () => {
+      const v = clean();
+      inp.value = money(v, 0);
+      if (v === Number(value)) return;
+      try { await onSave(v); await load(); } catch (e) { toast(e.message, true); }
+    });
+    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') inp.blur(); });
+    return el('span', { class: 'calc-rate' }, [inp, '%']);
+  }
+
+  // Строка листа. cells — функция, которая по товару возвращает содержимое ячейки.
+  function skuRow(label, unit, cells, cls) {
+    const p = SKU.products;
+    return el('tr', { class: 'calc-sku-r' + (cls ? ' ' + cls : '') }, [
+      el('th', { class: 'calc-sku-h' }, [
+        el('div', { class: 'calc-sku-lbl' }, label),
+        unit ? el('div', { class: 'calc-unit' }, unit) : null,
+      ]),
+    ].concat(p.map((x) => el('td', {}, cells(x)))));
+  }
+
+  // Понятные названия компонентов себестоимости — для подсказки «чего не хватает».
+  const COMP_NAMES = {
+    pack: 'упаковки', raw: 'сырья', production: 'производ. затрат',
+    overhead: 'накладных', labor: 'ФОТ',
+  };
+  const dash = () => el('span', { class: 'calc-dim' }, '—');
+  const auto = (v, dec) => (v === null || v === undefined ? dash() : el('span', {}, money(v, dec === undefined ? 2 : dec)));
+
+  function skuSheet() {
+    const d = SKU;
+    const box = el('div');
+
+    box.appendChild(el('div', { class: 'calc-sheet-head' }, [
+      el('h1', { class: 'calc-h1' }, d.sheet_title),
+      el('div', { class: 'calc-sub' }, 'Строки — расчёт, столбцы — товары. Упаковка и затраты на штуку подтягиваются с листов «Упаковка» и «Производство». Серые цифры считает система, белые поля — ваш ввод.'),
+    ]));
+
+    if (d.no_output_reason) {
+      box.appendChild(el('div', { class: 'calc-msg warn' }, '⚠️ ' + d.no_output_reason));
+    }
+
+    if (!d.products.length) {
+      box.appendChild(el('div', { class: 'calc-empty' }, [
+        el('div', {}, 'Товаров на этом листе пока нет.'),
+        canEdit() ? el('button', { class: 'calc-add', onclick: addProduct }, '+ товар') : null,
+      ]));
+      return box;
+    }
+
+    const tplOptions = d.pack_templates;
+    const rows = [];
+
+    // --- шапка: название и штрих-код товара ---
+    rows.push(el('tr', { class: 'calc-sku-head' }, [
+      el('th', { class: 'calc-sku-h' }, el('div', { class: 'calc-sku-lbl' }, 'Компоненты')),
+    ].concat(d.products.map((x) => el('th', {}, [
+      canEdit() ? nameCell(x.name, (v) => save(x.id, { name: v }))
+        : el('div', { class: 'calc-name calc-ro' }, x.name),
+      canEdit() ? el('input', {
+        type: 'text', class: 'calc-bar', value: x.barcode, placeholder: 'штрих-код',
+        onblur: async (e) => {
+          if (e.target.value.trim() === x.barcode) return;
+          try { await save(x.id, { barcode: e.target.value }); } catch (err) { toast(err.message, true); }
+        },
+      }) : el('div', { class: 'calc-bar calc-ro' }, x.barcode || ''),
+      canEdit() ? el('button', {
+        class: 'calc-del', title: 'Убрать товар с листа',
+        onclick: async () => {
+          try { await api('/sheet-product/' + x.id, { method: 'DELETE' }); toast('Товар убран'); await load(); }
+          catch (e) { toast(e.message, true); }
+        },
+      }, '×') : null,
+    ])))));
+
+    // --- компоненты себестоимости ---
+    rows.push(skuRow('Тип упаковки', '', (x) => {
+      if (!canEdit()) return el('span', {}, x.pack_template_name || '—');
+      const sel = el('select', { class: 'calc-sel' }, [el('option', { value: '' }, '— не выбран —')]
+        .concat(tplOptions.map((t) => {
+          const o = el('option', { value: String(t.id) }, t.name);
+          if (Number(x.pack_template_id) === t.id) o.setAttribute('selected', 'selected');
+          return o;
+        })));
+      sel.addEventListener('change', async () => {
+        try { await save(x.id, { pack_template_id: sel.value || null }); await load(); }
+        catch (e) { toast(e.message, true); }
+      });
+      return sel;
+    }));
+
+    rows.push(skuRow('Упаковка', 'сум', (x) => [
+      auto(x.calc.components.pack),
+      x.pack_incomplete ? el('div', { class: 'calc-warn-mini' }, 'в комплекте есть строки без цены') : null,
+    ]));
+
+    rows.push(skuRow('Зелень-сырьё', 'сум', (x) =>
+      cell(x.raw_cost, (v) => save(x.id, { raw_cost: v }), { placeholder: 'впишите' })));
+
+    rows.push(skuRow('Производ. затраты', 'сум', (x) => [
+      auto(x.calc.components.production),
+      // Доля нужна руколе: с одной операции выходит вдвое больше упаковок,
+      // поэтому на штуку приходится половина затрат.
+      canEdit() ? el('div', { class: 'calc-factor' }, [
+        el('span', { class: 'calc-dim' }, 'доля '),
+        cell(x.prod_factor, (v) => save(x.id, { prod_factor: v }), { cls: 'calc-rate-inp' }),
+      ]) : (x.prod_factor === 1 ? null : el('div', { class: 'calc-factor' }, 'доля ' + money(x.prod_factor))),
+    ]));
+
+    rows.push(skuRow('Накладные расходы', 'сум', (x) => auto(x.calc.components.overhead)));
+
+    rows.push(skuRow('ФОТ', 'сум', (x) =>
+      cell(x.labor_cost, (v) => save(x.id, { labor_cost: v }), { placeholder: 'впишите' })));
+
+    rows.push(skuRow('Себестоимость', 'сум', (x) => [
+      auto(x.calc.cost),
+      x.calc.missing ? el('div', { class: 'calc-warn-mini' },
+        'нет: ' + (x.calc.missing_keys || []).map((k) => COMP_NAMES[k] || k).join(', ')) : null,
+    ], 'calc-sku-sum'));
+
+    rows.push(skuRow('С/с с браком', 'сум', (x) => [
+      pctCell(x.defect_pct, (v) => save(x.id, { defect_pct: v })),
+      auto(x.calc.cost_defect),
+    ], 'calc-sku-accent'));
+
+    rows.push(el('tr', { class: 'calc-r-gap' },
+      el('td', { colspan: String(d.products.length + 1) }, '')));
+
+    // --- цены и результат ---
+    rows.push(skuRow('Наценка', '%', (x) => (x.calc.markup_pct === null ? dash()
+      : el('span', {}, money(x.calc.markup_pct, 0) + '%')), 'calc-sku-green'));
+
+    rows.push(skuRow('Цена, прайс 1', 'сум', (x) =>
+      cell(x.price, (v) => save(x.id, { price: v }), { dec: 0, placeholder: 'цена' }), 'calc-sku-green'));
+
+    rows.push(skuRow('Цена, прайс 2', 'сум', (x) =>
+      cell(x.price2, (v) => save(x.id, { price2: v }), { dec: 0, placeholder: 'цена' }), 'calc-sku-green'));
+
+    rows.push(skuRow('Ретро бонусы', 'сум', (x) => [
+      pctCell(x.retro_pct, (v) => save(x.id, { retro_pct: v })), auto(x.calc.retro),
+    ]));
+
+    rows.push(skuRow('НДС', 'сум', (x) => [
+      pctCell(x.vat_pct, (v) => save(x.id, { vat_pct: v })), auto(x.calc.vat),
+    ]));
+
+    rows.push(skuRow('Прибыль', 'сум', (x) => auto(x.calc.profit)));
+
+    rows.push(skuRow('Налог на прибыль', 'сум', (x) => [
+      pctCell(x.profit_tax_pct, (v) => save(x.id, { profit_tax_pct: v })), auto(x.calc.profit_tax),
+    ]));
+
+    rows.push(skuRow('Чистая прибыль', 'сум', (x) => auto(x.calc.net_profit), 'calc-sku-accent'));
+
+    rows.push(skuRow('ЧП', '%', (x) => (x.calc.net_pct === null ? dash()
+      : el('span', { class: x.calc.net_pct < 0 ? 'calc-bad' : '' }, money(x.calc.net_pct, 0) + '%'))));
+
+    box.appendChild(el('div', { class: 'calc-sku-wrap' },
+      el('table', { class: 'calc-sku-t' }, el('tbody', {}, rows))));
+
+    if (canEdit()) {
+      box.appendChild(el('button', { class: 'calc-add', onclick: addProduct }, '+ товар'));
+    }
+    box.appendChild(el('div', { class: 'calc-note' },
+      'Упаковка берётся из выбранного комплекта на листе «Упаковка». Производственные и накладные затраты на штуку — с листа «Производство», делённые на среднемесячный выпуск'
+      + (d.base.output ? ' (' + money0(d.base.output) + ' шт)' : '')
+      + '. Сырьё и ФОТ пока вписываются вручную.'));
+    return box;
+  }
+
+  async function addProduct() {
+    try { await post('/sheet/' + sheet + '/product', { name: 'Новый товар' }); await load(); }
+    catch (e) { toast(e.message, true); }
+  }
+
 })();
