@@ -620,8 +620,8 @@
     'с\\с': 'Себестоимость одной штуки — сумма всех строк выше: зелень, упаковка, производственные с накладными и ФОТ.',
     'с\\с с браком': 'Себестоимость с запасом на брак и потери: себестоимость × (1 + процент брака). Процент правится прямо в ячейке.',
     'Наценка %': 'На сколько процентов отпускная цена выше себестоимости с браком.',
-    'Цена нов прайс': 'Отпускная цена по первому прайс-листу. Вводится вручную — автоматически ниоткуда не подтягивается.',
-    'цена прайс2026(korz)': 'Отпускная цена по второму прайс-листу. Вводится вручную — автоматически ниоткуда не подтягивается.',
+    'Прайс 1 · Цена нов прайс': 'Первый прайс-лист. Цена вводится вручную. Ниже — что из неё получается: наценка, ретро-бонусы, НДС, прибыль и налог.',
+    'Прайс 2 · цена прайс2026 (korz)': 'Второй прайс-лист. Цена вводится вручную. Расчёт такой же, как по первому прайсу, — отличается только цена.',
     'Ретро бонусы': 'Сколько возвращаем сети по договору: цена × процент ретро-бонуса. Процент правится в ячейке.',
     'НДС': 'Налог на добавленную стоимость: цена × ставка. Ставка правится в ячейке.',
     'Прибыль': 'Что остаётся до налога: цена минус себестоимость с браком, минус ретро-бонусы, минус НДС.',
@@ -845,33 +845,26 @@
     rows.push(el('tr', { class: 'calc-r-gap' },
       el('td', { colspan: String(d.products.length + 2) }, '')));
 
-    rows.push(skuRow('Наценка %', '%', (x) => (x.calc.markup_pct === null ? dash()
-      : el('span', {}, money(x.calc.markup_pct, 0) + '%')), 'calc-sku-green'));
+    // --- Цена в SalesDoctor: для сверки, в расчёте не участвует -----------
+    rows.push(sdPriceRow(d));
 
-    rows.push(skuRow('Цена нов прайс', 'сум', (x) =>
-      cell(x.price, (v) => save(x.id, { price: v }), { dec: 0, placeholder: 'цена' }), 'calc-sku-green'));
-
-    rows.push(skuRow('цена прайс2026(korz)', 'сум', (x) =>
-      cell(x.price2, (v) => save(x.id, { price2: v }), { dec: 0, placeholder: 'цена' }), 'calc-sku-green'));
-
-    rows.push(skuRow('Ретро бонусы', 'сум', (x) => [
-      pctCell(x.retro_pct, (v) => save(x.id, { retro_pct: v })), auto(x.calc.retro),
-    ]));
-
-    rows.push(skuRow('НДС', 'сум', (x) => [
-      pctCell(x.vat_pct, (v) => save(x.id, { vat_pct: v })), auto(x.calc.vat),
-    ]));
-
-    rows.push(skuRow('Прибыль', 'сум', (x) => auto(x.calc.profit)));
-
-    rows.push(skuRow('Налог на прибыль', 'сум', (x) => [
-      pctCell(x.profit_tax_pct, (v) => save(x.id, { profit_tax_pct: v })), auto(x.calc.profit_tax),
-    ]));
-
-    rows.push(skuRow('Чистая прибыль', 'сум', (x) => auto(x.calc.net_profit), 'calc-sku-accent'));
-
-    rows.push(skuRow('ЧП, %', '%', (x) => (x.calc.net_pct === null ? dash()
-      : el('span', { class: x.calc.net_pct < 0 ? 'calc-bad' : '' }, money(x.calc.net_pct, 0) + '%'))));
+    // --- Два прайса: каждый своей сворачиваемой группой, как в Excel ------
+    // Себестоимость и ставки общие, поэтому наценка, прибыль и налог у каждого
+    // прайса получаются свои — их и показываем внутри его группы.
+    rows.push(...priceGroup(d, {
+      key: 'p1',
+      title: 'Прайс 1 · Цена нов прайс',
+      priceField: 'price',
+      value: (x) => x.price,
+      calc: (x) => x.calc,
+    }));
+    rows.push(...priceGroup(d, {
+      key: 'p2',
+      title: 'Прайс 2 · цена прайс2026 (korz)',
+      priceField: 'price2',
+      value: (x) => x.price2,
+      calc: (x) => x.calc2,
+    }));
 
     box.appendChild(el('div', { class: 'calc-sku-wrap' },
       el('table', { class: 'calc-sku-t' }, el('tbody', {}, rows))));
@@ -891,6 +884,156 @@
     catch (e) { toast(e.message, true); }
   }
 
+
+
+  // ---------------------------------------------------------------------------
+  // Прайсы: каждая цена — своя сворачиваемая группа
+  // ---------------------------------------------------------------------------
+  // Себестоимость и ставки у прайсов общие, отличается только отпускная цена.
+  // Поэтому наценка, прибыль, налог и чистая прибыль у каждого прайса свои —
+  // их и показываем внутри его группы, как группировку строк в Excel.
+  // Свёрнутая группа оставляет главное: цену и чистую прибыль.
+  const openGroups = { p1: true, p2: false };
+
+  function priceGroup(d, g) {
+    const open = openGroups[g.key];
+    const out = [];
+
+    // Шапка группы: стрелка, название, цена и — когда свёрнута — итог
+    out.push(el('tr', { class: 'calc-sku-r calc-grp' + (open ? ' on' : '') }, [
+      el('th', { class: 'calc-sku-h', 'data-hint': ROW_HINTS[g.title] || '' },
+        el('button', {
+          class: 'calc-grp-btn',
+          onclick: () => { openGroups[g.key] = !openGroups[g.key]; render(); },
+          title: open ? 'Свернуть расчёт по этому прайсу' : 'Развернуть расчёт по этому прайсу',
+        }, [el('span', { class: 'calc-grp-arrow' }, open ? '▾' : '▸'), g.title])),
+      el('th', { class: 'calc-sku-u' }, 'сум'),
+    ].concat(d.products.map((x) => el('td', { 'data-hint': GROUP_HINT }, [
+      cell(g.value(x), (v) => save(x.id, { [g.priceField]: v }), { dec: 0, placeholder: 'цена' }),
+      open ? null : el('div', { class: 'calc-grp-mini' },
+        g.calc(x).net_profit === null ? 'нет расчёта'
+          : 'ЧП ' + money(g.calc(x).net_profit) + ' · ' + money(g.calc(x).net_pct, 0) + '%'),
+    ])))));
+
+    if (!open) return out;
+
+    const sub = (label, unit, cells, cls) => {
+      const r = skuRow(label, unit, cells, 'calc-grp-row' + (cls ? ' ' + cls : ''));
+      return r;
+    };
+
+    out.push(sub('Наценка %', '%', (x) => (g.calc(x).markup_pct === null ? dash()
+      : el('span', {}, money(g.calc(x).markup_pct, 0) + '%')), 'calc-sku-green'));
+
+    out.push(sub('Ретро бонусы', 'сум', (x) => [
+      rateCell(x, 'retro_pct', x.retro_pct), auto(g.calc(x).retro),
+    ]));
+
+    out.push(sub('НДС', 'сум', (x) => [
+      rateCell(x, 'vat_pct', x.vat_pct), auto(g.calc(x).vat),
+    ]));
+
+    out.push(sub('Прибыль', 'сум', (x) => auto(g.calc(x).profit)));
+
+    out.push(sub('Налог на прибыль', 'сум', (x) => [
+      rateCell(x, 'profit_tax_pct', x.profit_tax_pct), auto(g.calc(x).profit_tax),
+    ]));
+
+    out.push(sub('Чистая прибыль', 'сум', (x) => auto(g.calc(x).net_profit), 'calc-sku-accent'));
+
+    out.push(sub('ЧП, %', '%', (x) => (g.calc(x).net_pct === null ? dash()
+      : el('span', { class: g.calc(x).net_pct < 0 ? 'calc-bad' : '' }, money(g.calc(x).net_pct, 0) + '%'))));
+
+    return out;
+  }
+
+  const GROUP_HINT = 'Отпускная цена по этому прайс-листу. Вводится вручную. '
+    + 'Ниже — что из неё получается: наценка, ретро-бонусы, НДС, прибыль и налог.';
+
+  // Ставка с кнопкой «поставить такую же всем товарам листа».
+  // Ретро, НДС и налог в рознице обычно одинаковы, и проставлять их по одному —
+  // потеря времени. Ставка у товара своя, кнопка лишь копирует её остальным.
+  function rateCell(x, field, value) {
+    const inp = pctCell(value, (v) => save(x.id, { [field]: v }));
+    if (!canEdit()) return inp;
+    const btn = el('button', {
+      class: 'calc-rate-all',
+      title: 'Поставить эту ставку всем товарам листа',
+      onclick: async (e) => {
+        e.stopPropagation();
+        try {
+          const r = await post('/sheet/' + sheet + '/apply-rate', { field, value });
+          toast('Ставка проставлена: товаров ' + r.updated);
+          await load();
+        } catch (err) { toast(err.message, true); }
+      },
+    }, 'всем');
+    return el('span', { class: 'calc-rate-wrap' }, [inp, btn]);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Строка «Цена в SalesDoctor»
+  // ---------------------------------------------------------------------------
+  // Только для сверки: в себестоимости и прибыли не участвует. Обновляется по
+  // кнопке, а не при каждом открытии листа — выгрузка прайсов из SD идёт
+  // постранично и не быстрая, ровно как со счётчиком реализации.
+  function sdPriceRow(d) {
+    const types = d.sd_price_types || [];
+    const head = el('th', { class: 'calc-sku-h', 'data-hint': SD_HINT }, [
+      el('div', { class: 'calc-sku-lbl calc-has-hint' }, 'Цена в SalesDoctor'),
+      canEdit() ? el('div', { class: 'calc-sd-tools' }, [
+        (() => {
+          const sel = el('select', { class: 'calc-sel calc-sd-sel' },
+            [el('option', { value: '' }, types.length ? '— прайс-лист —' : 'прайс-листов нет')]
+              .concat(types.map((t) => {
+                const o = el('option', { value: String(t.id) }, t.name);
+                if (Number(d.sd_price_type_id) === t.id) o.setAttribute('selected', 'selected');
+                return o;
+              })));
+          sel.addEventListener('change', async () => {
+            try { await post('/sheet/' + sheet + '/sd-price-type', { id: sel.value || null }); await load(); }
+            catch (e) { toast(e.message, true); }
+          });
+          return sel;
+        })(),
+        el('button', {
+          class: 'calc-fact-btn', title: 'Заново выгрузить прайс-листы из SalesDoctor',
+          onclick: refreshSdPrices,
+        }, [el('span', { class: 'calc-fact-ico' }, '↻'), 'обновить']),
+      ]) : null,
+    ]);
+
+    return el('tr', { class: 'calc-sku-r calc-sd-row' }, [
+      head, el('th', { class: 'calc-sku-u', 'data-hint': SD_HINT }, 'сум'),
+    ].concat(d.products.map((x) => el('td', { 'data-hint': sdCellHint(x, d) },
+      x.sd_price === null || x.sd_price === undefined
+        ? el('span', { class: 'calc-dim' }, '—')
+        : el('span', {}, money0(x.sd_price))))));
+  }
+
+  const SD_HINT = 'Отпускная цена из прайс-листа SalesDoctor. Показана для сверки: '
+    + 'в себестоимость и прибыль не входит. Товары сопоставляются по штрих-коду. '
+    + 'Обновляется кнопкой, а не сама, — выгрузка прайсов из SalesDoctor не быстрая.';
+
+  function sdCellHint(x, d) {
+    if (!d.sd_price_type_id) return SD_HINT + '\n\nВыберите прайс-лист слева.';
+    if (x.sd_price === null || x.sd_price === undefined) {
+      return SD_HINT + '\n\n' + (x.barcode
+        ? 'В этом прайс-листе нет цены по штрих-коду ' + x.barcode
+        : 'У товара не заполнен штрих-код — сопоставить не с чем');
+    }
+    return SD_HINT + '\n\nШтрих-код ' + x.barcode
+      + (x.sd_price_at ? ', выгружено ' + x.sd_price_at : '');
+  }
+
+  async function refreshSdPrices() {
+    toast('Выгружаем прайс-листы из SalesDoctor…');
+    try {
+      await post('/sd-prices/refresh', {});
+      toast('Цены обновлены');
+      await load();
+    } catch (e) { toast(e.message, true); }
+  }
 
   // ---------------------------------------------------------------------------
   // Подсказка при наведении

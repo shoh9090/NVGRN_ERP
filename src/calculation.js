@@ -487,6 +487,28 @@ const SHEETS = {
   bunches: 'Пучки и горшки',
 };
 
+// Какой прайс-лист SalesDoctor показывать на листе. Настройка листа,
+// а не товара: в рознице все товары смотрят на один и тот же прайс.
+const K_SD_PRICE_TYPE = (sheet) => 'sd_price_type_' + sheet;
+
+// Цены из прайс-листа SalesDoctor по нашим товарам. Сопоставляем по штрих-коду:
+// он есть и у нас, и в справочнике готовой продукции, который приходит из SD.
+// Сами цены попадают в ref_prices при синхронизации — здесь только читаем.
+async function sdPricesByBarcode(priceTypeId) {
+  if (!priceTypeId) return new Map();
+  const r = await db.pool.query(
+    `SELECT g.barcode, p.price, p.last_sync_at
+       FROM ref_prices p
+       JOIN ref_finished_goods g ON g.id = p.product_id
+      WHERE p.price_type_id = $1 AND COALESCE(g.barcode, '') <> ''`, [priceTypeId]);
+  const m = new Map();
+  r.rows.forEach((x) => m.set(String(x.barcode).trim(), {
+    price: Number(x.price) || null,
+    at: x.last_sync_at ? String(x.last_sync_at).slice(0, 10) : null,
+  }));
+  return m;
+}
+
 // Фонд оплаты труда — та же цифра, что на плитке «Персонал» → «Сотрудники»,
 // плашка «ФОТ (оклады, актив.)»: сумма окладов активных сотрудников.
 // Считаем тем же запросом, что и там, чтобы цифры не разошлись.
@@ -568,6 +590,13 @@ router.get('/api/sheet/:sheet', async (req, res) => {
       `SELECT * FROM calc_sheet_products
         WHERE sheet = $1 AND status = 'active' ORDER BY sort, id`, [sheet])).rows;
 
+    // Прайс-листы SalesDoctor и выбранный для этого листа.
+    const priceTypes = (await db.pool.query(
+      "SELECT id, name FROM ref_price_types WHERE COALESCE(status, 'active') <> 'archived' ORDER BY name")).rows;
+    const settingsAll = await calcSettings();
+    const sdTypeId = intOrNull(settingsAll[K_SD_PRICE_TYPE(sheet)]);
+    const sdPrices = await sdPricesByBarcode(sdTypeId);
+
     const products = rows.map((p) => {
       const tpl = p.pack_template_id ? tplById.get(p.pack_template_id) : null;
       const factor = p.prod_factor === null ? 1 : Number(p.prod_factor);
@@ -588,7 +617,10 @@ router.get('/api/sheet/:sheet', async (req, res) => {
         ? (weight / 1000) * rawPricePerKg
         : numOrNull(p.raw_cost);
 
-      const calc = engine.skuEconomics({
+      // Себестоимость и ставки общие, отличается только отпускная цена,
+      // поэтому считаем один и тот же расчёт дважды — по каждому прайсу.
+      // Ставки (ретро, НДС, налог) от прайса не зависят: они из договора.
+      const inputs = {
         pack: tpl ? Number(tpl.total) : null,
         raw: rawCost,
         production: scale(base.combined),
@@ -596,7 +628,6 @@ router.get('/api/sheet/:sheet', async (req, res) => {
         // затрат к нему не применяется — так описал Шох (ФОТ / выпуск).
         labor: base.labor,
         defect_pct: p.defect_pct,
-        price: numOrNull(p.price),
         retro_pct: p.retro_pct,
         vat_pct: p.vat_pct,
         profit_tax_pct: p.profit_tax_pct,
@@ -604,7 +635,11 @@ router.get('/api/sheet/:sheet', async (req, res) => {
         // ФОТ формально стоял вне с/с, но в строке «Производ.затраты» там была
         // скопирована та же формула ФОТ — то есть труд в себестоимость входил.
         // Решение Шоха: считать сумму всех строк.
-      }, { components: engine.SKU_SHEET_COMPONENTS });
+      };
+      const opts = { components: engine.SKU_SHEET_COMPONENTS };
+      const calc = engine.skuEconomics({ ...inputs, price: numOrNull(p.price) }, opts);
+      const calc2 = engine.skuEconomics({ ...inputs, price: numOrNull(p.price2) }, opts);
+      const sd = sdPrices.get(String(p.barcode || '').trim()) || null;
 
       const rawMat = p.raw_material_id ? rawMats.find((m) => m.id === p.raw_material_id) : null;
 
@@ -631,7 +666,10 @@ router.get('/api/sheet/:sheet', async (req, res) => {
         retro_pct: Number(p.retro_pct) || 0,
         vat_pct: Number(p.vat_pct) || 0,
         profit_tax_pct: Number(p.profit_tax_pct) || 0,
+        sd_price: sd ? sd.price : null,
+        sd_price_at: sd ? sd.at : null,
         calc,
+        calc2,
       };
     });
 
@@ -651,6 +689,8 @@ router.get('/api/sheet/:sheet', async (req, res) => {
         id: t.id, name: t.name, total: Number(t.total),
         missing_prices: Number(t.missing_prices),
       })),
+      sd_price_types: priceTypes.map((t) => ({ id: t.id, name: t.name })),
+      sd_price_type_id: sdTypeId,
       raw_materials: rawMats.map((m) => ({
         id: m.id, name: m.name, price_per_kg: rawPrices.has(m.id) ? rawPrices.get(m.id).price : null,
       })),
@@ -742,6 +782,56 @@ router.delete('/api/sheet-product/:id(\\d+)', async (req, res) => {
     await db.log(req.user.id, 'calc_sheet_product_remove', { id: Number(req.params.id) });
     res.json({ ok: true });
   } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Применить ставку сразу ко всем товарам листа. Ретро, НДС и налог обычно
+// одинаковы для всей розницы, и проставлять их по одному — потеря времени.
+// Список полей закрытый: через этот маршрут меняются только ставки.
+const SKU_BULK_FIELDS = ['defect_pct', 'retro_pct', 'vat_pct', 'profit_tax_pct'];
+
+router.post('/api/sheet/:sheet/apply-rate', J, async (req, res) => {
+  if (!canEdit(req)) return denyEdit(res);
+  const sheet = String(req.params.sheet || '');
+  if (!SHEETS[sheet]) return res.status(404).json({ error: 'Такого листа нет' });
+  const b = req.body || {};
+  const field = String(b.field || '');
+  if (!SKU_BULK_FIELDS.includes(field)) return res.status(400).json({ error: 'Эту ставку так менять нельзя' });
+  const value = numOrNull(b.value);
+  if (value === null || value < 0) return res.status(400).json({ error: 'Укажите ставку' });
+  try {
+    const r = await db.pool.query(
+      `UPDATE calc_sheet_products SET ${field} = $1, updated_by = $2, updated_at = now()
+        WHERE sheet = $3 AND status = 'active'`, [value, req.user.id, sheet]);
+    await db.log(req.user.id, 'calc_sheet_apply_rate', { sheet, field, value, rows: r.rowCount });
+    res.json({ ok: true, updated: r.rowCount });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Какой прайс-лист SalesDoctor показываем в строке «Цена в SD».
+router.post('/api/sheet/:sheet/sd-price-type', J, async (req, res) => {
+  if (!canEdit(req)) return denyEdit(res);
+  const sheet = String(req.params.sheet || '');
+  if (!SHEETS[sheet]) return res.status(404).json({ error: 'Такого листа нет' });
+  try {
+    await setCalcSetting(K_SD_PRICE_TYPE(sheet), intOrNull((req.body || {}).id) || '', req.user.id);
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Обновление цен из SalesDoctor — ТОЛЬКО по кнопке, как счётчик реализации
+// на листе «Производство». Выгрузка прайсов идёт постранично и не быстрая,
+// поэтому при обычном открытии листа её не трогаем.
+router.post('/api/sd-prices/refresh', J, async (req, res) => {
+  if (!canEdit(req)) return denyEdit(res);
+  try {
+    const started = Date.now();
+    const summary = await integrations.syncPrices(req.user.id);
+    await db.log(req.user.id, 'calc_sd_prices_refresh', summary || {});
+    res.json({ ok: true, summary, took_ms: Date.now() - started });
+  } catch (e) {
+    console.error('[КАЛЬКУЛЯЦИЯ] прайсы SD:', e.message);
+    res.status(400).json({ error: 'Не удалось обновить цены из SalesDoctor: ' + e.message });
+  }
 });
 
 module.exports = router;
