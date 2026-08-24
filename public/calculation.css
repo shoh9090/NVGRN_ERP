@@ -343,6 +343,9 @@ input.calc-cell:focus, input.calc-name:focus {
   font-size: 11px; font-weight: 600; color: var(--ink-faint);
   border-left: 1px solid var(--line);
 }
+/* В общем стиле Hub у th стоит uppercase — для этой таблицы он не нужен:
+   названия строк должны читаться так же, как в Excel Шоха. */
+.calc-sku-t th { text-transform: none; letter-spacing: 0; }
 .calc-sku-lbl { font-weight: 700; color: var(--ink); font-size: 12.5px; line-height: 1.25; }
 
 /* Шапка: название товара и штрих-код */

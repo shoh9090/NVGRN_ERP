@@ -412,8 +412,13 @@ async function ensureCalculationSchema(pool) {
 
   // --- Наполнение листа «Рознич. тара» товарами из Excel Шоха -------------
   // Источник: файл розн.xlsx, лист «0000_розница», все восемь столбцов.
-  // Комплект упаковки — «вак.пакет розница» с листа «Упаковка», если он там
-  // уже есть. Не найден — товар останется без комплекта, Шох выберет сам.
+  //
+  // ВАЖНО про идемпотентность: раньше здесь стояла проверка «вставляем, только
+  // если лист совсем пуст». Это оказалось ловушкой: Шох нажал «+ товар», на
+  // листе появилась одна пустая строка — и сид больше никогда не срабатывал.
+  // Теперь каждый товар проверяется ОТДЕЛЬНО по штрих-коду: нет такой строки —
+  // добавляем, есть — не трогаем. Проверяем в любом статусе, поэтому удалённый
+  // вручную товар не вернётся сам собой.
   const retailTpl = await q(
     "SELECT id FROM calc_pack_templates WHERE status = 'active' AND name ILIKE '%вак%розниц%' ORDER BY id LIMIT 1");
   const retailTplId = retailTpl.rows[0] ? retailTpl.rows[0].id : null;
@@ -445,10 +450,17 @@ async function ensureCalculationSchema(pool) {
     ['айсберг 150г', '4780114040050', 1, 150, 'айсберг', 12000, 50, 20500, 24640, 80],
   ];
 
-  const retailCount = await q(
-    "SELECT count(*)::int AS n FROM calc_sheet_products WHERE sheet = 'retail' AND status = 'active'");
-  if (!Number(retailCount.rows[0].n)) {
-    for (const [name, barcode, factor, weightG, rawName, pricePerKg, defect, price, price2, sort] of RETAIL_ITEMS) {
+  // Донастройка уже заведённых строк (граммаж, цена за кг, доля) выполняется
+  // один раз — чтобы не перетирать то, что Шох поправит руками потом.
+  const retailFixDone = (await q(
+    "SELECT 1 FROM calc_settings WHERE key = 'calc_retail_seed_fix_3'")).rows.length > 0;
+
+  for (const [name, barcode, factor, weightG, rawName, pricePerKg, defect, price, price2, sort] of RETAIL_ITEMS) {
+    const exists = (await q(
+      'SELECT id FROM calc_sheet_products WHERE sheet = $1 AND barcode = $2 LIMIT 1',
+      ['retail', barcode])).rows[0];
+
+    if (!exists) {
       const rawMaterialId = await findRawMaterialId(rawName);
       await q(
         `INSERT INTO calc_sheet_products
@@ -457,30 +469,26 @@ async function ensureCalculationSchema(pool) {
          VALUES ('retail', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 21, 12, 15, $11)`,
         [name, barcode, retailTplId, factor, weightG, rawMaterialId, pricePerKg, defect, price, price2, sort])
         .catch((e) => console.error('calc retail seed ' + name + ':', e.message));
-    }
-  } else {
-    // Лист уже засеян прошлой версией — донастраиваем строки один раз по
-    // штрих-коду. Прошлый заход мог оставить товары без цены за кг, поэтому
-    // проставляем её здесь. Флаг с новым номером: старый уже мог сработать.
-    const fixDone = await q("SELECT 1 FROM calc_settings WHERE key = 'calc_retail_seed_fix_2'");
-    if (!fixDone.rows.length) {
-      for (const [, barcode, factor, weightG, rawName, pricePerKg] of RETAIL_ITEMS) {
-        const rawMaterialId = await findRawMaterialId(rawName);
-        // raw_cost обнуляем: сумма зелени больше не вводится напрямую, она
-        // считается как граммаж × цена за кг (так же, как в Excel).
-        await q(
-          `UPDATE calc_sheet_products
-              SET prod_factor = $1, net_weight_g = $2,
-                  raw_material_id = COALESCE($3, raw_material_id),
-                  raw_price_per_kg = COALESCE(raw_price_per_kg, $4),
-                  raw_cost = NULL
-            WHERE sheet = 'retail' AND barcode = $5 AND status = 'active'`,
-          [factor, weightG, rawMaterialId, pricePerKg, barcode])
-          .catch((e) => console.error('calc retail seed fix ' + barcode + ':', e.message));
-      }
+    } else if (!retailFixDone) {
+      const rawMaterialId = await findRawMaterialId(rawName);
+      // raw_cost обнуляем: сумма зелени больше не вводится напрямую, она
+      // считается как граммаж × цена за кг — так же, как в Excel.
       await q(
-        "INSERT INTO calc_settings (key, value) VALUES ('calc_retail_seed_fix_2', '1') ON CONFLICT (key) DO NOTHING");
+        `UPDATE calc_sheet_products
+            SET prod_factor = $1,
+                net_weight_g = COALESCE(net_weight_g, $2),
+                raw_material_id = COALESCE(raw_material_id, $3),
+                raw_price_per_kg = COALESCE(raw_price_per_kg, $4),
+                pack_template_id = COALESCE(pack_template_id, $5),
+                raw_cost = NULL
+          WHERE id = $6`,
+        [factor, weightG, rawMaterialId, pricePerKg, retailTplId, exists.id])
+        .catch((e) => console.error('calc retail seed fix ' + barcode + ':', e.message));
     }
+  }
+  if (!retailFixDone) {
+    await q(
+      "INSERT INTO calc_settings (key, value) VALUES ('calc_retail_seed_fix_3', '1') ON CONFLICT (key) DO NOTHING");
   }
 
   _ready = true;
