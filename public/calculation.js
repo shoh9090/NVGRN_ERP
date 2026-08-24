@@ -47,7 +47,6 @@
   const SHEETS = [
     { key: 'production', title: 'Производство', ready: true },
     { key: 'packaging', title: 'Упаковка', ready: true },
-    { key: 'raw', title: 'Зелень-сырьё' },
     { key: 'retail', title: 'Рознич. тара' },
     { key: 'horeca250', title: 'Хорека 250г' },
     { key: 'horeca500', title: 'Хорека 500' },
