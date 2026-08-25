@@ -1084,6 +1084,7 @@ router.get('/api/orders', async (req, res) => {
   const r = await db.pool.query(
     `SELECT po.id, po.number, po.status, po.payment_type, po.pay_condition, po.defer_days,
             po.delivery_date, po.delivery_window, po.created_at, po.received_at, po.comment,
+            po.cancelled_at, po.cancelled_by, po.cancel_reason,
             c.name AS supplier_name, pc.name AS parent_category_name, pc.color AS parent_category_color,
             COALESCE(SUM((CASE WHEN po.status = 'received' THEN COALESCE(i.fact_qty, 0) ELSE i.qty END) * i.price), 0) AS total,
             COALESCE(SUM(i.fact_qty * i.fact_price), 0) AS fact_total,
@@ -1095,7 +1096,7 @@ router.get('/api/orders', async (req, res) => {
      LEFT JOIN purchase_order_items i ON i.order_id = po.id
      WHERE ${where}
      GROUP BY po.id, c.name, pc.name, pc.color
-     ORDER BY po.id DESC LIMIT 300`,
+     ORDER BY po.id DESC LIMIT 300`, // po.* в GROUP BY не нужен: группируем по первичному ключу po.id
     params
   );
   res.json({ items: r.rows.map(enrichOrderFinance) });
@@ -1289,16 +1290,24 @@ router.post('/api/orders/:id(\\d+)/status', express.json(), async (req, res) => 
   const o = await db.pool.query('SELECT status, number FROM purchase_orders WHERE id = $1', [req.params.id]);
   if (!o.rows.length) return res.status(404).json({ error: 'Заявка не найдена' });
   const cur = o.rows[0].status;
+  const who = (req.user && (req.user.name || req.user.login)) || 'пользователь';
   if (action === 'order' && cur === 'draft') {
     await db.pool.query("UPDATE purchase_orders SET status = 'ordered', ordered_at = now() WHERE id = $1", [req.params.id]);
   } else if (action === 'cancel' && (cur === 'draft' || cur === 'ordered')) {
-    await db.pool.query("UPDATE purchase_orders SET status = 'cancelled' WHERE id = $1", [req.params.id]);
-  } else if (action === 'reopen' && cur === 'ordered') {
-    await db.pool.query("UPDATE purchase_orders SET status = 'draft', ordered_at = NULL WHERE id = $1", [req.params.id]);
+    // Отмена — замена удаления для тех, у кого нет прав удалять. Пишем след: кто, когда, почему.
+    await db.pool.query(
+      "UPDATE purchase_orders SET status = 'cancelled', cancelled_at = now(), cancelled_by = $2, cancel_reason = $3 WHERE id = $1",
+      [req.params.id, who, String(req.body.reason || '').trim().slice(0, 500)]);
+  } else if (action === 'reopen' && (cur === 'ordered' || cur === 'cancelled')) {
+    // Возврат в черновик (в том числе из отменённых — если отменили по ошибке). След отмены стираем.
+    await db.pool.query(
+      "UPDATE purchase_orders SET status = 'draft', ordered_at = NULL, cancelled_at = NULL, cancelled_by = '', cancel_reason = '' WHERE id = $1",
+      [req.params.id]);
   } else {
     return res.status(400).json({ error: 'Недопустимое действие для статуса «' + cur + '»' });
   }
-  await db.log(req.user.id, 'purchase_order_' + action, o.rows[0].number);
+  const note = o.rows[0].number + (action === 'cancel' && req.body.reason ? ' — причина: ' + String(req.body.reason).slice(0, 200) : '');
+  await db.log(req.user.id, 'purchase_order_' + action, note);
   res.json({ ok: true });
 });
 

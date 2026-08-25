@@ -52,13 +52,19 @@
     return { close: () => (root.innerHTML = '') };
   }
 
-  const statusPill = (s) => {
+  // Кто и когда отменил заявку (+ причина). Показываем подсказкой на статусе и строкой в карточке.
+  function cancelNote(o) {
+    if (!o || o.status !== 'cancelled' || !o.cancelled_at) return '';
+    return 'Отменил: ' + (o.cancelled_by || '—') + ' · ' + dt(o.cancelled_at)
+      + (o.cancel_reason ? '\nПричина: ' + o.cancel_reason : '');
+  }
+  const statusPill = (s, o) => {
     const map = {
       draft: ['Черновик', 'st-draft'], ordered: ['Заказано', 'st-ordered'],
       received: ['Принято', 'st-received'], cancelled: ['Отменено', 'st-cancelled'],
     };
     const [label, cls] = map[s] || [s, ''];
-    return el('span', { class: 'status-pill ' + cls }, label);
+    return el('span', { class: 'status-pill ' + cls, title: cancelNote(o) || null }, label);
   };
   const payIcon = (p) => (p === 'наличка' ? '💵 наличка' : '🏦 перечисление');
 
@@ -149,7 +155,7 @@
           el('td', { class: 'tnum', style: rnum }, o.paid ? fmtMoney(o.paid) : '—'),
           el('td', { class: 'tnum', style: rnum + (o.remainder > 0 ? ';color:#c0392b;font-weight:700' : '') }, o.remainder > 0 ? fmtMoney(o.remainder) : '—'),
           el('td', {}, payStatusPill(o.pay_status)),
-          el('td', {}, statusPill(o.status)),
+          el('td', {}, statusPill(o.status, o)),
         ])
       )),
     ]);
@@ -439,9 +445,15 @@
       el('div', { class: 'pur-card-meta' }, [
         el('span', {}, '🤝 ' + o.supplier_name),
         el('span', {}, payIcon(o.payment_type)),
-        statusPill(o.status),
+        statusPill(o.status, o),
         el('span', { class: 'muted' }, 'создана ' + dt(o.created_at) + (o.received_at ? ' · принята ' + dt(o.received_at) : '')),
       ]),
+      // След отмены — прямо в карточке, чтобы не искать по журналу, кто её отменил.
+      o.status === 'cancelled' && o.cancelled_at
+        ? el('p', { style: 'color:#c0392b;font-weight:600;margin:6px 0' },
+            '❌ Отменил: ' + (o.cancelled_by || '—') + ' · ' + dt(o.cancelled_at)
+            + (o.cancel_reason ? ' · причина: ' + o.cancel_reason : ''))
+        : null,
       o.comment ? el('p', { class: 'muted' }, '💬 ' + o.comment) : null,
       table,
       el('div', { class: 'oe-total' }, (rcvd ? 'Долг: ' : 'Итого: ') + fmtMoney(sum) + ' сум'),
@@ -461,13 +473,22 @@
     if (o.status === 'draft' || o.status === 'ordered') {
       actions.push(el('button', {
         class: 'btn-danger-link',
+        title: 'Заявка останется в системе со статусом «Отменено» — видно, кто и почему отменил',
+        onclick: () => { m.close(); openCancelOrder(id, o.number); },
+      }, '❌ Отменить заявку'));
+    }
+    // Отменили по ошибке — можно вернуть в черновик (заявка никуда не удалялась).
+    if (o.status === 'cancelled') {
+      actions.push(el('button', {
         onclick: async () => {
-          if (!confirm('Отменить заявку ' + o.number + '?')) return;
-          await api('/orders/' + id + '/status', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'cancel' }) });
-          toast('Заявка отменена');
-          m.close(); loadOrders();
+          if (!confirm('Вернуть заявку ' + o.number + ' в черновики?')) return;
+          try {
+            await api('/orders/' + id + '/status', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'reopen' }) });
+            toast('Заявка возвращена в черновики');
+            m.close(); loadOrders();
+          } catch (e) { toast(e.message, true); }
         },
-      }, 'Отменить'));
+      }, '↩️ Вернуть в черновик'));
     }
     if (window.HUB_USER && (window.HUB_USER.isAdmin || window.HUB_USER.buyerEdit)) {
       actions.push(el('button', {
@@ -495,6 +516,31 @@
       actions.push(el('button', { onclick: () => { m.close(); openReconcileEditor(id); } }, '✏️ Изменить (перенос)'));
     }
     const m = modal('Заявка ' + o.number, body, actions);
+  }
+
+  // Отмена заявки. Заменяет удаление тем, у кого нет прав удалять: заявка остаётся в системе,
+  // но с пометкой «Отменено» и следом — кто, когда и почему. Причина необязательна.
+  function openCancelOrder(id, number) {
+    const reason = el('textarea', { rows: 3, style: 'width:100%', placeholder: 'Например: ошиблись поставщиком / заявка-дубль / поставка не состоялась' });
+    const body = el('div', {}, [
+      el('p', {}, 'Заявка ' + number + ' получит статус «Отменено». Она останется в списке и в истории — в суммы и долги поставщику не пойдёт.'),
+      el('label', { style: 'display:block;margin-top:10px' }, [
+        el('div', { class: 'muted', style: 'margin-bottom:4px' }, 'Причина отмены (необязательно)'),
+        reason,
+      ]),
+    ]);
+    const ok = el('button', { class: 'btn-danger-link', onclick: async () => {
+      ok.disabled = true;
+      try {
+        await api('/orders/' + id + '/status', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'cancel', reason: reason.value.trim() }),
+        });
+        toast('Заявка отменена');
+        m2.close(); loadOrders();
+      } catch (e) { toast(e.message, true); ok.disabled = false; }
+    } }, '❌ Отменить заявку');
+    const m2 = modal('Отмена заявки ' + number, body, [el('button', { onclick: () => m2.close() }, 'Назад'), ok]);
   }
 
   // Правка заявки для сверки/переноса: поставщик + по позициям кол-во/цена. Приёмку не трогает.

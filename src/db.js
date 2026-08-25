@@ -310,6 +310,11 @@ async function migrate() {
   await pool.query("ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS temperature TEXT DEFAULT ''").catch(()=>{});
   await pool.query("ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS receipt_comment TEXT DEFAULT ''").catch(()=>{});
   await pool.query("ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS receipt_reason TEXT DEFAULT ''").catch(()=>{});
+  // След отмены заявки: кто отменил, когда и почему. У закупщика нет прав на удаление —
+  // он отменяет, и по этим полям в карточке видно, чья это была отмена.
+  await pool.query("ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ").catch(()=>{});
+  await pool.query("ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS cancelled_by TEXT DEFAULT ''").catch(()=>{});
+  await pool.query("ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS cancel_reason TEXT DEFAULT ''").catch(()=>{});
   // Условия оплаты на уровне заявки (ТЗ «Закуп»): условие + дни отсрочки. payment_type уже есть.
   await pool.query("ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS pay_condition TEXT DEFAULT 'on_fact'").catch(()=>{}); // prepay | on_fact | defer
   await pool.query("ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS defer_days INTEGER DEFAULT 0").catch(()=>{});
