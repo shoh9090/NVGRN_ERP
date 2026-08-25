@@ -405,6 +405,63 @@ router.get('/api/employees', async (req, res) => {
   res.json({ items: rows, fot });
 });
 
+// Выгрузка справочника сотрудников в Excel — ровно то, что видно на вкладке
+// (те же фильтры: отделы, статус, поиск). Отделы не выбраны = все отделы.
+router.get('/api/employees-export.xlsx', async (req, res) => {
+  try {
+    const p = [], w = [];
+    deptFilter(req.query.department, p, w);
+    if (req.query.schedule && SCHEDULE_CODES.includes(req.query.schedule)) { p.push(req.query.schedule); w.push(`e.schedule_type = $${p.length}`); }
+    if (req.query.status && STATUSES.includes(req.query.status)) { p.push(req.query.status); w.push(`e.status = $${p.length}`); }
+    else if (!req.query.status) w.push(`e.status <> 'archived'`);
+    if (req.query.q) { p.push('%' + String(req.query.q).trim() + '%'); w.push(`(e.full_name ILIKE $${p.length} OR e.position ILIKE $${p.length} OR e.phone ILIKE $${p.length})`); }
+    const where = w.length ? 'WHERE ' + w.join(' AND ') : '';
+    const rows = (await db.pool.query(
+      `SELECT e.*, d.name AS department_name, COALESCE(d.sort_order, 999) AS dept_sort,
+              to_char(e.hire_date,'DD.MM.YYYY') AS hire_txt, to_char(e.fire_date,'DD.MM.YYYY') AS fire_txt
+       FROM hr_employees e LEFT JOIN hr_departments d ON d.id = e.department_id
+       ${where} ORDER BY dept_sort, d.name NULLS LAST, e.full_name`, p)).rows;
+    // Постоянные надбавки/удержания из карточки — одной колонкой текстом.
+    const recur = {};
+    if (rows.length) {
+      const rr = (await db.pool.query(
+        `SELECT employee_id, field, SUM(amount) AS amount FROM hr_employee_recurring
+          WHERE active = TRUE AND employee_id = ANY($1::int[]) GROUP BY employee_id, field`,
+        [rows.map((r) => r.id)])).rows;
+      const NAME = Object.fromEntries(RECUR_FIELDS);
+      rr.forEach((x) => {
+        if (!NAME[x.field] || !Number(x.amount)) return;
+        (recur[x.employee_id] = recur[x.employee_id] || []).push(NAME[x.field] + ' ' + Math.round(Number(x.amount)).toLocaleString('ru-RU'));
+      });
+    }
+    const SCHED = Object.fromEntries(SCHEDULES.map((s) => [s.code, s.name]));
+    const ST = { active: 'Активен', fired: 'Уволен', archived: 'Архив' };
+    const num = (v) => (v === null || v === undefined || v === '' ? '' : Math.round(Number(v) || 0));
+    const aoa = [['#', 'ФИО', 'Отдел', 'Должность', 'График', 'Дата приёма', 'Дата увольнения', 'Статус',
+      'Оклад/ставка', 'Официальная часть', 'Неофициальная часть', 'Полный месяц', 'Телефон', 'Номер карты',
+      'Telegram', 'Постоянные суммы', 'Комментарий']];
+    rows.forEach((e, i) => aoa.push([
+      i + 1, e.full_name || '', e.department_name || 'Без отдела', e.position || '',
+      SCHED[e.schedule_type] || '', e.hire_txt || '', e.fire_txt || '', ST[e.status] || e.status,
+      num(e.base_salary), num(e.salary_official), num(e.salary_unofficial), e.full_month ? 'да' : '',
+      e.phone || '', e.card_number || '', e.telegram_id || '',
+      (recur[e.id] || []).join('; '), e.comment || '',
+    ]));
+    const sum = (f) => Math.round(rows.reduce((s, e) => s + (Number(e[f]) || 0), 0));
+    aoa.push(['', 'ИТОГО (' + rows.length + ' чел.)', '', '', '', '', '', '',
+      sum('base_salary'), sum('salary_official'), sum('salary_unofficial'), '', '', '', '', '', '']);
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = [{ wch: 5 }, { wch: 30 }, { wch: 20 }, { wch: 22 }, { wch: 12 }, { wch: 13 }, { wch: 15 }, { wch: 11 },
+      { wch: 14 }, { wch: 16 }, { wch: 18 }, { wch: 13 }, { wch: 16 }, { wch: 20 }, { wch: 14 }, { wch: 30 }, { wch: 30 }];
+    ws['!freeze'] = { xSplit: 0, ySplit: 1 };
+    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Сотрудники');
+    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="sotrudniki_${new Date().toISOString().slice(0, 10)}.xlsx"`);
+    res.send(buf);
+  } catch (e) { res.status(400).send('Ошибка выгрузки: ' + e.message); }
+});
+
 router.post('/api/employee', J, async (req, res) => {
   const b = req.body || {};
   const name = String(b.full_name || '').trim();

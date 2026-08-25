@@ -461,6 +461,12 @@
     c.appendChild(el('div', { class: 'hr-head' }, [
       el('div', {}, [el('div', { class: 'hr-h2' }, 'Сотрудники'), el('div', { class: 'hr-sub' }, 'Единый справочник. Клик — карточка. Галочками — массовые действия.')]),
       el('div', { class: 'hr-head-btns' }, [
+        // Выгрузка идёт по текущим фильтрам: отделы не выбраны — значит все отделы.
+        el('button', { class: 'btn-ghost', title: 'Скачать список в Excel (с учётом фильтров)', onclick: () => {
+          const sp = new URLSearchParams();
+          ['department', 'schedule', 'status', 'q'].forEach((k) => { if (empFilter[k]) sp.set(k, empFilter[k]); });
+          window.location = '/hr/api/employees-export.xlsx?' + sp.toString();
+        } }, '📥 Excel'),
         el('button', { class: 'btn-primary hr-add', onclick: () => openEmp(null) }, '+ Сотрудник'),
       ]),
     ]));
