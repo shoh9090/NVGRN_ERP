@@ -1096,7 +1096,75 @@
   }
 
   // ================= ВЗАИМОРАСЧЁТЫ =================
-  const setState = { q: '', pc: '', status: '', from: '', to: '' };
+  // --- Период: готовые интервалы + «Выбрать дату» ---
+  const MON_SHORT = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
+  // Дату собираем из локальных частей (не через toISOString) — иначе Ташкент даёт минус день.
+  function isoDate(y, m, d) { return y + '-' + String(m + 1).padStart(2, '0') + '-' + String(d).padStart(2, '0'); }
+  function dayShift(n) { const t = new Date(); const x = new Date(t.getFullYear(), t.getMonth(), t.getDate() - n); return isoDate(x.getFullYear(), x.getMonth(), x.getDate()); }
+  function todayStr() { return dayShift(0); }
+  function monthStartStr() { const t = new Date(); return isoDate(t.getFullYear(), t.getMonth(), 1); }
+  function rangePresets() {
+    const t = new Date();
+    const prevEnd = new Date(t.getFullYear(), t.getMonth(), 0); // последний день прошлого месяца
+    return [
+      ['Сегодня', dayShift(0), dayShift(0)],
+      ['Вчера', dayShift(1), dayShift(1)],
+      ['Последние 7 дней', dayShift(6), dayShift(0)],
+      ['Последние 30 дней', dayShift(29), dayShift(0)],
+      ['Этот месяц', monthStartStr(), dayShift(0)],
+      ['Прошлый месяц', isoDate(prevEnd.getFullYear(), prevEnd.getMonth(), 1), isoDate(prevEnd.getFullYear(), prevEnd.getMonth(), prevEnd.getDate())],
+      ['Этот год', isoDate(t.getFullYear(), 0, 1), dayShift(0)],
+      ['Всё время', '', ''],
+    ];
+  }
+  function rangeLabel(from, to) {
+    const hit = rangePresets().find((p) => p[1] === (from || '') && p[2] === (to || ''));
+    if (hit) return hit[0];
+    const short = (s) => { if (!s) return '…'; const p = s.split('-'); return Number(p[2]) + ' ' + MON_SHORT[Number(p[1]) - 1]; };
+    return short(from) + ' – ' + short(to);
+  }
+  // Кнопка с выпадающим списком периодов. onChange вызывается после выбора.
+  function periodPicker(state, onChange) {
+    const btn = el('button', { class: 'pur-tbtn pur-range-btn' }, '🗓 ' + rangeLabel(state.from, state.to));
+    const pop = el('div', { class: 'pur-range-pop' });
+    const wrap = el('div', { class: 'pur-range' }, [btn, pop]);
+    let open = false;
+    const outside = (e) => { if (!wrap.contains(e.target)) toggle(false); };
+    function toggle(v) {
+      open = v === undefined ? !open : v;
+      pop.classList.toggle('open', open);
+      if (open) document.addEventListener('click', outside);
+      else document.removeEventListener('click', outside);
+    }
+    function apply(from, to) {
+      state.from = from; state.to = to;
+      btn.textContent = '🗓 ' + rangeLabel(from, to);
+      toggle(false);
+      onChange();
+    }
+    btn.onclick = (e) => { e.stopPropagation(); toggle(); };
+    rangePresets().forEach(([label, f, t2]) => {
+      const on = (state.from || '') === f && (state.to || '') === t2;
+      pop.appendChild(el('div', { class: 'pur-range-it' + (on ? ' on' : ''), onclick: () => apply(f, t2) }, label));
+    });
+    // «Выбрать дату» — раскрывает ручной интервал.
+    const custom = el('div', { class: 'pur-range-custom' });
+    const fIn = el('input', { type: 'date', value: state.from || '' });
+    const tIn = el('input', { type: 'date', value: state.to || '' });
+    custom.appendChild(el('div', { class: 'pur-range-row' }, [el('span', {}, 'с'), fIn]));
+    custom.appendChild(el('div', { class: 'pur-range-row' }, [el('span', {}, 'по'), tIn]));
+    custom.appendChild(el('div', { class: 'pur-range-row' }, [
+      el('button', { class: 'btn-primary', onclick: () => { if (fIn.value || tIn.value) apply(fIn.value, tIn.value); } }, 'ОК'),
+      el('button', { class: 'btn-ghost', onclick: () => toggle(false) }, 'Отменить'),
+    ]));
+    const custHead = el('div', { class: 'pur-range-it pur-range-more', onclick: () => custom.classList.toggle('open') }, 'Выбрать дату');
+    pop.appendChild(custHead);
+    pop.appendChild(custom);
+    return wrap;
+  }
+
+  // Период по умолчанию — с начала месяца по сегодня (движение за текущий месяц).
+  const setState = { q: '', pc: '', status: '', from: monthStartStr(), to: todayStr() };
   let setHidden = []; try { setHidden = JSON.parse(localStorage.getItem('pur_set_cols') || '[]'); } catch (e) { setHidden = []; }
 
   function settlementCols(period) {
@@ -1139,16 +1207,13 @@
     ]);
     const stSel = el('select', { onchange: (e) => { setState.status = e.target.value; loadSettlements(); } },
       [['', 'Все'], ['debt', 'Только с долгом'], ['overdue', 'Только просроченные'], ['advance', 'Только авансы']].map(([v, t]) => el('option', { value: v, selected: setState.status === v || null }, t)));
-    const fromIn = el('input', { type: 'date', value: setState.from, onchange: (e) => { setState.from = e.target.value; loadSettlements(); } });
-    const toIn = el('input', { type: 'date', value: setState.to, onchange: (e) => { setState.to = e.target.value; loadSettlements(); } });
     const qIn = el('input', { placeholder: 'Поиск поставщика…', value: setState.q, oninput: debounce((e) => { setState.q = e.target.value; loadSettlements(); }, 300) });
     main.appendChild(el('div', { class: 'pur-filters' }, [
       el('label', {}, ['Категория', pcSel]),
       el('label', {}, ['Статус', stSel]),
-      el('label', {}, ['Период с', fromIn]),
-      el('label', {}, ['по', toIn]),
+      // Не <label>: внутри пикера есть поля дат, и клик по пункту списка уводил бы фокус в них.
+      el('div', { class: 'pur-fld' }, [el('span', {}, 'Период'), periodPicker(setState, loadSettlements)]),
       el('label', { style: 'flex:1 1 180px' }, ['Поиск', qIn]),
-      setState.from || setState.to ? el('button', { class: 'btn-ghost', style: 'align-self:flex-end', onclick: () => { setState.from = ''; setState.to = ''; viewSettlements(); } }, 'Сбросить период') : null,
     ]));
     main.appendChild(el('div', { id: 'set-list', class: 'pur-content', style: 'overflow-x:auto' }));
     await loadSettlements();
