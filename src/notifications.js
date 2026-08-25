@@ -13,17 +13,32 @@ async function refreshReminders() {
   await ensureObligationReminders();
 }
 
-// Создать уведомление (вызывается из других модулей)
-async function notify({ role = null, userId = null, title, body = '', kind = 'info', link = '' }) {
+// Создать уведомление (вызывается из других модулей).
+// tile — url плитки ('/cash', '/stock', '/purchase'): уведомление увидят все, у кого есть
+// доступ к этой плитке. Это надёжнее адресации по названию роли: роли называют по-разному,
+// а права в системе и так раздаются плитками.
+async function notify({ role = null, userId = null, tile = null, title, body = '', kind = 'info', link = '' }) {
   try {
     await db.pool.query(
-      `INSERT INTO notifications (recipient_role, recipient_user_id, title, body, kind, link)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [role, userId, title, body, kind, link]
+      `INSERT INTO notifications (recipient_role, recipient_user_id, tile_url, title, body, kind, link)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [role, userId, tile, title, body, kind, link]
     );
   } catch (e) {
     console.error('notify error:', e.message);
   }
+}
+
+// Плитки, доступные пользователю (админу — все). По ним решаем, что показывать в колокольчике.
+async function userTiles(user) {
+  if (!user) return [];
+  if (user.isAdmin) return (await db.pool.query('SELECT url FROM tiles')).rows.map((r) => r.url);
+  const r = await db.pool.query(
+    `SELECT DISTINCT t.url FROM tiles t
+       JOIN role_tiles rt ON rt.tile_id = t.id
+       JOIN user_roles ur ON ur.role_id = rt.role_id
+      WHERE ur.user_id = $1`, [user.id]);
+  return r.rows.map((x) => x.url);
 }
 
 // Список уведомлений текущего пользователя (по роли или персонально)
@@ -44,6 +59,12 @@ router.get('/api/notifications', async (req, res) => {
   if (recipientRoles.length) {
     params.push(recipientRoles);
     roleClause += ` OR recipient_role = ANY($${params.length})`;
+  }
+  // Уведомления с указанной плиткой видит тот, у кого есть доступ к этой плитке.
+  const tiles = await userTiles(req.user);
+  if (tiles.length) {
+    params.push(tiles);
+    roleClause += ` OR tile_url = ANY($${params.length})`;
   }
   const r = await db.pool.query(
     `SELECT id, title, body, kind, link, is_read, created_at

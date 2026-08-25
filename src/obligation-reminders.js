@@ -54,9 +54,11 @@ async function ensureObligationReminders(pool = db.pool) {
         title = 'Скоро платёж: ' + r.creditor_name;
         body = when + ' — ' + amount + '. Касса → Обязательства.';
       }
+      // Адресуем плиткой «Касса»: напоминание увидят все, у кого есть к ней доступ.
+      // recipient_role оставляем для совместимости со старыми записями.
       await pool.query(
-        `INSERT INTO notifications (recipient_role, title, body, kind, link, dedup_key)
-         VALUES ('finance', $1, $2, $3, '/cash', $4)
+        `INSERT INTO notifications (recipient_role, tile_url, title, body, kind, link, dedup_key)
+         VALUES ('finance', '/cash', $1, $2, $3, '/cash', $4)
          ON CONFLICT (dedup_key) WHERE dedup_key IS NOT NULL DO NOTHING`,
         [title, body, kind, dedup]
       );

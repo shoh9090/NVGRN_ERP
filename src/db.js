@@ -192,6 +192,10 @@ CREATE INDEX IF NOT EXISTS idx_notif_unread ON notifications (is_read, created_a
 -- Ключ дедупликации: не создавать одно и то же напоминание повторно
 ALTER TABLE notifications ADD COLUMN IF NOT EXISTS dedup_key TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_notif_dedup ON notifications (dedup_key) WHERE dedup_key IS NOT NULL;
+-- Адресация по ПЛИТКЕ: уведомление видят те, у кого есть доступ к этой плитке (и админ).
+-- Надёжнее адресации по названию роли — роли называют по-разному, а доступ задаётся плитками.
+ALTER TABLE notifications ADD COLUMN IF NOT EXISTS tile_url TEXT;
+CREATE INDEX IF NOT EXISTS idx_notif_tile ON notifications (tile_url);
 
 -- Передача сырья в производство
 CREATE TABLE IF NOT EXISTS production_issues (

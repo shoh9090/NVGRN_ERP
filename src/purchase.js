@@ -1246,7 +1246,7 @@ router.post('/api/orders', express.json({ limit: '2mb' }), async (req, res) => {
     if (deliveryDate === today || deliveryDate === tmr) {
       const sup = await db.pool.query('SELECT name FROM ref_counterparties WHERE id = $1', [supplierId]);
       await notify({
-        role: 'warehouse',
+        role: 'warehouse', tile: '/stock',
         title: 'Новая заявка на приёмку',
         body: `${deliveryDate === today ? 'Сегодня' : 'Завтра'}: ${sup.rows[0] ? sup.rows[0].name : ''}, ${items.length} позиц.`,
         kind: 'info', link: '/stock#receiving',

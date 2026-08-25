@@ -462,7 +462,7 @@ async function checkOverdueIssues() {
          WHERE pii.issue_id=$1`, [row.id]);
       const body = items.rows.map((x) => `${x.name} ${x.code || ''} — ${x.qty}`).join('; ');
       for (const role of ['warehouse', 'manager']) {
-        await notify({ role, title: 'Передача не подтверждена производством', body: `${row.area}: ${body}`, kind: 'warning', link: '/stock#issue' });
+        await notify({ role, tile: '/stock', title: 'Передача не подтверждена производством', body: `${row.area}: ${body}`, kind: 'warning', link: '/stock#issue' });
       }
     }
   } catch (e) { console.error('overdue check:', e.message); }

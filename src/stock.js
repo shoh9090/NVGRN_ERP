@@ -184,13 +184,13 @@ router.post('/api/receipt/:id(\\d+)', express.json({ limit: '2mb' }), async (req
   const dev = factSum - planSum;
   const statusText = rstatus === 'received' ? 'принята полностью' : rstatus === 'partial' ? 'принята частично' : 'не приехала';
   await notify({
-    role: 'purchaser', userId: o.rows[0].created_by || null,
+    role: 'purchaser', tile: '/purchase', userId: o.rows[0].created_by || null,
     title: 'Поставка ' + statusText,
     body: `${o.rows[0].supplier_name}, заявка ${o.rows[0].number}: план ${planSum}, факт ${factSum}${dev !== 0 ? ', отклонение ' + (dev > 0 ? '+' : '') + dev : ''}`,
     kind: rstatus === 'received' ? 'success' : 'warning', link: '/purchase#orders',
   });
   if (planSum > 0 && factSum < planSum * 0.85) {
-    await notify({ role: 'manager', title: 'Крупное отклонение поставки',
+    await notify({ role: 'manager', tile: '/purchase', title: 'Крупное отклонение поставки',
       body: `${o.rows[0].supplier_name}, ${o.rows[0].number}: факт ниже плана (${factSum} из ${planSum})`,
       kind: 'warning', link: '/purchase#orders' });
   }
@@ -339,7 +339,7 @@ router.post('/api/issue', express.json({ limit: '2mb' }), async (req, res) => {
   } finally {
     client.release();
   }
-  await notify({ role: 'manager', title: 'Новая передача в производство', body: `${area}: ${items.length} позиц. — ожидает подтверждения`, kind: 'info', link: '/stock#issue' });
+  await notify({ role: 'manager', tile: '/stock', title: 'Новая передача в производство', body: `${area}: ${items.length} позиц. — ожидает подтверждения`, kind: 'info', link: '/stock#issue' });
   await db.log(req.user.id, 'stock_issue_create', `#${issueId} ${area}, позиций ${items.length}`);
   res.json({ ok: true, issueId });
 });
