@@ -497,11 +497,12 @@ async function recipesData() {
       WHERE i.recipe_id = ANY($1) ORDER BY i.recipe_id, i.sort, i.id`,
     [recipes.map((r) => r.id)])).rows : [];
   const prices = await lastRawPrices();
+  const manual = await manualRawPrices();
 
   return recipes.map((r) => {
     const items = lines.filter((l) => l.recipe_id === r.id).map((l) => {
-      const info = l.raw_material_id ? prices.get(l.raw_material_id) : null;
-      const price = info ? info.price : null;
+      const info = rawPriceOf(l.raw_material_id, prices, manual);
+      const price = info.price;
       const qty = Number(l.qty_g) || 0;
       return {
         id: l.id,
@@ -509,7 +510,8 @@ async function recipesData() {
         raw_material_name: l.raw_material_name || '',
         qty_g: qty,
         price_per_kg: price,
-        price_at: info ? info.at : null,
+        price_at: info.at,
+        price_source: info.source,
         // Цены нет в Закупе — строка не превращается в ноль, иначе микс
         // выглядел бы дешевле, чем он есть.
         line_cost: price === null ? null : (qty / 1000) * price,
@@ -703,7 +705,7 @@ async function lastRawPrices() {
   const r = await db.pool.query(
     `SELECT DISTINCT ON (i.item_id) i.item_id,
             COALESCE(i.fact_price, i.price) AS price,
-            COALESCE(po.received_at::date, po.delivery_date) AS at
+            to_char(COALESCE(po.received_at::date, po.delivery_date), 'DD.MM.YY') AS at
        FROM purchase_order_items i
        JOIN purchase_orders po ON po.id = i.order_id AND po.status = 'received'
       WHERE i.item_kind = 'raw' AND COALESCE(i.fact_price, i.price) > 0
@@ -712,6 +714,53 @@ async function lastRawPrices() {
   r.rows.forEach((x) => byId.set(x.item_id, { price: Number(x.price), at: x.at }));
   return byId;
 }
+
+// Ручные цены сырья — запасной вариант там, где в Закупе цены ещё нет.
+async function manualRawPrices() {
+  const m = new Map();
+  try {
+    const r = await db.pool.query(
+      "SELECT raw_material_id, price, to_char(updated_at, 'DD.MM.YY') AS at FROM calc_raw_manual_prices");
+    r.rows.forEach((x) => m.set(x.raw_material_id, { price: Number(x.price), at: x.at }));
+  } catch (e) { console.error('calc_raw_manual_prices read:', e.message); }
+  return m;
+}
+
+// Цена сырья одним правилом для всех экранов: сначала Закуп, потом ручная.
+// Ручная НЕ перебивает Закуп — иначе лист годами жил бы на выдуманной цифре,
+// хотя приёмки идут и настоящая цена рядом.
+function rawPriceOf(rawId, purchaseMap, manualMap) {
+  const p = rawId ? purchaseMap.get(rawId) : null;
+  if (p) return { price: p.price, at: p.at, source: 'purchase' };
+  const m = rawId ? manualMap.get(rawId) : null;
+  if (m) return { price: m.price, at: m.at, source: 'manual' };
+  return { price: null, at: null, source: 'none' };
+}
+
+// Ручная цена: вписать / убрать. Правит тот же, кто правит калькуляцию.
+router.post('/api/raw-price/:rawId(\\d+)', J, async (req, res) => {
+  if (!canEdit(req)) return denyEdit(res);
+  const price = numOrNull((req.body || {}).price);
+  if (price === null || !(price > 0)) return res.status(400).json({ error: 'Укажите цену больше нуля' });
+  try {
+    await db.pool.query(
+      `INSERT INTO calc_raw_manual_prices (raw_material_id, price, updated_by, updated_at)
+       VALUES ($1,$2,$3,now())
+       ON CONFLICT (raw_material_id) DO UPDATE SET price = $2, updated_by = $3, updated_at = now()`,
+      [req.params.rawId, price, req.user.id]);
+    await db.log(req.user.id, 'calc_raw_price_manual', { raw_material_id: Number(req.params.rawId), price });
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+router.delete('/api/raw-price/:rawId(\\d+)', async (req, res) => {
+  if (!canEdit(req)) return denyEdit(res);
+  try {
+    await db.pool.query('DELETE FROM calc_raw_manual_prices WHERE raw_material_id = $1', [req.params.rawId]);
+    await db.log(req.user.id, 'calc_raw_price_manual_clear', { raw_material_id: Number(req.params.rawId) });
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
 
 // Полный расчёт товарного листа. Вынесен из маршрута, потому что этот же объект
 // целиком ложится в снимок при утверждении — чтобы утверждённая версия и экран
@@ -737,6 +786,7 @@ async function sheetPayload(sheet) {
     const rawMats = (await db.pool.query(
       "SELECT id, name FROM ref_raw_materials WHERE status = 'active' ORDER BY name")).rows;
     const rawPrices = await lastRawPrices();
+    const manualRaw = await manualRawPrices();
     // Рецептуры (миксы) с листа «Рецептуры»: у товара может стоять либо одно
     // сырьё с граммажом, либо рецептура. Второе сильнее.
     const recipes = await recipesData();
@@ -763,12 +813,13 @@ async function sheetPayload(sheet) {
       // нет — из вписанной вручную. Так лист всегда показывает цифру, и при
       // этом видно, откуда она взялась.
       const weight = numOrNull(p.net_weight_g);
-      const rawInfo = p.raw_material_id ? rawPrices.get(p.raw_material_id) : null;
-      const purchasePrice = rawInfo ? rawInfo.price : null;
-      const manualPrice = numOrNull(p.raw_price_per_kg);
-      const rawPricePerKg = purchasePrice !== null ? purchasePrice : manualPrice;
-      const rawPriceSource = purchasePrice !== null ? 'purchase'
-        : (manualPrice !== null ? 'manual' : 'none');
+      // Цена сырья: Закуп → ручная цена сырья → ручная цена в карточке товара
+      // (последняя осталась от прежней схемы, у новых записей её нет).
+      const rawInfo = rawPriceOf(p.raw_material_id, rawPrices, manualRaw);
+      const legacyPrice = numOrNull(p.raw_price_per_kg);
+      const rawPricePerKg = rawInfo.price !== null ? rawInfo.price : legacyPrice;
+      const rawPriceSource = rawInfo.price !== null ? rawInfo.source
+        : (legacyPrice !== null ? 'manual_product' : 'none');
       // Выбрана рецептура — зелень считается по ней (сумма компонентов микса),
       // граммаж и одиночное сырьё в расчёте не участвуют.
       const recipe = p.recipe_id ? recipeById.get(p.recipe_id) : null;
@@ -826,7 +877,7 @@ async function sheetPayload(sheet) {
         net_weight_g: weight,
         raw_price_per_kg: rawPricePerKg,
         raw_price_source: rawPriceSource,
-        raw_price_at: rawInfo ? rawInfo.at : null,
+        raw_price_at: rawInfo.at,
         raw_cost: rawCost,
         labor_cost: numOrNull(p.labor_cost),
         defect_pct: Number(p.defect_pct) || 0,
@@ -862,7 +913,7 @@ async function sheetPayload(sheet) {
       sd_price_types: priceTypes.map((t) => ({ id: t.id, name: t.name })),
       sd_price_type_id: sdTypeId,
       raw_materials: rawMats.map((m) => ({
-        id: m.id, name: m.name, price_per_kg: rawPrices.has(m.id) ? rawPrices.get(m.id).price : null,
+        id: m.id, name: m.name, price_per_kg: rawPriceOf(m.id, rawPrices, manualRaw).price,
       })),
       products,
       no_output_reason: base.output > 0 ? null

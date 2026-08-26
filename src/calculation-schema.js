@@ -432,6 +432,24 @@ async function ensureCalculationSchema(pool) {
   await q(`CREATE INDEX IF NOT EXISTS idx_calc_mix_items ON calc_mix_items (recipe_id, sort, id)`)
     .catch((e) => console.error('idx_calc_mix_items:', e.message));
 
+  // --- Ручная цена сырья --------------------------------------------------
+  // Запасной вариант для позиций, которых в Закупе ещё не было (мангольд и
+  // прочая редкая зелень). Цена — свойство СЫРЬЯ, а не строки рецептуры:
+  // иначе одно и то же пришлось бы вписывать в каждый микс и они разъехались бы.
+  // Закуп НЕ перебивает: как только по позиции пройдёт приёмка, цена берётся
+  // оттуда, а эта остаётся лежать запасной.
+  await q(`CREATE TABLE IF NOT EXISTS calc_raw_manual_prices (
+    raw_material_id INT PRIMARY KEY,
+    price NUMERIC NOT NULL,
+    updated_by INT,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`).catch((e) => console.error('calc_raw_manual_prices:', e.message));
+  for (const [col, type] of [['price', 'NUMERIC'], ['updated_by', 'INT'],
+    ['updated_at', 'TIMESTAMPTZ NOT NULL DEFAULT now()']]) {
+    await q(`ALTER TABLE calc_raw_manual_prices ADD COLUMN IF NOT EXISTS ${col} ${type}`)
+      .catch((e) => console.error('calc_raw_manual_prices ' + col + ':', e.message));
+  }
+
   // --- Товарные листы (Рознич. тара, Хорека 250/500, Салаты, Пучки) --------
   // В Excel это отдельные листы одинаковой структуры: строки — статьи расчёта,
   // столбцы — товары. Поэтому таблица одна, лист задаётся колонкой sheet.

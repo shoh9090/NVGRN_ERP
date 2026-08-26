@@ -606,6 +606,50 @@
     ]);
   }
 
+  // ---------------------------------------------------------------------------
+  // Ручная цена сырья
+  // ---------------------------------------------------------------------------
+  // Цена сохраняется у САМОГО СЫРЬЯ, а не в строке рецептуры: одно и то же
+  // сырьё встречается в нескольких миксах и на товарных листах, и держать
+  // цену в каждой строке — верный способ получить расхождение.
+  // Закуп не перебиваем: как только пройдёт приёмка, цена возьмётся оттуда.
+  function openManualPrice(line, after) {
+    const inp = el('input', { type: 'number', step: 'any', min: '0', class: 'calc-modal-inp',
+      value: line.price_source === 'manual' && line.price_per_kg !== null ? String(Math.round(line.price_per_kg)) : '',
+      placeholder: 'сум за кг' });
+    const body = el('div', {}, [
+      el('div', { class: 'calc-modal-facts' }, line.raw_material_name || 'сырьё'),
+      el('div', { style: 'margin-top:12px' }, [el('div', { class: 'calc-modal-lbl' }, 'Цена за кг'), inp]),
+      el('p', { class: 'calc-modal-note' },
+        'Цена сохранится у сырья и будет использоваться везде — во всех рецептурах и на товарных листах. '
+        + 'Как только по этой позиции пройдёт приёмка в Закупе, цена возьмётся оттуда, а эта останется запасной.'),
+    ]);
+    const ok = el('button', { class: 'calc-btn primary', onclick: async () => {
+      const v = inp.value.trim() === '' ? null : Number(inp.value);
+      if (v === null || !(v > 0)) return toast('Укажите цену больше нуля', true);
+      ok.disabled = true;
+      try { await post('/raw-price/' + line.raw_material_id, { price: v }); m.close(); toast('Цена сохранена'); await after(); }
+      catch (e) { toast(e.message, true); ok.disabled = false; }
+    } }, 'Сохранить');
+    const m = calcModal('Цена за кг · ' + (line.raw_material_name || ''), body, [
+      el('button', { class: 'calc-btn', onclick: () => m.close() }, 'Отмена'), ok,
+    ]);
+  }
+
+  function clearManualPrice(line, after) {
+    const body = el('p', { class: 'calc-modal-note' },
+      'Ручная цена сырья «' + (line.raw_material_name || '') + '» будет убрана. Пока по нему нет приёмки в Закупе, '
+      + 'строки с этим сырьём останутся без цены и в себестоимость не войдут.');
+    const ok = el('button', { class: 'calc-btn danger', onclick: async () => {
+      ok.disabled = true;
+      try { await api('/raw-price/' + line.raw_material_id, { method: 'DELETE' }); m.close(); toast('Ручная цена убрана'); await after(); }
+      catch (e) { toast(e.message, true); ok.disabled = false; }
+    } }, 'Убрать');
+    const m = calcModal('Убрать ручную цену?', body, [
+      el('button', { class: 'calc-btn', onclick: () => m.close() }, 'Отмена'), ok,
+    ]);
+  }
+
   function confirmRemoveTemplate(t) {
     const body = el('div', {}, [
       el('div', { class: 'calc-modal-facts' }, t.items.length
@@ -688,19 +732,33 @@
         el('div', { class: 'calc-tpl-cost' }, line.price_per_kg === null
           ? el('span', { class: 'calc-warn-mini' }, 'нет цены')
           : el('span', {}, [money0(line.price_per_kg),
-            el('div', { class: 'calc-src-mini' }, 'из Закупа' + (line.price_at ? ' · ' + line.price_at : ''))])),
+            el('div', { class: 'calc-src-mini' },
+              (line.price_source === 'manual' ? 'вручную' : 'из Закупа') + (line.price_at ? ' · ' + line.price_at : ''))])),
         el('div', { class: 'calc-tpl-cost' }, line.line_cost === null ? el('span', { class: 'calc-dim' }, '—') : money(line.line_cost)),
         canEdit() ? el('button', {
           class: 'calc-dots', title: 'Действия с компонентом', 'aria-label': 'Действия с компонентом',
           onclick: (e) => {
             e.stopPropagation();
-            dotsMenu(e.currentTarget, [{
+            const items = [];
+            // Ручная цена — свойство сырья, поэтому пункт есть только когда
+            // сырьё в строке выбрано.
+            if (line.raw_material_id) {
+              items.push({
+                label: line.price_source === 'manual' ? 'Изменить цену вручную' : 'Указать цену вручную',
+                onClick: () => openManualPrice(line, loadRecipes),
+              });
+              if (line.price_source === 'manual') {
+                items.push({ label: 'Убрать ручную цену', onClick: () => clearManualPrice(line, loadRecipes) });
+              }
+            }
+            items.push({
               label: 'Убрать «' + (line.raw_material_name || 'компонент') + '»', danger: true,
               onClick: async () => {
                 try { await api('/recipes/line/' + line.id, { method: 'DELETE' }); await loadRecipes(); }
                 catch (err) { toast(err.message, true); }
               },
-            }]);
+            });
+            dotsMenu(e.currentTarget, items);
           },
         }, '⋯') : null,
       ]);
@@ -1008,10 +1066,20 @@
         class: 'calc-dots', title: 'Действия с товаром', 'aria-label': 'Действия с товаром',
         onclick: (e) => {
           e.stopPropagation();
+          // Ручная цена — то же окно, что в рецептуре: сырьё одно, цена одна.
+          const line = { raw_material_id: x.raw_material_id, raw_material_name: x.raw_material_name,
+            price_per_kg: x.raw_price_per_kg, price_source: x.raw_price_source };
           dotsMenu(e.currentTarget, [
             // Пункт нужен только когда строки «Рецептура» на листе нет: иначе
             // подключить микс было бы негде.
             ...(showRecipeRow ? [] : [{ label: 'Подключить рецептуру', onClick: () => openAttachRecipe(x, d) }]),
+            ...(x.raw_material_id && !x.recipe_id ? [{
+              label: x.raw_price_source === 'manual' ? 'Изменить цену вручную' : 'Указать цену вручную',
+              onClick: () => openManualPrice(line, loadSku),
+            }] : []),
+            ...(x.raw_price_source === 'manual' ? [{
+              label: 'Убрать ручную цену', onClick: () => clearManualPrice(line, loadSku),
+            }] : []),
             { label: 'Убрать с листа', danger: true, onClick: () => confirmRemoveProduct(x, d) },
           ]);
         },
@@ -1070,12 +1138,20 @@
       if (x.raw_price_source === 'purchase') {
         return el('div', {}, [
           el('div', {}, money0(x.raw_price_per_kg)),
-          el('div', { class: 'calc-src-mini' }, 'из Закупа'),
+          el('div', { class: 'calc-src-mini' }, 'из Закупа' + (x.raw_price_at ? ' · ' + x.raw_price_at : '')),
+        ]);
+      }
+      // Цена вписана вручную у самого сырья — одна на все листы и рецептуры.
+      // Правится тем же окном, что и в рецептуре: через меню «⋯» у товара.
+      if (x.raw_price_source === 'manual') {
+        return el('div', {}, [
+          el('div', {}, money0(x.raw_price_per_kg)),
+          el('div', { class: 'calc-src-mini' }, 'вручную' + (x.raw_price_at ? ' · ' + x.raw_price_at : '')),
         ]);
       }
       return el('div', {}, [
         cell(x.raw_price_per_kg, (v) => save(x.id, { raw_price_per_kg: v }), { dec: 0, placeholder: 'цена/кг' }),
-        x.raw_material_id ? el('div', { class: 'calc-src-mini' }, 'в Закупе цены нет') : null,
+        x.raw_material_id ? el('div', { class: 'calc-src-mini' }, 'в Закупе цены нет — «⋯» → указать вручную') : null,
       ]);
     }));
 
