@@ -44,6 +44,43 @@
     toastTimer = setTimeout(() => t.remove(), 3000);
   }
 
+  // ---------------------------------------------------------------------------
+  // Модалка и меню «⋯». Общие: пригодятся и утверждению расчёта.
+  // ---------------------------------------------------------------------------
+  function calcModal(title, bodyNode, actions) {
+    const overlay = el('div', { class: 'calc-overlay' });
+    const close = () => { overlay.remove(); document.removeEventListener('keydown', esc); };
+    function esc(e) { if (e.key === 'Escape') close(); }
+    overlay.appendChild(el('div', { class: 'calc-panel' }, [
+      el('div', { class: 'calc-panel-h' }, title),
+      el('div', { class: 'calc-panel-b' }, bodyNode),
+      el('div', { class: 'calc-panel-a' }, actions),
+    ]));
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+    document.addEventListener('keydown', esc);
+    document.body.appendChild(overlay);
+    return { close };
+  }
+
+  // Выпадающее меню у кнопки «⋯». items: [{ label, danger, onClick }].
+  // Крестик удаления стоял вплотную к полю штрих-кода — попасть по нему случайно
+  // было слишком легко, поэтому опасное действие спрятано за два клика.
+  function dotsMenu(btn, items) {
+    const old = $('.calc-menu'); if (old) old.remove();
+    const box = el('div', { class: 'calc-menu' }, items.map((it) => el('div', {
+      class: 'calc-menu-it' + (it.danger ? ' danger' : ''),
+      onclick: () => { box.remove(); it.onClick(); },
+    }, it.label)));
+    const r = btn.getBoundingClientRect();
+    box.style.top = (r.bottom + window.scrollY + 4) + 'px';
+    box.style.left = Math.max(8, r.right + window.scrollX - 180) + 'px';
+    document.body.appendChild(box);
+    setTimeout(() => {
+      const off = (e) => { if (!box.contains(e.target)) { box.remove(); document.removeEventListener('click', off); } };
+      document.addEventListener('click', off);
+    }, 0);
+  }
+
   // Листы, как внизу в Excel. Готовые открываются, остальные пока недоступны.
   const SHEETS = [
     { key: 'production', title: 'Производство', ready: true },
@@ -750,12 +787,12 @@
         },
       }) : el('div', { class: 'calc-bar calc-ro' }, x.barcode || ''),
       canEdit() ? el('button', {
-        class: 'calc-del', title: 'Убрать товар с листа',
-        onclick: async () => {
-          try { await api('/sheet-product/' + x.id, { method: 'DELETE' }); toast('Товар убран'); await load(); }
-          catch (e) { toast(e.message, true); }
+        class: 'calc-dots', title: 'Действия с товаром', 'aria-label': 'Действия с товаром',
+        onclick: (e) => {
+          e.stopPropagation();
+          dotsMenu(e.currentTarget, [{ label: 'Убрать с листа', danger: true, onClick: () => confirmRemoveProduct(x, d) }]);
         },
-      }, '×') : null,
+      }, '⋯') : null,
     ])))));
 
     // --- Строки идут ровно в том же порядке, что на листе «0000_розница» ---
@@ -877,6 +914,32 @@
       + (d.base.output ? ' (' + money0(d.base.output) + ' шт)' : '')
       + '. ФОТ берётся из плитки «Персонал» (фонд окладов активных сотрудников), делённый на тот же выпуск. Показан отдельно и в себестоимость не входит — так же, как в вашем файле.'));
     return box;
+  }
+
+  // Подтверждение перед тем, как убрать товар с листа. Показываем, что именно
+  // теряем: по названию легко перепутать соседние столбцы, по цифрам — нет.
+  function confirmRemoveProduct(x, d) {
+    const facts = [];
+    if (x.net_weight_g) facts.push('граммаж ' + money0(x.net_weight_g) + ' гр');
+    if (x.raw_material_name) facts.push('сырьё «' + x.raw_material_name + '»');
+    if (x.pack_template_name) facts.push('упаковка «' + x.pack_template_name + '»');
+    if (x.price) facts.push('прайс 1 — ' + money0(x.price));
+    if (x.price2) facts.push('прайс 2 — ' + money0(x.price2));
+    const body = el('div', {}, [
+      facts.length ? el('div', { class: 'calc-modal-facts' }, facts.join(' · ')) : null,
+      el('p', { class: 'calc-modal-note' },
+        'Товар уходит в архив: введённые цифры сохраняются, но расчёт по нему на листе больше не показывается.'),
+    ]);
+    const ok = el('button', { class: 'calc-btn danger', onclick: async () => {
+      ok.disabled = true;
+      try {
+        await api('/sheet-product/' + x.id, { method: 'DELETE' });
+        m.close(); toast('Товар убран с листа'); await load();
+      } catch (e) { toast(e.message, true); ok.disabled = false; }
+    } }, 'Убрать с листа');
+    const m = calcModal('Убрать «' + x.name + '» с листа «' + d.sheet_title + '»?', body, [
+      el('button', { class: 'calc-btn', onclick: () => m.close() }, 'Отмена'), ok,
+    ]);
   }
 
   async function addProduct() {

@@ -128,6 +128,43 @@ input.calc-cell:focus, input.calc-name:focus {
 }
 .calc-toast.bad { background: var(--red); }
 
+/* ---------- Меню «⋯» в шапке товара и модалка подтверждения ---------- */
+.calc-dots {
+  background: none; border: none; color: var(--ink-faint); cursor: pointer;
+  font-size: 17px; line-height: 1; padding: 3px 7px; border-radius: 6px; letter-spacing: 1px;
+}
+.calc-dots:hover { color: var(--ink); background: var(--surface-2); }
+.calc-menu {
+  position: absolute; z-index: 120; min-width: 180px; padding: 5px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 11px; box-shadow: var(--shadow-lg);
+}
+.calc-menu-it { padding: 9px 12px; border-radius: 8px; font-size: 13.5px; font-weight: 600; color: var(--ink); cursor: pointer; }
+.calc-menu-it:hover { background: var(--surface-2); }
+.calc-menu-it.danger { color: var(--red); }
+.calc-menu-it.danger:hover { background: var(--red-soft); }
+
+.calc-overlay {
+  position: fixed; inset: 0; z-index: 200; background: rgba(20, 36, 27, .38);
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+}
+.calc-panel {
+  background: var(--surface); border-radius: 16px; box-shadow: var(--shadow-lg);
+  width: 100%; max-width: 480px; overflow: hidden;
+}
+.calc-panel-h { padding: 17px 22px 0; font-size: 16px; font-weight: 800; color: var(--ink); line-height: 1.35; }
+.calc-panel-b { padding: 12px 22px 4px; }
+.calc-panel-a { padding: 14px 22px 18px; display: flex; gap: 9px; justify-content: flex-end; }
+.calc-modal-facts { font-size: 13px; color: var(--ink-soft); background: var(--surface-2); border-radius: 9px; padding: 9px 12px; }
+.calc-modal-note { font-size: 13px; color: var(--ink-soft); line-height: 1.5; margin: 10px 0 0; }
+.calc-btn {
+  border: 1px solid var(--line); background: var(--surface); color: var(--ink);
+  padding: 9px 16px; border-radius: 9px; font-size: 13.5px; font-weight: 700; cursor: pointer;
+}
+.calc-btn:hover { border-color: var(--ink-faint); }
+.calc-btn.danger { background: var(--red); border-color: var(--red); color: #fff; }
+.calc-btn.danger:hover { filter: brightness(.94); }
+.calc-btn:disabled { opacity: .55; cursor: default; }
+
 @media (max-width: 760px) {
   #calc-main { padding: 12px 10px 0; }
   .calc-t { font-size: 12.5px; }
