@@ -162,7 +162,13 @@ input.calc-cell:focus, input.calc-name:focus {
 }
 .calc-btn:hover { border-color: var(--ink-faint); }
 .calc-btn.danger { background: var(--red); border-color: var(--red); color: #fff; }
-.calc-btn.danger:hover { filter: brightness(.94); }
+.calc-btn.primary { background: var(--forest); border-color: var(--forest); color: #fff; }
+.calc-btn.danger:hover, .calc-btn.primary:hover { filter: brightness(.94); }
+.calc-modal-inp {
+  width: 100%; padding: 9px 12px; border: 1px solid var(--line); border-radius: 9px;
+  font-family: inherit; font-size: 14px; color: var(--ink); background: var(--surface);
+}
+.calc-modal-inp:focus { outline: none; border-color: var(--lime-d); }
 .calc-btn:disabled { opacity: .55; cursor: default; }
 
 @media (max-width: 760px) {
@@ -480,6 +486,8 @@ input.calc-rate-inp:focus { border-color: var(--lime-d); background: var(--surfa
   padding: 1px 4px; border-radius: 5px; line-height: 1.4;
 }
 .calc-rate-all:hover { border-color: var(--lime-d); color: var(--forest); background: var(--lime-soft); }
+/* «всем» в колонке «ед.изм»: одна кнопка на строку, спрашивает значение в окне */
+.calc-all-row { display: block; margin: 3px auto 0; border-color: var(--line); }
 
 /* Строка «Цена в SalesDoctor» — справочная, в расчёте не участвует */
 .calc-sd-row th.calc-sku-h, .calc-sd-row th.calc-sku-u, .calc-sd-row td { background: #f7f6f0; }

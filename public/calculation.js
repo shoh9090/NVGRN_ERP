@@ -715,14 +715,15 @@
       : num(x.calc.net_profit) + ' ÷ ' + num(x.price, 0) + ' = ' + num(x.calc.net_pct, 0) + '%'),
   };
 
-  function skuRow(label, unit, cells, cls) {
+  // unitExtra — кнопка «всем» в колонке «ед.изм» (одна на строку, а не в каждом товаре).
+  function skuRow(label, unit, cells, cls, unitExtra) {
     const p = SKU.products;
     const hint = ROW_HINTS[label] || '';
     const cellHint = CELL_HINTS[label];
     return el('tr', { class: 'calc-sku-r' + (cls ? ' ' + cls : '') }, [
       el('th', { class: 'calc-sku-h', 'data-hint': hint },
         el('div', { class: 'calc-sku-lbl' + (hint ? ' calc-has-hint' : '') }, label)),
-      el('th', { class: 'calc-sku-u', 'data-hint': hint }, unit || ''),
+      el('th', { class: 'calc-sku-u', 'data-hint': unitExtra ? null : hint }, [unit || '', unitExtra || null]),
     ].concat(p.map((x) => {
       // У ячейки — та же подсказка, но с настоящими числами этого товара.
       // Общее объяснение идёт первой строкой, расчёт — второй.
@@ -735,6 +736,36 @@
       return el('td', { 'data-hint': t }, cells(x));
     })));
   }
+
+  // Кнопка «всем» в колонке «ед.изм»: спрашивает одно значение и проставляет его
+  // всем товарам листа. У ставок такая же кнопка стоит в самой ячейке (там она
+  // копирует значение товара), здесь же ячейки нет — поэтому спрашиваем в окне.
+  function allRowBtn(field, title, buildControl, readValue) {
+    if (!canEdit()) return null;
+    return el('button', {
+      class: 'calc-rate-all calc-all-row', title: 'Проставить одно значение всем товарам листа',
+      onclick: (e) => {
+        e.stopPropagation();
+        const ctl = buildControl();
+        const ok = el('button', { class: 'calc-btn primary', onclick: async () => {
+          const v = readValue(ctl);
+          if (v === null) { toast('Укажите значение', true); return; }
+          ok.disabled = true;
+          try {
+            const r = await post('/sheet/' + sheet + '/apply-rate', { field, value: v });
+            m.close(); toast('Проставлено товарам: ' + r.updated); await load();
+          } catch (err) { toast(err.message, true); ok.disabled = false; }
+        } }, 'Проставить всем');
+        const m = calcModal(title, el('div', {}, [
+          el('p', { class: 'calc-modal-note', style: 'margin:0 0 11px' },
+            'Значение получат все товары листа «' + SKU.sheet_title + '» (' + SKU.products.length + ' шт). Прежние значения заменятся.'),
+          ctl,
+        ]), [el('button', { class: 'calc-btn', onclick: () => m.close() }, 'Отмена'), ok]);
+      },
+    }, 'всем');
+  }
+  const numCtl = (placeholder) => el('input', { type: 'number', step: 'any', min: '0', class: 'calc-modal-inp', placeholder });
+  const readNum = (c) => (c.value.trim() === '' ? null : Number(c.value));
 
   // Понятные названия компонентов себестоимости — для подсказки «чего не хватает».
   const COMP_NAMES = {
@@ -797,7 +828,8 @@
 
     // --- Строки идут ровно в том же порядке, что на листе «0000_розница» ---
     rows.push(skuRow('Граммаж', 'гр', (x) =>
-      cell(x.net_weight_g, (v) => save(x.id, { net_weight_g: v }), { dec: 0, placeholder: 'гр' })));
+      cell(x.net_weight_g, (v) => save(x.id, { net_weight_g: v }), { dec: 0, placeholder: 'гр' }),
+      null, allRowBtn('net_weight_g', 'Граммаж всем товарам листа', () => numCtl('гр'), readNum)));
 
     rows.push(skuRow('наименование', '', (x) => {
       if (!canEdit()) return el('span', {}, x.raw_material_name || '—');
@@ -844,7 +876,10 @@
         catch (e) { toast(e.message, true); }
       });
       return sel;
-    }));
+    }, null, allRowBtn('pack_template_id', 'Комплект упаковки всем товарам листа',
+      () => el('select', { class: 'calc-modal-inp' }, [el('option', { value: '' }, '— выберите комплект —')]
+        .concat(tplOptions.map((t) => el('option', { value: String(t.id) }, t.name)))),
+      (c) => (c.value ? Number(c.value) : null))));
 
     rows.push(skuRow('Упаковка', 'сум', (x) => [
       auto(x.calc.components.pack),
@@ -880,7 +915,7 @@
     rows.push(skuRow('с\\с с браком', 'сум', (x) => [
       pctCell(x.defect_pct, (v) => save(x.id, { defect_pct: v })),
       auto(x.calc.cost_defect),
-    ], 'calc-sku-accent'));
+    ], 'calc-sku-accent', allRowBtn('defect_pct', 'Процент брака всем товарам листа', () => numCtl('%'), readNum)));
 
     rows.push(el('tr', { class: 'calc-r-gap' },
       el('td', { colspan: String(d.products.length + 2) }, '')));

@@ -784,10 +784,10 @@ router.delete('/api/sheet-product/:id(\\d+)', async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
-// Применить ставку сразу ко всем товарам листа. Ретро, НДС и налог обычно
-// одинаковы для всей розницы, и проставлять их по одному — потеря времени.
-// Список полей закрытый: через этот маршрут меняются только ставки.
-const SKU_BULK_FIELDS = ['defect_pct', 'retro_pct', 'vat_pct', 'profit_tax_pct'];
+// Применить значение сразу ко всем товарам листа. Ставки, граммаж и комплект
+// упаковки в рознице обычно одинаковы, и проставлять их по одному — потеря
+// времени. Список полей закрытый: цены и сырьё так менять нельзя.
+const SKU_BULK_FIELDS = ['defect_pct', 'retro_pct', 'vat_pct', 'profit_tax_pct', 'net_weight_g', 'pack_template_id'];
 
 router.post('/api/sheet/:sheet/apply-rate', J, async (req, res) => {
   if (!canEdit(req)) return denyEdit(res);
@@ -795,9 +795,16 @@ router.post('/api/sheet/:sheet/apply-rate', J, async (req, res) => {
   if (!SHEETS[sheet]) return res.status(404).json({ error: 'Такого листа нет' });
   const b = req.body || {};
   const field = String(b.field || '');
-  if (!SKU_BULK_FIELDS.includes(field)) return res.status(400).json({ error: 'Эту ставку так менять нельзя' });
-  const value = numOrNull(b.value);
-  if (value === null || value < 0) return res.status(400).json({ error: 'Укажите ставку' });
+  if (!SKU_BULK_FIELDS.includes(field)) return res.status(400).json({ error: 'Это поле так менять нельзя' });
+  let value = numOrNull(b.value);
+  if (value === null || value < 0) return res.status(400).json({ error: 'Укажите значение' });
+  if (field === 'net_weight_g' && !(value > 0)) return res.status(400).json({ error: 'Граммаж должен быть больше нуля' });
+  if (field === 'pack_template_id') {
+    value = intOrNull(b.value);
+    const ok = value && (await db.pool.query(
+      "SELECT 1 FROM calc_pack_templates WHERE id = $1 AND status = 'active'", [value])).rowCount;
+    if (!ok) return res.status(400).json({ error: 'Выберите комплект упаковки' });
+  }
   try {
     const r = await db.pool.query(
       `UPDATE calc_sheet_products SET ${field} = $1, updated_by = $2, updated_at = now()
