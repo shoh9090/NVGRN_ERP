@@ -413,6 +413,12 @@ router.post('/api/packaging/template/:id(\\d+)', J, async (req, res) => {
 router.delete('/api/packaging/template/:id(\\d+)', async (req, res) => {
   if (!canEdit(req)) return denyEdit(res);
   try {
+    // Занятый комплект не убираем: иначе у товара тихо пропала бы упаковка,
+    // и себестоимость молча уехала бы вниз. То же правило, что у рецептур.
+    const used = (await db.pool.query(
+      "SELECT COUNT(*)::int AS n FROM calc_sheet_products WHERE pack_template_id = $1 AND status = 'active'",
+      [req.params.id])).rows[0].n;
+    if (used > 0) return res.status(409).json({ error: 'Комплект выбран у ' + used + ' товар(ов). Сначала смените упаковку у них.' });
     await db.pool.query("UPDATE calc_pack_templates SET status='archived' WHERE id=$1", [req.params.id]);
     await db.log(req.user.id, 'calc_pack_template_remove', { id: Number(req.params.id) });
     res.json({ ok: true });

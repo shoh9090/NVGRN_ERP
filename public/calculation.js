@@ -554,13 +554,22 @@
       cell(line.qty, (v) => post('/packaging/line/' + line.id, { qty: v }), { dec: 2 }),
       el('div', { class: 'calc-tpl-cost' },
         line.line_cost === null ? el('span', { class: 'calc-dim' }, 'впишите цену') : money(line.line_cost)),
+      // Меню вместо крестика: он стоял вплотную к полю количества, и промах
+      // стирал строку без вопроса. Само меню и есть подтверждение — пункт
+      // называет, что именно уберём.
       canEdit() ? el('button', {
-        class: 'calc-del', title: 'Убрать строку',
-        onclick: async () => {
-          try { await api('/packaging/line/' + line.id, { method: 'DELETE' }); await loadPackaging(); }
-          catch (e) { toast(e.message, true); }
+        class: 'calc-dots', title: 'Действия со строкой', 'aria-label': 'Действия со строкой',
+        onclick: (e) => {
+          e.stopPropagation();
+          dotsMenu(e.currentTarget, [{
+            label: 'Убрать «' + (line.name || 'строку') + '»', danger: true,
+            onClick: async () => {
+              try { await api('/packaging/line/' + line.id, { method: 'DELETE' }); await loadPackaging(); }
+              catch (err) { toast(err.message, true); }
+            },
+          }]);
         },
-      }, '×') : null,
+      }, '⋯') : null,
     ]));
 
     if (!lines.length) lines.push(el('div', { class: 'calc-tpl-empty' }, 'Пусто — добавьте строку'));
@@ -571,12 +580,12 @@
           ? nameCell(t.name, (v) => post('/packaging/template/' + t.id, { name: v }))
           : el('div', { class: 'calc-name calc-ro' }, t.name),
         canEdit() ? el('button', {
-          class: 'calc-del', title: 'Убрать комплект',
-          onclick: async () => {
-            try { await api('/packaging/template/' + t.id, { method: 'DELETE' }); toast('Комплект убран'); await loadPackaging(); }
-            catch (e) { toast(e.message, true); }
+          class: 'calc-dots', title: 'Действия с комплектом', 'aria-label': 'Действия с комплектом',
+          onclick: (e) => {
+            e.stopPropagation();
+            dotsMenu(e.currentTarget, [{ label: 'Убрать комплект', danger: true, onClick: () => confirmRemoveTemplate(t) }]);
           },
-        }, '×') : null,
+        }, '⋯') : null,
       ]),
       el('div', { class: 'calc-tpl-cols' }, [
         el('span', {}, 'что входит'), el('span', {}, 'цена'), el('span', {}, 'кол-во'),
@@ -594,6 +603,24 @@
       t.missing_prices
         ? el('div', { class: 'calc-partial' }, 'строк без цены: ' + t.missing_prices + ' — в сумму не вошли')
         : null,
+    ]);
+  }
+
+  function confirmRemoveTemplate(t) {
+    const body = el('div', {}, [
+      el('div', { class: 'calc-modal-facts' }, t.items.length
+        ? ('строк: ' + t.items.length + ' · стоимость комплекта ' + money(t.total))
+        : 'комплект пустой'),
+      el('p', { class: 'calc-modal-note' },
+        'Комплект уходит в архив. Если он выбран у какого-то товара, система не даст его убрать — сначала смените упаковку там.'),
+    ]);
+    const ok = el('button', { class: 'calc-btn danger', onclick: async () => {
+      ok.disabled = true;
+      try { await api('/packaging/template/' + t.id, { method: 'DELETE' }); m.close(); toast('Комплект убран'); await loadPackaging(); }
+      catch (e) { toast(e.message, true); ok.disabled = false; }
+    } }, 'Убрать комплект');
+    const m = calcModal('Убрать комплект «' + t.name + '»?', body, [
+      el('button', { class: 'calc-btn', onclick: () => m.close() }, 'Отмена'), ok,
     ]);
   }
 
@@ -664,12 +691,18 @@
             el('div', { class: 'calc-src-mini' }, 'из Закупа' + (line.price_at ? ' · ' + line.price_at : ''))])),
         el('div', { class: 'calc-tpl-cost' }, line.line_cost === null ? el('span', { class: 'calc-dim' }, '—') : money(line.line_cost)),
         canEdit() ? el('button', {
-          class: 'calc-del', title: 'Убрать компонент',
-          onclick: async () => {
-            try { await api('/recipes/line/' + line.id, { method: 'DELETE' }); await loadRecipes(); }
-            catch (e) { toast(e.message, true); }
+          class: 'calc-dots', title: 'Действия с компонентом', 'aria-label': 'Действия с компонентом',
+          onclick: (e) => {
+            e.stopPropagation();
+            dotsMenu(e.currentTarget, [{
+              label: 'Убрать «' + (line.raw_material_name || 'компонент') + '»', danger: true,
+              onClick: async () => {
+                try { await api('/recipes/line/' + line.id, { method: 'DELETE' }); await loadRecipes(); }
+                catch (err) { toast(err.message, true); }
+              },
+            }]);
           },
-        }, '×') : null,
+        }, '⋯') : null,
       ]);
     });
     if (!lines.length) lines.push(el('div', { class: 'calc-tpl-empty' }, 'Пусто — добавьте сырьё'));
