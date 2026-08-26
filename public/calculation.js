@@ -85,6 +85,7 @@
   const SHEETS = [
     { key: 'production', title: 'Производство', ready: true },
     { key: 'packaging', title: 'Упаковка', ready: true },
+    { key: 'recipes', title: 'Рецептуры', ready: true },
     { key: 'retail', title: 'Рознич. тара', ready: true },
     { key: 'horeca250', title: 'Хорека 250г', ready: true },
     { key: 'horeca500', title: 'Хорека 500', ready: true },
@@ -308,6 +309,7 @@
   async function load() {
     showLoading();
     if (sheet === 'packaging') return loadPackaging();
+    if (sheet === 'recipes') return loadRecipes();
     if (SKU_SHEETS.includes(sheet)) return loadSku();
     let d;
     try { d = await api('/production?period=' + (DATA ? DATA.period : '')); }
@@ -345,7 +347,8 @@
     main.innerHTML = '';
     main.appendChild(sheetTabs());              // вкладки листов — сверху
     const body = sheet === 'packaging' ? packagingSheet()
-      : SKU_SHEETS.includes(sheet) ? skuSheet() : production();
+      : sheet === 'recipes' ? recipesSheet()
+        : SKU_SHEETS.includes(sheet) ? skuSheet() : production();
     main.appendChild(el('div', { class: 'calc-sheet' }, body));
   }
 
@@ -594,6 +597,133 @@
     ]);
   }
 
+  // ---------------------------------------------------------------------------
+  // Лист «Рецептуры»: миксы салатов
+  // ---------------------------------------------------------------------------
+  // Устроен как «Упаковка», отличие одно: цену за кг руками не вводят — она
+  // приходит из Закупа. Человек вписывает граммы, процент считаем сами.
+  let RCP = null;
+
+  async function loadRecipes() {
+    let d;
+    try { d = await api('/recipes'); }
+    catch (e) {
+      const main = $('#calc-main'); main.innerHTML = '';
+      main.appendChild(sheetTabs());
+      main.appendChild(el('div', { class: 'calc-empty' }, 'Не удалось загрузить: ' + e.message));
+      return;
+    }
+    RCP = d;
+    DATA = { can_edit: d.can_edit };
+    render();
+  }
+
+  function recipesSheet() {
+    const box = el('div');
+    box.appendChild(el('div', { class: 'calc-sheet-head' }, [
+      el('div', { class: 'calc-sheet-top' }, [
+        el('h1', { class: 'calc-h1' }, 'Рецептуры'),
+        canEdit() ? el('button', { class: 'calc-add', onclick: async () => {
+          try { await post('/recipes/recipe', { name: 'Новая рецептура' }); await loadRecipes(); }
+          catch (e) { toast(e.message, true); }
+        } }, '+ рецептура') : null,
+      ]),
+      el('div', { class: 'calc-sub' }, 'Состав микса на одну упаковку: выбираете сырьё и вписываете граммы. Долю в процентах и стоимость считает система, цена за кг приходит из Закупа. Готовую рецептуру выбирайте в строке «Рецептура» на товарном листе.'),
+    ]));
+
+    const list = (RCP && RCP.recipes) || [];
+    const cards = list.map((r) => recipeCard(r));
+    if (!cards.length) {
+      cards.push(el('div', { class: 'calc-tpl-empty-all' },
+        'Рецептур пока нет. Добавьте первую — например «Цезарь микс».'));
+    }
+    box.appendChild(el('div', { class: 'calc-tpls' }, cards));
+    return box;
+  }
+
+  function recipeCard(r) {
+    const raws = (RCP && RCP.raw_materials) || [];
+    const lines = r.items.map((line) => {
+      const sel = el('select', { class: 'calc-sel' }, [el('option', { value: '' }, '— сырьё —')]
+        .concat(raws.map((m) => {
+          const o = el('option', { value: String(m.id) }, m.name);
+          if (Number(line.raw_material_id) === m.id) o.setAttribute('selected', 'selected');
+          return o;
+        })));
+      sel.addEventListener('change', async () => {
+        try { await post('/recipes/line/' + line.id, { raw_material_id: sel.value || null }); await loadRecipes(); }
+        catch (e) { toast(e.message, true); }
+      });
+      return el('div', { class: 'calc-rcp-line' }, [
+        canEdit() ? sel : el('div', { class: 'calc-tpl-nm' }, line.raw_material_name || '—'),
+        cell(line.qty_g, (v) => post('/recipes/line/' + line.id, { qty_g: v }), { dec: 0, placeholder: 'гр' }),
+        el('div', { class: 'calc-tpl-cost calc-dim' }, line.pct === null ? '—' : money(line.pct, 0) + '%'),
+        el('div', { class: 'calc-tpl-cost' }, line.price_per_kg === null
+          ? el('span', { class: 'calc-warn-mini' }, 'нет цены')
+          : el('span', {}, [money0(line.price_per_kg),
+            el('div', { class: 'calc-src-mini' }, 'из Закупа' + (line.price_at ? ' · ' + line.price_at : ''))])),
+        el('div', { class: 'calc-tpl-cost' }, line.line_cost === null ? el('span', { class: 'calc-dim' }, '—') : money(line.line_cost)),
+        canEdit() ? el('button', {
+          class: 'calc-del', title: 'Убрать компонент',
+          onclick: async () => {
+            try { await api('/recipes/line/' + line.id, { method: 'DELETE' }); await loadRecipes(); }
+            catch (e) { toast(e.message, true); }
+          },
+        }, '×') : null,
+      ]);
+    });
+    if (!lines.length) lines.push(el('div', { class: 'calc-tpl-empty' }, 'Пусто — добавьте сырьё'));
+
+    return el('div', { class: 'calc-tpl' }, [
+      el('div', { class: 'calc-tpl-head' }, [
+        canEdit()
+          ? nameCell(r.name, (v) => post('/recipes/recipe/' + r.id, { name: v }))
+          : el('div', { class: 'calc-name calc-ro' }, r.name),
+        canEdit() ? el('button', {
+          class: 'calc-dots', title: 'Действия с рецептурой', 'aria-label': 'Действия с рецептурой',
+          onclick: (e) => {
+            e.stopPropagation();
+            dotsMenu(e.currentTarget, [{ label: 'Убрать рецептуру', danger: true, onClick: () => confirmRemoveRecipe(r) }]);
+          },
+        }, '⋯') : null,
+      ]),
+      el('div', { class: 'calc-rcp-cols' }, [
+        el('span', {}, 'сырьё'), el('span', {}, 'гр'), el('span', {}, 'доля'),
+        el('span', {}, 'цена/кг'), el('span', {}, 'стоимость'), el('span', {}, ''),
+      ]),
+      el('div', {}, lines),
+      canEdit() ? el('button', { class: 'calc-tpl-add', onclick: async () => {
+        try { await post('/recipes/recipe/' + r.id + '/line', { qty_g: 0 }); await loadRecipes(); }
+        catch (e) { toast(e.message, true); }
+      } }, '+ сырьё') : null,
+      el('div', { class: 'calc-tpl-total' }, [
+        el('span', {}, 'Зелень на упаковку · ' + money(r.total_g, 0) + ' гр'),
+        el('b', {}, money(r.total)),
+      ]),
+      r.missing_prices
+        ? el('div', { class: 'calc-partial' }, 'компонентов без цены: ' + r.missing_prices + ' — в сумму не вошли')
+        : null,
+    ]);
+  }
+
+  function confirmRemoveRecipe(r) {
+    const body = el('div', {}, [
+      el('div', { class: 'calc-modal-facts' }, r.items.length
+        ? (money(r.total_g, 0) + ' гр · компонентов: ' + r.items.length + ' · ' + money(r.total) + ' сум')
+        : 'состав пустой'),
+      el('p', { class: 'calc-modal-note' },
+        'Рецептура уходит в архив. Если она стоит у какого-то товара, система не даст её убрать — сначала смените рецептуру там.'),
+    ]);
+    const ok = el('button', { class: 'calc-btn danger', onclick: async () => {
+      ok.disabled = true;
+      try { await api('/recipes/recipe/' + r.id, { method: 'DELETE' }); m.close(); toast('Рецептура убрана'); await loadRecipes(); }
+      catch (e) { toast(e.message, true); ok.disabled = false; }
+    } }, 'Убрать рецептуру');
+    const m = calcModal('Убрать рецептуру «' + r.name + '»?', body, [
+      el('button', { class: 'calc-btn', onclick: () => m.close() }, 'Отмена'), ok,
+    ]);
+  }
+
   load();
   // ---------------------------------------------------------------------------
   // Товарные листы: Рознич. тара, Хорека, Салаты, Пучки
@@ -650,6 +780,7 @@
     'наименование': 'Какая именно зелень. Выберите позицию из справочника — тогда цена за килограмм подтянется из Закупа сама.',
     'Стоимость зелени': 'Сколько стоит килограмм этой зелени. Берётся из последней приёмки в Закупе. Если там цены ещё нет — впишите руками.',
     'зелень в упаковке': 'Во сколько обходится зелень в одной упаковке. Считается: граммаж ÷ 1000 × цена за килограмм.',
+    'Рецептура': 'Микс из нескольких видов зелени. Собирается на листе «Рецептуры». Если рецептура выбрана, зелень считается по ней, а граммаж и одиночное сырьё в расчёте не участвуют.',
     'Тип упаковки': 'Во что упакован товар. Сами комплекты собираются на листе «Упаковка».',
     'Упаковка': 'Во сколько обходится упаковка одной штуки — сумма всех строк выбранного комплекта с листа «Упаковка».',
     'Производ.затраты / накладные расходы': 'Доля общих расходов завода на одну штуку. С листа «Производство»: производственные затраты на штуку плюс накладные на штуку. Если товара с одной операции выходит больше обычного, поставьте долю меньше единицы.',
@@ -801,6 +932,7 @@
 
     const tplOptions = d.pack_templates;
     const rawOptions = d.raw_materials || [];
+    const recipeOptions = d.recipes || [];
     const rows = [];
 
     // --- шапка: название и штрих-код товара ---
@@ -827,11 +959,36 @@
     ])))));
 
     // --- Строки идут ровно в том же порядке, что на листе «0000_розница» ---
-    rows.push(skuRow('Граммаж', 'гр', (x) =>
+    rows.push(skuRow('Граммаж', 'гр', (x) => el('div', {}, [
       cell(x.net_weight_g, (v) => save(x.id, { net_weight_g: v }), { dec: 0, placeholder: 'гр' }),
-      null, allRowBtn('net_weight_g', 'Граммаж всем товарам листа', () => numCtl('гр'), readNum)));
+      // Сверка с рецептурой: расхождение почти всегда означает опечатку в граммах.
+      (x.recipe_id && x.net_weight_g && x.recipe_total_g && Math.abs(x.recipe_total_g - x.net_weight_g) > 1)
+        ? el('div', { class: 'calc-warn-mini' }, 'рецептура даёт ' + money(x.recipe_total_g, 0) + ' гр')
+        : null,
+    ]), null, allRowBtn('net_weight_g', 'Граммаж всем товарам листа', () => numCtl('гр'), readNum)));
+
+    // Рецептура (микс) вместо одного сырья. Не выбрана — лист работает по-старому.
+    rows.push(skuRow('Рецептура', '', (x) => {
+      if (!canEdit()) return el('span', {}, x.recipe_name || '—');
+      const sel = el('select', { class: 'calc-sel' }, [el('option', { value: '' }, '— одно сырьё —')]
+        .concat(recipeOptions.map((r) => {
+          const o = el('option', { value: String(r.id) }, r.name);
+          if (Number(x.recipe_id) === r.id) o.setAttribute('selected', 'selected');
+          return o;
+        })));
+      sel.addEventListener('change', async () => {
+        try { await save(x.id, { recipe_id: sel.value || null }); await load(); }
+        catch (e) { toast(e.message, true); }
+      });
+      return el('div', {}, [
+        sel,
+        x.recipe_empty ? el('div', { class: 'calc-warn-mini' }, 'в рецептуре нет сырья') : null,
+        x.recipe_missing_prices ? el('div', { class: 'calc-warn-mini' }, 'в рецептуре есть сырьё без цены') : null,
+      ]);
+    }));
 
     rows.push(skuRow('наименование', '', (x) => {
+      if (x.recipe_id) return el('span', { class: 'calc-dim' }, 'по рецептуре');
       if (!canEdit()) return el('span', {}, x.raw_material_name || '—');
       const sel = el('select', { class: 'calc-sel' }, [el('option', { value: '' }, '— не выбрано —')]
         .concat(rawOptions.map((m) => {
@@ -849,6 +1006,7 @@
     // Цена за кг: из Закупа, если позиция связана и цена там есть. Иначе
     // вписывается вручную — тогда поле открыто для ввода.
     rows.push(skuRow('Стоимость зелени', 'сум/кг', (x) => {
+      if (x.recipe_id) return el('span', { class: 'calc-dim' }, 'по рецептуре');
       if (x.raw_price_source === 'purchase') {
         return el('div', {}, [
           el('div', {}, money0(x.raw_price_per_kg)),

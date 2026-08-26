@@ -371,6 +371,28 @@ async function ensureCalculationSchema(pool) {
     .catch((e) => console.error('calc pack names backfill:', e.message));
 
 
+  // --- Рецептуры (миксы салатов) ------------------------------------------
+  // Устроены как комплекты упаковки, только строки — сырьё в граммах на одну
+  // упаковку. Цена за кг НЕ хранится: она приходит из Закупа (последняя принятая
+  // приёмка) — тот же источник, что и у обычного сырья на товарном листе.
+  await q(`CREATE TABLE IF NOT EXISTS calc_recipes (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    sort INT NOT NULL DEFAULT 100,
+    status TEXT NOT NULL DEFAULT 'active',      -- active | archived
+    comment TEXT DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by INT, updated_at TIMESTAMPTZ
+  )`);
+  await q(`CREATE TABLE IF NOT EXISTS calc_recipe_items (
+    id SERIAL PRIMARY KEY,
+    recipe_id INT NOT NULL REFERENCES calc_recipes(id) ON DELETE CASCADE,
+    raw_material_id INT,                        -- ref_raw_materials
+    qty_g NUMERIC NOT NULL DEFAULT 0,           -- граммы на одну упаковку
+    sort INT NOT NULL DEFAULT 100
+  )`);
+  await q(`CREATE INDEX IF NOT EXISTS idx_calc_recipe_items ON calc_recipe_items (recipe_id, sort, id)`);
+
   // --- Товарные листы (Рознич. тара, Хорека 250/500, Салаты, Пучки) --------
   // В Excel это отдельные листы одинаковой структуры: строки — статьи расчёта,
   // столбцы — товары. Поэтому таблица одна, лист задаётся колонкой sheet.
@@ -415,6 +437,9 @@ async function ensureCalculationSchema(pool) {
     ['raw_material_id', 'INTEGER'],
     ['net_weight_g', 'NUMERIC'],
     ['raw_price_per_kg', 'NUMERIC'],
+    // Рецептура вместо одного сырья: микс салата собирается на листе «Рецептуры».
+    // Не выбрана — товар считается по-старому (одно сырьё × граммаж).
+    ['recipe_id', 'INTEGER'],
   ]) {
     await q(`ALTER TABLE calc_sheet_products ADD COLUMN IF NOT EXISTS ${col} ${type}`)
       .catch((e) => console.error('calc_sheet_products ' + col + ':', e.message));

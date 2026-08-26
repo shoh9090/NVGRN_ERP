@@ -465,6 +465,145 @@ router.delete('/api/packaging/line/:id(\\d+)', async (req, res) => {
 });
 
 // ===========================================================================
+// Лист «Рецептуры» — миксы салатов
+// ===========================================================================
+// Устроен как «Упаковка»: карточка = рецептура, строки = сырьё в граммах на одну
+// упаковку. Отличие одно: цену за кг руками не вводят — она приходит из Закупа
+// (последняя принятая приёмка), тот же источник, что и на товарных листах.
+// Технологических потерь здесь нет намеренно: они уже сидят в строке «с/с с
+// браком» на товарном листе, и держать их в двух местах — путь к двойному счёту.
+
+// Собрать рецептуры с ценами и итогами. Используется и листом «Рецептуры»,
+// и товарными листами (там нужен только итог).
+async function recipesData() {
+  const recipes = (await db.pool.query(
+    `SELECT id, name, sort FROM calc_recipes WHERE status = 'active' ORDER BY sort, name`)).rows;
+  const lines = recipes.length ? (await db.pool.query(
+    `SELECT i.id, i.recipe_id, i.raw_material_id, i.qty_g, i.sort, m.name AS raw_material_name
+       FROM calc_recipe_items i
+       LEFT JOIN ref_raw_materials m ON m.id = i.raw_material_id
+      WHERE i.recipe_id = ANY($1) ORDER BY i.recipe_id, i.sort, i.id`,
+    [recipes.map((r) => r.id)])).rows : [];
+  const prices = await lastRawPrices();
+
+  return recipes.map((r) => {
+    const items = lines.filter((l) => l.recipe_id === r.id).map((l) => {
+      const info = l.raw_material_id ? prices.get(l.raw_material_id) : null;
+      const price = info ? info.price : null;
+      const qty = Number(l.qty_g) || 0;
+      return {
+        id: l.id,
+        raw_material_id: l.raw_material_id,
+        raw_material_name: l.raw_material_name || '',
+        qty_g: qty,
+        price_per_kg: price,
+        price_at: info ? info.at : null,
+        // Цены нет в Закупе — строка не превращается в ноль, иначе микс
+        // выглядел бы дешевле, чем он есть.
+        line_cost: price === null ? null : (qty / 1000) * price,
+      };
+    });
+    const totalG = items.reduce((s, x) => s + x.qty_g, 0);
+    const known = items.filter((x) => x.line_cost !== null);
+    return {
+      id: r.id,
+      name: r.name,
+      // Доля компонента в миксе: граммы вводит человек, процент считаем сами.
+      items: items.map((x) => ({ ...x, pct: totalG > 0 ? (x.qty_g / totalG) * 100 : null })),
+      total_g: totalG,
+      total: known.reduce((s, x) => s + x.line_cost, 0),
+      missing_prices: items.length - known.length,
+    };
+  });
+}
+
+router.get('/api/recipes', async (req, res) => {
+  try {
+    const rawMats = (await db.pool.query(
+      "SELECT id, name FROM ref_raw_materials WHERE status = 'active' ORDER BY name")).rows;
+    res.json({ recipes: await recipesData(), raw_materials: rawMats, can_edit: canEdit(req) });
+  } catch (e) {
+    console.error('[КАЛЬКУЛЯЦИЯ] рецептуры:', e.message);
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.post('/api/recipes/recipe', J, async (req, res) => {
+  if (!canEdit(req)) return denyEdit(res);
+  const name = String((req.body || {}).name || '').trim() || 'Новая рецептура';
+  try {
+    const next = (await db.pool.query('SELECT COALESCE(MAX(sort),0)+10 AS n FROM calc_recipes')).rows[0].n;
+    const r = await db.pool.query('INSERT INTO calc_recipes (name, sort) VALUES ($1,$2) RETURNING id', [name, next]);
+    await db.log(req.user.id, 'calc_recipe_add', { id: r.rows[0].id, name });
+    res.json({ ok: true, id: r.rows[0].id });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+router.post('/api/recipes/recipe/:id(\\d+)', J, async (req, res) => {
+  if (!canEdit(req)) return denyEdit(res);
+  const name = String((req.body || {}).name || '').trim();
+  if (!name) return res.status(400).json({ error: 'Название рецептуры не может быть пустым' });
+  try {
+    await db.pool.query('UPDATE calc_recipes SET name = $1, updated_by = $2, updated_at = now() WHERE id = $3',
+      [name, req.user.id, req.params.id]);
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+router.delete('/api/recipes/recipe/:id(\\d+)', async (req, res) => {
+  if (!canEdit(req)) return denyEdit(res);
+  try {
+    // Занятую рецептуру не убираем: иначе у товара тихо пропала бы вся зелень.
+    const used = (await db.pool.query(
+      "SELECT COUNT(*)::int AS n FROM calc_sheet_products WHERE recipe_id = $1 AND status = 'active'",
+      [req.params.id])).rows[0].n;
+    if (used > 0) return res.status(409).json({ error: 'Рецептура стоит у ' + used + ' товар(ов). Сначала смените её у них.' });
+    await db.pool.query("UPDATE calc_recipes SET status='archived', updated_by=$1, updated_at=now() WHERE id=$2",
+      [req.user.id, req.params.id]);
+    await db.log(req.user.id, 'calc_recipe_remove', { id: Number(req.params.id) });
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+router.post('/api/recipes/recipe/:id(\\d+)/line', J, async (req, res) => {
+  if (!canEdit(req)) return denyEdit(res);
+  try {
+    const next = (await db.pool.query(
+      'SELECT COALESCE(MAX(sort),0)+10 AS n FROM calc_recipe_items WHERE recipe_id=$1', [req.params.id])).rows[0].n;
+    const r = await db.pool.query(
+      'INSERT INTO calc_recipe_items (recipe_id, raw_material_id, qty_g, sort) VALUES ($1,$2,$3,$4) RETURNING id',
+      [req.params.id, intOrNull((req.body || {}).raw_material_id), asNum((req.body || {}).qty_g), next]);
+    res.json({ ok: true, id: r.rows[0].id });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+router.post('/api/recipes/line/:id(\\d+)', J, async (req, res) => {
+  if (!canEdit(req)) return denyEdit(res);
+  const b = req.body || {};
+  const sets = [], vals = [];
+  if (b.raw_material_id !== undefined) { vals.push(intOrNull(b.raw_material_id)); sets.push(`raw_material_id = $${vals.length}`); }
+  if (b.qty_g !== undefined) {
+    const qty = asNum(b.qty_g);
+    if (qty < 0) return res.status(400).json({ error: 'Граммы не бывают отрицательными' });
+    vals.push(qty); sets.push(`qty_g = $${vals.length}`);
+  }
+  if (!sets.length) return res.json({ ok: true });
+  vals.push(req.params.id);
+  try {
+    await db.pool.query(`UPDATE calc_recipe_items SET ${sets.join(', ')} WHERE id = $${vals.length}`, vals);
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+router.delete('/api/recipes/line/:id(\\d+)', async (req, res) => {
+  if (!canEdit(req)) return denyEdit(res);
+  try {
+    await db.pool.query('DELETE FROM calc_recipe_items WHERE id = $1', [req.params.id]);
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// ===========================================================================
 // Товарные листы: Рознич. тара, Хорека 250 г, Хорека 500, Салаты, Пучки и горшки
 // ===========================================================================
 // В Excel это отдельные листы одинаковой структуры: строки — статьи расчёта,
@@ -585,6 +724,10 @@ router.get('/api/sheet/:sheet', async (req, res) => {
     const rawMats = (await db.pool.query(
       "SELECT id, name FROM ref_raw_materials WHERE status = 'active' ORDER BY name")).rows;
     const rawPrices = await lastRawPrices();
+    // Рецептуры (миксы) с листа «Рецептуры»: у товара может стоять либо одно
+    // сырьё с граммажом, либо рецептура. Второе сильнее.
+    const recipes = await recipesData();
+    const recipeById = new Map(recipes.map((r) => [r.id, r]));
 
     const rows = (await db.pool.query(
       `SELECT * FROM calc_sheet_products
@@ -613,9 +756,17 @@ router.get('/api/sheet/:sheet', async (req, res) => {
       const rawPricePerKg = purchasePrice !== null ? purchasePrice : manualPrice;
       const rawPriceSource = purchasePrice !== null ? 'purchase'
         : (manualPrice !== null ? 'manual' : 'none');
-      const rawCost = (weight !== null && rawPricePerKg !== null)
-        ? (weight / 1000) * rawPricePerKg
-        : numOrNull(p.raw_cost);
+      // Выбрана рецептура — зелень считается по ней (сумма компонентов микса),
+      // граммаж и одиночное сырьё в расчёте не участвуют.
+      const recipe = p.recipe_id ? recipeById.get(p.recipe_id) : null;
+      // Ни у одного компонента нет цены — это не «ноль», а «неизвестно»:
+      // иначе микс выглядел бы бесплатным и занижал себестоимость.
+      const recipePriced = recipe ? recipe.items.length - recipe.missing_prices : 0;
+      const rawCost = recipe
+        ? (recipePriced > 0 ? recipe.total : null)
+        : ((weight !== null && rawPricePerKg !== null)
+          ? (weight / 1000) * rawPricePerKg
+          : numOrNull(p.raw_cost));
 
       // Себестоимость и ставки общие, отличается только отпускная цена,
       // поэтому считаем один и тот же расчёт дважды — по каждому прайсу.
@@ -654,6 +805,11 @@ router.get('/api/sheet/:sheet', async (req, res) => {
         prod_factor: factor,
         raw_material_id: p.raw_material_id,
         raw_material_name: rawMat ? rawMat.name : '',
+        recipe_id: p.recipe_id || null,
+        recipe_name: recipe ? recipe.name : '',
+        recipe_total_g: recipe ? recipe.total_g : null,
+        recipe_missing_prices: recipe ? recipe.missing_prices : 0,
+        recipe_empty: !!(recipe && !recipe.items.length),
         net_weight_g: weight,
         raw_price_per_kg: rawPricePerKg,
         raw_price_source: rawPriceSource,
@@ -689,6 +845,7 @@ router.get('/api/sheet/:sheet', async (req, res) => {
         id: t.id, name: t.name, total: Number(t.total),
         missing_prices: Number(t.missing_prices),
       })),
+      recipes: recipes.map((r) => ({ id: r.id, name: r.name, total: r.total, total_g: r.total_g })),
       sd_price_types: priceTypes.map((t) => ({ id: t.id, name: t.name })),
       sd_price_type_id: sdTypeId,
       raw_materials: rawMats.map((m) => ({
@@ -762,6 +919,9 @@ router.post('/api/sheet-product/:id(\\d+)', J, async (req, res) => {
     }
     if (b.raw_material_id !== undefined) {
       vals.push(intOrNull(b.raw_material_id)); sets.push(`raw_material_id = $${vals.length}`);
+    }
+    if (b.recipe_id !== undefined) {
+      vals.push(intOrNull(b.recipe_id)); sets.push(`recipe_id = $${vals.length}`);
     }
     if (!sets.length) return res.json({ ok: true });
     vals.push(req.user.id); sets.push(`updated_by = $${vals.length}`);

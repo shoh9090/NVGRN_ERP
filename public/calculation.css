@@ -352,6 +352,23 @@ input.calc-cell:focus, input.calc-name:focus {
 .calc-tpl-total b { font-family: 'Lora', Georgia, serif; font-size: 16px; font-variant-numeric: tabular-nums; }
 .calc-tpl .calc-partial { padding: 0 12px 8px; }
 
+/* Карточка рецептуры: сырьё, граммы, доля, цена/кг из Закупа, стоимость */
+.calc-rcp-cols, .calc-rcp-line {
+  display: grid; grid-template-columns: minmax(130px, 1fr) 66px 46px 86px 82px 26px; gap: 6px;
+}
+.calc-rcp-cols {
+  padding: 6px 8px 3px; font-size: 10px; font-weight: 800; color: var(--ink-faint);
+  text-transform: uppercase; letter-spacing: .03em;
+}
+.calc-rcp-cols span:not(:first-child) { text-align: right; }
+.calc-rcp-line { align-items: center; padding: 2px 8px; border-bottom: 1px solid var(--line-soft); }
+.calc-rcp-line > * { min-width: 0; }
+.calc-rcp-line .calc-cell { padding: 5px 6px; font-size: 12.5px; }
+.calc-rcp-line .calc-sel { font-size: 12.5px; width: 100%; }
+@media (max-width: 620px) {
+  .calc-rcp-cols, .calc-rcp-line { grid-template-columns: minmax(96px, 1fr) 54px 40px 74px 72px 24px; gap: 4px; }
+}
+
 /* Строка комплекта: название редактируется как обычный текст */
 .calc-tpl-line .calc-name { font-size: 12.5px; font-weight: 600; padding: 5px 6px; }
 .calc-tpl-empty-all { padding: 24px; text-align: center; color: var(--ink-faint); font-size: 13px; }
