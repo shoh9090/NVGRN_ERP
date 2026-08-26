@@ -392,15 +392,28 @@ async function ensureCalculationSchema(pool) {
   await q(`CREATE INDEX IF NOT EXISTS idx_calc_sheet_approvals
            ON calc_sheet_approvals (sheet, approved_at DESC, id DESC)`)
     .catch((e) => console.error('idx_calc_sheet_approvals:', e.message));
-  // Причина появилась после первых утверждений — добавляем отдельным ALTER.
-  await q(`ALTER TABLE calc_sheet_approvals ADD COLUMN IF NOT EXISTS reason TEXT DEFAULT ''`)
-    .catch((e) => console.error('calc_sheet_approvals reason:', e.message));
+  // Колонки добавляем и отдельными ALTER — на случай, если таблица уже была
+  // создана раньше в другом виде: CREATE TABLE IF NOT EXISTS её не тронет.
+  for (const [col, type] of [
+    ['approved_by', 'INT'], ['approved_by_name', "TEXT DEFAULT ''"],
+    ['reason', "TEXT DEFAULT ''"], ['comment', "TEXT DEFAULT ''"],
+    ['avg_cost', 'NUMERIC'], ['avg_margin', 'NUMERIC'],
+    ['changes', "TEXT DEFAULT ''"], ['data', 'JSONB'],
+  ]) {
+    await q(`ALTER TABLE calc_sheet_approvals ADD COLUMN IF NOT EXISTS ${col} ${type}`)
+      .catch((e) => console.error('calc_sheet_approvals ' + col + ':', e.message));
+  }
 
   // --- Рецептуры (миксы салатов) ------------------------------------------
   // Устроены как комплекты упаковки, только строки — сырьё в граммах на одну
   // упаковку. Цена за кг НЕ хранится: она приходит из Закупа (последняя принятая
   // приёмка) — тот же источник, что и у обычного сырья на товарном листе.
-  await q(`CREATE TABLE IF NOT EXISTS calc_recipes (
+  // ВНИМАНИЕ про имена. Имена calc_recipes / calc_recipe_items занимать НЕЛЬЗЯ:
+  // такие таблицы остались в базе от ранней версии Калькуляции, у них другая
+  // структура. CREATE TABLE IF NOT EXISTS на существующей таблице молча ничего
+  // не делает — колонки не появляются, и все запросы падают на «column does not
+  // exist». Поэтому миксы живут под своими именами calc_mix_*.
+  await q(`CREATE TABLE IF NOT EXISTS calc_mix_recipes (
     id SERIAL PRIMARY KEY,
     name TEXT NOT NULL,
     sort INT NOT NULL DEFAULT 100,
@@ -408,16 +421,16 @@ async function ensureCalculationSchema(pool) {
     comment TEXT DEFAULT '',
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_by INT, updated_at TIMESTAMPTZ
-  )`).catch((e) => console.error('calc_recipes:', e.message));
-  await q(`CREATE TABLE IF NOT EXISTS calc_recipe_items (
+  )`).catch((e) => console.error('calc_mix_recipes:', e.message));
+  await q(`CREATE TABLE IF NOT EXISTS calc_mix_items (
     id SERIAL PRIMARY KEY,
-    recipe_id INT NOT NULL REFERENCES calc_recipes(id) ON DELETE CASCADE,
+    recipe_id INT NOT NULL REFERENCES calc_mix_recipes(id) ON DELETE CASCADE,
     raw_material_id INT,                        -- ref_raw_materials
     qty_g NUMERIC NOT NULL DEFAULT 0,           -- граммы на одну упаковку
     sort INT NOT NULL DEFAULT 100
-  )`).catch((e) => console.error('calc_recipe_items:', e.message));
-  await q(`CREATE INDEX IF NOT EXISTS idx_calc_recipe_items ON calc_recipe_items (recipe_id, sort, id)`)
-    .catch((e) => console.error('idx_calc_recipe_items:', e.message));
+  )`).catch((e) => console.error('calc_mix_items:', e.message));
+  await q(`CREATE INDEX IF NOT EXISTS idx_calc_mix_items ON calc_mix_items (recipe_id, sort, id)`)
+    .catch((e) => console.error('idx_calc_mix_items:', e.message));
 
   // --- Товарные листы (Рознич. тара, Хорека 250/500, Салаты, Пучки) --------
   // В Excel это отдельные листы одинаковой структуры: строки — статьи расчёта,

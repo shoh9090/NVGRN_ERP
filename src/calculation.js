@@ -483,10 +483,10 @@ router.delete('/api/packaging/line/:id(\\d+)', async (req, res) => {
 // и товарными листами (там нужен только итог).
 async function recipesData() {
   const recipes = (await db.pool.query(
-    `SELECT id, name, sort FROM calc_recipes WHERE status = 'active' ORDER BY sort, name`)).rows;
+    `SELECT id, name, sort FROM calc_mix_recipes WHERE status = 'active' ORDER BY sort, name`)).rows;
   const lines = recipes.length ? (await db.pool.query(
     `SELECT i.id, i.recipe_id, i.raw_material_id, i.qty_g, i.sort, m.name AS raw_material_name
-       FROM calc_recipe_items i
+       FROM calc_mix_items i
        LEFT JOIN ref_raw_materials m ON m.id = i.raw_material_id
       WHERE i.recipe_id = ANY($1) ORDER BY i.recipe_id, i.sort, i.id`,
     [recipes.map((r) => r.id)])).rows : [];
@@ -538,8 +538,8 @@ router.post('/api/recipes/recipe', J, async (req, res) => {
   if (!canEdit(req)) return denyEdit(res);
   const name = String((req.body || {}).name || '').trim() || 'Новая рецептура';
   try {
-    const next = (await db.pool.query('SELECT COALESCE(MAX(sort),0)+10 AS n FROM calc_recipes')).rows[0].n;
-    const r = await db.pool.query('INSERT INTO calc_recipes (name, sort) VALUES ($1,$2) RETURNING id', [name, next]);
+    const next = (await db.pool.query('SELECT COALESCE(MAX(sort),0)+10 AS n FROM calc_mix_recipes')).rows[0].n;
+    const r = await db.pool.query('INSERT INTO calc_mix_recipes (name, sort) VALUES ($1,$2) RETURNING id', [name, next]);
     await db.log(req.user.id, 'calc_recipe_add', { id: r.rows[0].id, name });
     res.json({ ok: true, id: r.rows[0].id });
   } catch (e) { res.status(400).json({ error: e.message }); }
@@ -550,7 +550,7 @@ router.post('/api/recipes/recipe/:id(\\d+)', J, async (req, res) => {
   const name = String((req.body || {}).name || '').trim();
   if (!name) return res.status(400).json({ error: 'Название рецептуры не может быть пустым' });
   try {
-    await db.pool.query('UPDATE calc_recipes SET name = $1, updated_by = $2, updated_at = now() WHERE id = $3',
+    await db.pool.query('UPDATE calc_mix_recipes SET name = $1, updated_by = $2, updated_at = now() WHERE id = $3',
       [name, req.user.id, req.params.id]);
     res.json({ ok: true });
   } catch (e) { res.status(400).json({ error: e.message }); }
@@ -564,7 +564,7 @@ router.delete('/api/recipes/recipe/:id(\\d+)', async (req, res) => {
       "SELECT COUNT(*)::int AS n FROM calc_sheet_products WHERE recipe_id = $1 AND status = 'active'",
       [req.params.id])).rows[0].n;
     if (used > 0) return res.status(409).json({ error: 'Рецептура стоит у ' + used + ' товар(ов). Сначала смените её у них.' });
-    await db.pool.query("UPDATE calc_recipes SET status='archived', updated_by=$1, updated_at=now() WHERE id=$2",
+    await db.pool.query("UPDATE calc_mix_recipes SET status='archived', updated_by=$1, updated_at=now() WHERE id=$2",
       [req.user.id, req.params.id]);
     await db.log(req.user.id, 'calc_recipe_remove', { id: Number(req.params.id) });
     res.json({ ok: true });
@@ -575,9 +575,9 @@ router.post('/api/recipes/recipe/:id(\\d+)/line', J, async (req, res) => {
   if (!canEdit(req)) return denyEdit(res);
   try {
     const next = (await db.pool.query(
-      'SELECT COALESCE(MAX(sort),0)+10 AS n FROM calc_recipe_items WHERE recipe_id=$1', [req.params.id])).rows[0].n;
+      'SELECT COALESCE(MAX(sort),0)+10 AS n FROM calc_mix_items WHERE recipe_id=$1', [req.params.id])).rows[0].n;
     const r = await db.pool.query(
-      'INSERT INTO calc_recipe_items (recipe_id, raw_material_id, qty_g, sort) VALUES ($1,$2,$3,$4) RETURNING id',
+      'INSERT INTO calc_mix_items (recipe_id, raw_material_id, qty_g, sort) VALUES ($1,$2,$3,$4) RETURNING id',
       [req.params.id, intOrNull((req.body || {}).raw_material_id), asNum((req.body || {}).qty_g), next]);
     res.json({ ok: true, id: r.rows[0].id });
   } catch (e) { res.status(400).json({ error: e.message }); }
@@ -596,7 +596,7 @@ router.post('/api/recipes/line/:id(\\d+)', J, async (req, res) => {
   if (!sets.length) return res.json({ ok: true });
   vals.push(req.params.id);
   try {
-    await db.pool.query(`UPDATE calc_recipe_items SET ${sets.join(', ')} WHERE id = $${vals.length}`, vals);
+    await db.pool.query(`UPDATE calc_mix_items SET ${sets.join(', ')} WHERE id = $${vals.length}`, vals);
     res.json({ ok: true });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
@@ -604,7 +604,7 @@ router.post('/api/recipes/line/:id(\\d+)', J, async (req, res) => {
 router.delete('/api/recipes/line/:id(\\d+)', async (req, res) => {
   if (!canEdit(req)) return denyEdit(res);
   try {
-    await db.pool.query('DELETE FROM calc_recipe_items WHERE id = $1', [req.params.id]);
+    await db.pool.query('DELETE FROM calc_mix_items WHERE id = $1', [req.params.id]);
     res.json({ ok: true });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
