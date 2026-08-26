@@ -11,6 +11,9 @@
 
 /* ---------- Заголовок листа (фирменный вид Hub) ---------- */
 .calc-sheet-head { margin-bottom: 16px; }
+/* заголовок листа и кнопка «+ товар» в одну строку */
+.calc-sheet-top { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 5px; }
+.calc-sheet-top .calc-h1 { margin-bottom: 0; }
 .calc-h1 {
   font-family: 'Lora', Georgia, serif; font-weight: 600; font-size: 25px;
   margin: 0 0 5px; color: var(--ink); letter-spacing: -.01em;

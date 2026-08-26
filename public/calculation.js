@@ -711,8 +711,13 @@
     const d = SKU;
     const box = el('div');
 
+    // Кнопка «+ товар» — вверху, рядом с заголовком: лист длинный, и тянуться
+    // за ней в самый низ было неудобно.
     box.appendChild(el('div', { class: 'calc-sheet-head' }, [
-      el('h1', { class: 'calc-h1' }, d.sheet_title),
+      el('div', { class: 'calc-sheet-top' }, [
+        el('h1', { class: 'calc-h1' }, d.sheet_title),
+        canEdit() ? el('button', { class: 'calc-add', onclick: addProduct }, '+ товар') : null,
+      ]),
       el('div', { class: 'calc-sub' }, 'Строки — расчёт, столбцы — товары. Упаковка и затраты на штуку подтягиваются с листов «Упаковка» и «Производство». Серые цифры считает система, белые поля — ваш ввод.'),
     ]));
 
@@ -721,10 +726,8 @@
     }
 
     if (!d.products.length) {
-      box.appendChild(el('div', { class: 'calc-empty' }, [
-        el('div', {}, 'Товаров на этом листе пока нет.'),
-        canEdit() ? el('button', { class: 'calc-add', onclick: addProduct }, '+ товар') : null,
-      ]));
+      box.appendChild(el('div', { class: 'calc-empty' },
+        el('div', {}, canEdit() ? 'Товаров на этом листе пока нет — добавьте кнопкой «+ товар» вверху.' : 'Товаров на этом листе пока нет.')));
       return box;
     }
 
@@ -869,9 +872,6 @@
     box.appendChild(el('div', { class: 'calc-sku-wrap' },
       el('table', { class: 'calc-sku-t' }, el('tbody', {}, rows))));
 
-    if (canEdit()) {
-      box.appendChild(el('button', { class: 'calc-add', onclick: addProduct }, '+ товар'));
-    }
     box.appendChild(el('div', { class: 'calc-note' },
       'Зелень в упаковке = граммаж × стоимость зелени. Цена за кг берётся из Закупа по выбранному наименованию, а если её там нет — вписывается вручную. Упаковка — из выбранного комплекта на листе «Упаковка». Производственные и накладные затраты на штуку — с листа «Производство», делённые на среднемесячный выпуск'
       + (d.base.output ? ' (' + money0(d.base.output) + ' шт)' : '')
