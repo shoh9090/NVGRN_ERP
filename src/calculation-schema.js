@@ -371,6 +371,26 @@ async function ensureCalculationSchema(pool) {
     .catch((e) => console.error('calc pack names backfill:', e.message));
 
 
+  // --- Утверждённые расчёты (снимки товарных листов) ----------------------
+  // Снимок самодостаточен: в data лежат ВСЕ цифры листа на момент утверждения —
+  // и введённые, и посчитанные, и цена из SalesDoctor. Поэтому потом его нельзя
+  // испортить задним числом: убрали товар, поменяли комплект упаковки, подорожало
+  // сырьё — утверждённая версия остаётся такой, какой была.
+  await q(`CREATE TABLE IF NOT EXISTS calc_sheet_approvals (
+    id SERIAL PRIMARY KEY,
+    sheet TEXT NOT NULL,
+    approved_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    approved_by INT,
+    approved_by_name TEXT DEFAULT '',
+    comment TEXT DEFAULT '',
+    avg_cost NUMERIC,                           -- средняя с/с с браком по листу
+    avg_margin NUMERIC,                         -- средняя чистая маржа по прайсу 1
+    changes TEXT DEFAULT '',                    -- что изменилось против прошлой версии
+    data JSONB NOT NULL
+  )`);
+  await q(`CREATE INDEX IF NOT EXISTS idx_calc_sheet_approvals
+           ON calc_sheet_approvals (sheet, approved_at DESC, id DESC)`);
+
   // --- Рецептуры (миксы салатов) ------------------------------------------
   // Устроены как комплекты упаковки, только строки — сырьё в граммах на одну
   // упаковку. Цена за кг НЕ хранится: она приходит из Закупа (последняя принятая

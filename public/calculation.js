@@ -359,7 +359,7 @@
       title: s.ready ? s.title : 'Этот лист ещё не собран',
       onclick: () => {
         if (!s.ready) return toast('Лист «' + s.title + '» ещё не собран — идём по порядку');
-        sheet = s.key; load();
+        sheet = s.key; skuMode = 'approved'; load();
       },
     }, s.title)));
   }
@@ -732,6 +732,11 @@
   // Считает всё сервер, здесь только показ и отправка правок.
   let SKU = null;
 
+  // Лист открывается в утверждённом виде: цифры не меняются сами, пока их не
+  // утвердят заново. «Текущий» показывает пересчёт по сегодняшним ценам.
+  let skuMode = 'approved';   // approved | current
+  let SKU_SNAP = null;        // мета открытого снимка (когда смотрим утверждённое)
+
   async function loadSku() {
     let d;
     try { d = await api('/sheet/' + sheet); }
@@ -741,7 +746,17 @@
       main.appendChild(el('div', { class: 'calc-empty' }, 'Не удалось загрузить: ' + e.message));
       return;
     }
-    SKU = d;
+    let snap = null;
+    if (skuMode === 'approved' && d.approval && d.approval.has) {
+      try {
+        const s = await api('/approval/' + d.approval.id);
+        snap = { id: s.id, approved_at: s.approved_at, approved_by_name: s.approved_by_name, comment: s.comment };
+        // Снимок самодостаточен, но заголовок листа и состояние утверждения
+        // берём свежие — они про «сейчас», а не про момент утверждения.
+        d = Object.assign({}, s.data, { can_edit: false, approval: d.approval, sheet_title: d.sheet_title });
+      } catch (e) { snap = null; }   // снимок не открылся — покажем текущий расчёт
+    }
+    SKU = d; SKU_SNAP = snap;
     DATA = { can_edit: d.can_edit };
     render();
   }
@@ -919,6 +934,8 @@
       ]),
       el('div', { class: 'calc-sub' }, 'Строки — расчёт, столбцы — товары. Упаковка и затраты на штуку подтягиваются с листов «Упаковка» и «Производство». Серые цифры считает система, белые поля — ваш ввод.'),
     ]));
+
+    box.appendChild(approvalBar(d));
 
     if (d.no_output_reason) {
       box.appendChild(el('div', { class: 'calc-msg warn' }, '⚠️ ' + d.no_output_reason));
@@ -1107,6 +1124,147 @@
       + (d.base.output ? ' (' + money0(d.base.output) + ' шт)' : '')
       + '. ФОТ берётся из плитки «Персонал» (фонд окладов активных сотрудников), делённый на тот же выпуск. Показан отдельно и в себестоимость не входит — так же, как в вашем файле.'));
     return box;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Утверждение расчёта: панель, окно утверждения, история
+  // ---------------------------------------------------------------------------
+  const dtRu = (s) => { try { return new Date(s).toLocaleDateString('ru-RU'); } catch (e) { return String(s || ''); } };
+  const signPct = (v) => (v === null || v === undefined ? '' : (v > 0 ? '+' : '') + money(v, 0) + '%');
+
+  // Панель под заголовком листа: где мы сейчас (утверждённое/текущее), насколько
+  // текущий расчёт ушёл от утверждённого, и кнопки «Утвердить» / «История».
+  function approvalBar(d) {
+    if (SKU_SNAP && SKU_SNAP.old) return el('div');   // смотрим старую версию — панель ни к чему
+    const a = d.approval || { has: false };
+    const wrap = el('div', { class: 'calc-appr' });
+
+    if (a.has) {
+      const tabs = el('div', { class: 'calc-appr-modes' }, [
+        el('button', { class: 'calc-appr-mode' + (skuMode === 'approved' ? ' on' : ''),
+          onclick: () => { if (skuMode !== 'approved') { skuMode = 'approved'; loadSku(); } } }, 'Утверждённый'),
+        el('button', { class: 'calc-appr-mode' + (skuMode === 'current' ? ' on' : ''),
+          onclick: () => { if (skuMode !== 'current') { skuMode = 'current'; loadSku(); } } }, 'Текущий'),
+      ]);
+      wrap.appendChild(tabs);
+      wrap.appendChild(el('div', { class: 'calc-appr-info' }, skuMode === 'approved'
+        ? ('утверждён ' + dtRu(a.approved_at) + (a.approved_by_name ? ' · ' + a.approved_by_name : '')
+          + (SKU_SNAP && SKU_SNAP.comment ? ' · «' + SKU_SNAP.comment + '»' : ''))
+        : 'пересчёт по сегодняшним ценам · в утверждённую версию не попадает'));
+    } else {
+      wrap.appendChild(el('div', { class: 'calc-appr-info' }, 'Расчёт ещё ни разу не утверждали'));
+    }
+
+    const btns = el('div', { class: 'calc-appr-btns' }, [
+      el('button', { class: 'calc-tbtn', onclick: openApprovalHistory }, 'История'),
+      canEditUser() ? el('button', { class: 'calc-tbtn primary', onclick: () => openApprove(d) }, '✓ Утвердить') : null,
+    ]);
+    wrap.appendChild(btns);
+
+    const rows = [wrap];
+    // Плашка расхождения. Порог 10%: у зелени цены скачут, дёргать по мелочи незачем.
+    if (a.has && a.diff_pct !== null && a.diff_pct !== undefined && Math.abs(a.diff_pct) >= (a.diff_pct_limit || 10)) {
+      rows.push(el('div', { class: 'calc-appr-warn' }, [
+        el('b', {}, 'Текущий расчёт разошёлся с утверждённым: с/с ' + signPct(a.diff_pct)),
+        a.changes ? el('div', {}, a.changes) : null,
+      ]));
+    }
+    return el('div', {}, rows);
+  }
+
+  // Право менять цифры берём у пользователя, а не у листа: в утверждённом виде
+  // лист открыт только на чтение, но «Утвердить» и «История» должны работать.
+  const canEditUser = () => !!(window.HUB_USER && (window.HUB_USER.isAdmin || window.HUB_USER.isFinance));
+
+  function openApprove(d) {
+    const cmt = el('input', { type: 'text', class: 'calc-modal-inp', maxlength: '300',
+      placeholder: 'например: прайс на сентябрь' });
+    const a = d.approval || { has: false };
+    const body = el('div', {}, [
+      el('div', { class: 'calc-modal-facts' }, 'Товаров на листе: ' + d.products.length
+        + (a.has && a.diff_pct !== null && a.diff_pct !== undefined ? ' · с/с к прошлой версии ' + signPct(a.diff_pct) : '')),
+      el('p', { class: 'calc-modal-note' },
+        'Сохраним снимок листа целиком: все цифры, включая цену из SalesDoctor. Он не изменится, что бы дальше ни случилось с ценами в Закупе.'),
+      el('div', { style: 'margin-top:12px' }, [
+        el('div', { class: 'calc-modal-lbl' }, 'Комментарий (необязательно)'),
+        cmt,
+      ]),
+    ]);
+    const ok = el('button', { class: 'calc-btn primary', onclick: async () => {
+      ok.disabled = true;
+      try {
+        const r = await post('/sheet/' + sheet + '/approve', { comment: cmt.value });
+        m.close(); toast('Расчёт утверждён');
+        skuMode = 'approved';
+        await loadSku();
+        if (r.changes) toast(r.changes);
+      } catch (e) { toast(e.message, true); ok.disabled = false; }
+    } }, 'Утвердить');
+    const m = calcModal('Утвердить расчёт листа «' + d.sheet_title + '»', body, [
+      el('button', { class: 'calc-btn', onclick: () => m.close() }, 'Отмена'), ok,
+    ]);
+  }
+
+  async function openApprovalHistory() {
+    let h;
+    try { h = await api('/sheet/' + sheet + '/approvals'); }
+    catch (e) { return toast(e.message, true); }
+
+    const rows = [];
+    const a = h.approval || { has: false };
+    // Текущий расчёт — всегда первой строкой: видно, есть ли расхождение.
+    rows.push(el('div', { class: 'calc-hist-now' + (a.has && a.diff_pct !== null && Math.abs(a.diff_pct) >= (a.diff_pct_limit || 10) ? ' warn' : '') }, [
+      el('div', { class: 'calc-hist-l1' }, [
+        el('b', {}, 'Текущий расчёт · не утверждён'),
+        el('span', {}, (h.current.avg_cost === null ? '—' : 'с/с ' + money0(h.current.avg_cost))
+          + (a.has && a.diff_pct !== null && a.diff_pct !== undefined ? ' · ' + signPct(a.diff_pct) + ' к последнему' : '')),
+      ]),
+      a.has && a.changes ? el('div', { class: 'calc-hist-ch' }, a.changes) : null,
+    ]));
+
+    if (!h.items.length) {
+      rows.push(el('div', { class: 'calc-tpl-empty' }, 'Утверждений пока нет. Нажмите «Утвердить», чтобы зафиксировать первый расчёт.'));
+    }
+    h.items.forEach((it, i) => {
+      rows.push(el('div', { class: 'calc-hist-it' }, [
+        el('div', { class: 'calc-hist-l1' }, [
+          el('b', {}, dtRu(it.approved_at) + (i === 0 ? '' : '')),
+          el('span', {}, (it.avg_cost === null ? '—' : 'с/с ' + money0(it.avg_cost))
+            + (it.avg_margin === null ? '' : ' · маржа ' + money(it.avg_margin, 0) + '%')),
+        ]),
+        i === 0 ? el('span', { class: 'calc-hist-badge' }, 'действующий') : null,
+        el('div', { class: 'calc-hist-who' }, (it.approved_by_name || '—') + (it.comment ? ' · «' + it.comment + '»' : '')),
+        it.changes ? el('div', { class: 'calc-hist-ch' }, it.changes) : null,
+        el('button', { class: 'calc-tbtn small', onclick: async () => {
+          m.close();
+          await openSnapshot(it.id);
+        } }, 'Открыть лист на эту дату'),
+      ]));
+    });
+
+    const m = calcModal('История утверждений · ' + h.sheet_title,
+      el('div', { class: 'calc-hist' }, rows),
+      [el('button', { class: 'calc-btn', onclick: () => m.close() }, 'Закрыть')]);
+  }
+
+  // Открыть старую версию: показываем снимок как есть, без пересчёта.
+  async function openSnapshot(id) {
+    let s;
+    try { s = await api('/approval/' + id); }
+    catch (e) { return toast(e.message, true); }
+    SKU = Object.assign({}, s.data, { can_edit: false, approval: { has: false } });
+    SKU_SNAP = { id: s.id, approved_at: s.approved_at, approved_by_name: s.approved_by_name, comment: s.comment, old: true };
+    DATA = { can_edit: false };
+    const main = $('#calc-main'); main.innerHTML = '';
+    main.appendChild(sheetTabs());
+    const back = el('div', { class: 'calc-appr-warn' }, [
+      el('b', {}, 'Утверждение от ' + dtRu(s.approved_at)
+        + (s.approved_by_name ? ' · ' + s.approved_by_name : '') + (s.comment ? ' · «' + s.comment + '»' : '')),
+      el('div', {}, 'Это снимок: цифры такие, какими были в тот день. Правка недоступна.'),
+      el('button', { class: 'calc-tbtn small', style: 'margin-top:8px', onclick: () => { skuMode = 'approved'; loadSku(); } }, '← Вернуться к листу'),
+    ]);
+    const body = skuSheet();
+    main.appendChild(el('div', { class: 'calc-sheet' }, [back, body]));
   }
 
   // Подтверждение перед тем, как убрать товар с листа. Показываем, что именно

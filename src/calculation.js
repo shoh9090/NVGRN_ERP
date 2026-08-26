@@ -701,10 +701,11 @@ async function lastRawPrices() {
   return byId;
 }
 
-router.get('/api/sheet/:sheet', async (req, res) => {
-  const sheet = String(req.params.sheet || '');
-  if (!SHEETS[sheet]) return res.status(404).json({ error: 'Такого листа нет' });
-  try {
+// Полный расчёт товарного листа. Вынесен из маршрута, потому что этот же объект
+// целиком ложится в снимок при утверждении — чтобы утверждённая версия и экран
+// показывали ровно одни и те же цифры.
+async function sheetPayload(sheet) {
+  {
     const base = await perUnitByKind();
 
     // Комплекты упаковки с листа «Упаковка» — вместе с их стоимостью.
@@ -829,7 +830,7 @@ router.get('/api/sheet/:sheet', async (req, res) => {
       };
     });
 
-    res.json({
+    return {
       sheet,
       sheet_title: SHEETS[sheet],
       base: {
@@ -852,14 +853,170 @@ router.get('/api/sheet/:sheet', async (req, res) => {
         id: m.id, name: m.name, price_per_kg: rawPrices.has(m.id) ? rawPrices.get(m.id).price : null,
       })),
       products,
-      can_edit: canEdit(req),
       no_output_reason: base.output > 0 ? null
         : 'На листе «Производство» не указан среднемесячный выпуск — затраты на штуку посчитать не из чего.',
-    });
+    };
+  }
+}
+
+router.get('/api/sheet/:sheet', async (req, res) => {
+  const sheet = String(req.params.sheet || '');
+  if (!SHEETS[sheet]) return res.status(404).json({ error: 'Такого листа нет' });
+  try {
+    const payload = await sheetPayload(sheet);
+    payload.can_edit = canEdit(req);
+    // Действующее утверждение и расхождение с текущим расчётом.
+    payload.approval = await approvalState(sheet, payload);
+    res.json(payload);
   } catch (e) {
     console.error('[КАЛЬКУЛЯЦИЯ] товарный лист:', e.message);
     res.status(400).json({ error: e.message });
   }
+});
+
+// ===========================================================================
+// Утверждение расчёта и история
+// ===========================================================================
+// Утверждение — это ФОТОГРАФИЯ листа, а не пересчёт. Цены сырья остаются
+// живыми (приходят из Закупа), но лист по умолчанию показывает утверждённые
+// цифры: иначе себестоимость менялась бы каждый день сама по себе, и сравнить
+// август с июлем было бы не с чем.
+const APPROVAL_DIFF_PCT = 10; // с какого расхождения предупреждаем
+
+// Итоги листа для строки истории: средняя с/с с браком и средняя маржа по прайсу 1.
+function sheetTotals(payload) {
+  const items = (payload && payload.products) || [];
+  const costs = items.map((x) => x.calc && x.calc.cost_defect).filter((v) => v !== null && v !== undefined);
+  const margins = items.map((x) => x.calc && x.calc.net_pct).filter((v) => v !== null && v !== undefined);
+  const avg = (arr) => (arr.length ? arr.reduce((s, v) => s + Number(v), 0) / arr.length : null);
+  return { avg_cost: avg(costs), avg_margin: avg(margins) };
+}
+
+// Что изменилось против прошлой версии. Считаем автоматически: человек пишет
+// свой комментарий, а «кто именно поехал» система должна найти сама.
+function describeChanges(prevPayload, nowPayload) {
+  const prev = new Map(((prevPayload && prevPayload.products) || []).map((p) => [p.id, p]));
+  const now = (nowPayload && nowPayload.products) || [];
+  const added = [], gone = [], moved = [];
+  for (const p of now) {
+    const was = prev.get(p.id);
+    if (!was) { added.push(p.name); continue; }
+    const a = was.calc && was.calc.cost_defect, b = p.calc && p.calc.cost_defect;
+    if (a === null || a === undefined || !(a > 0) || b === null || b === undefined) continue;
+    const diff = ((b - a) / a) * 100;
+    if (Math.abs(diff) >= 0.5) moved.push({ name: p.name, diff });
+  }
+  for (const [id, p] of prev) if (!now.some((x) => x.id === id)) gone.push(p.name);
+
+  const parts = [];
+  moved.sort((x, y) => Math.abs(y.diff) - Math.abs(x.diff));
+  const shown = moved.slice(0, 3).map((m) => m.name + ' ' + (m.diff > 0 ? '+' : '') + Math.round(m.diff) + '%');
+  if (shown.length) {
+    if (moved.length === now.length && now.length > 1) {
+      // Поехали все — значит дело не в конкретном сырье, а в общем: затраты
+      // на штуку с листа «Производство» или ФОТ.
+      parts.push('все товары (' + now.length + '): ' + shown.join(', ') + (moved.length > 3 ? ' и др.' : ''));
+    } else {
+      parts.push(shown.join(', ') + (moved.length > 3 ? ' и ещё ' + (moved.length - 3) : ''));
+      const same = now.length - moved.length - added.length;
+      if (same > 0) parts.push('остальные ' + same + ' без изменений');
+    }
+  }
+  if (added.length) parts.push('добавлен(ы): ' + added.join(', '));
+  if (gone.length) parts.push('убран(ы): ' + gone.join(', '));
+  if (!parts.length) return 'без изменений в цифрах';
+  return parts.join(' · ');
+}
+
+async function lastApproval(sheet) {
+  return (await db.pool.query(
+    `SELECT id, sheet, approved_at, approved_by_name, comment, avg_cost, avg_margin, changes, data
+       FROM calc_sheet_approvals WHERE sheet = $1 ORDER BY approved_at DESC, id DESC LIMIT 1`,
+    [sheet])).rows[0] || null;
+}
+
+// Состояние утверждения для экрана: есть ли действующая версия и насколько
+// текущий расчёт от неё ушёл.
+async function approvalState(sheet, nowPayload) {
+  const last = await lastApproval(sheet);
+  if (!last) return { has: false, diff_pct_limit: APPROVAL_DIFF_PCT };
+  const now = sheetTotals(nowPayload);
+  const wasCost = last.avg_cost === null ? null : Number(last.avg_cost);
+  const diff = (wasCost && wasCost > 0 && now.avg_cost !== null) ? ((now.avg_cost - wasCost) / wasCost) * 100 : null;
+  return {
+    has: true,
+    id: last.id,
+    approved_at: last.approved_at,
+    approved_by_name: last.approved_by_name || '',
+    comment: last.comment || '',
+    avg_cost: wasCost,
+    avg_margin: last.avg_margin === null ? null : Number(last.avg_margin),
+    current_avg_cost: now.avg_cost,
+    diff_pct: diff,
+    diff_pct_limit: APPROVAL_DIFF_PCT,
+    // Что изменилось прямо сейчас — тем же кодом, что и подпись в истории.
+    changes: describeChanges(last.data, nowPayload),
+  };
+}
+
+// Список утверждений (без тяжёлого data — он нужен только при открытии версии).
+router.get('/api/sheet/:sheet/approvals', async (req, res) => {
+  const sheet = String(req.params.sheet || '');
+  if (!SHEETS[sheet]) return res.status(404).json({ error: 'Такого листа нет' });
+  try {
+    const rows = (await db.pool.query(
+      `SELECT id, approved_at, approved_by_name, comment, avg_cost, avg_margin, changes
+         FROM calc_sheet_approvals WHERE sheet = $1 ORDER BY approved_at DESC, id DESC LIMIT 60`,
+      [sheet])).rows;
+    const now = await sheetPayload(sheet);
+    res.json({
+      sheet, sheet_title: SHEETS[sheet], can_edit: canEdit(req),
+      items: rows.map((r) => ({
+        id: r.id, approved_at: r.approved_at, approved_by_name: r.approved_by_name || '',
+        comment: r.comment || '', changes: r.changes || '',
+        avg_cost: r.avg_cost === null ? null : Number(r.avg_cost),
+        avg_margin: r.avg_margin === null ? null : Number(r.avg_margin),
+      })),
+      current: sheetTotals(now),
+      approval: await approvalState(sheet, now),
+    });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Открыть утверждённую версию: отдаём снимок как есть, без пересчёта.
+router.get('/api/approval/:id(\\d+)', async (req, res) => {
+  try {
+    const r = (await db.pool.query(
+      `SELECT id, sheet, approved_at, approved_by_name, comment, changes, data
+         FROM calc_sheet_approvals WHERE id = $1`, [req.params.id])).rows[0];
+    if (!r) return res.status(404).json({ error: 'Утверждение не найдено' });
+    res.json({
+      id: r.id, sheet: r.sheet, approved_at: r.approved_at, approved_by_name: r.approved_by_name || '',
+      comment: r.comment || '', changes: r.changes || '',
+      data: Object.assign({}, r.data, { can_edit: false }),
+    });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+router.post('/api/sheet/:sheet/approve', J, async (req, res) => {
+  if (!canEdit(req)) return denyEdit(res);
+  const sheet = String(req.params.sheet || '');
+  if (!SHEETS[sheet]) return res.status(404).json({ error: 'Такого листа нет' });
+  try {
+    const payload = await sheetPayload(sheet);
+    if (!payload.products.length) return res.status(400).json({ error: 'На листе нет товаров — утверждать нечего' });
+    const totals = sheetTotals(payload);
+    const prev = await lastApproval(sheet);
+    const changes = prev ? describeChanges(prev.data, payload) : 'первое утверждение листа';
+    const r = await db.pool.query(
+      `INSERT INTO calc_sheet_approvals
+         (sheet, approved_by, approved_by_name, comment, avg_cost, avg_margin, changes, data)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+      [sheet, req.user.id, req.user.name || '', String((req.body || {}).comment || '').trim().slice(0, 300),
+        totals.avg_cost, totals.avg_margin, changes, JSON.stringify(payload)]);
+    await db.log(req.user.id, 'calc_sheet_approve', { sheet, id: r.rows[0].id });
+    res.json({ ok: true, id: r.rows[0].id, changes });
+  } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 router.post('/api/sheet/:sheet/product', J, async (req, res) => {
