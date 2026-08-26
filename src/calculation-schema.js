@@ -388,9 +388,10 @@ async function ensureCalculationSchema(pool) {
     avg_margin NUMERIC,                         -- средняя чистая маржа по прайсу 1
     changes TEXT DEFAULT '',                    -- что изменилось против прошлой версии
     data JSONB NOT NULL
-  )`);
+  )`).catch((e) => console.error('calc_sheet_approvals:', e.message));
   await q(`CREATE INDEX IF NOT EXISTS idx_calc_sheet_approvals
-           ON calc_sheet_approvals (sheet, approved_at DESC, id DESC)`);
+           ON calc_sheet_approvals (sheet, approved_at DESC, id DESC)`)
+    .catch((e) => console.error('idx_calc_sheet_approvals:', e.message));
   // Причина появилась после первых утверждений — добавляем отдельным ALTER.
   await q(`ALTER TABLE calc_sheet_approvals ADD COLUMN IF NOT EXISTS reason TEXT DEFAULT ''`)
     .catch((e) => console.error('calc_sheet_approvals reason:', e.message));
@@ -407,15 +408,16 @@ async function ensureCalculationSchema(pool) {
     comment TEXT DEFAULT '',
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_by INT, updated_at TIMESTAMPTZ
-  )`);
+  )`).catch((e) => console.error('calc_recipes:', e.message));
   await q(`CREATE TABLE IF NOT EXISTS calc_recipe_items (
     id SERIAL PRIMARY KEY,
     recipe_id INT NOT NULL REFERENCES calc_recipes(id) ON DELETE CASCADE,
     raw_material_id INT,                        -- ref_raw_materials
     qty_g NUMERIC NOT NULL DEFAULT 0,           -- граммы на одну упаковку
     sort INT NOT NULL DEFAULT 100
-  )`);
-  await q(`CREATE INDEX IF NOT EXISTS idx_calc_recipe_items ON calc_recipe_items (recipe_id, sort, id)`);
+  )`).catch((e) => console.error('calc_recipe_items:', e.message));
+  await q(`CREATE INDEX IF NOT EXISTS idx_calc_recipe_items ON calc_recipe_items (recipe_id, sort, id)`)
+    .catch((e) => console.error('idx_calc_recipe_items:', e.message));
 
   // --- Товарные листы (Рознич. тара, Хорека 250/500, Салаты, Пучки) --------
   // В Excel это отдельные листы одинаковой структуры: строки — статьи расчёта,

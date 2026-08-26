@@ -66,8 +66,14 @@ const BLOCKS = [
   },
 ];
 
+// Сбой миграции НЕ должен ронять всю плитку: раньше любая ошибка в схеме
+// давала «Internal Server Error» на весь /calculation, включая листы, которые
+// с этой таблицей никак не связаны. Пишем ошибку в лог и работаем дальше —
+// не хватит какой-то таблицы, отвалится только её экран, а не всё сразу.
 router.use(async (req, res, next) => {
-  try { await require('./calculation-schema').ensureCalculationSchema(db.pool); next(); } catch (e) { next(e); }
+  try { await require('./calculation-schema').ensureCalculationSchema(db.pool); }
+  catch (e) { console.error('[КАЛЬКУЛЯЦИЯ] схема:', e.message); }
+  next();
 });
 
 router.get('/', async (req, res) => {
