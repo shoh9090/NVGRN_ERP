@@ -950,6 +950,11 @@
     const tplOptions = d.pack_templates;
     const rawOptions = d.raw_materials || [];
     const recipeOptions = d.recipes || [];
+    // Строка «Рецептура» нужна не везде: на рознице это восемь выпадашек
+    // «— одно сырьё —» и ничего больше. Показываем её на «Салатах» и там, где
+    // рецептура уже кому-то подключена. На остальных листах подключить микс
+    // можно через меню «⋯» у товара — тогда строка появится сама.
+    const showRecipeRow = sheet === 'salads' || d.products.some((x) => x.recipe_id);
     const rows = [];
 
     // --- шапка: название и штрих-код товара ---
@@ -970,7 +975,12 @@
         class: 'calc-dots', title: 'Действия с товаром', 'aria-label': 'Действия с товаром',
         onclick: (e) => {
           e.stopPropagation();
-          dotsMenu(e.currentTarget, [{ label: 'Убрать с листа', danger: true, onClick: () => confirmRemoveProduct(x, d) }]);
+          dotsMenu(e.currentTarget, [
+            // Пункт нужен только когда строки «Рецептура» на листе нет: иначе
+            // подключить микс было бы негде.
+            ...(showRecipeRow ? [] : [{ label: 'Подключить рецептуру', onClick: () => openAttachRecipe(x, d) }]),
+            { label: 'Убрать с листа', danger: true, onClick: () => confirmRemoveProduct(x, d) },
+          ]);
         },
       }, '⋯') : null,
     ])))));
@@ -985,7 +995,7 @@
     ]), null, allRowBtn('net_weight_g', 'Граммаж всем товарам листа', () => numCtl('гр'), readNum)));
 
     // Рецептура (микс) вместо одного сырья. Не выбрана — лист работает по-старому.
-    rows.push(skuRow('Рецептура', '', (x) => {
+    if (showRecipeRow) rows.push(skuRow('Рецептура', '', (x) => {
       if (!canEdit()) return el('span', {}, x.recipe_name || '—');
       const sel = el('select', { class: 'calc-sel' }, [el('option', { value: '' }, '— одно сырьё —')]
         .concat(recipeOptions.map((r) => {
@@ -1279,6 +1289,37 @@
     ]);
     const body = skuSheet();
     main.appendChild(el('div', { class: 'calc-sheet' }, [back, body]));
+  }
+
+  // Подключить микс к товару на листе, где строки «Рецептура» не видно.
+  // После сохранения строка появится сама — и дальше рецептура меняется в ней.
+  function openAttachRecipe(x, d) {
+    const list = d.recipes || [];
+    if (!list.length) {
+      const m0 = calcModal('Рецептур пока нет',
+        el('p', { class: 'calc-modal-note' },
+          'Сначала соберите микс на вкладке «Рецептуры»: выберите сырьё и впишите граммы. После этого его можно будет подключить к товару.'),
+        [el('button', { class: 'calc-btn', onclick: () => m0.close() }, 'Понятно')]);
+      return;
+    }
+    const sel = el('select', { class: 'calc-modal-inp' },
+      [el('option', { value: '' }, '— выберите рецептуру —')]
+        .concat(list.map((r) => el('option', { value: String(r.id) }, r.name + ' · ' + money(r.total_g, 0) + ' гр'))));
+    const body = el('div', {}, [
+      el('div', { class: 'calc-modal-facts' }, x.name),
+      el('p', { class: 'calc-modal-note' },
+        'Зелень будет считаться по рецептуре: граммаж и одиночное сырьё в расчёте участвовать перестанут. На листе появится строка «Рецептура».'),
+      el('div', { style: 'margin-top:12px' }, [el('div', { class: 'calc-modal-lbl' }, 'Рецептура'), sel]),
+    ]);
+    const ok = el('button', { class: 'calc-btn primary', onclick: async () => {
+      if (!sel.value) return toast('Выберите рецептуру', true);
+      ok.disabled = true;
+      try { await save(x.id, { recipe_id: sel.value }); m.close(); toast('Рецептура подключена'); await load(); }
+      catch (e) { toast(e.message, true); ok.disabled = false; }
+    } }, 'Подключить');
+    const m = calcModal('Подключить рецептуру', body, [
+      el('button', { class: 'calc-btn', onclick: () => m.close() }, 'Отмена'), ok,
+    ]);
   }
 
   // Подтверждение перед тем, как убрать товар с листа. Показываем, что именно
