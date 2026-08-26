@@ -867,6 +867,7 @@ router.get('/api/sheet/:sheet', async (req, res) => {
     payload.can_edit = canEdit(req);
     // Действующее утверждение и расхождение с текущим расчётом.
     payload.approval = await approvalState(sheet, payload);
+    payload.approval_reasons = APPROVAL_REASONS;
     res.json(payload);
   } catch (e) {
     console.error('[КАЛЬКУЛЯЦИЯ] товарный лист:', e.message);
@@ -882,6 +883,21 @@ router.get('/api/sheet/:sheet', async (req, res) => {
 // цифры: иначе себестоимость менялась бы каждый день сама по себе, и сравнить
 // август с июлем было бы не с чем.
 const APPROVAL_DIFF_PCT = 10; // с какого расхождения предупреждаем
+
+// Причина утверждения. Отвечает на вопрос «зачем утверждаем сейчас» — это
+// решение человека. На вопрос «что изменилось» отвечает автоподпись (describeChanges).
+// Список держим в коде: причин мало, они стабильны, а править их проще правкой
+// строки, чем заводить справочник с отдельным экраном управления.
+const APPROVAL_REASONS = [
+  { code: 'planned', label: 'Плановое утверждение' },
+  { code: 'raw_price', label: 'Изменились цены на сырьё' },
+  { code: 'packaging', label: 'Изменилась упаковка' },
+  { code: 'factory', label: 'Изменились затраты завода' },
+  { code: 'recipe', label: 'Изменили состав или граммаж' },
+  { code: 'price', label: 'Пересмотр отпускных цен' },
+  { code: 'fix', label: 'Исправление ошибки' },
+];
+const REASON_LABEL = (code) => (APPROVAL_REASONS.find((r) => r.code === code) || {}).label || '';
 
 // Итоги листа для строки истории: средняя с/с с браком и средняя маржа по прайсу 1.
 function sheetTotals(payload) {
@@ -930,7 +946,7 @@ function describeChanges(prevPayload, nowPayload) {
 
 async function lastApproval(sheet) {
   return (await db.pool.query(
-    `SELECT id, sheet, approved_at, approved_by_name, comment, avg_cost, avg_margin, changes, data
+    `SELECT id, sheet, approved_at, approved_by_name, reason, comment, avg_cost, avg_margin, changes, data
        FROM calc_sheet_approvals WHERE sheet = $1 ORDER BY approved_at DESC, id DESC LIMIT 1`,
     [sheet])).rows[0] || null;
 }
@@ -948,6 +964,8 @@ async function approvalState(sheet, nowPayload) {
     id: last.id,
     approved_at: last.approved_at,
     approved_by_name: last.approved_by_name || '',
+    reason: last.reason || '',
+    reason_label: REASON_LABEL(last.reason),
     comment: last.comment || '',
     avg_cost: wasCost,
     avg_margin: last.avg_margin === null ? null : Number(last.avg_margin),
@@ -965,14 +983,16 @@ router.get('/api/sheet/:sheet/approvals', async (req, res) => {
   if (!SHEETS[sheet]) return res.status(404).json({ error: 'Такого листа нет' });
   try {
     const rows = (await db.pool.query(
-      `SELECT id, approved_at, approved_by_name, comment, avg_cost, avg_margin, changes
+      `SELECT id, approved_at, approved_by_name, reason, comment, avg_cost, avg_margin, changes
          FROM calc_sheet_approvals WHERE sheet = $1 ORDER BY approved_at DESC, id DESC LIMIT 60`,
       [sheet])).rows;
     const now = await sheetPayload(sheet);
     res.json({
       sheet, sheet_title: SHEETS[sheet], can_edit: canEdit(req),
+      reasons: APPROVAL_REASONS,
       items: rows.map((r) => ({
         id: r.id, approved_at: r.approved_at, approved_by_name: r.approved_by_name || '',
+        reason: r.reason || '', reason_label: REASON_LABEL(r.reason),
         comment: r.comment || '', changes: r.changes || '',
         avg_cost: r.avg_cost === null ? null : Number(r.avg_cost),
         avg_margin: r.avg_margin === null ? null : Number(r.avg_margin),
@@ -987,11 +1007,12 @@ router.get('/api/sheet/:sheet/approvals', async (req, res) => {
 router.get('/api/approval/:id(\\d+)', async (req, res) => {
   try {
     const r = (await db.pool.query(
-      `SELECT id, sheet, approved_at, approved_by_name, comment, changes, data
+      `SELECT id, sheet, approved_at, approved_by_name, reason, comment, changes, data
          FROM calc_sheet_approvals WHERE id = $1`, [req.params.id])).rows[0];
     if (!r) return res.status(404).json({ error: 'Утверждение не найдено' });
     res.json({
       id: r.id, sheet: r.sheet, approved_at: r.approved_at, approved_by_name: r.approved_by_name || '',
+      reason: r.reason || '', reason_label: REASON_LABEL(r.reason),
       comment: r.comment || '', changes: r.changes || '',
       data: Object.assign({}, r.data, { can_edit: false }),
     });
@@ -1003,6 +1024,10 @@ router.post('/api/sheet/:sheet/approve', J, async (req, res) => {
   const sheet = String(req.params.sheet || '');
   if (!SHEETS[sheet]) return res.status(404).json({ error: 'Такого листа нет' });
   try {
+    const reason = String((req.body || {}).reason || '');
+    if (!APPROVAL_REASONS.some((r) => r.code === reason)) {
+      return res.status(400).json({ error: 'Выберите причину утверждения' });
+    }
     const payload = await sheetPayload(sheet);
     if (!payload.products.length) return res.status(400).json({ error: 'На листе нет товаров — утверждать нечего' });
     const totals = sheetTotals(payload);
@@ -1010,9 +1035,10 @@ router.post('/api/sheet/:sheet/approve', J, async (req, res) => {
     const changes = prev ? describeChanges(prev.data, payload) : 'первое утверждение листа';
     const r = await db.pool.query(
       `INSERT INTO calc_sheet_approvals
-         (sheet, approved_by, approved_by_name, comment, avg_cost, avg_margin, changes, data)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-      [sheet, req.user.id, req.user.name || '', String((req.body || {}).comment || '').trim().slice(0, 300),
+         (sheet, approved_by, approved_by_name, reason, comment, avg_cost, avg_margin, changes, data)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+      [sheet, req.user.id, req.user.name || '', reason,
+        String((req.body || {}).comment || '').trim().slice(0, 300),
         totals.avg_cost, totals.avg_margin, changes, JSON.stringify(payload)]);
     await db.log(req.user.id, 'calc_sheet_approve', { sheet, id: r.rows[0].id });
     res.json({ ok: true, id: r.rows[0].id, changes });

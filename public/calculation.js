@@ -1149,7 +1149,8 @@
       wrap.appendChild(tabs);
       wrap.appendChild(el('div', { class: 'calc-appr-info' }, skuMode === 'approved'
         ? ('утверждён ' + dtRu(a.approved_at) + (a.approved_by_name ? ' · ' + a.approved_by_name : '')
-          + (SKU_SNAP && SKU_SNAP.comment ? ' · «' + SKU_SNAP.comment + '»' : ''))
+          + (a.reason_label ? ' · ' + a.reason_label : '')
+          + (a.comment ? ' · «' + a.comment + '»' : ''))
         : 'пересчёт по сегодняшним ценам · в утверждённую версию не попадает'));
     } else {
       wrap.appendChild(el('div', { class: 'calc-appr-info' }, 'Расчёт ещё ни разу не утверждали'));
@@ -1177,8 +1178,13 @@
   const canEditUser = () => !!(window.HUB_USER && (window.HUB_USER.isAdmin || window.HUB_USER.isFinance));
 
   function openApprove(d) {
+    // Причина — обязательна, но «Плановое утверждение» стоит по умолчанию:
+    // торопишься — просто жмёшь «Утвердить», и в истории всё равно осмысленно.
+    const reasons = d.approval_reasons || [{ code: 'planned', label: 'Плановое утверждение' }];
+    const rsn = el('select', { class: 'calc-modal-inp' },
+      reasons.map((r) => el('option', { value: r.code }, r.label)));
     const cmt = el('input', { type: 'text', class: 'calc-modal-inp', maxlength: '300',
-      placeholder: 'например: прайс на сентябрь' });
+      placeholder: 'например: после подорожания руколы' });
     const a = d.approval || { has: false };
     const body = el('div', {}, [
       el('div', { class: 'calc-modal-facts' }, 'Товаров на листе: ' + d.products.length
@@ -1186,14 +1192,18 @@
       el('p', { class: 'calc-modal-note' },
         'Сохраним снимок листа целиком: все цифры, включая цену из SalesDoctor. Он не изменится, что бы дальше ни случилось с ценами в Закупе.'),
       el('div', { style: 'margin-top:12px' }, [
-        el('div', { class: 'calc-modal-lbl' }, 'Комментарий (необязательно)'),
+        el('div', { class: 'calc-modal-lbl' }, 'Причина утверждения'),
+        rsn,
+      ]),
+      el('div', { style: 'margin-top:10px' }, [
+        el('div', { class: 'calc-modal-lbl' }, 'Уточнение (необязательно)'),
         cmt,
       ]),
     ]);
     const ok = el('button', { class: 'calc-btn primary', onclick: async () => {
       ok.disabled = true;
       try {
-        const r = await post('/sheet/' + sheet + '/approve', { comment: cmt.value });
+        const r = await post('/sheet/' + sheet + '/approve', { reason: rsn.value, comment: cmt.value });
         m.close(); toast('Расчёт утверждён');
         skuMode = 'approved';
         await loadSku();
@@ -1233,7 +1243,9 @@
             + (it.avg_margin === null ? '' : ' · маржа ' + money(it.avg_margin, 0) + '%')),
         ]),
         i === 0 ? el('span', { class: 'calc-hist-badge' }, 'действующий') : null,
-        el('div', { class: 'calc-hist-who' }, (it.approved_by_name || '—') + (it.comment ? ' · «' + it.comment + '»' : '')),
+        el('div', { class: 'calc-hist-why' }, (it.reason_label || 'Причина не указана')
+          + (it.comment ? ' · «' + it.comment + '»' : '')),
+        el('div', { class: 'calc-hist-who' }, it.approved_by_name || '—'),
         it.changes ? el('div', { class: 'calc-hist-ch' }, it.changes) : null,
         el('button', { class: 'calc-tbtn small', onclick: async () => {
           m.close();
@@ -1259,7 +1271,9 @@
     main.appendChild(sheetTabs());
     const back = el('div', { class: 'calc-appr-warn' }, [
       el('b', {}, 'Утверждение от ' + dtRu(s.approved_at)
-        + (s.approved_by_name ? ' · ' + s.approved_by_name : '') + (s.comment ? ' · «' + s.comment + '»' : '')),
+        + (s.approved_by_name ? ' · ' + s.approved_by_name : '')
+        + (s.reason_label ? ' · ' + s.reason_label : '')
+        + (s.comment ? ' · «' + s.comment + '»' : '')),
       el('div', {}, 'Это снимок: цифры такие, какими были в тот день. Правка недоступна.'),
       el('button', { class: 'calc-tbtn small', style: 'margin-top:8px', onclick: () => { skuMode = 'approved'; loadSku(); } }, '← Вернуться к листу'),
     ]);

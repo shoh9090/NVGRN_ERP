@@ -382,7 +382,8 @@ async function ensureCalculationSchema(pool) {
     approved_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     approved_by INT,
     approved_by_name TEXT DEFAULT '',
-    comment TEXT DEFAULT '',
+    reason TEXT DEFAULT '',                     -- код причины из APPROVAL_REASONS
+    comment TEXT DEFAULT '',                    -- необязательное уточнение своими словами
     avg_cost NUMERIC,                           -- средняя с/с с браком по листу
     avg_margin NUMERIC,                         -- средняя чистая маржа по прайсу 1
     changes TEXT DEFAULT '',                    -- что изменилось против прошлой версии
@@ -390,6 +391,9 @@ async function ensureCalculationSchema(pool) {
   )`);
   await q(`CREATE INDEX IF NOT EXISTS idx_calc_sheet_approvals
            ON calc_sheet_approvals (sheet, approved_at DESC, id DESC)`);
+  // Причина появилась после первых утверждений — добавляем отдельным ALTER.
+  await q(`ALTER TABLE calc_sheet_approvals ADD COLUMN IF NOT EXISTS reason TEXT DEFAULT ''`)
+    .catch((e) => console.error('calc_sheet_approvals reason:', e.message));
 
   // --- Рецептуры (миксы салатов) ------------------------------------------
   // Устроены как комплекты упаковки, только строки — сырьё в граммах на одну
