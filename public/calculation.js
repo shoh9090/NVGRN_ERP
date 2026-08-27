@@ -92,7 +92,6 @@
     { key: 'salads', title: 'Салаты', ready: true },
     { key: 'bunches', title: 'Пучки и горшки', ready: true },
     { key: 'culinary', title: 'Кулинарка', ready: true },
-    { key: 'dehkan', title: 'Дехкан хорека', ready: true },
     { key: 'cutveg', title: 'Резаные овощи', ready: true },
   ];
   // Что за товары на листе. Устройство расчёта у всех листов ОДИНАКОВОЕ и
@@ -104,11 +103,10 @@
     salads: 'Салатные смеси. Фасовка и для розницы, и для HoReCa; сюда же входят боксы.',
     bunches: 'Пучковая продукция и зелень в горшках. Поставляется как в упаковке, так и без неё.',
     culinary: 'Продукция второго сорта, в том числе резаная. Для приготовления блюд, где внешний вид не имеет значения.',
-    dehkan: 'Немытая продукция для HoReCa: с поля сразу в упаковку, без мойки и очистки.',
     cutveg: 'Зелень и овощи, нарезанные на оборудовании. Вид нарезки различается по позициям.',
   };
   // Товарные листы устроены одинаково, поэтому у них общий загрузчик и общий вид.
-  const SKU_SHEETS = ['retail', 'horeca250', 'horeca500', 'salads', 'bunches', 'culinary', 'dehkan', 'cutveg'];
+  const SKU_SHEETS = ['retail', 'horeca250', 'horeca500', 'salads', 'bunches', 'culinary', 'cutveg'];
   let sheet = 'production';
   let DATA = null;
   const canEdit = () => !!(DATA && DATA.can_edit);

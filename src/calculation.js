@@ -639,7 +639,6 @@ const SHEETS = {
   salads: 'Салаты',
   bunches: 'Пучки и горшки',
   culinary: 'Кулинарка',
-  dehkan: 'Дехкан хорека',
   cutveg: 'Резаные овощи',
 };
 
