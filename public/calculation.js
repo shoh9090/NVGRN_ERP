@@ -91,9 +91,12 @@
     { key: 'horeca500', title: 'Хорека 500', ready: true },
     { key: 'salads', title: 'Салаты', ready: true },
     { key: 'bunches', title: 'Пучки и горшки', ready: true },
+    { key: 'culinary', title: 'Кулинарка', ready: true },
+    { key: 'dehkan', title: 'Дехкан хорека', ready: true },
+    { key: 'cutveg', title: 'Резанные овощи', ready: true },
   ];
   // Товарные листы устроены одинаково, поэтому у них общий загрузчик и общий вид.
-  const SKU_SHEETS = ['retail', 'horeca250', 'horeca500', 'salads', 'bunches'];
+  const SKU_SHEETS = ['retail', 'horeca250', 'horeca500', 'salads', 'bunches', 'culinary', 'dehkan', 'cutveg'];
   let sheet = 'production';
   let DATA = null;
   const canEdit = () => !!(DATA && DATA.can_edit);
