@@ -331,3 +331,40 @@ test('отход без цены родителя не занижает пока
   assert.strictEqual(r.waste.priced, 1);
   assert.strictEqual(r.waste.no_price, 1);        // и об этом сказано
 });
+
+test('выручка в P&L — это реализация, а не поступление денег', async () => {
+  // Случай Шоха: в августе по SalesDoctor отгружено на 1,75 млрд, а денег
+  // пришло меньше — отсрочка до 30 дней. На поступлениях получался мнимый
+  // убыток. В P&L выручка должна быть отгрузкой.
+  const pool = makePool({
+    cash: [{ code: '200', name: 'Выручка от продаж', group_name: 'Доходы и поступления', flow_type: 'operating', inc: 1200000000, exp: 0, cnt: 400 }],
+    settings: [{ key: 'pnl_sales_2026-08', value: '1750000000' }],
+    used: [{ item_kind: 'raw', item_id: 1, qty: 10000 }],
+    prices: [{ item_kind: 'raw', item_id: 1, avg_price: 30000 }],
+    rawNames: [{ id: 1, name: 'рукола' }],
+  });
+  const r = await buildPnl(pool, '2026-08');
+
+  assert.strictEqual(r.revenue.source, 'shipped');
+  assert.strictEqual(r.revenue.total, 1750000000);       // в прибыль идёт отгрузка
+  assert.strictEqual(r.revenue.cash_in, 1200000000);     // поступления — справочно
+  assert.strictEqual(r.revenue.receivable, 550000000);   // отгрузили, но не получили
+  // Прибыль считается от реализации
+  assert.strictEqual(r.gross_profit, 1750000000 - 300000000);
+  // Показатели тоже от реализации, иначе проценты будут про другую величину
+  assert.strictEqual(r.ratios.base, 1750000000);
+});
+
+test('реализация не подтянута — считаем по деньгам, но предупреждаем', async () => {
+  const pool = makePool({
+    cash: [{ code: '200', name: 'Выручка', group_name: 'Доходы и поступления', flow_type: 'operating', inc: 1200000000, exp: 0, cnt: 400 }],
+    used: [{ item_kind: 'raw', item_id: 1, qty: 1 }],
+    prices: [{ item_kind: 'raw', item_id: 1, avg_price: 1 }],
+  });
+  const r = await buildPnl(pool, '2026-08');
+  assert.strictEqual(r.revenue.source, 'cash');
+  assert.strictEqual(r.revenue.total, 1200000000);
+  assert.strictEqual(r.revenue.receivable, null);
+  assert.ok(r.warnings.some((w) => w.includes('ПОСТУПЛЕНИЮ ДЕНЕГ') && w.includes('мнимый убыток')),
+    'должно быть предупреждение о мнимом убытке: ' + r.warnings.join(' | '));
+});

@@ -18,6 +18,10 @@
 // Ключ, под которым храним подтянутое из SalesDoctor количество отгрузок.
 // Хранится по месяцам: цифра нужна, чтобы посчитать плановую себестоимость.
 const UNITS_KEY = (period) => 'pnl_units_' + period;
+// Сумма реализации из SalesDoctor за месяц. В P&L выручка — это ОТГРУЖЕНО,
+// а не «деньги пришли»: при отсрочке до 30 дней поступления отстают от
+// отгрузок на месяц, и отчёт на поступлениях показывает мнимый убыток.
+const SALES_KEY = (period) => 'pnl_sales_' + period;
 
 // Группы классификатора ДДС. Первая — оплаты поставщикам за сырьё и упаковку:
 // в P&L они НЕ расход, иначе себестоимость посчиталась бы дважды (её мы берём
@@ -394,10 +398,11 @@ async function buildPnl(pool, period) {
   // Настройки читаем через ПЕРЕДАННЫЙ пул, а не через глобальный: иначе
   // функцию нельзя проверить тестом, не поднимая настоящую базу.
   const st = (await pool.query('SELECT key, value FROM settings WHERE key = ANY($1)',
-    [[UNITS_KEY(period), UNITS_KEY(period) + '_at']])).rows;
+    [[UNITS_KEY(period), UNITS_KEY(period) + '_at', SALES_KEY(period)]])).rows;
   const byKey = new Map(st.map((x) => [x.key, x.value]));
   const units = Number(byKey.get(UNITS_KEY(period))) || 0;
   const unitsAt = byKey.get(UNITS_KEY(period) + '_at') || '';
+  const shipped = Number(byKey.get(SALES_KEY(period))) || 0;
 
   const [cash, fact, plan, adjust, waste] = await Promise.all([
     cashSide(pool, from, toStr),
@@ -407,7 +412,12 @@ async function buildPnl(pool, period) {
     wasteCost(pool, from, toStr),
   ]);
 
-  const revenue = cash.revenue.total;
+  // ВЫРУЧКА В P&L = РЕАЛИЗАЦИЯ (отгружено за месяц по SalesDoctor).
+  // Поступления денег остаются в отчёте, но как справка: это Кэш-флоу.
+  // Разница между ними — то, что отгрузили и ещё не получили (отсрочка).
+  const cashIn = cash.revenue.total;
+  const revenue = shipped > 0 ? shipped : cashIn;
+  const revenueSource = shipped > 0 ? 'shipped' : 'cash';
   // Себестоимость берём фактическую. Если склад за месяц не вёлся, считаем по
   // плану — иначе отчёт бесполезен целые месяцы. Чем посчитано, отдаём наружу:
   // подменять факт планом молча нельзя, человек должен это видеть.
@@ -434,10 +444,24 @@ async function buildPnl(pool, period) {
       + '. Пока они не разнесены, отчёт неполный.');
   }
   if (!units) warnings.push('Количество отгрузок за месяц не подтянуто — плановая себестоимость не посчитана.');
+  if (revenueSource === 'cash') {
+    warnings.push('Выручка считается по ПОСТУПЛЕНИЮ ДЕНЕГ — реализация из SalesDoctor не подтянута. '
+      + 'При отсрочке платежа это занижает выручку и даёт мнимый убыток. Нажмите «обновить» внизу.');
+  }
 
   return {
     period, from, to: toStr,
-    revenue: cash.revenue,
+    revenue: {
+      ...cash.revenue,
+      // total — то, что реально идёт в прибыль
+      total: revenue,
+      source: revenueSource,
+      shipped,                 // реализация из SalesDoctor
+      cash_in: cashIn,         // поступило денег (как в Кэш-флоу)
+      // Отгрузили, но денег ещё не получили. При отсрочке это норма,
+      // но если растёт месяц к месяцу — деньги зависают у клиентов.
+      receivable: shipped > 0 ? shipped - cashIn : null,
+    },
     cogs: {
       fact,
       plan,
@@ -458,11 +482,14 @@ async function buildPnl(pool, period) {
     // в Кэш-флоу, иначе процент не с чем будет сверить.
     waste,
     ratios: {
-      base: cash.revenue.sales,
-      raw_load_pct: pct((fact.has_data ? fact.raw : 0) + waste.amount, cash.revenue.sales),
-      waste_pct: pct(waste.amount, cash.revenue.sales),
-      pack_pct: fact.has_data ? pct(fact.packaging, cash.revenue.sales) : null,
-      opex_pct: pct(cash.opex.total, cash.revenue.sales),
+      // Считаем от той же выручки, что и прибыль: иначе проценты и итог
+      // будут про разные величины.
+      base: revenue,
+      base_source: revenueSource,
+      raw_load_pct: pct((fact.has_data ? fact.raw : 0) + waste.amount, revenue),
+      waste_pct: pct(waste.amount, revenue),
+      pack_pct: fact.has_data ? pct(fact.packaging, revenue) : null,
+      opex_pct: pct(cash.opex.total, revenue),
     },
     excluded: {
       refunds: cash.refunds,
@@ -531,6 +558,11 @@ async function buildTrend(pool, endPeriod, months) {
     if (!byMonth.has(m)) byMonth.set(m, { period: m, rows: [], cogs: 0, cogs_known: false });
     return byMonth.get(m);
   };
+  // Реализация по месяцам — та же, что в месячном отчёте: подтянутая кнопкой
+  // и сохранённая. Где её нет, на графике честно берём поступления денег.
+  const salesRows = (await pool.query(
+    "SELECT key, value FROM settings WHERE key LIKE 'pnl_sales_%'")).rows;
+  const shippedOf = new Map(salesRows.map((x) => [String(x.key).replace('pnl_sales_', ''), Number(x.value) || 0]));
   cashRows.forEach((r) => monthOf(r.m).rows.push(r));
   usedRows.forEach((u) => {
     const slot = monthOf(u.m);
@@ -551,15 +583,18 @@ async function buildTrend(pool, endPeriod, months) {
     if (!slot) { out.push({ period: key, revenue: 0, cogs: null, opex: 0, profit: null }); continue; }
     const c = classifyRows(slot.rows);
     const cogs = slot.cogs_known ? slot.cogs : null;
+    const shippedM = shippedOf.get(key) || 0;
+    const rev = shippedM > 0 ? shippedM : c.revenueTotal;
     out.push({
       period: key,
-      revenue: c.revenueTotal,
+      revenue: rev,
+      revenue_source: shippedM > 0 ? 'shipped' : 'cash',
       cogs,
       opex: c.opexTotal,
-      profit: cogs === null ? null : c.revenueTotal - cogs - c.opexTotal,
+      profit: cogs === null ? null : rev - cogs - c.opexTotal,
     });
   }
   return { months: n, from: bounds.f, to: bounds.t, points: out };
 }
 
-module.exports = { buildPnl, buildTrend, UNITS_KEY };
+module.exports = { buildPnl, buildTrend, UNITS_KEY, SALES_KEY };

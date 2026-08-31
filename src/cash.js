@@ -6,7 +6,7 @@ const multer = require('multer');
 const XLSX = require('xlsx');
 const db = require('./db');
 const integrations = require('./integrations');
-const { buildPnl, buildTrend, UNITS_KEY } = require('./cash-pnl');
+const { buildPnl, buildTrend, UNITS_KEY, SALES_KEY } = require('./cash-pnl');
 const pfin = require('./purchase-finance'); // общий расчёт долга поставщикам (read-only в «Обязательствах»)
 
 const router = express.Router();
@@ -1471,9 +1471,12 @@ router.post('/api/pnl/units', express.json(), async (req, res) => {
   try {
     const r = await integrations.getMonthlySalesUnits(period, { maxMs: 20000, maxPages: 20 });
     await db.setSetting(UNITS_KEY(period), String(Math.round(r.units || 0)));
+    // Сумма реализации — основа выручки в P&L (отгружено, а не оплачено)
+    await db.setSetting(SALES_KEY(period), String(Math.round(r.net_amount || 0)));
     await db.setSetting(UNITS_KEY(period) + '_at', new Date().toISOString().slice(0, 16).replace('T', ' '));
     await db.log(req.user.id, 'pnl_units_refresh', { period, units: r.units, truncated: r.truncated });
-    res.json({ ok: true, units: r.units, orders: r.orders, truncated: r.truncated, took_ms: r.took_ms });
+    res.json({ ok: true, units: r.units, amount: r.net_amount, returned: r.returned,
+      orders: r.orders, truncated: r.truncated, took_ms: r.took_ms });
   } catch (e) {
     console.error('[КАССА] отгрузки из SD:', e.message);
     res.status(400).json({ error: 'Не удалось получить отгрузки из SalesDoctor: ' + e.message });

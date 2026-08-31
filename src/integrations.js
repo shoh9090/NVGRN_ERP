@@ -690,7 +690,10 @@ async function getMonthlySalesUnits(period, opts = {}) {
   const d = new Date(from);
   const to = new Date(d.getFullYear(), d.getMonth() + 1, 0).toISOString().slice(0, 10);
 
-  let units = 0, positions = 0, orders = 0, page = 1, truncated = false;
+  // Сумма реализации нужна для P&L: там выручка — это ОТГРУЖЕНО, а не
+  // «деньги пришли». При отсрочке до 30 дней поступления отстают от отгрузок
+  // на месяц, и отчёт о прибыли на поступлениях показывает мнимый убыток.
+  let units = 0, amount = 0, returned = 0, positions = 0, orders = 0, page = 1, truncated = false;
   const byStatus = {};
   const limit = 500;
   for (;;) {
@@ -704,13 +707,18 @@ async function getMonthlySalesUnits(period, opts = {}) {
     for (const o of items) {
       orders++;
       const st = String(o.status === undefined || o.status === null ? '?' : o.status);
-      byStatus[st] = byStatus[st] || { orders: 0, units: 0 };
+      byStatus[st] = byStatus[st] || { orders: 0, units: 0, amount: 0 };
       byStatus[st].orders++;
       for (const op of (o.orderProducts || [])) {
         const q = Number(op.quantity) || 0;
-        if (!(q > 0)) continue;
-        units += q; positions++;
-        byStatus[st].units += q;
+        // Сумму берём из строки заказа. Возвраты SalesDoctor отдаёт полем
+        // returned — вычитаем их, иначе реализация будет завышена.
+        const sum = Number(op.summa) || 0;
+        const ret = Number(op.returned) || 0;
+        if (q > 0) { units += q; positions++; byStatus[st].units += q; }
+        amount += sum;
+        returned += ret;
+        byStatus[st].amount = (byStatus[st].amount || 0) + sum;
       }
     }
     const total = data.pagination ? data.pagination.total : 0;
@@ -720,6 +728,7 @@ async function getMonthlySalesUnits(period, opts = {}) {
 
   return {
     period, from, to, statuses, orders, positions, units,
+    amount, returned, net_amount: amount - returned,
     by_status: byStatus,
     truncated,                                   // данные неполные: уперлись в предел
     took_ms: Date.now() - started,
