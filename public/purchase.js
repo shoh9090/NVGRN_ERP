@@ -85,6 +85,11 @@
           el('option', { value: 'received' }, 'Принято'),
           el('option', { value: 'cancelled' }, 'Отменено'),
         ]),
+        // Период — общим компонентом Hub, как в Кассе и Претензиях.
+        HubDateRange.create({
+          mode: 'range', from: ordPeriod.from, to: ordPeriod.to,
+          onChange: (v) => { ordPeriod.from = v.from; ordPeriod.to = v.to; loadOrders(); },
+        }),
         el('input', { id: 'ord-q', placeholder: 'Поиск: номер, поставщик...', oninput: debounce(loadOrders, 300) }),
         el('button', { class: 'btn-primary', onclick: () => openOrderEditor(null) }, '+ Новая заявка'),
         ...((typeof HUB_USER !== 'undefined' && (HUB_USER.isAdmin || HUB_USER.buyerEdit)) ? [el('button', { style: 'color:#c0392b', title: 'Удалить все заявки за всё время', onclick: clearAllOrders }, '🧹 Очистить все заявки')] : []),
@@ -123,6 +128,11 @@
     } catch (e) { toast(e.message, true); }
   }
 
+  // Период заявок: по умолчанию пусто — показываем все, как было раньше.
+  // Пустой период не должен внезапно прятать половину заявок у того, кто
+  // просто открыл вкладку.
+  const ordPeriod = { from: '', to: '' };
+
   async function loadOrders() {
     const box = $('#ord-list');
     const status = $('#ord-status') ? $('#ord-status').value : 'all';
@@ -132,10 +142,26 @@
     if ($('#ord-pc') && $('#ord-pc').value) params.set('parent_category_id', $('#ord-pc').value);
     if ($('#ord-sup') && $('#ord-sup').value) params.set('supplier_id', $('#ord-sup').value);
     if (ORD_ITEMS && ORD_ITEMS.size) params.set('item_ids', [...ORD_ITEMS].join(','));
+    if (ordPeriod.from) params.set('from', ordPeriod.from);
+    if (ordPeriod.to) params.set('to', ordPeriod.to);
     const data = await api('/orders?' + params.toString());
     box.innerHTML = '';
+    // Итог по отобранным заявкам: сколько их и на какую сумму. Считается на
+    // сервере по всей выборке, а не по показанным строкам — список обрезан
+    // тремястами, и сумма по нему вводила бы в заблуждение.
+    if (data.totals) {
+      box.appendChild(el('div', { class: 'pur-ord-total' }, [
+        el('span', {}, [el('b', {}, String(data.totals.orders)), ' заявок на сумму ',
+          el('b', {}, Math.round(data.totals.total).toLocaleString('ru-RU')), ' сум']),
+        (ordPeriod.from || ordPeriod.to)
+          ? el('span', { class: 'pur-ord-total-p' }, 'за выбранный период')
+          : el('span', { class: 'pur-ord-total-p' }, 'за всё время — выберите период кнопкой выше'),
+        data.truncated ? el('span', { class: 'pur-ord-total-w' }, 'в списке показаны первые 300') : null,
+      ]));
+    }
     if (!data.items.length) {
-      box.appendChild(el('p', { class: 'dict-empty' }, 'Заявок пока нет. Нажмите «+ Новая заявка».'));
+      box.appendChild(el('p', { class: 'dict-empty' },
+        (ordPeriod.from || ordPeriod.to) ? 'За выбранный период заявок нет.' : 'Заявок пока нет. Нажмите «+ Новая заявка».'));
       return;
     }
     const rnum = 'text-align:right';

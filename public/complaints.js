@@ -394,13 +394,16 @@
   function listFilterBar() {
     const opt = (arr, val, ph) => [el('option', { value: '' }, ph), ...arr.map((x) => el('option', { value: x.code, selected: val === x.code || null }, x.label_ru))];
     const sel = (key, arr, ph) => el('select', { class: 'cmp-f', onchange: (e) => { listState[key] = e.target.value; loadList(); } }, opt(arr, listState[key], ph));
-    const dateInp = (key) => el('input', { type: 'date', class: 'cmp-f', value: listState[key], onchange: (e) => { listState[key] = e.target.value; loadList(); } });
     // Фильтр по контрагенту (ИНН) → точке — с поиском по первым буквам.
     const netSel = searchSelect(netItems(), listState.inn, 'Все контрагенты', (v) => { listState.inn = v; listState.point = ''; loadList(); });
     const ptSel = searchSelect(pointItems(listState.inn), listState.point, listState.inn ? 'Все точки контрагента' : 'Все точки', (v) => { listState.point = v; loadList(); });
     const agSel = searchSelect(agentItems(), listState.agent, 'Все агенты', (v) => { listState.agent = v; loadList(); });
     return el('div', { class: 'cmp-filters' }, [
-      el('div', { class: 'cmp-f-grp' }, [el('label', {}, 'С'), dateInp('from'), el('label', {}, 'по'), dateInp('to')]),
+      // Период — общим компонентом Hub, как в Кассе: один вид на все плитки.
+      HubDateRange.create({
+        mode: 'range', from: listState.from, to: listState.to,
+        onChange: (v) => { listState.from = v.from; listState.to = v.to; loadList(); },
+      }),
       netSel, ptSel, agSel,
       sel('status', DICTS.status, 'Все статусы'),
       sel('link', DICTS.link, 'Все звенья'),

@@ -1074,6 +1074,16 @@ router.get('/api/orders', async (req, res) => {
     params.push(parseInt(req.query.supplier_id));
     where += ` AND po.supplier_id = $${params.length}`;
   }
+  // Период по дате поставки — по ней заявки и читают («что привезли на неделе»).
+  // Дата создания заявки для этого не годится: заявку часто заводят заранее.
+  if (/^\d{4}-\d{2}-\d{2}$/.test(req.query.from || '')) {
+    params.push(req.query.from);
+    where += ` AND COALESCE(po.delivery_date, po.created_at::date) >= $${params.length}`;
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(req.query.to || '')) {
+    params.push(req.query.to);
+    where += ` AND COALESCE(po.delivery_date, po.created_at::date) <= $${params.length}`;
+  }
   // мультивыбор товаров: показываем заявки, где есть хотя бы один из выбранных
   let itemJoin = '';
   const itemIds = String(req.query.item_ids || '').split(',').map((x) => parseInt(x)).filter(Boolean);
@@ -1099,7 +1109,21 @@ router.get('/api/orders', async (req, res) => {
      ORDER BY po.id DESC LIMIT 300`, // po.* в GROUP BY не нужен: группируем по первичному ключу po.id
     params
   );
-  res.json({ items: r.rows.map(enrichOrderFinance) });
+  // Итог по ОТФИЛЬТРОВАННЫМ заявкам, а не по показанным: список обрезан
+  // тремястами строками, и сумма по нему вводила бы в заблуждение.
+  const tot = (await db.pool.query(
+    `SELECT COUNT(DISTINCT po.id)::int AS orders,
+            COALESCE(SUM(CASE WHEN po.status = 'received' THEN COALESCE(i.fact_qty, 0) ELSE i.qty END * i.price), 0) AS total
+     FROM purchase_orders po
+     JOIN ref_counterparties c ON c.id = po.supplier_id
+     LEFT JOIN purchase_order_items i ON i.order_id = po.id
+     WHERE ${where}`, params)).rows[0];
+
+  res.json({
+    items: r.rows.map(enrichOrderFinance),
+    totals: { orders: Number(tot.orders) || 0, total: Number(tot.total) || 0 },
+    truncated: r.rows.length >= 300,
+  });
 });
 
 // enrichOrderFinance вынесен в общий сервис src/purchase-finance.js (используется и Кассой).
