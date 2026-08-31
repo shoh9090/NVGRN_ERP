@@ -27,6 +27,7 @@ function makePool(opts) {
       if (/direction_hint = 'transfer'/.test(q)) return { rows: [{ inc: o.transfersIn || 0 }] };
       if (/reason = 'production'/.test(q)) return { rows: o.used || [] };
       if (/reason = 'receive'/.test(q)) return { rows: o.prices || [] };
+      if (/reason = 'adjust'/.test(q)) return { rows: [o.adjust || { qty: 0, cnt: 0 }] };
       if (/FROM ref_raw_materials WHERE id = ANY/.test(q)) return { rows: o.rawNames || [] };
       if (/FROM ref_packaging WHERE id = ANY/.test(q)) return { rows: o.packNames || [] };
       if (/FROM calc_sheet_products/.test(q)) return { rows: o.products || [] };
@@ -213,4 +214,54 @@ test('выручка — это доходные статьи, а не любо�
   assert.strictEqual(
     rc.revenue + rc.finance_in + rc.other_inflows + rc.conversion_in + rc.transfers_in + rc.unclassified_in,
     rc.all_in);
+});
+
+test('расходники производства не пропадают из отчёта', async () => {
+  // Статья 12 лежит в той же группе, что сырьё, но через склад не проходит.
+  // Раньше она исключалась вместе с сырьём и исчезала совсем.
+  const pool = makePool({
+    cash: [
+      { code: '200', name: 'Выручка', group_name: 'Доходы и поступления', flow_type: 'operating', inc: 100000000, exp: 0, cnt: 1 },
+      { code: '10', name: 'Сырьё (зелень)', group_name: '1. Сырьё и переменные затраты', flow_type: 'operating', inc: 0, exp: 40000000, cnt: 5 },
+      { code: '11', name: 'Упаковка', group_name: '1. Сырьё и переменные затраты', flow_type: 'operating', inc: 0, exp: 10000000, cnt: 3 },
+      { code: '12', name: 'Расходники производства', group_name: '1. Сырьё и переменные затраты', flow_type: 'operating', inc: 0, exp: 7000000, cnt: 4 },
+    ],
+    used: [{ item_kind: 'raw', item_id: 1, qty: 1000 }],
+    prices: [{ item_kind: 'raw', item_id: 1, avg_price: 30000 }],
+    rawNames: [{ id: 1, name: 'рукола' }],
+  });
+  const r = await buildPnl(pool, '2026-08');
+  // Сырьё и упаковка — в справочном блоке (их расход берём со склада)
+  assert.strictEqual(r.excluded.materials_paid.total, 50000000);
+  // А расходники остались настоящим расходом
+  assert.strictEqual(r.opex.total, 7000000);
+  assert.ok(r.opex.groups.some((g) => g.items.some((i) => i.code === '12')),
+    'статья 12 должна быть среди операционных расходов');
+});
+
+test('возврат покупателю уменьшает выручку, а не пропадает', async () => {
+  const pool = makePool({
+    cash: [
+      { code: '200', name: 'Выручка', group_name: 'Доходы и поступления', flow_type: 'operating', inc: 100000000, exp: 4000000, cnt: 20 },
+    ],
+    used: [{ item_kind: 'raw', item_id: 1, qty: 1 }],
+    prices: [{ item_kind: 'raw', item_id: 1, avg_price: 1 }],
+  });
+  const r = await buildPnl(pool, '2026-08');
+  assert.strictEqual(r.excluded.refunds.total, 4000000);
+  assert.strictEqual(r.revenue.total, 96000000);
+  // и в расходы возврат не залез
+  assert.strictEqual(r.opex.total, 0);
+});
+
+test('минусовые корректировки склада видны, а не спрятаны', async () => {
+  const pool = makePool({
+    cash: CASH,
+    used: [{ item_kind: 'raw', item_id: 1, qty: 1 }],
+    prices: [{ item_kind: 'raw', item_id: 1, avg_price: 1 }],
+    adjust: { qty: 250, cnt: 4 },
+  });
+  const r = await buildPnl(pool, '2026-08');
+  assert.strictEqual(r.stock_adjust.qty, 250);
+  assert.strictEqual(r.stock_adjust.cnt, 4);
 });

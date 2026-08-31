@@ -26,6 +26,13 @@ const UNITS_KEY = (period) => 'pnl_units_' + period;
 const CODE_CONVERSION = '102';
 const GRP_INCOME = 'Доходы и поступления';
 const isIncomeGroup = (g) => String(g || '') === GRP_INCOME;
+// Из операционных расходов исключаются только те статьи, чей расход мы берём
+// со склада: сырьё и упаковка. Раньше исключалась вся группа «1. Сырьё и
+// переменные затраты», и статья 12 «Расходники производства (перчатки)»
+// пропадала из отчёта совсем: в себестоимость со склада она не попадает
+// (там только сырьё и упаковка), а из расходов была вычеркнута.
+const CODES_FROM_STOCK = new Set(['10', '11']);
+const isFromStock = (code) => CODES_FROM_STOCK.has(String(code));
 const GRP_MATERIALS = '1.';
 const GRP_FINANCE = '6.';
 const GRP_CAPEX = '7.';
@@ -71,6 +78,7 @@ async function cashSide(pool, from, to) {
   const finance = [];      // финансовые потоки (вне прибыли)
   const capex = [];        // инвестиции (вне прибыли)
   const otherIn = [];      // приходы по РАСХОДНЫМ статьям — это возвраты, не выручка
+  const refunds = [];      // расход по ДОХОДНОЙ статье — возврат покупателю
   const conversion = [];   // конверсия валюты: обе ноги, деньги никуда не делись
 
   // Приход и расход по одной статье разбираем ОТДЕЛЬНО. Раньше статья целиком
@@ -87,7 +95,7 @@ async function cashSide(pool, from, to) {
 
     const fin = isFinance(r.group_name) || r.flow_type === 'financing';
     const cap = isCapex(r.group_name) || r.flow_type === 'investing';
-    const mat = isMaterials(r.group_name);
+    const mat = isFromStock(r.code);
     const inc = isIncomeGroup(r.group_name);
 
     // --- приход ---
@@ -105,7 +113,10 @@ async function cashSide(pool, from, to) {
       if (fin) { if (item.inc <= 0) finance.push(item); }
       else if (cap) capex.push(item);
       else if (mat) materials.push(item);
-      else if (!inc) {
+      // Расход по ДОХОДНОЙ статье — это возврат покупателю. Он уменьшает
+      // выручку, а не увеличивает расходы; раньше пропадал совсем.
+      else if (inc) refunds.push(item);
+      else {
         const key = r.group_name || 'Без группы';
         if (!opex.has(key)) opex.set(key, { group_name: key, amount: 0, items: [] });
         const g = opex.get(key);
@@ -124,7 +135,10 @@ async function cashSide(pool, from, to) {
         AND c.direction_hint = 'transfer'`, [from, to])).rows[0];
 
   const sum = (list, f) => list.reduce((s, x) => s + x[f], 0);
-  const revenueTotal = sum(revenue, 'inc');
+  const refundsTotal = sum(refunds, 'exp');
+  // Выручка — за вычетом возвратов покупателям: продали столько, сколько
+  // у нас в итоге осталось, а не столько, сколько выставили.
+  const revenueTotal = sum(revenue, 'inc') - refundsTotal;
   const financeIn = sum(finance, 'inc');
   const otherInTotal = sum(otherIn, 'inc');
   const convIn = sum(conversion, 'inc');
@@ -137,13 +151,15 @@ async function cashSide(pool, from, to) {
     finance: { in: financeIn, out: sum(finance, 'exp'), items: finance },
     capex: { total: sum(capex, 'exp'), items: capex },
     other_inflows: { total: otherInTotal, items: otherIn },
+    refunds: { total: refundsTotal, items: refunds },
     conversion: { in: convIn, out: sum(conversion, 'exp'), items: conversion },
     unclassified: { inc: num(un.inc), exp: num(un.exp), cnt: Number(un.cnt) },
     // Сверка: из чего складывается расхождение с приходом в Кэш-флоу.
     // Показываем арифметикой, чтобы не выяснять это в переписке.
     reconcile: {
-      all_in: revenueTotal + financeIn + otherInTotal + convIn + transferIn + num(un.inc),
+      all_in: revenueTotal + refundsTotal + financeIn + otherInTotal + convIn + transferIn + num(un.inc),
       revenue: revenueTotal,
+      refunds: refundsTotal,
       finance_in: financeIn,
       other_inflows: otherInTotal,
       conversion_in: convIn,
@@ -159,6 +175,17 @@ async function cashSide(pool, from, to) {
 // Списание оценивается средневзвешенной ценой приходов этой позиции. Позиции,
 // по которым цены прихода нет, в сумму НЕ попадают и показываются отдельным
 // списком: молча занизить себестоимость хуже, чем показать пробел.
+// Корректировки остатка (инвентаризация, порча). Не считаем их себестоимостью
+// автоматически — причина у них разная, — но и не прячем: минус на складе,
+// который никуда не делся, должен быть виден.
+async function stockAdjustments(pool, from, to) {
+  const r = (await pool.query(
+    `SELECT COALESCE(SUM(-qty), 0) AS qty, COUNT(*) AS cnt
+       FROM stock_movements
+      WHERE reason = 'adjust' AND qty < 0 AND moved_at BETWEEN $1 AND $2`, [from, to])).rows[0] || {};
+  return { qty: num(r.qty), cnt: Number(r.cnt) || 0 };
+}
+
 async function factCogs(pool, from, to) {
   const used = (await pool.query(
     `SELECT item_kind, item_id, SUM(-qty) AS qty
@@ -291,10 +318,11 @@ async function buildPnl(pool, period) {
   const units = Number(byKey.get(UNITS_KEY(period))) || 0;
   const unitsAt = byKey.get(UNITS_KEY(period) + '_at') || '';
 
-  const [cash, fact, plan] = await Promise.all([
+  const [cash, fact, plan, adjust] = await Promise.all([
     cashSide(pool, from, toStr),
     factCogs(pool, from, toStr),
     planCogs(pool, units),
+    stockAdjustments(pool, from, toStr),
   ]);
 
   const revenue = cash.revenue.total;
@@ -342,7 +370,9 @@ async function buildPnl(pool, period) {
     operating_profit: operating,
     operating_margin_pct: operating === null ? null : pct(operating, revenue),
     reconcile: cash.reconcile,
+    stock_adjust: adjust,
     excluded: {
+      refunds: cash.refunds,
       other_inflows: cash.other_inflows,
       conversion: cash.conversion,
       materials_paid: cash.materials_paid,

@@ -481,6 +481,98 @@
     return (m[Number(mm) - 1] || p) + ' ' + y;
   };
 
+
+  // ---------------------------------------------------------------------------
+  // Сводка P&L человеческим языком
+  // ---------------------------------------------------------------------------
+  // Отчёт о прибыли читают не только бухгалтеры. Сверху — три числа и одна
+  // фраза обычными словами; таблицы с кодами статей уходят под «Подробный
+  // расчёт», чтобы не пугать того, кому нужен только итог.
+  const mlrd = (v) => {
+    if (v === null || v === undefined) return '—';
+    const a = Math.abs(v);
+    if (a >= 1e9) return (v / 1e9).toLocaleString('ru-RU', { maximumFractionDigits: 2 }) + ' млрд';
+    if (a >= 1e6) return (v / 1e6).toLocaleString('ru-RU', { maximumFractionDigits: 1 }) + ' млн';
+    return money(v);
+  };
+
+  // Склонение: 21 копейка, 43 копейки, 15 копеек. Без этого получалось
+  // «43 копеек», и текст читался как машинный.
+  const kopeek = (n) => {
+    const a = Math.abs(n) % 100, b = a % 10;
+    if (a > 10 && a < 20) return n + ' копеек';
+    if (b === 1) return n + ' копейка';
+    if (b >= 2 && b <= 4) return n + ' копейки';
+    return n + ' копеек';
+  };
+
+  function humanSummary(d) {
+    const rev = d.revenue.total;
+    const cogs = d.cogs_source === 'plan' ? d.cogs.plan.total
+      : (d.cogs.fact.has_data ? d.cogs.fact.total : null);
+    const opex = d.opex.total;
+    const profit = d.operating_profit;
+
+    const card = (title, value, note, cls) => el('div', { class: 'cash-sum-card' + (cls ? ' ' + cls : '') }, [
+      el('div', { class: 'cash-sum-title' }, title),
+      el('div', { class: 'cash-sum-val' }, mlrd(value)),
+      note ? el('div', { class: 'cash-sum-note' }, note) : null,
+    ]);
+
+    const cards = el('div', { class: 'cash-sum-cards' }, [
+      card('Продали на', rev, 'деньги, пришедшие от покупателей'),
+      card('Товар обошёлся в', cogs, d.cogs_source === 'plan' ? 'по калькуляции — склад не вёлся' : 'сырьё и упаковка со склада'),
+      card('Работа компании', opex, 'зарплата, аренда, логистика и прочее'),
+      card('Осталось прибыли', profit,
+        profit === null ? 'не хватает данных'
+          : (d.operating_margin_pct === null ? null
+            : (kopeek(Math.round(d.operating_margin_pct)) + ' с каждого сума выручки')),
+        profit === null ? '' : (profit >= 0 ? 'good' : 'bad')),
+    ]);
+
+    // Полоса: как выручка разошлась на товар, работу и прибыль
+    let bar = null;
+    if (rev > 0 && cogs !== null && profit !== null) {
+      const part = (v) => Math.max(0, (v / rev) * 100);
+      bar = el('div', {}, [
+        el('div', { class: 'cash-sum-bar' }, [
+          el('div', { class: 'cash-sum-seg seg-cogs', style: 'width:' + part(cogs) + '%' }),
+          el('div', { class: 'cash-sum-seg seg-opex', style: 'width:' + part(opex) + '%' }),
+          el('div', { class: 'cash-sum-seg ' + (profit >= 0 ? 'seg-profit' : 'seg-loss'), style: 'width:' + part(Math.abs(profit)) + '%' }),
+        ]),
+        el('div', { class: 'cash-sum-legend' }, [
+          el('span', {}, [el('i', { class: 'seg-cogs' }), 'товар']),
+          el('span', {}, [el('i', { class: 'seg-opex' }), 'работа компании']),
+          el('span', {}, [el('i', { class: profit >= 0 ? 'seg-profit' : 'seg-loss' }), profit >= 0 ? 'прибыль' : 'убыток']),
+        ]),
+      ]);
+    }
+
+    // Одна фраза прозой — то, что человек пересказал бы вслух
+    let phrase;
+    if (profit === null) {
+      phrase = 'Прибыль за ' + monthLabelRu(d.period) + ' посчитать пока не из чего: '
+        + 'нужны либо выдачи сырья в Складе, либо количество отгрузок (кнопка внизу).';
+    } else {
+      const kop = d.operating_margin_pct === null ? null : Math.round(d.operating_margin_pct);
+      phrase = 'За ' + monthLabelRu(d.period) + ' продали на ' + mlrd(rev)
+        + ', товар обошёлся в ' + mlrd(cogs)
+        + ', на работу компании ушло ' + mlrd(opex) + '. '
+        + (profit >= 0
+          ? ('Осталось ' + mlrd(profit) + ' прибыли')
+          : ('Не хватило ' + mlrd(Math.abs(profit)) + ' — месяц в убытке'))
+        + (kop === null ? '.' : (profit >= 0
+          ? (' — это ' + kopeek(kop) + ' с каждого сума выручки.')
+          : '.'));
+    }
+
+    return el('div', { class: 'cash-sum' }, [
+      cards,
+      bar,
+      el('div', { class: 'cash-sum-phrase' }, phrase),
+    ]);
+  }
+
   async function renderPnl(c) {
     c.appendChild(el('div', { class: 'cash-head' }, [
       el('div', {}, [
@@ -498,7 +590,7 @@
     ]));
 
     let d;
-    const box = el('div');
+    let box = el('div');
     c.appendChild(box);
     box.appendChild(el('div', { class: 'cash-sub' }, 'Считаем…'));
     try { d = await api('/pnl?period=' + encodeURIComponent(PNL_PERIOD)); }
@@ -510,6 +602,11 @@
       box.appendChild(el('div', { class: 'cash-pnl-warn' },
         d.warnings.map((w) => el('div', {}, '⚠️ ' + w))));
     }
+
+    // --- Сводка человеческим языком ------------------------------------
+    // Три числа и одна фраза: что заработали, во что обошёлся товар,
+    // сколько осталось. Таблицы ниже — для тех, кто хочет разобраться.
+    box.appendChild(humanSummary(d));
 
     const rows = [];
     const row = (label, value, opts) => {
@@ -585,7 +682,14 @@
     row('Операционная прибыль', pnlMoney(d.operating_profit), { cls: 'cash-pnl-total' });
     row('Рентабельность', pnlPct(d.operating_margin_pct), { cls: 'cash-pnl-sub' });
 
-    box.appendChild(el('table', { class: 'cash-pnl-t' }, el('tbody', {}, rows)));
+    const details = el('div', { class: 'cash-pnl-details' });
+    details.appendChild(el('table', { class: 'cash-pnl-t' }, el('tbody', {}, rows)));
+    box.appendChild(el('details', { class: 'cash-pnl-more' }, [
+      el('summary', {}, 'Подробный расчёт'),
+      details,
+    ]));
+    // Дальше всё складываем внутрь этого же раскрывающегося блока
+    box = details;
 
     // --- Справочно: что в прибыль не входит ---
     const ex = d.excluded;

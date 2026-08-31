@@ -385,3 +385,45 @@ select.cb-cell { cursor: pointer; }
   background: var(--surface-2); border: 1px solid var(--line); border-radius: 12px; font-size: 13.5px;
 }
 .cash-pnl-note { max-width: 760px; margin-top: 12px; line-height: 1.5; }
+
+/* ---------- P&L: сводка человеческим языком ---------- */
+.cash-sum { max-width: 900px; margin-bottom: 18px; }
+.cash-sum-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; }
+.cash-sum-card {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 14px;
+  padding: 13px 15px;
+}
+.cash-sum-card.good { background: #f4f7f1; border-color: #cfe0c2; }
+.cash-sum-card.bad { background: var(--red-soft); border-color: #eec7c7; }
+.cash-sum-title { font-size: 12px; color: var(--ink-soft); font-weight: 700; }
+.cash-sum-val {
+  font-family: 'Lora', Georgia, serif; font-size: 26px; font-weight: 600;
+  color: var(--ink); margin: 3px 0 2px; line-height: 1.1;
+}
+.cash-sum-card.good .cash-sum-val { color: var(--forest); }
+.cash-sum-card.bad .cash-sum-val { color: var(--red); }
+.cash-sum-note { font-size: 11.5px; color: var(--ink-faint); line-height: 1.35; }
+
+.cash-sum-bar { display: flex; height: 14px; border-radius: 7px; overflow: hidden; margin-top: 14px; background: var(--surface-2); }
+.cash-sum-seg { height: 100%; }
+.seg-cogs { background: #7fa86a; }
+.seg-opex { background: #c9b06a; }
+.seg-profit { background: var(--forest); }
+.seg-loss { background: var(--red); }
+.cash-sum-legend { display: flex; gap: 16px; margin-top: 7px; font-size: 12px; color: var(--ink-soft); flex-wrap: wrap; }
+.cash-sum-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.cash-sum-legend i { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+
+.cash-sum-phrase {
+  margin-top: 14px; padding: 12px 15px; background: var(--surface-2);
+  border-left: 3px solid var(--lime); border-radius: 0 10px 10px 0;
+  font-size: 14px; line-height: 1.55; color: var(--ink);
+}
+
+.cash-pnl-more { margin-top: 6px; }
+.cash-pnl-more > summary {
+  cursor: pointer; font-size: 13.5px; font-weight: 700; color: var(--forest);
+  padding: 9px 0; user-select: none;
+}
+.cash-pnl-more > summary:hover { color: var(--ink); }
+.cash-pnl-details { padding-top: 6px; }
