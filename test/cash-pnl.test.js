@@ -60,6 +60,7 @@ test('оплата поставщикам за сырьё не считаетс�
   assert.strictEqual(r.excluded.materials_paid.total, 40000000);
   // В расходах остались только производственные и логистика
   assert.strictEqual(r.opex.total, 8000000);
+  assert.strictEqual(r.cogs_source, 'fact');
   assert.strictEqual(r.gross_profit, 70000000);
   assert.strictEqual(r.operating_profit, 62000000);
 });
@@ -89,17 +90,35 @@ test('позиция без цены прихода не занижает себ
   assert.strictEqual(r.cogs.fact.total, 30000000);
   assert.strictEqual(r.cogs.fact.no_price.length, 1);
   assert.strictEqual(r.cogs.fact.no_price[0].name, 'шпинат');
-  assert.ok(r.warnings.some((w) => w.includes('Не оценено позиций')));
+  assert.ok(r.warnings.some((w) => w.includes('Нет цены прихода') && w.includes('шпинат')),
+    'предупреждение должно называть позицию по имени: ' + r.warnings.join(' | '));
 });
 
-test('нет списаний — прибыль не считается, а не показывается нулём', async () => {
+test('нет ни списаний, ни отгрузок — прибыль не считается, а не показывается нулём', async () => {
   const pool = makePool({ cash: CASH, used: [] });
   const r = await buildPnl(pool, '2026-08');
   assert.strictEqual(r.cogs.fact.has_data, false);
+  assert.strictEqual(r.cogs_source, null);
   assert.strictEqual(r.gross_profit, null);
   assert.strictEqual(r.operating_profit, null);
   assert.strictEqual(r.gross_margin_pct, null);
-  assert.ok(r.warnings.some((w) => w.includes('нет списаний')));
+  assert.ok(r.warnings.some((w) => w.includes('посчитать не из чего')));
+});
+
+test('склад не вёлся — прибыль считается по плану, и это видно', async () => {
+  const pool = makePool({
+    cash: CASH,
+    used: [],                                        // выдач со склада нет
+    settings: [{ key: 'pnl_units_2026-08', value: '1000' }],
+    products: [{ net_weight_g: 100, raw_price_per_kg: 30000, raw_cost: null, pack_template_id: 1, recipe_id: null }],
+    templates: [{ id: 1, total: 1000 }],
+  });
+  const r = await buildPnl(pool, '2026-08');
+  // Источник назван явно — подмена факта планом не должна быть незаметной
+  assert.strictEqual(r.cogs_source, 'plan');
+  assert.strictEqual(r.cogs.plan.total, 4000000);
+  assert.strictEqual(r.gross_profit, 100000000 - 4000000);
+  assert.ok(r.warnings.some((w) => w.includes('по плану')));
 });
 
 test('неразнесённые операции попадают в предупреждения', async () => {

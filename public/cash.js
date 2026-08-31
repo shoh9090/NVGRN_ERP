@@ -534,14 +534,20 @@
     gap();
 
     // --- Себестоимость ---
-    row('Себестоимость (материалы)', pnlMoney(d.cogs.fact.has_data ? d.cogs.fact.total : null), {
-      cls: 'cash-pnl-head',
-      hint: 'Сырьё и упаковка, списанные со склада в производство, по средней цене прихода.',
+    const byPlan = d.cogs_source === 'plan';
+    row('Себестоимость (материалы)' + (byPlan ? ' — по плану' : ''),
+      pnlMoney(byPlan ? d.cogs.plan.total : (d.cogs.fact.has_data ? d.cogs.fact.total : null)), {
+        cls: 'cash-pnl-head',
+        hint: byPlan
+          ? 'Считаем по Калькуляции: за месяц нет выдач сырья со склада.'
+          : 'Сырьё и упаковка, списанные со склада в производство, по средней цене прихода.',
+      });
+    row('   факт: списано со склада', pnlMoney(d.cogs.fact.has_data ? d.cogs.fact.total : null), {
+      cls: 'cash-pnl-sub',
+      hint: d.cogs.fact.has_data
+        ? ('зелень ' + money(d.cogs.fact.raw) + ' + упаковка ' + money(d.cogs.fact.packaging))
+        : 'Выдач сырья в производство за этот месяц не отмечено',
     });
-    if (d.cogs.fact.has_data) {
-      row('   зелень и сырьё', money(d.cogs.fact.raw), { cls: 'cash-pnl-sub' });
-      row('   упаковка', money(d.cogs.fact.packaging), { cls: 'cash-pnl-sub' });
-    }
     row('   план по Калькуляции', pnlMoney(d.cogs.plan.total), {
       cls: 'cash-pnl-sub',
       hint: d.cogs.plan.reason
@@ -555,7 +561,11 @@
     }
 
     gap();
-    row('Валовая прибыль', pnlMoney(d.gross_profit), { cls: 'cash-pnl-total' });
+    row('Валовая прибыль', pnlMoney(d.gross_profit), {
+      cls: 'cash-pnl-total',
+      hint: d.cogs_source === 'plan' ? 'Посчитана по плановой себестоимости — факта за месяц нет.'
+        : (d.cogs_source === 'fact' ? 'Выручка минус фактическая себестоимость со склада.' : null),
+    });
     row('Валовая маржа', pnlPct(d.gross_margin_pct), { cls: 'cash-pnl-sub' });
 
     gap();
@@ -603,15 +613,27 @@
         el('span', {}, d.units ? money(d.units) + ' шт' : 'не подтянуто'),
         d.units_at ? el('span', { class: 'cash-pnl-hint' }, ' обновлено ' + d.units_at) : null,
       ]),
+      // Класс cash-preset, а не btn-ghost: тот почти белый, он рассчитан на
+      // тёмную шапку и на светлом фоне отчёта пропадает.
       el('button', {
-        class: 'btn-ghost', title: 'Выгрузить количество отгрузок из SalesDoctor за этот месяц',
+        class: 'cash-preset', title: 'Выгрузить количество отгрузок из SalesDoctor за этот месяц',
         onclick: async (e) => {
-          const b = e.target; b.disabled = true; b.textContent = 'Тянем…';
+          const b = e.target;
+          b.disabled = true;
+          b.textContent = 'Тянем из SalesDoctor…';
+          // Выгрузка идёт постранично и занимает до полминуты — говорим об этом,
+          // иначе кажется, что кнопка не сработала.
+          toast('Выгружаем отгрузки из SalesDoctor, это может занять до минуты…');
           try {
             const r = await post('/pnl/units', { period: d.period });
-            toast('Отгружено: ' + money(r.units) + ' шт' + (r.truncated ? ' (данные неполные)' : ''));
+            toast('Отгружено: ' + money(r.units) + ' шт'
+              + (r.truncated ? ' — данные неполные, SalesDoctor отдал не всё' : ''));
             renderReport('pnl');
-          } catch (err) { toast(err.message, true); b.disabled = false; b.textContent = '↻ обновить'; }
+          } catch (err) {
+            toast(err.message, true);
+            b.disabled = false;
+            b.textContent = '↻ обновить';
+          }
         },
       }, '↻ обновить'),
     ]));

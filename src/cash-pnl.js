@@ -241,16 +241,26 @@ async function buildPnl(pool, period) {
   ]);
 
   const revenue = cash.revenue.total;
-  const cogs = fact.has_data ? fact.total : null;
+  // Себестоимость берём фактическую. Если склад за месяц не вёлся, считаем по
+  // плану — иначе отчёт бесполезен целые месяцы. Чем посчитано, отдаём наружу:
+  // подменять факт планом молча нельзя, человек должен это видеть.
+  const factTotal = fact.has_data ? fact.total : null;
+  const cogs = factTotal !== null ? factTotal : plan.total;
+  const cogsSource = factTotal !== null ? 'fact' : (plan.total !== null ? 'plan' : null);
   const gross = cogs === null ? null : revenue - cogs;
   const operating = gross === null ? null : gross - cash.opex.total;
 
   // Честные предупреждения: пусть человек видит, чему верить нельзя.
   const warnings = [];
-  if (!fact.has_data) warnings.push('За период нет списаний со склада — себестоимость и валовая прибыль не посчитаны.');
+  if (!fact.has_data) {
+    warnings.push(cogsSource === 'plan'
+      ? 'За месяц нет выдач сырья в производство, поэтому себестоимость посчитана по плану из Калькуляции. Чтобы увидеть факт, отмечайте выдачи в Складе.'
+      : 'За месяц нет ни выдач сырья со склада, ни количества отгрузок — себестоимость и прибыль посчитать не из чего.');
+  }
   if (fact.no_price.length) {
-    warnings.push('Не оценено позиций: ' + fact.no_price.length
-      + ' — по ним нет цены прихода, в себестоимость они не вошли.');
+    // Называем позиции поимённо: «не оценено 1» непонятно, что делать.
+    warnings.push('Нет цены прихода: ' + fact.no_price.map((x) => x.name).join(', ')
+      + '. В себестоимость эти позиции не вошли — проведите приёмку с ценой в Закупе.');
   }
   if (cash.unclassified.cnt) {
     warnings.push('Операций без статьи: ' + cash.unclassified.cnt
@@ -268,6 +278,7 @@ async function buildPnl(pool, period) {
       diff: (fact.has_data && plan.total !== null) ? fact.total - plan.total : null,
       diff_pct: (fact.has_data && plan.total > 0) ? pct(fact.total - plan.total, plan.total) : null,
     },
+    cogs_source: cogsSource,
     gross_profit: gross,
     gross_margin_pct: gross === null ? null : pct(gross, revenue),
     opex: cash.opex,
