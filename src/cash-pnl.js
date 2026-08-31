@@ -25,6 +25,12 @@ const UNITS_KEY = (period) => 'pnl_units_' + period;
 // Конверсия валюты: покупка/продажа собственных денег. Ни доход, ни расход.
 const CODE_CONVERSION = '102';
 const GRP_INCOME = 'Доходы и поступления';
+// Статья «Выручка от продаж». Её и только её показывает строка выручки в
+// Кэш-флоу, поэтому в P&L она идёт ОТДЕЛЬНОЙ строкой с тем же названием:
+// иначе цифры двух отчётов не сойдутся, и доверия к ним не будет.
+// Прочие доходные статьи (компенсации, продажа тары и т. п.) — своя строка.
+const CODE_SALES = '200';
+const isSales = (code) => String(code) === CODE_SALES;
 const isIncomeGroup = (g) => String(g || '') === GRP_INCOME;
 // Из операционных расходов исключаются только те статьи, чей расход мы берём
 // со склада: сырьё и упаковка. Раньше исключалась вся группа «1. Сырьё и
@@ -55,6 +61,7 @@ function classifyRows(rows) {
   const materials = [];    // оплата за сырьё и упаковку (справочно)
   const finance = [];      // финансовые потоки (вне прибыли)
   const capex = [];        // инвестиции (вне прибыли)
+  const otherIncome = []; // прочие доходные статьи, кроме 200 «Выручка от продаж»
   const otherIn = [];      // приходы по РАСХОДНЫМ статьям — это возвраты, не выручка
   const refunds = [];      // расход по ДОХОДНОЙ статье — возврат покупателю
   const conversion = [];   // конверсия валюты: обе ноги, деньги никуда не делись
@@ -82,7 +89,8 @@ function classifyRows(rows) {
     // расходилась и с Кэш-флоу, и с реализацией в SalesDoctor.
     if (item.inc > 0) {
       if (fin) finance.push(item);
-      else if (inc) revenue.push(item);
+      else if (inc && isSales(r.code)) revenue.push(item);
+      else if (inc) otherIncome.push(item);
       else otherIn.push(item);
     }
 
@@ -108,8 +116,12 @@ function classifyRows(rows) {
   const sum = (list, f) => list.reduce((s, x) => s + x[f], 0);
   const refundsTotal = sum(refunds, 'exp');
   return {
-    revenue, opex, materials, finance, capex, otherIn, refunds, conversion,
-    revenueTotal: sum(revenue, 'inc') - refundsTotal,
+    revenue, opex, materials, finance, capex, otherIn, otherIncome, refunds, conversion,
+    // Выручка от продаж — ровно статья 200, как в Кэш-флоу
+    salesTotal: sum(revenue, 'inc'),
+    otherIncomeTotal: sum(otherIncome, 'inc'),
+    // В прибыли участвуют все доходы за вычетом возвратов покупателям
+    revenueTotal: sum(revenue, 'inc') + sum(otherIncome, 'inc') - refundsTotal,
     refundsTotal,
     opexTotal: [...opex.values()].reduce((s, g) => s + g.amount, 0),
     financeIn: sum(finance, 'inc'),
@@ -148,7 +160,7 @@ async function cashSide(pool, from, to) {
         AND t.source <> 'opening' AND t.category_id IS NULL`, [from, to])).rows[0];
 
   const c = classifyRows(rows);
-  const { revenue, opex, materials, finance, capex, otherIn, refunds, conversion } = c;
+  const { revenue, opex, materials, finance, capex, otherIn, otherIncome, refunds, conversion } = c;
 
   // Переводы между своими счетами — для сверки с Кэш-флоу.
   const tr = (await pool.query(
@@ -161,11 +173,17 @@ async function cashSide(pool, from, to) {
   const sum = (list, f) => list.reduce((s, x) => s + x[f], 0);
   // Выручка — за вычетом возвратов покупателям: продали столько, сколько
   // у нас в итоге осталось, а не столько, сколько выставили.
-  const { refundsTotal, revenueTotal, financeIn, otherInTotal, convIn } = c;
+  const { refundsTotal, revenueTotal, salesTotal, otherIncomeTotal, financeIn, otherInTotal, convIn } = c;
   const transferIn = num(tr.inc);
 
   return {
-    revenue: { total: revenueTotal, items: revenue },
+    revenue: {
+      total: revenueTotal,
+      sales: salesTotal, sales_items: revenue,
+      other: otherIncomeTotal, other_items: otherIncome,
+      refunds: refundsTotal,
+      items: revenue.concat(otherIncome),
+    },
     opex: { total: c.opexTotal, groups: [...opex.values()] },
     materials_paid: { total: sum(materials, 'exp'), items: materials },
     finance: { in: financeIn, out: sum(finance, 'exp'), items: finance },
@@ -179,6 +197,8 @@ async function cashSide(pool, from, to) {
     reconcile: {
       all_in: revenueTotal + refundsTotal + financeIn + otherInTotal + convIn + transferIn + num(un.inc),
       revenue: revenueTotal,
+      sales: salesTotal,
+      other_income: otherIncomeTotal,
       refunds: refundsTotal,
       finance_in: financeIn,
       other_inflows: otherInTotal,

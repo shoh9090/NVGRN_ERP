@@ -265,3 +265,33 @@ test('минусовые корректировки склада видны, а 
   assert.strictEqual(r.stock_adjust.qty, 250);
   assert.strictEqual(r.stock_adjust.cnt, 4);
 });
+
+test('прочие доходы не приплюсовываются к выручке от продаж', async () => {
+  // Случай из жизни: в Кэш-флоу строка «Выручка от продаж» = 1 485 957 206,
+  // а P&L показывал 1 597 509 206. Разница — прочие доходные статьи, которые
+  // сваливались в ту же строку. Теперь они видны отдельно.
+  const pool = makePool({
+    cash: [
+      { code: '200', name: 'Выручка от продаж', group_name: 'Доходы и поступления', flow_type: 'operating', inc: 1485957206, exp: 0, cnt: 640 },
+      { code: '204', name: 'Прочие доходы', group_name: 'Доходы и поступления', flow_type: 'operating', inc: 111552000, exp: 0, cnt: 12 },
+      { code: '202', name: 'Получение кредита', group_name: 'Доходы и поступления', flow_type: 'financing', inc: 80000000, exp: 0, cnt: 1 },
+    ],
+    used: [{ item_kind: 'raw', item_id: 1, qty: 1 }],
+    prices: [{ item_kind: 'raw', item_id: 1, avg_price: 1 }],
+  });
+  const r = await buildPnl(pool, '2026-07');
+
+  // Строка выручки совпадает с Кэш-флоу до копейки
+  assert.strictEqual(r.revenue.sales, 1485957206);
+  assert.strictEqual(r.revenue.sales_items.length, 1);
+  // Прочие доходы видны отдельно и названы поимённо
+  assert.strictEqual(r.revenue.other, 111552000);
+  assert.strictEqual(r.revenue.other_items[0].code, '204');
+  // Кредит по-прежнему в финансовых, а не в доходах
+  assert.strictEqual(r.excluded.finance.in, 80000000);
+  // В прибыль идут все доходы, и это ровно сумма двух строк
+  assert.strictEqual(r.revenue.total, 1485957206 + 111552000);
+  // Сверка по-прежнему сходится без остатка
+  const rc = r.reconcile;
+  assert.strictEqual(rc.sales + rc.other_income, rc.revenue + rc.refunds);
+});
