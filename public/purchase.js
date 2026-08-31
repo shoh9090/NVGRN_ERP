@@ -72,34 +72,15 @@
   async function viewOrders() {
     const main = $('#pur-main');
     main.innerHTML = '';
-    const toolbar = el('div', { class: 'pur-toolbar' }, [
-      el('h2', {}, 'Заявки на закуп'),
-      el('div', { class: 'pur-toolbar-right' }, [
-        el('select', {
-          id: 'ord-status',
-          onchange: () => loadOrders(),
-        }, [
-          el('option', { value: 'all' }, 'Все статусы'),
-          el('option', { value: 'draft' }, 'Черновики'),
-          el('option', { value: 'ordered' }, 'Заказано'),
-          el('option', { value: 'received' }, 'Принято'),
-          el('option', { value: 'cancelled' }, 'Отменено'),
-        ]),
-        // Период — общим компонентом Hub, как в Кассе и Претензиях.
-        HubDateRange.create({
-          mode: 'range', from: ordPeriod.from, to: ordPeriod.to,
-          onChange: (v) => { ordPeriod.from = v.from; ordPeriod.to = v.to; loadOrders(); },
-        }),
-        el('input', { id: 'ord-q', placeholder: 'Поиск: номер, поставщик...', oninput: debounce(loadOrders, 300) }),
-        el('button', { class: 'btn-primary', onclick: () => openOrderEditor(null) }, '+ Новая заявка'),
-        ...((typeof HUB_USER !== 'undefined' && (HUB_USER.isAdmin || HUB_USER.buyerEdit)) ? [el('button', { style: 'color:#c0392b', title: 'Удалить все заявки за всё время', onclick: clearAllOrders }, '🧹 Очистить все заявки')] : []),
-      ]),
-    ]);
-    main.appendChild(toolbar);
+    main.appendChild(el('h2', { class: 'pur-h2' }, 'Заявки на закуп'));
     await ensureOpts();
+
+    // Все фильтры одной строкой. Подписи над полями убраны: каждый список и
+    // так говорит о себе первым пунктом («Все поставщики», «Товары: все»),
+    // а два ряда с заголовками занимали пол-экрана над таблицей.
     const ordPc = el('select', { id: 'ord-pc', onchange: loadOrders }, [
       el('option', { value: '' }, 'Все родит. категории'),
-      ...FOPTS.parents.map((p) => el('option', { value: p.id }, p.name)),
+      ...FOPTS.parents.map((x) => el('option', { value: x.id }, x.name)),
     ]);
     const ordSup = el('select', { id: 'ord-sup', onchange: loadOrders }, [
       el('option', { value: '' }, 'Все поставщики'),
@@ -107,26 +88,40 @@
     ]);
     ORD_ITEMS = new Set();
     const ordItems = itemMultiSelect(FOPTS.items, ORD_ITEMS, loadOrders);
-    const reset = el('button', { onclick: () => { ordPc.value=''; ordSup.value=''; ORD_ITEMS.clear(); $('#ord-q').value=''; viewOrders(); } }, 'Сбросить');
-    main.appendChild(el('div', { class: 'pur-filters' }, [
-      el('label', {}, ['Родит. категория', ordPc]),
-      el('label', {}, ['Поставщик', ordSup]),
-      el('label', {}, ['Товары (мультивыбор)', ordItems]),
+    const ordStatus = el('select', { id: 'ord-status', onchange: () => loadOrders() }, [
+      el('option', { value: 'all' }, 'Все статусы'),
+      el('option', { value: 'draft' }, 'Черновики'),
+      el('option', { value: 'ordered' }, 'Заказано'),
+      el('option', { value: 'received' }, 'Принято'),
+      el('option', { value: 'cancelled' }, 'Отменено'),
+    ]);
+    const reset = el('button', {
+      onclick: () => { ordPc.value = ''; ordSup.value = ''; ORD_ITEMS.clear(); ordPeriod.from = ''; ordPeriod.to = ''; viewOrders(); },
+    }, 'Сбросить');
+
+    main.appendChild(el('div', { class: 'pur-bar' }, [
+      // Период — общим компонентом Hub, как в Кассе и Претензиях.
+      HubDateRange.create({
+        mode: 'range', from: ordPeriod.from, to: ordPeriod.to,
+        onChange: (v) => { ordPeriod.from = v.from; ordPeriod.to = v.to; loadOrders(); },
+      }),
+      ordStatus, ordPc, ordSup, ordItems,
+      el('input', { id: 'ord-q', class: 'pur-bar-q', placeholder: 'Поиск: номер, поставщик…', oninput: debounce(loadOrders, 300) }),
       reset,
+      // Итог держим в той же строке и прижимаем вправо: раньше он жил
+      // отдельной полосой, и его перекрывала выпадашка товаров.
+      el('div', { id: 'ord-total', class: 'pur-bar-total' }, ''),
+      el('button', { class: 'btn-primary', onclick: () => openOrderEditor(null) }, '+ Новая заявка'),
+      // Кнопки «Очистить все заявки» здесь больше нет: она стирала всю историю
+      // закупок одним нажатием и стояла рядом с обычными фильтрами.
     ]));
     main.appendChild(el('div', { id: 'ord-list', class: 'pur-content' }));
     await loadOrders();
   }
 
-  async function clearAllOrders() {
-    if (!confirm('Удалить ВСЕ заявки за всё время?\n\n• Склад сырья и остатки — останутся.\n• Стартовые долги поставщиков — останутся.\n• Оплаты поставщикам — сохранятся (отвяжутся от заявок).\n\nОтменить нельзя. Продолжить?')) return;
-    if (!confirm('Точно удаляем все заявки безвозвратно?')) return;
-    try {
-      const r = await api('/orders/clear-all', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
-      toast('Удалено заявок: ' + r.deleted);
-      viewOrders();
-    } catch (e) { toast(e.message, true); }
-  }
+  // Массовое удаление заявок из интерфейса убрано: одно нажатие стирало всю
+  // историю закупок. Серверный маршрут /orders/clear-all остался и по-прежнему
+  // требует прав — если такая чистка когда-то понадобится, её делают точечно.
 
   // Период заявок: по умолчанию пусто — показываем все, как было раньше.
   // Пустой период не должен внезапно прятать половину заявок у того, кто
@@ -146,18 +141,20 @@
     if (ordPeriod.to) params.set('to', ordPeriod.to);
     const data = await api('/orders?' + params.toString());
     box.innerHTML = '';
-    // Итог по отобранным заявкам: сколько их и на какую сумму. Считается на
+    // Итог по отобранным заявкам показываем в строке фильтров: считается на
     // сервере по всей выборке, а не по показанным строкам — список обрезан
-    // тремястами, и сумма по нему вводила бы в заблуждение.
-    if (data.totals) {
-      box.appendChild(el('div', { class: 'pur-ord-total' }, [
-        el('span', {}, [el('b', {}, String(data.totals.orders)), ' заявок на сумму ',
-          el('b', {}, Math.round(data.totals.total).toLocaleString('ru-RU')), ' сум']),
-        (ordPeriod.from || ordPeriod.to)
-          ? el('span', { class: 'pur-ord-total-p' }, 'за выбранный период')
-          : el('span', { class: 'pur-ord-total-p' }, 'за всё время — выберите период кнопкой выше'),
-        data.truncated ? el('span', { class: 'pur-ord-total-w' }, 'в списке показаны первые 300') : null,
-      ]));
+    // тремястами, и сумма по ним вводила бы в заблуждение.
+    const totalBox = $('#ord-total');
+    if (totalBox && data.totals) {
+      totalBox.innerHTML = '';
+      totalBox.appendChild(el('b', {}, zayavok(data.totals.orders)));
+      totalBox.appendChild(document.createTextNode(' на '));
+      totalBox.appendChild(el('b', {}, Math.round(data.totals.total).toLocaleString('ru-RU') + ' сум'));
+      totalBox.title = (ordPeriod.from || ordPeriod.to)
+        ? 'За выбранный период' : 'За всё время — выберите период слева';
+      if (data.truncated) {
+        totalBox.appendChild(el('span', { class: 'pur-bar-total-w', title: 'Сумма посчитана по всем заявкам, в таблице показаны первые 300' }, ' · показаны первые 300'));
+      }
     }
     if (!data.items.length) {
       box.appendChild(el('p', { class: 'dict-empty' },
@@ -1862,7 +1859,7 @@
     const box = el('div', { class: 'pur-multi' });
     const btn = el('button', { class: 'pur-multi-btn', type: 'button' }, 'Товары: все');
     const panel = el('div', { class: 'pur-multi-panel', style: 'display:none' });
-    const search = el('input', { placeholder: 'поиск товара...', oninput: () => renderOpts() });
+    const search = el('input', { class: 'pur-multi-search', placeholder: 'поиск товара…', oninput: () => renderOpts() });
     panel.appendChild(search);
     const list = el('div', { class: 'pur-multi-list' });
     panel.appendChild(list);
@@ -1886,6 +1883,15 @@
     box.appendChild(btn); box.appendChild(panel);
     label();
     return box;
+  }
+
+  // 1 заявка, 2 заявки, 5 заявок. Без склонения строка читается как машинная.
+  function zayavok(n) {
+    const a = Math.abs(n) % 100, b = a % 10;
+    if (a > 10 && a < 20) return n + ' заявок';
+    if (b === 1) return n + ' заявка';
+    if (b >= 2 && b <= 4) return n + ' заявки';
+    return n + ' заявок';
   }
 
   function debounce(fn, ms) {
