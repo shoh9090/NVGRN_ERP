@@ -482,3 +482,41 @@ select.cb-cell { cursor: pointer; }
   background: var(--surface); color: var(--forest);
   box-shadow: inset 0 3px 0 var(--lime);
 }
+
+/* ---------- P&L: вкладка «Откуда цифры» ----------
+   Три столбца, как в Excel: статья, откуда берётся, значение. Инструмент
+   настройки: пока данные не выверены, источник важнее красоты. */
+.cash-src-t {
+  width: 100%; max-width: 1100px; border-collapse: collapse; font-size: 13px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+  overflow: hidden;
+}
+.cash-src-t thead th {
+  text-align: left; font-size: 11px; font-weight: 800; color: var(--ink-soft);
+  background: var(--surface-2); padding: 9px 14px; border-bottom: 1px solid var(--line);
+  text-transform: uppercase; letter-spacing: .04em;
+}
+.cash-src-t thead th:last-child { text-align: right; }
+.cash-src-t td { padding: 7px 14px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+.cash-src-t tr:last-child td { border-bottom: none; }
+.cash-src-name { color: var(--ink); font-weight: 600; white-space: pre; }
+.cash-src-where { color: var(--ink-faint); font-size: 11.5px; line-height: 1.45; }
+.cash-src-val {
+  text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap;
+  color: var(--ink); font-weight: 600;
+}
+.cash-src-head td {
+  background: var(--forest); color: #eef3ec; font-weight: 800; font-size: 12px;
+  padding: 8px 14px; letter-spacing: .01em;
+}
+.cash-src-total td { background: #f4f7f1; font-weight: 800; }
+.cash-src-total .cash-src-val { font-size: 14px; }
+.cash-src-grp td { background: var(--surface-2); font-weight: 700; }
+.cash-src-sub .cash-src-name { font-weight: 500; color: var(--ink-soft); }
+.cash-src-warn td { background: var(--red-soft); }
+.cash-src-warn .cash-src-name { color: var(--red); }
+.cash-src-why {
+  max-width: 1100px; margin-bottom: 14px; padding: 12px 15px;
+  background: var(--amber-soft); border-left: 3px solid var(--amber);
+  border-radius: 0 10px 10px 0; font-size: 13.5px; line-height: 1.55; color: var(--ink);
+}
