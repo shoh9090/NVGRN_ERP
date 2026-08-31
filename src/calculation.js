@@ -652,14 +652,17 @@ const K_SD_PRICE_TYPE = (sheet) => 'sd_price_type_' + sheet;
 async function sdPricesByBarcode(priceTypeId) {
   if (!priceTypeId) return new Map();
   const r = await db.pool.query(
-    `SELECT g.barcode, p.price, p.last_sync_at
+    `SELECT g.barcode, p.price,
+            to_char(p.last_sync_at, 'DD.MM.YYYY') AS last_sync_at
        FROM ref_prices p
        JOIN ref_finished_goods g ON g.id = p.product_id
       WHERE p.price_type_id = $1 AND COALESCE(g.barcode, '') <> ''`, [priceTypeId]);
   const m = new Map();
   r.rows.forEach((x) => m.set(String(x.barcode).trim(), {
     price: Number(x.price) || null,
-    at: x.last_sync_at ? String(x.last_sync_at).slice(0, 10) : null,
+    // Дату форматирует база: Postgres отдаёт timestamp объектом Date, и
+    // обрезка его строки давала «Wed Aug 20» вместо нормальной даты.
+    at: x.last_sync_at || null,
   }));
   return m;
 }
@@ -712,6 +715,7 @@ async function lastRawPrices() {
        JOIN purchase_orders po ON po.id = i.order_id AND po.status = 'received'
       WHERE i.item_kind = 'raw' AND COALESCE(i.fact_price, i.price) > 0
       ORDER BY i.item_id, COALESCE(po.received_at::date, po.delivery_date) DESC`);
+    // ниже дата уходит на экран, поэтому приводим её к тексту сразу
   const byId = new Map();
   r.rows.forEach((x) => byId.set(x.item_id, { price: Number(x.price), at: x.at }));
   return byId;

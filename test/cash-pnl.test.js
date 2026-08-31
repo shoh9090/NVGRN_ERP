@@ -13,7 +13,14 @@ function makePool(opts) {
   return {
     query: async (sql) => {
       const q = String(sql).replace(/\s+/g, ' ');
-      if (/INTERVAL '1 month'/.test(q)) return { rows: [{ d: '2026-08-31' }] };
+      // Проверяем даты как настоящий Postgres: колонку date драйвер отдаёт
+      // объектом Date, а to_char — строкой. Раньше заглушка всегда возвращала
+      // строку, и ошибка «invalid input syntax for type date: Mon Aug 31»
+      // до прода дошла незамеченной.
+      // to_char просим текстом — база возвращает готовую строку
+      if (/to_char/.test(q) && /INTERVAL/.test(q)) return { rows: [{ d: '2026-08-31' }] };
+      // а голую колонку date драйвер отдал бы объектом Date
+      if (/INTERVAL '1 month'/.test(q)) return { rows: [{ d: new Date('2026-08-31T00:00:00+05:00') }] };
       if (/FROM settings WHERE key/.test(q)) return { rows: o.settings || [] };
       if (/FROM cash_transactions t JOIN cash_categories/.test(q)) return { rows: o.cash || [] };
       if (/AND t\.category_id IS NULL/.test(q)) return { rows: [o.unclassified || { inc: 0, exp: 0, cnt: 0 }] };
@@ -134,4 +141,19 @@ test('миксы по рецептуре не выпадают из планов
   assert.strictEqual(r.cogs.plan.skipped, 0);
   assert.strictEqual(r.cogs.plan.unit_cost, 5000);
   assert.strictEqual(r.cogs.plan.total, 5000000);
+});
+
+test('в запросы уходит дата в формате базы, а не текст Date', async () => {
+  const seen = [];
+  const base = makePool({ cash: CASH, used: [], settings: [] });
+  const pool = {
+    query: async (sql, params) => {
+      // Ловим любую дату, ушедшую параметром: она должна быть ГГГГ-ММ-ДД
+      (params || []).forEach((v) => { if (typeof v === 'string' && /^[A-Za-z]{3} /.test(v)) seen.push(v); });
+      return base.query(sql, params);
+    },
+  };
+  const r = await buildPnl(pool, '2026-08');
+  assert.deepStrictEqual(seen, [], 'в параметры ушла дата в виде «Mon Aug 31»: ' + seen.join(', '));
+  assert.strictEqual(r.to, '2026-08-31');
 });

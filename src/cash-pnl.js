@@ -219,8 +219,12 @@ async function planCogs(pool, units) {
 // ---------------------------------------------------------------------------
 async function buildPnl(pool, period) {
   const from = period + '-01';
-  const to = (await pool.query("SELECT (($1::date + INTERVAL '1 month') - INTERVAL '1 day')::date AS d", [from])).rows[0].d;
-  const toStr = String(to).slice(0, 10);
+  // Дату форматирует САМА база. Postgres отдаёт колонку date объектом Date,
+  // и String(...) даёт «Mon Aug 31» вместо «2026-08-31» — такую строку
+  // следующий же запрос не примет. Просим сразу текст.
+  const toStr = (await pool.query(
+    "SELECT to_char(($1::date + INTERVAL '1 month') - INTERVAL '1 day', 'YYYY-MM-DD') AS d",
+    [from])).rows[0].d;
 
   // Настройки читаем через ПЕРЕДАННЫЙ пул, а не через глобальный: иначе
   // функцию нельзя проверить тестом, не поднимая настоящую базу.
