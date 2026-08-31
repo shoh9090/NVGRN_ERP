@@ -404,15 +404,6 @@ select.cb-cell { cursor: pointer; }
 .cash-sum-card.bad .cash-sum-val { color: var(--red); }
 .cash-sum-note { font-size: 11.5px; color: var(--ink-faint); line-height: 1.35; }
 
-.cash-sum-bar { display: flex; height: 14px; border-radius: 7px; overflow: hidden; margin-top: 14px; background: var(--surface-2); }
-.cash-sum-seg { height: 100%; }
-.seg-cogs { background: #7fa86a; }
-.seg-opex { background: #c9b06a; }
-.seg-profit { background: var(--forest); }
-.seg-loss { background: var(--red); }
-.cash-sum-legend { display: flex; gap: 16px; margin-top: 7px; font-size: 12px; color: var(--ink-soft); flex-wrap: wrap; }
-.cash-sum-legend span { display: inline-flex; align-items: center; gap: 6px; }
-.cash-sum-legend i { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
 
 .cash-sum-phrase {
   margin-top: 14px; padding: 12px 15px; background: var(--surface-2);
@@ -427,3 +418,55 @@ select.cb-cell { cursor: pointer; }
 }
 .cash-pnl-more > summary:hover { color: var(--ink); }
 .cash-pnl-details { padding-top: 6px; }
+
+/* ---------- P&L: графики ---------- */
+.cash-charts { display: grid; grid-template-columns: 1fr; gap: 12px; max-width: 900px; margin: 16px 0 6px; }
+/* display:block задан явно: карточка подхватывала flex от общего правила
+   и график сжимался до своей «родной» ширины вместо ширины карточки. */
+.cash-pl-card { display: block; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px 12px; }
+.cash-pl-h { font-size: 14px; font-weight: 800; color: var(--ink); }
+.cash-pl-sub { font-size: 11.5px; color: var(--ink-faint); margin: 1px 0 10px; }
+.cash-pl-wrap { width: 100%; }
+.cash-pl-svg { width: 100%; height: 210px; display: block; }
+.cash-pl-hit { cursor: pointer; }
+.cash-pl-hit:focus { outline: 2px solid var(--lime-d); outline-offset: -2px; }
+
+.cash-pl-legend { display: flex; gap: 16px; margin-top: 9px; font-size: 12px; color: var(--ink-soft); flex-wrap: wrap; }
+.cash-pl-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.cash-pl-legend i { width: 11px; height: 11px; border-radius: 3px; display: inline-block; flex: none; }
+
+/* Полоса «куда ушла выручка»: зазор в 2px подложки между долями */
+.cash-share { display: flex; height: 26px; border-radius: 8px; overflow: hidden; background: var(--surface-2); gap: 2px; }
+.cash-share-seg { height: 100%; position: relative; cursor: default; display: flex; align-items: center; justify-content: center; min-width: 2px; }
+.cash-share-seg:focus { outline: 2px solid var(--ink); outline-offset: -2px; }
+.cash-share-lbl { color: #fff; font-size: 11px; font-weight: 800; }
+
+/* Расходы по группам */
+.cash-obar-row {
+  display: grid; grid-template-columns: minmax(120px, 1.4fr) 2fr 80px; gap: 10px;
+  align-items: center; width: 100%; background: none; border: none; cursor: pointer;
+  padding: 7px 4px; font-family: inherit; text-align: left; border-radius: 8px;
+  min-height: 34px;
+}
+.cash-obar-row:hover { background: var(--surface-2); }
+.cash-obar-row.on { background: var(--lime-soft); }
+.cash-obar-name { font-size: 12.5px; color: var(--ink); font-weight: 600; }
+.cash-obar { height: 10px; background: var(--surface-2); border-radius: 5px; overflow: hidden; }
+.cash-obar-fill { height: 100%; border-radius: 5px; }
+.cash-obar-val { font-size: 12.5px; text-align: right; color: var(--ink); font-weight: 700; }
+.cash-obar-items { padding: 2px 4px 8px 12px; }
+.cash-obar-item {
+  display: flex; justify-content: space-between; gap: 12px;
+  font-size: 12px; color: var(--ink-soft); padding: 3px 0;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Подсказка графиков */
+.cash-pl-tip {
+  position: fixed; z-index: 9999; pointer-events: none; opacity: 0; transition: opacity .1s;
+  background: var(--ink); color: #f4f2ea; border-radius: 10px; padding: 8px 11px;
+  font-size: 12.5px; line-height: 1.45; max-width: 280px;
+  box-shadow: 0 10px 28px rgba(20, 36, 27, .28);
+}
+.cash-pl-tip .dim { color: #b9c4bb; }
+.cash-pl-tip i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; margin-right: 5px; }

@@ -44,34 +44,12 @@ const num = (v) => Number(v) || 0;
 const pct = (part, whole) => (whole > 0 ? (part / whole) * 100 : null);
 
 // ---------------------------------------------------------------------------
-// Деньги Кассы за период, разложенные по назначению
+// Разбор статей по назначению
 // ---------------------------------------------------------------------------
-async function cashSide(pool, from, to) {
-  // Переводы между своими счетами исключены на входе: они не доход и не расход.
-  const rows = (await pool.query(
-    `SELECT c.code, c.name, c.group_name, c.flow_type,
-            COALESCE(SUM(t.amount) FILTER (WHERE t.tx_type = 'in'), 0)  AS inc,
-            COALESCE(SUM(t.amount) FILTER (WHERE t.tx_type = 'out'), 0) AS exp,
-            COUNT(*) AS cnt
-       FROM cash_transactions t
-       JOIN cash_categories c ON c.id = t.category_id
-      WHERE t.tx_date BETWEEN $1 AND $2
-        AND t.tx_type IN ('in', 'out')
-        AND t.source <> 'opening'
-        AND (c.direction_hint IS DISTINCT FROM 'transfer')
-      GROUP BY c.code, c.name, c.group_name, c.flow_type
-      ORDER BY c.code`, [from, to])).rows;
-
-  // Операции без статьи — их нельзя молча потерять, иначе итог не сойдётся
-  // с Кэш-флоу и человек справедливо перестанет верить отчёту.
-  const un = (await pool.query(
-    `SELECT COALESCE(SUM(amount) FILTER (WHERE tx_type = 'in'), 0)  AS inc,
-            COALESCE(SUM(amount) FILTER (WHERE tx_type = 'out'), 0) AS exp,
-            COUNT(*) AS cnt
-       FROM cash_transactions t
-      WHERE t.tx_date BETWEEN $1 AND $2 AND t.tx_type IN ('in', 'out')
-        AND t.source <> 'opening' AND t.category_id IS NULL`, [from, to])).rows[0];
-
+// Вынесено в отдельную функцию, потому что этим же правилом пользуется график
+// динамики. Две копии правила означали бы, что график и таблица показывают
+// разное, а это худшее, что может случиться с отчётом о деньгах.
+function classifyRows(rows) {
   const revenue = [];      // выручка: ТОЛЬКО доходные операционные статьи
   const opex = new Map();  // операционные расходы по группам
   const materials = [];    // оплата за сырьё и упаковку (справочно)
@@ -126,6 +104,52 @@ async function cashSide(pool, from, to) {
     }
   }
 
+
+  const sum = (list, f) => list.reduce((s, x) => s + x[f], 0);
+  const refundsTotal = sum(refunds, 'exp');
+  return {
+    revenue, opex, materials, finance, capex, otherIn, refunds, conversion,
+    revenueTotal: sum(revenue, 'inc') - refundsTotal,
+    refundsTotal,
+    opexTotal: [...opex.values()].reduce((s, g) => s + g.amount, 0),
+    financeIn: sum(finance, 'inc'),
+    otherInTotal: sum(otherIn, 'inc'),
+    convIn: sum(conversion, 'inc'),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Деньги Кассы за период, разложенные по назначению
+// ---------------------------------------------------------------------------
+async function cashSide(pool, from, to) {
+  // Переводы между своими счетами исключены на входе: они не доход и не расход.
+  const rows = (await pool.query(
+    `SELECT c.code, c.name, c.group_name, c.flow_type,
+            COALESCE(SUM(t.amount) FILTER (WHERE t.tx_type = 'in'), 0)  AS inc,
+            COALESCE(SUM(t.amount) FILTER (WHERE t.tx_type = 'out'), 0) AS exp,
+            COUNT(*) AS cnt
+       FROM cash_transactions t
+       JOIN cash_categories c ON c.id = t.category_id
+      WHERE t.tx_date BETWEEN $1 AND $2
+        AND t.tx_type IN ('in', 'out')
+        AND t.source <> 'opening'
+        AND (c.direction_hint IS DISTINCT FROM 'transfer')
+      GROUP BY c.code, c.name, c.group_name, c.flow_type
+      ORDER BY c.code`, [from, to])).rows;
+
+  // Операции без статьи — их нельзя молча потерять, иначе итог не сойдётся
+  // с Кэш-флоу и человек справедливо перестанет верить отчёту.
+  const un = (await pool.query(
+    `SELECT COALESCE(SUM(amount) FILTER (WHERE tx_type = 'in'), 0)  AS inc,
+            COALESCE(SUM(amount) FILTER (WHERE tx_type = 'out'), 0) AS exp,
+            COUNT(*) AS cnt
+       FROM cash_transactions t
+      WHERE t.tx_date BETWEEN $1 AND $2 AND t.tx_type IN ('in', 'out')
+        AND t.source <> 'opening' AND t.category_id IS NULL`, [from, to])).rows[0];
+
+  const c = classifyRows(rows);
+  const { revenue, opex, materials, finance, capex, otherIn, refunds, conversion } = c;
+
   // Переводы между своими счетами — для сверки с Кэш-флоу.
   const tr = (await pool.query(
     `SELECT COALESCE(SUM(t.amount) FILTER (WHERE t.tx_type = 'in'), 0) AS inc
@@ -135,18 +159,14 @@ async function cashSide(pool, from, to) {
         AND c.direction_hint = 'transfer'`, [from, to])).rows[0];
 
   const sum = (list, f) => list.reduce((s, x) => s + x[f], 0);
-  const refundsTotal = sum(refunds, 'exp');
   // Выручка — за вычетом возвратов покупателям: продали столько, сколько
   // у нас в итоге осталось, а не столько, сколько выставили.
-  const revenueTotal = sum(revenue, 'inc') - refundsTotal;
-  const financeIn = sum(finance, 'inc');
-  const otherInTotal = sum(otherIn, 'inc');
-  const convIn = sum(conversion, 'inc');
+  const { refundsTotal, revenueTotal, financeIn, otherInTotal, convIn } = c;
   const transferIn = num(tr.inc);
 
   return {
     revenue: { total: revenueTotal, items: revenue },
-    opex: { total: [...opex.values()].reduce((s, g) => s + g.amount, 0), groups: [...opex.values()] },
+    opex: { total: c.opexTotal, groups: [...opex.values()] },
     materials_paid: { total: sum(materials, 'exp'), items: materials },
     finance: { in: financeIn, out: sum(finance, 'exp'), items: finance },
     capex: { total: sum(capex, 'exp'), items: capex },
@@ -385,4 +405,88 @@ async function buildPnl(pool, period) {
   };
 }
 
-module.exports = { buildPnl, UNITS_KEY };
+
+// ---------------------------------------------------------------------------
+// Динамика по месяцам — для графика на дашборде
+// ---------------------------------------------------------------------------
+// Считаем те же величины, что и месячный отчёт, но сразу за несколько месяцев
+// и одним набором запросов: дёргать buildPnl двенадцать раз означало бы
+// полсотни запросов к базе на каждое открытие вкладки.
+//
+// Классификация статей — ровно та же функция, что и в месячном отчёте
+// (classifyRows). Если развести их на две копии, график и таблица начнут
+// показывать разное, и доверие к отчёту закончится.
+async function buildTrend(pool, endPeriod, months) {
+  const n = Math.max(2, Math.min(24, Number(months) || 12));
+  const bounds = (await pool.query(
+    `SELECT to_char(($1::date - ($2 || ' months')::interval), 'YYYY-MM-DD') AS f,
+            to_char((($1::date + INTERVAL '1 month') - INTERVAL '1 day'), 'YYYY-MM-DD') AS t`,
+    [endPeriod + '-01', n - 1])).rows[0];
+
+  // Деньги по месяцам и статьям
+  const cashRows = (await pool.query(
+    `SELECT to_char(t.tx_date, 'YYYY-MM') AS m,
+            c.code, c.name, c.group_name, c.flow_type,
+            COALESCE(SUM(t.amount) FILTER (WHERE t.tx_type = 'in'), 0)  AS inc,
+            COALESCE(SUM(t.amount) FILTER (WHERE t.tx_type = 'out'), 0) AS exp,
+            COUNT(*) AS cnt
+       FROM cash_transactions t
+       JOIN cash_categories c ON c.id = t.category_id
+      WHERE t.tx_date BETWEEN $1 AND $2
+        AND t.tx_type IN ('in', 'out')
+        AND t.source <> 'opening'
+        AND (c.direction_hint IS DISTINCT FROM 'transfer')
+      GROUP BY 1, c.code, c.name, c.group_name, c.flow_type`, [bounds.f, bounds.t])).rows;
+
+  // Списания со склада по месяцам, оценённые средней ценой прихода
+  const usedRows = (await pool.query(
+    `SELECT to_char(moved_at, 'YYYY-MM') AS m, item_kind, item_id, SUM(-qty) AS qty
+       FROM stock_movements
+      WHERE reason = 'production' AND moved_at BETWEEN $1 AND $2
+      GROUP BY 1, item_kind, item_id
+     HAVING SUM(-qty) > 0`, [bounds.f, bounds.t])).rows;
+  const priceRows = usedRows.length ? (await pool.query(
+    `SELECT item_kind, item_id, SUM(qty * price) / NULLIF(SUM(qty), 0) AS avg_price
+       FROM stock_movements
+      WHERE reason = 'receive' AND price > 0 AND qty > 0 AND moved_at <= $1
+      GROUP BY item_kind, item_id`, [bounds.t])).rows : [];
+  const priceOf = new Map(priceRows.map((p) => [p.item_kind + '#' + p.item_id, Number(p.avg_price)]));
+
+  // Раскладываем по месяцам
+  const byMonth = new Map();
+  const monthOf = (m) => {
+    if (!byMonth.has(m)) byMonth.set(m, { period: m, rows: [], cogs: 0, cogs_known: false });
+    return byMonth.get(m);
+  };
+  cashRows.forEach((r) => monthOf(r.m).rows.push(r));
+  usedRows.forEach((u) => {
+    const slot = monthOf(u.m);
+    const price = priceOf.get(u.item_kind + '#' + u.item_id);
+    if (price === undefined) return;          // без цены прихода не оцениваем
+    slot.cogs += (Number(u.qty) || 0) * price;
+    slot.cogs_known = true;
+  });
+
+  // Идём по всем месяцам подряд, включая пустые: провал в данных должен быть
+  // виден дырой на графике, а не «съеденным» месяцем.
+  const out = [];
+  const [ey, em] = endPeriod.split('-').map(Number);
+  for (let i = n - 1; i >= 0; i--) {
+    const d = new Date(Date.UTC(ey, em - 1 - i, 1));
+    const key = d.toISOString().slice(0, 7);
+    const slot = byMonth.get(key);
+    if (!slot) { out.push({ period: key, revenue: 0, cogs: null, opex: 0, profit: null }); continue; }
+    const c = classifyRows(slot.rows);
+    const cogs = slot.cogs_known ? slot.cogs : null;
+    out.push({
+      period: key,
+      revenue: c.revenueTotal,
+      cogs,
+      opex: c.opexTotal,
+      profit: cogs === null ? null : c.revenueTotal - cogs - c.opexTotal,
+    });
+  }
+  return { months: n, from: bounds.f, to: bounds.t, points: out };
+}
+
+module.exports = { buildPnl, buildTrend, UNITS_KEY };

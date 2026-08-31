@@ -6,7 +6,7 @@ const multer = require('multer');
 const XLSX = require('xlsx');
 const db = require('./db');
 const integrations = require('./integrations');
-const { buildPnl, UNITS_KEY } = require('./cash-pnl');
+const { buildPnl, buildTrend, UNITS_KEY } = require('./cash-pnl');
 const pfin = require('./purchase-finance'); // общий расчёт долга поставщикам (read-only в «Обязательствах»)
 
 const router = express.Router();
@@ -1447,6 +1447,18 @@ router.get('/api/pnl', async (req, res) => {
     res.json(await buildPnl(db.pool, period));
   } catch (e) {
     console.error('[КАССА] P&L:', e.message);
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Динамика по месяцам для графика на дашборде.
+router.get('/api/pnl/trend', async (req, res) => {
+  const period = /^\d{4}-\d{2}$/.test(req.query.period || '')
+    ? req.query.period : new Date().toISOString().slice(0, 7);
+  try {
+    res.json(await buildTrend(db.pool, period, req.query.months));
+  } catch (e) {
+    console.error('[КАССА] динамика P&L:', e.message);
     res.status(400).json({ error: e.message });
   }
 });

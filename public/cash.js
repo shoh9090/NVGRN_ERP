@@ -482,6 +482,239 @@
   };
 
 
+
+  // ---------------------------------------------------------------------------
+  // Графики P&L — собственный inline SVG, как в Претензиях
+  // ---------------------------------------------------------------------------
+  // Палитра проверена валидатором на светлой подложке: зелёный → синий →
+  // янтарный. Порядок важен: соседние пары различимы при дальтонизме, а
+  // зелёный с янтарным (самая слабая пара) в графиках никогда не соседствуют
+  // и всегда снабжены подписями.
+  const CH = {
+    green: '#3d8b52',
+    blue: '#2f6fb0',
+    amber: '#c98306',
+    loss: '#bf3f28',
+    grid: '#e6e2d6',
+    ink: '#52605a',
+    faint: '#8a958f',
+    surface: '#ffffff',
+  };
+  const svgEl = (tag, attrs) => {
+    const n = document.createElementNS('http://www.w3.org/2000/svg', tag);
+    for (const [k, v] of Object.entries(attrs || {})) {
+      if (v === null || v === undefined || v === false) continue;
+      n.setAttribute(k, v);
+    }
+    return n;
+  };
+
+  // Подсказка у графиков: своя, чтобы появлялась сразу и не пряталась под маркой
+  let chartTip = null;
+  function showChartTip(html, x, y) {
+    if (!chartTip) {
+      chartTip = el('div', { class: 'cash-pl-tip' });
+      document.body.appendChild(chartTip);
+    }
+    chartTip.innerHTML = html;
+    const b = chartTip.getBoundingClientRect();
+    chartTip.style.left = Math.max(8, Math.min(x + 14, window.innerWidth - b.width - 8)) + 'px';
+    chartTip.style.top = Math.max(8, y - b.height - 12) + 'px';
+    chartTip.style.opacity = '1';
+  }
+  function hideChartTip() { if (chartTip) chartTip.style.opacity = '0'; }
+
+  const chartCard = (title, sub, body) => el('div', { class: 'cash-pl-card' }, [
+    el('div', { class: 'cash-pl-h' }, title),
+    sub ? el('div', { class: 'cash-pl-sub' }, sub) : null,
+    body,
+  ]);
+
+  const legend = (items) => el('div', { class: 'cash-pl-legend' }, items.map((it) =>
+    el('span', {}, [el('i', { style: 'background:' + it.color }), it.label])));
+
+  // --- Куда ушла выручка: части одного целого ------------------------------
+  // Полоса, а не пончик: три доли, которые надо сравнить между собой, на
+  // полосе читаются точнее. Между сегментами зазор в 2 пикселя подложки.
+  function shareBar(d) {
+    const rev = d.revenue.total;
+    const cogs = d.cogs_source === 'plan' ? d.cogs.plan.total
+      : (d.cogs.fact.has_data ? d.cogs.fact.total : null);
+    const opex = d.opex.total;
+    const profit = d.operating_profit;
+    if (!(rev > 0) || cogs === null || profit === null) return null;
+
+    const parts = [
+      { label: 'Товар', value: cogs, color: CH.green, note: d.cogs_source === 'plan' ? 'по калькуляции' : 'сырьё и упаковка со склада' },
+      { label: 'Работа компании', value: opex, color: CH.blue, note: 'зарплата, аренда, логистика' },
+      { label: profit >= 0 ? 'Прибыль' : 'Убыток', value: Math.abs(profit), color: profit >= 0 ? CH.amber : CH.loss, note: profit >= 0 ? 'то, что осталось' : 'месяц в минусе' },
+    ];
+
+    const bar = el('div', { class: 'cash-share' });
+    parts.forEach((p) => {
+      const w = Math.max(0, (p.value / rev) * 100);
+      const seg = el('div', {
+        class: 'cash-share-seg', style: 'width:' + w + '%;background:' + p.color,
+        tabindex: '0',
+      });
+      const tip = () => '<b>' + p.label + '</b><br>' + money(p.value) + ' сум · '
+        + Math.round(w) + '% выручки<br><span class="dim">' + p.note + '</span>';
+      seg.addEventListener('mousemove', (e) => showChartTip(tip(), e.clientX, e.clientY));
+      seg.addEventListener('mouseleave', hideChartTip);
+      seg.addEventListener('focus', () => {
+        const r = seg.getBoundingClientRect();
+        showChartTip(tip(), r.left + r.width / 2, r.top);
+      });
+      seg.addEventListener('blur', hideChartTip);
+      // Подпись внутри сегмента — только если реально помещается
+      if (w >= 14) seg.appendChild(el('span', { class: 'cash-share-lbl' }, Math.round(w) + '%'));
+      bar.appendChild(seg);
+    });
+
+    return chartCard('Куда ушла выручка', 'из каждого сума, пришедшего от покупателей', el('div', {}, [
+      bar,
+      legend(parts.map((p) => ({ color: p.color, label: p.label + ' · ' + mlrd(p.value) }))),
+    ]));
+  }
+
+  // --- Динамика по месяцам ------------------------------------------------
+  // Две линии на ОДНОЙ шкале: выручка и прибыль в одних и тех же сумах.
+  // Клик по месяцу переключает отчёт на него.
+  function trendChart(t, current, onPick) {
+    const pts = t.points || [];
+    if (pts.length < 2) return null;
+
+    const W = 720, H = 210, padL = 8, padR = 8, padT = 14, padB = 26;
+    const vals = [];
+    pts.forEach((p) => { vals.push(p.revenue); if (p.profit !== null) vals.push(p.profit); });
+    const maxV = Math.max(1, ...vals);
+    const minV = Math.min(0, ...vals);
+    const x = (i) => padL + (i * (W - padL - padR)) / Math.max(1, pts.length - 1);
+    const y = (v) => padT + (H - padT - padB) * (1 - (v - minV) / (maxV - minV || 1));
+
+    const svg = svgEl('svg', { viewBox: '0 0 ' + W + ' ' + H, class: 'cash-pl-svg', preserveAspectRatio: 'none' });
+
+    // Сетка — сплошные волосяные линии, приглушённые
+    for (let k = 0; k <= 3; k++) {
+      const v = minV + ((maxV - minV) * k) / 3;
+      svg.appendChild(svgEl('line', {
+        x1: padL, x2: W - padR, y1: y(v), y2: y(v), stroke: CH.grid, 'stroke-width': 1,
+      }));
+    }
+    // Ноль виден отдельно, если график уходит в минус
+    if (minV < 0) {
+      svg.appendChild(svgEl('line', { x1: padL, x2: W - padR, y1: y(0), y2: y(0), stroke: CH.faint, 'stroke-width': 1 }));
+    }
+
+    const line = (get, color) => {
+      const dPath = pts.map((p, i) => {
+        const v = get(p);
+        return v === null ? null : (i === 0 || get(pts[i - 1]) === null ? 'M' : 'L') + x(i) + ' ' + y(v);
+      }).filter(Boolean).join(' ');
+      svg.appendChild(svgEl('path', { d: dPath, fill: 'none', stroke: color, 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
+      pts.forEach((p, i) => {
+        const v = get(p);
+        if (v === null) return;
+        // Кольцо подложки, чтобы точки не слипались при пересечении линий
+        svg.appendChild(svgEl('circle', { cx: x(i), cy: y(v), r: 4.5, fill: color, stroke: CH.surface, 'stroke-width': 2 }));
+      });
+    };
+    line((p) => p.revenue, CH.blue);
+    line((p) => p.profit, CH.amber);
+
+    // Подписи месяцев: показываем не все, чтобы не слиплись
+    const step = Math.ceil(pts.length / 6);
+    pts.forEach((p, i) => {
+      if (i % step && i !== pts.length - 1) return;
+      svg.appendChild(Object.assign(svgEl('text', {
+        x: x(i), y: H - 8, 'text-anchor': 'middle', fill: CH.faint, 'font-size': 11,
+      }), { textContent: shortMonth(p.period) }));
+    });
+
+    // Прозрачные полосы-мишени: попасть мышкой легко, и по клику — переход
+    pts.forEach((p, i) => {
+      const half = (W - padL - padR) / Math.max(1, pts.length - 1) / 2;
+      const hit = svgEl('rect', {
+        x: x(i) - half, y: 0, width: half * 2, height: H, fill: 'transparent',
+        class: 'cash-pl-hit', tabindex: '0', role: 'button',
+      });
+      const tip = () => '<b>' + monthLabelRu(p.period) + '</b><br>'
+        + '<i style="background:' + CH.blue + '"></i> выручка ' + money(p.revenue) + '<br>'
+        + '<i style="background:' + CH.amber + '"></i> прибыль '
+        + (p.profit === null ? 'нет данных' : money(p.profit))
+        + (p.period === current ? '<br><span class="dim">показан сейчас</span>' : '<br><span class="dim">нажмите, чтобы открыть</span>');
+      hit.addEventListener('mousemove', (e) => showChartTip(tip(), e.clientX, e.clientY));
+      hit.addEventListener('mouseleave', hideChartTip);
+      hit.addEventListener('click', () => onPick(p.period));
+      hit.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onPick(p.period); } });
+      svg.appendChild(hit);
+    });
+
+    // Текущий месяц отмечен вертикалью
+    const ci = pts.findIndex((p) => p.period === current);
+    if (ci >= 0) {
+      svg.appendChild(svgEl('line', {
+        x1: x(ci), x2: x(ci), y1: padT - 6, y2: H - padB, stroke: CH.ink,
+        'stroke-width': 1, opacity: 0.35,
+      }));
+    }
+
+    return chartCard('Выручка и прибыль по месяцам', 'нажмите на месяц, чтобы открыть его', el('div', {}, [
+      el('div', { class: 'cash-pl-wrap' }, svg),
+      legend([{ color: CH.blue, label: 'выручка' }, { color: CH.amber, label: 'прибыль' }]),
+    ]));
+  }
+
+  const shortMonth = (p) => {
+    const m = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
+    const [y, mm] = String(p).split('-');
+    return m[Number(mm) - 1] + (Number(mm) === 1 ? ' ' + String(y).slice(2) : '');
+  };
+
+  // --- Расходы по группам -------------------------------------------------
+  // Одна серия — один цвет. Раскраска «чем больше, тем темнее» была бы двойным
+  // кодированием длины полосы и запрещена.
+  function opexChart(d) {
+    const groups = (d.opex.groups || []).slice().sort((a, b) => b.amount - a.amount);
+    if (!groups.length) return null;
+    const max = Math.max(...groups.map((g) => g.amount)) || 1;
+
+    const rows = groups.map((g) => {
+      const items = g.items.slice().sort((a, b) => b.exp - a.exp);
+      const bar = el('div', { class: 'cash-obar' }, [
+        el('div', { class: 'cash-obar-fill', style: 'width:' + (g.amount / max) * 100 + '%;background:' + CH.green }),
+      ]);
+      const head = el('button', {
+        class: 'cash-obar-row', tabindex: '0',
+        title: 'Показать статьи внутри группы',
+      }, [
+        el('div', { class: 'cash-obar-name' }, g.group_name),
+        bar,
+        el('div', { class: 'cash-obar-val' }, mlrd(g.amount)),
+      ]);
+      const inner = el('div', { class: 'cash-obar-items' },
+        items.map((i) => el('div', { class: 'cash-obar-item' }, [
+          el('span', {}, i.code + ' · ' + i.name),
+          el('b', {}, money(i.exp)),
+        ])));
+      inner.style.display = 'none';
+      head.addEventListener('click', () => {
+        const open = inner.style.display !== 'none';
+        inner.style.display = open ? 'none' : '';
+        head.classList.toggle('on', !open);
+      });
+      head.addEventListener('mousemove', (e) => showChartTip(
+        '<b>' + g.group_name + '</b><br>' + money(g.amount) + ' сум · '
+        + Math.round((g.amount / d.opex.total) * 100) + '% расходов<br>'
+        + '<span class="dim">статей: ' + items.length + ', нажмите — раскроется</span>',
+        e.clientX, e.clientY));
+      head.addEventListener('mouseleave', hideChartTip);
+      return el('div', {}, [head, inner]);
+    });
+
+    return chartCard('На что ушли деньги', 'без сырья и упаковки — они в себестоимости', el('div', {}, rows));
+  }
+
   // ---------------------------------------------------------------------------
   // Сводка P&L человеческим языком
   // ---------------------------------------------------------------------------
@@ -530,24 +763,6 @@
         profit === null ? '' : (profit >= 0 ? 'good' : 'bad')),
     ]);
 
-    // Полоса: как выручка разошлась на товар, работу и прибыль
-    let bar = null;
-    if (rev > 0 && cogs !== null && profit !== null) {
-      const part = (v) => Math.max(0, (v / rev) * 100);
-      bar = el('div', {}, [
-        el('div', { class: 'cash-sum-bar' }, [
-          el('div', { class: 'cash-sum-seg seg-cogs', style: 'width:' + part(cogs) + '%' }),
-          el('div', { class: 'cash-sum-seg seg-opex', style: 'width:' + part(opex) + '%' }),
-          el('div', { class: 'cash-sum-seg ' + (profit >= 0 ? 'seg-profit' : 'seg-loss'), style: 'width:' + part(Math.abs(profit)) + '%' }),
-        ]),
-        el('div', { class: 'cash-sum-legend' }, [
-          el('span', {}, [el('i', { class: 'seg-cogs' }), 'товар']),
-          el('span', {}, [el('i', { class: 'seg-opex' }), 'работа компании']),
-          el('span', {}, [el('i', { class: profit >= 0 ? 'seg-profit' : 'seg-loss' }), profit >= 0 ? 'прибыль' : 'убыток']),
-        ]),
-      ]);
-    }
-
     // Одна фраза прозой — то, что человек пересказал бы вслух
     let phrase;
     if (profit === null) {
@@ -568,7 +783,6 @@
 
     return el('div', { class: 'cash-sum' }, [
       cards,
-      bar,
       el('div', { class: 'cash-sum-phrase' }, phrase),
     ]);
   }
@@ -607,6 +821,27 @@
     // Три числа и одна фраза: что заработали, во что обошёлся товар,
     // сколько осталось. Таблицы ниже — для тех, кто хочет разобраться.
     box.appendChild(humanSummary(d));
+
+    // --- Графики -------------------------------------------------------
+    const charts = el('div', { class: 'cash-charts' });
+    box.appendChild(charts);
+    const share = shareBar(d);
+    if (share) charts.appendChild(share);
+    const opexC = opexChart(d);
+    if (opexC) charts.appendChild(opexC);
+
+    // Динамика грузится отдельно: она за год, и незачем задерживать из-за неё
+    // весь экран. Пока не пришла — карточка не мигает пустотой.
+    (async () => {
+      let t;
+      try { t = await api('/pnl/trend?period=' + encodeURIComponent(d.period) + '&months=12'); }
+      catch (e) { return; }
+      const tc = trendChart(t, d.period, (period) => {
+        PNL_PERIOD = period;
+        renderReport('pnl');
+      });
+      if (tc) charts.insertBefore(tc, charts.firstChild);
+    })();
 
     const rows = [];
     const row = (label, value, opts) => {
