@@ -237,21 +237,19 @@
   }
 
   // Панель периода для отчётов (месяц по умолчанию — текущий).
+  // Период выбирается общим компонентом Hub: один вид на все плитки.
+  // Раньше здесь были два поля с датами и три кнопки-пресета, а в P&L —
+  // поле «месяц»; на соседних вкладках одно и то же делалось по-разному.
   function repPeriodBar() {
-    const dinp = (k) => el('input', { type: 'date', class: 'cashf-inp cash-filt', value: repState[k], onchange: (e) => { repState[k] = e.target.value; render(); } });
-    const preset = (label, from, to) => el('button', { class: 'cash-preset' + (repState.from === from && repState.to === to ? ' cash-preset-on' : ''), onclick: () => { repState.from = from; repState.to = to; render(); } }, label);
-    const now = new Date();
-    const ym = (y, m) => new Date(Date.UTC(y, m, 1)).toISOString().slice(0, 10);
-    const mEnd = (y, m) => new Date(Date.UTC(y, m + 1, 0)).toISOString().slice(0, 10);
     const walletSel = el('select', { class: 'cashf-inp cash-filt', onchange: (e) => { repState.wallet = e.target.value; render(); } }, [
       el('option', { value: '' }, 'Все кошельки'),
       ...(DICTS.wallets || []).map((w) => el('option', { value: w.id, selected: String(w.id) === repState.wallet || null }, w.name)),
     ]);
     return el('div', { class: 'cash-filters' }, [
-      el('span', { class: 'cash-flab' }, 'С'), dinp('from'), el('span', { class: 'cash-flab' }, 'по'), dinp('to'),
-      preset('Текущий месяц', monthStartStr(), todayStr()),
-      preset('Прошлый месяц', ym(now.getFullYear(), now.getMonth() - 1), mEnd(now.getFullYear(), now.getMonth() - 1)),
-      preset('Год', ym(now.getFullYear(), 0), todayStr()),
+      HubDateRange.create({
+        mode: 'range', from: repState.from, to: repState.to,
+        onChange: (v) => { repState.from = v.from; repState.to = v.to; render(); },
+      }),
       walletSel,
     ]);
   }
@@ -846,12 +844,13 @@
         el('div', { class: 'cash-sub' }, 'Управленческий отчёт за месяц: выручка, себестоимость со склада и операционные расходы.'),
       ]),
       el('div', { class: 'cash-filters', style: 'margin-bottom:0' }, [
-        el('span', { class: 'cash-flab' }, 'Месяц'),
-        (() => {
-          const inp = el('input', { type: 'month', class: 'cashf-inp cash-filt', value: PNL_PERIOD });
-          inp.addEventListener('change', () => { PNL_PERIOD = inp.value || PNL_PERIOD; renderReport('pnl'); });
-          return inp;
-        })(),
+        // Тот же компонент, что на «Кэш-флоу», только помесячно: расчёт
+        // себестоимости и реализации привязан к месяцу, произвольный отрезок
+        // их сломал бы.
+        HubDateRange.create({
+          mode: 'month', period: PNL_PERIOD,
+          onChange: (v) => { PNL_PERIOD = v.period; renderReport('pnl'); },
+        }),
       ]),
     ]));
 

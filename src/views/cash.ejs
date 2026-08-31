@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Касса — <%= settings.company_name %></title>
   <link rel="stylesheet" href="/static/style.css?v=<%= V %>">
+  <link rel="stylesheet" href="/static/daterange.css?v=<%= V %>">
   <link rel="stylesheet" href="/static/cash.css?v=<%= V %>">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Lora:wght@500;600&display=swap" rel="stylesheet">
@@ -28,6 +29,7 @@
   <div id="cash-modal-root"></div>
 
   <script>window.HUB_USER = { isAdmin: <%= user.isAdmin ? "true" : "false" %>, isFinance: <%= user.isFinance ? "true" : "false" %>, name: "<%= user.name %>" };</script>
+  <script src="/static/daterange.js?v=<%= V %>"></script>
   <script src="/static/bell.js?v=<%= V %>"></script>
   <script src="/static/cash.js?v=<%= V %>"></script>
 </body>
