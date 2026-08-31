@@ -66,6 +66,14 @@ input,select,textarea{
   border:1px solid var(--line);border-radius:var(--radius-s);
   background:var(--surface);width:100%;color:var(--ink);transition:.15s;
 }
+/* Галочки и радиокнопки НЕ текстовые поля: правило выше давало им ширину
+   во всю строку и отступы в 10 пикселей, из-за чего подпись уезжала под
+   галочку (так ломался мультивыбор товаров в Закупе). Сбрасываем один раз
+   на весь Hub, чтобы не чинить это в каждой плитке заплаткой. */
+input[type=checkbox],input[type=radio]{
+  width:16px;min-width:16px;height:16px;padding:0;border-radius:4px;
+  accent-color:var(--lime-d);flex:none;
+}
 input:focus,select:focus,textarea:focus{
   outline:none;border-color:var(--lime-d);box-shadow:0 0 0 3px rgba(140,198,63,.18);
 }
