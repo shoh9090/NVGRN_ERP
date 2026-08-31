@@ -520,3 +520,13 @@ select.cb-cell { cursor: pointer; }
   background: var(--amber-soft); border-left: 3px solid var(--amber);
   border-radius: 0 10px 10px 0; font-size: 13.5px; line-height: 1.55; color: var(--ink);
 }
+
+/* ---------- P&L: показатели нагрузки ---------- */
+.cash-ratios { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+.cash-ratio-bar { height: 8px; background: var(--surface-2); border-radius: 4px; overflow: hidden; }
+.cash-ratio-fill { height: 100%; border-radius: 4px; }
+.cash-ratio-txt { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-top: 6px; }
+.cash-ratio-txt b { font-size: 12.5px; color: var(--ink); }
+.cash-ratio-val { font-size: 16px; font-weight: 800; color: var(--ink); }
+.cash-ratio-note { font-size: 11px; color: var(--ink-faint); line-height: 1.4; margin-top: 3px; }
+.cash-obar-pct { font-size: 11px; color: var(--ink-faint); font-weight: 600; }

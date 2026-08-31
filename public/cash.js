@@ -674,6 +674,38 @@
     return m[Number(mm) - 1] + (Number(mm) === 1 ? ' ' + String(y).slice(2) : '');
   };
 
+  // --- Сколько съедает производство ---------------------------------------
+  // Показатели из отчёта финансиста: сырьевая нагрузка и доля отходов.
+  // Для зелени это два главных числа: сырьё дорожает, а обрезь — прямые
+  // деньги, выброшенные в мусор.
+  function loadRatios(d) {
+    const r = d.ratios;
+    if (!r || !(r.base > 0)) return null;
+    const one = (label, value, note, color) => el('div', { class: 'cash-ratio' }, [
+      el('div', { class: 'cash-ratio-bar' },
+        el('div', { class: 'cash-ratio-fill', style: 'width:' + Math.min(100, Math.max(0, value || 0)) + '%;background:' + color })),
+      el('div', { class: 'cash-ratio-txt' }, [
+        el('b', {}, label),
+        el('span', { class: 'cash-ratio-val' }, value === null ? '—' : (Math.round(value * 10) / 10).toLocaleString('ru-RU') + '%'),
+      ]),
+      el('div', { class: 'cash-ratio-note' }, note),
+    ]);
+
+    const items = [
+      one('Сырьевая нагрузка', r.raw_load_pct,
+        'зелень со склада плюс отходы — сколько процентов выручки съедает сырьё', CH.green),
+      one('Отходы', r.waste_pct,
+        d.waste && d.waste.has_data
+          ? ('обрезь ' + money(d.waste.qty) + ' кг по цене того сырья, из которого получена'
+            + (d.waste.no_price ? '. Позиций без цены: ' + d.waste.no_price + ' — в сумму не вошли' : ''))
+          : 'за месяц отходы на складе не отмечены', CH.amber),
+      one('Работа компании', r.opex_pct,
+        'зарплата, аренда, логистика и прочее — доля от выручки', CH.blue),
+    ];
+    return chartCard('Сколько съедает производство', 'в процентах от выручки от продаж',
+      el('div', { class: 'cash-ratios' }, items));
+  }
+
   // --- Расходы по группам -------------------------------------------------
   // Одна серия — один цвет. Раскраска «чем больше, тем темнее» была бы двойным
   // кодированием длины полосы и запрещена.
@@ -693,7 +725,14 @@
       }, [
         el('div', { class: 'cash-obar-name' }, g.group_name),
         bar,
-        el('div', { class: 'cash-obar-val' }, mlrd(g.amount)),
+        el('div', { class: 'cash-obar-val' }, [
+          el('div', {}, mlrd(g.amount)),
+          // Не просто сумма, а сколько это копеек с сума выручки — так цифра
+          // сравнима между месяцами, когда выручка разная.
+          d.ratios && d.ratios.base > 0
+            ? el('div', { class: 'cash-obar-pct' }, (Math.round((g.amount / d.ratios.base) * 1000) / 10) + '%')
+            : null,
+        ]),
       ]);
       const inner = el('div', { class: 'cash-obar-items' },
         items.map((i) => el('div', { class: 'cash-obar-item' }, [
@@ -773,7 +812,11 @@
         + 'нужны либо выдачи сырья в Складе, либо количество отгрузок (кнопка внизу).';
     } else {
       const kop = d.operating_margin_pct === null ? null : Math.round(d.operating_margin_pct);
-      phrase = 'За ' + monthLabelRu(d.period) + ' продали на ' + mlrd(rev)
+      // В фразе та же цифра, что на плашке: выручка ОТ ПРОДАЖ. Прочие доходы
+      // называем отдельно — иначе фраза и плашка показывают разное, и человек
+      // справедливо перестаёт верить обеим.
+      phrase = 'За ' + monthLabelRu(d.period) + ' продали на ' + mlrd(d.revenue.sales)
+        + (d.revenue.other ? ', плюс ' + mlrd(d.revenue.other) + ' прочих доходов' : '')
         + ', товар обошёлся в ' + mlrd(cogs)
         + ', на работу компании ушло ' + mlrd(opex) + '. '
         + (profit >= 0
@@ -846,6 +889,8 @@
     box.appendChild(charts);
     const share = shareBar(d);
     if (share) charts.appendChild(share);
+    const load = loadRatios(d);
+    if (load) charts.appendChild(load);
     const opexC = opexChart(d);
     if (opexC) charts.appendChild(opexC);
 

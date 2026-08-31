@@ -28,6 +28,7 @@ function makePool(opts) {
       if (/reason = 'production'/.test(q)) return { rows: o.used || [] };
       if (/reason = 'receive'/.test(q)) return { rows: o.prices || [] };
       if (/reason = 'adjust'/.test(q)) return { rows: [o.adjust || { qty: 0, cnt: 0 }] };
+      if (/receive_waste/.test(q)) return { rows: o.waste || [] };
       if (/FROM ref_raw_materials WHERE id = ANY/.test(q)) return { rows: o.rawNames || [] };
       if (/FROM ref_packaging WHERE id = ANY/.test(q)) return { rows: o.packNames || [] };
       if (/FROM calc_sheet_products/.test(q)) return { rows: o.products || [] };
@@ -294,4 +295,39 @@ test('прочие доходы не приплюсовываются к выр�
   // Сверка по-прежнему сходится без остатка
   const rc = r.reconcile;
   assert.strictEqual(rc.sales + rc.other_income, rc.revenue + rc.refunds);
+});
+
+test('отходы оцениваются по цене сырья, из которого получены', async () => {
+  // Показатель из отчёта финансиста: «% отходов» от выручки.
+  // Отход приходит с ценой ноль, но заплачено за него было — считаем по
+  // цене родительской позиции (ref_raw_materials.waste_of_id).
+  const pool = makePool({
+    cash: [{ code: '200', name: 'Выручка от продаж', group_name: 'Доходы и поступления', flow_type: 'operating', inc: 1000000000, exp: 0, cnt: 100 }],
+    used: [{ item_kind: 'raw', item_id: 1, qty: 10000 }],
+    prices: [{ item_kind: 'raw', item_id: 1, avg_price: 30000 }],
+    rawNames: [{ id: 1, name: 'рукола' }],
+    waste: [{ parent_id: 1, qty: 2000 }],
+  });
+  const r = await buildPnl(pool, '2026-07');
+
+  assert.strictEqual(r.waste.qty, 2000);
+  assert.strictEqual(r.waste.amount, 60000000);          // 2000 × 30 000
+  assert.strictEqual(r.waste.no_price, 0);
+  assert.strictEqual(Math.round(r.ratios.waste_pct * 10) / 10, 6);   // 60 млн / 1 млрд
+  // Сырьевая нагрузка = (списанное сырьё + отходы) / выручка от продаж
+  assert.strictEqual(Math.round(r.ratios.raw_load_pct * 10) / 10, 36);
+});
+
+test('отход без цены родителя не занижает показатель молча', async () => {
+  const pool = makePool({
+    cash: [{ code: '200', name: 'Выручка', group_name: 'Доходы и поступления', flow_type: 'operating', inc: 1000000000, exp: 0, cnt: 1 }],
+    used: [{ item_kind: 'raw', item_id: 1, qty: 1 }],
+    prices: [{ item_kind: 'raw', item_id: 1, avg_price: 30000 }],
+    waste: [{ parent_id: 1, qty: 1000 }, { parent_id: 99, qty: 500 }],  // у 99 цены нет
+  });
+  const r = await buildPnl(pool, '2026-07');
+  assert.strictEqual(r.waste.qty, 1500);          // количество учтено всё
+  assert.strictEqual(r.waste.amount, 30000000);   // а в деньги вошла только оценённая часть
+  assert.strictEqual(r.waste.priced, 1);
+  assert.strictEqual(r.waste.no_price, 1);        // и об этом сказано
 });

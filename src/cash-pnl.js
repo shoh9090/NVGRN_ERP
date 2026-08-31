@@ -215,6 +215,47 @@ async function cashSide(pool, from, to) {
 // Списание оценивается средневзвешенной ценой приходов этой позиции. Позиции,
 // по которым цены прихода нет, в сумму НЕ попадают и показываются отдельным
 // списком: молча занизить себестоимость хуже, чем показать пробел.
+// ---------------------------------------------------------------------------
+// Отходы сырья: сколько денег ушло в обрезь
+// ---------------------------------------------------------------------------
+// Отход приходит на склад отдельной позицией с ценой ноль (он «бесплатный»),
+// но заплачено-то за него было — он входил в вес купленной зелени. Поэтому
+// оцениваем его по цене РОДИТЕЛЬСКОГО сырья: ref_raw_materials.waste_of_id
+// указывает, из чего этот отход получен.
+//
+// Показатель взят из отчёта финансиста: у него «ОТХОДЫ сырья» отдельной
+// строкой и «% отходов» от выручки. Для зелени это одно из главных чисел.
+async function wasteCost(pool, from, to) {
+  const rows = (await pool.query(
+    `SELECT w.waste_of_id AS parent_id, SUM(m.qty) AS qty
+       FROM stock_movements m
+       JOIN ref_raw_materials w ON w.id = m.item_id AND w.waste_of_id IS NOT NULL
+      WHERE m.item_kind = 'raw' AND m.reason = 'receive_waste'
+        AND m.moved_at BETWEEN $1 AND $2 AND m.qty > 0
+      GROUP BY w.waste_of_id`, [from, to])).rows;
+  if (!rows.length) return { qty: 0, amount: 0, priced: 0, no_price: 0, has_data: false };
+
+  const prices = (await pool.query(
+    `SELECT item_id, SUM(qty * price) / NULLIF(SUM(qty), 0) AS avg_price
+       FROM stock_movements
+      WHERE item_kind = 'raw' AND reason = 'receive' AND price > 0 AND qty > 0 AND moved_at <= $1
+      GROUP BY item_id`, [to])).rows;
+  const priceOf = new Map(prices.map((x) => [x.item_id, Number(x.avg_price)]));
+
+  let qty = 0, amount = 0, priced = 0, noPrice = 0;
+  for (const r of rows) {
+    const q = num(r.qty);
+    qty += q;
+    const price = priceOf.get(r.parent_id);
+    // Без цены родителя отход не оцениваем — молча считать его бесплатным
+    // нельзя, иначе показатель отходов занизится.
+    if (price === undefined) { noPrice++; continue; }
+    amount += q * price;
+    priced++;
+  }
+  return { qty, amount, priced, no_price: noPrice, has_data: true };
+}
+
 // Корректировки остатка (инвентаризация, порча). Не считаем их себестоимостью
 // автоматически — причина у них разная, — но и не прячем: минус на складе,
 // который никуда не делся, должен быть виден.
@@ -358,11 +399,12 @@ async function buildPnl(pool, period) {
   const units = Number(byKey.get(UNITS_KEY(period))) || 0;
   const unitsAt = byKey.get(UNITS_KEY(period) + '_at') || '';
 
-  const [cash, fact, plan, adjust] = await Promise.all([
+  const [cash, fact, plan, adjust, waste] = await Promise.all([
     cashSide(pool, from, toStr),
     factCogs(pool, from, toStr),
     planCogs(pool, units),
     stockAdjustments(pool, from, toStr),
+    wasteCost(pool, from, toStr),
   ]);
 
   const revenue = cash.revenue.total;
@@ -411,6 +453,17 @@ async function buildPnl(pool, period) {
     operating_margin_pct: operating === null ? null : pct(operating, revenue),
     reconcile: cash.reconcile,
     stock_adjust: adjust,
+    // Показатели из отчёта финансиста: сколько копеек с сума выручки съедают
+    // сырьё и отходы. Считаем от выручки ОТ ПРОДАЖ — от той же цифры, что
+    // в Кэш-флоу, иначе процент не с чем будет сверить.
+    waste,
+    ratios: {
+      base: cash.revenue.sales,
+      raw_load_pct: pct((fact.has_data ? fact.raw : 0) + waste.amount, cash.revenue.sales),
+      waste_pct: pct(waste.amount, cash.revenue.sales),
+      pack_pct: fact.has_data ? pct(fact.packaging, cash.revenue.sales) : null,
+      opex_pct: pct(cash.opex.total, cash.revenue.sales),
+    },
     excluded: {
       refunds: cash.refunds,
       other_inflows: cash.other_inflows,
