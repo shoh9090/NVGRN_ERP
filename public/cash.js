@@ -471,6 +471,9 @@
   // списано), а не из оплат поставщикам, поэтому отчёт НЕ совпадает
   // с Кэш-флоу — и не должен.
   let PNL_PERIOD = new Date().toISOString().slice(0, 7);
+  // Внутри P&L две вкладки: дашборд (открывается по умолчанию) и расчёт.
+  // Обе строятся на ОДНОМ загруженном отчёте — переключение не ходит в базу.
+  let PNL_VIEW = 'dash';
 
   const pnlMoney = (v) => (v === null || v === undefined ? '—' : money(v));
   const pnlPct = (v) => (v === null || v === undefined ? '—' : (Math.round(v * 10) / 10).toLocaleString('ru-RU') + '%');
@@ -803,26 +806,40 @@
       ]),
     ]));
 
+    // Вкладки в той же стилистике, что листы в «Калькуляции себестоимости».
+    const tab = (id, label) => el('button', {
+      class: 'cash-pl-tab' + (PNL_VIEW === id ? ' on' : ''),
+      onclick: () => { PNL_VIEW = id; renderReport('pnl'); },
+    }, label);
+    c.appendChild(el('div', { class: 'cash-pl-tabs' }, [
+      tab('dash', 'Дашборд'),
+      tab('calc', 'Расчёт'),
+    ]));
+
     let d;
-    let box = el('div');
+    const box = el('div');
     c.appendChild(box);
     box.appendChild(el('div', { class: 'cash-sub' }, 'Считаем…'));
     try { d = await api('/pnl?period=' + encodeURIComponent(PNL_PERIOD)); }
     catch (e) { box.innerHTML = ''; box.appendChild(el('div', { class: 'cash-empty' }, 'Ошибка: ' + e.message)); return; }
     box.innerHTML = '';
 
-    // Что в отчёте неполно — говорим сразу, до цифр.
+    // Что в отчёте неполно — говорим сразу, на обеих вкладках.
     if (d.warnings && d.warnings.length) {
       box.appendChild(el('div', { class: 'cash-pnl-warn' },
         d.warnings.map((w) => el('div', {}, '⚠️ ' + w))));
     }
 
-    // --- Сводка человеческим языком ------------------------------------
-    // Три числа и одна фраза: что заработали, во что обошёлся товар,
-    // сколько осталось. Таблицы ниже — для тех, кто хочет разобраться.
+    if (PNL_VIEW === 'dash') pnlDashboard(box, d);
+    else pnlCalc(box, d);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Вкладка «Дашборд»
+  // ---------------------------------------------------------------------------
+  function pnlDashboard(box, d) {
     box.appendChild(humanSummary(d));
 
-    // --- Графики -------------------------------------------------------
     const charts = el('div', { class: 'cash-charts' });
     box.appendChild(charts);
     const share = shareBar(d);
@@ -843,6 +860,15 @@
       if (tc) charts.insertBefore(tc, charts.firstChild);
     })();
 
+    box.appendChild(unitsBlock(d));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Вкладка «Расчёт»
+  // ---------------------------------------------------------------------------
+  // Тот же самый отчёт, только строками. Дашборд рисуется по этим же данным —
+  // если цифра здесь и на графике разойдётся, значит сломан расчёт, а не показ.
+  function pnlCalc(box, d) {
     const rows = [];
     const row = (label, value, opts) => {
       const o = opts || {};
@@ -856,17 +882,15 @@
     };
     const gap = () => rows.push(el('tr', { class: 'cash-pnl-gap' }, el('td', { colspan: '2' }, '')));
 
-    // --- Выручка ---
     row('Выручка', pnlMoney(d.revenue.total), {
       cls: 'cash-pnl-head',
       hint: 'Приход денег ТОЛЬКО по статьям группы «Доходы и поступления» (обычно 200 «Выручка от продаж»). '
-        + 'Возвраты от поставщиков, конверсия валюты, кредиты и переводы сюда не входят — см. сверку внизу.',
+        + 'Возвраты от поставщиков, конверсия валюты, кредиты и переводы сюда не входят — см. сверку ниже.',
     });
     d.revenue.items.forEach((x) => row('   ' + x.code + ' · ' + x.name, money(x.inc), { cls: 'cash-pnl-sub' }));
 
     gap();
 
-    // --- Себестоимость ---
     const byPlan = d.cogs_source === 'plan';
     row('Себестоимость (материалы)' + (byPlan ? ' — по плану' : ''),
       pnlMoney(byPlan ? d.cogs.plan.total : (d.cogs.fact.has_data ? d.cogs.fact.total : null)), {
@@ -902,58 +926,20 @@
     row('Валовая маржа', pnlPct(d.gross_margin_pct), { cls: 'cash-pnl-sub' });
 
     gap();
-
-    // --- Операционные расходы ---
     row('Операционные расходы', money(d.opex.total), {
       cls: 'cash-pnl-head',
       hint: 'По дате оплаты. Начислений пока нет: аренда за квартал ляжет одним месяцем.',
     });
-    d.opex.groups
-      .slice()
-      .sort((a, b) => b.amount - a.amount)
+    d.opex.groups.slice().sort((a, b) => b.amount - a.amount)
       .forEach((g) => row('   ' + g.group_name, money(g.amount), { cls: 'cash-pnl-sub' }));
 
     gap();
     row('Операционная прибыль', pnlMoney(d.operating_profit), { cls: 'cash-pnl-total' });
     row('Рентабельность', pnlPct(d.operating_margin_pct), { cls: 'cash-pnl-sub' });
 
-    const details = el('div', { class: 'cash-pnl-details' });
-    details.appendChild(el('table', { class: 'cash-pnl-t' }, el('tbody', {}, rows)));
-    box.appendChild(el('details', { class: 'cash-pnl-more' }, [
-      el('summary', {}, 'Подробный расчёт'),
-      details,
-    ]));
-    // Дальше всё складываем внутрь этого же раскрывающегося блока
-    box = details;
+    box.appendChild(el('table', { class: 'cash-pnl-t' }, el('tbody', {}, rows)));
 
-    // --- Справочно: что в прибыль не входит ---
-    const ex = d.excluded;
-    const exRows = [];
-    const exRow = (label, value, hint) => exRows.push(el('tr', {}, [
-      el('td', { class: 'cash-pnl-lbl' }, [el('span', {}, label), hint ? el('div', { class: 'cash-pnl-hint' }, hint) : null]),
-      el('td', { class: 'cash-pnl-val' }, value),
-    ]));
-    if (ex.other_inflows && ex.other_inflows.total) {
-      exRow('Возвраты и прочие поступления', money(ex.other_inflows.total),
-        'Приход по расходным статьям: ' + ex.other_inflows.items.map((x) => x.code + ' ' + x.name).join(', ')
-        + '. В выручку не входит.');
-    }
-    if (ex.conversion && (ex.conversion.in || ex.conversion.out)) {
-      exRow('Конверсия валюты', money(ex.conversion.out) + ' ↓ / ' + money(ex.conversion.in) + ' ↑',
-        'Покупка и продажа собственной валюты. Ни доход, ни расход — как и в Кэш-флоу.');
-    }
-    exRow('Оплачено поставщикам за сырьё и упаковку', money(ex.materials_paid.total),
-      'Это движение денег. В прибыль вошло не оно, а списание со склада — иначе расход посчитался бы дважды.');
-    exRow('Финансы: кредиты, займы, взносы', money(ex.finance.out) + ' ↓ / ' + money(ex.finance.in) + ' ↑',
-      'Возврат тела кредита и взносы учредителей — не расход и не доход.');
-    exRow('Капитальные вложения', money(ex.capex.total),
-      'Покупка оборудования списывается через амортизацию, которой у нас пока нет.');
-    if (ex.unclassified.cnt) {
-      exRow('Операции без статьи', money(ex.unclassified.exp) + ' ↓ / ' + money(ex.unclassified.inc) + ' ↑',
-        'Операций: ' + ex.unclassified.cnt + '. Пока не разнесены — в отчёт не попали.');
-    }
-    // Сверка с Кэш-флоу: показываем арифметикой, из чего складывается разница,
-    // чтобы не выяснять «откуда эта цифра» в переписке.
+    // --- Сверка с Кэш-флоу ---
     const rc = d.reconcile;
     if (rc) {
       const recRows = [];
@@ -966,33 +952,67 @@
       recRow('− переводы между своими счетами', money(rc.transfers_in), 'Деньги не пришли извне, а переложены со счёта на счёт.');
       recRow('− конверсия валюты', money(rc.conversion_in), 'Купили или продали свою же валюту. Ни доход, ни расход.');
       recRow('− кредиты, займы, взносы учредителей', money(rc.finance_in), 'Это не заработок, а привлечённые деньги.');
-      recRow('− возвраты и прочие поступления', money(rc.other_inflows), 'Приход по расходным статьям: поставщик вернул деньги. Уменьшает расход, а не создаёт выручку.');
+      recRow('− возвраты и прочие поступления', money(rc.other_inflows), 'Приход по расходным статьям: поставщик вернул деньги.');
+      recRow('− возвраты покупателям', money(rc.refunds || 0), 'Расход по доходной статье. Уменьшает выручку.');
       recRow('− приходы без статьи', money(rc.unclassified_in), 'Пока не разнесены по статьям.');
       recRow('= Выручка в этом отчёте', money(rc.revenue), null, 'cash-pnl-total');
       box.appendChild(el('div', { class: 'cash-h3' }, 'Сверка с Кэш-флоу — почему выручка меньше прихода'));
       box.appendChild(el('table', { class: 'cash-pnl-t' }, el('tbody', {}, recRows)));
     }
 
+    // --- Справочно ---
+    const ex = d.excluded;
+    const exRows = [];
+    const exRow = (label, value, hint) => exRows.push(el('tr', {}, [
+      el('td', { class: 'cash-pnl-lbl' }, [el('span', {}, label), hint ? el('div', { class: 'cash-pnl-hint' }, hint) : null]),
+      el('td', { class: 'cash-pnl-val' }, value),
+    ]));
+    if (ex.other_inflows && ex.other_inflows.total) {
+      exRow('Возвраты и прочие поступления', money(ex.other_inflows.total),
+        'Приход по расходным статьям: ' + ex.other_inflows.items.map((x) => x.code + ' ' + x.name).join(', ') + '. В выручку не входит.');
+    }
+    if (ex.conversion && (ex.conversion.in || ex.conversion.out)) {
+      exRow('Конверсия валюты', money(ex.conversion.out) + ' ↓ / ' + money(ex.conversion.in) + ' ↑',
+        'Покупка и продажа собственной валюты. Ни доход, ни расход — как и в Кэш-флоу.');
+    }
+    exRow('Оплачено поставщикам за сырьё и упаковку', money(ex.materials_paid.total),
+      'Это движение денег. В прибыль вошло не оно, а списание со склада — иначе расход посчитался бы дважды.');
+    exRow('Финансы: кредиты, займы, взносы', money(ex.finance.out) + ' ↓ / ' + money(ex.finance.in) + ' ↑',
+      'Возврат тела кредита и взносы учредителей — не расход и не доход.');
+    exRow('Капитальные вложения', money(ex.capex.total),
+      'Покупка оборудования списывается через амортизацию, которой у нас пока нет.');
+    if (d.stock_adjust && d.stock_adjust.cnt) {
+      exRow('Минусовые корректировки склада', money(d.stock_adjust.qty) + ' ед.',
+        'Операций: ' + d.stock_adjust.cnt + '. Себестоимостью не считаем — причина у них разная.');
+    }
+    if (ex.unclassified.cnt) {
+      exRow('Операции без статьи', money(ex.unclassified.exp) + ' ↓ / ' + money(ex.unclassified.inc) + ' ↑',
+        'Операций: ' + ex.unclassified.cnt + '. Пока не разнесены — в отчёт не попали.');
+    }
     box.appendChild(el('div', { class: 'cash-h3' }, 'Справочно — в прибыль не входит'));
     box.appendChild(el('table', { class: 'cash-pnl-t cash-pnl-ex' }, el('tbody', {}, exRows)));
 
-    // --- Отгрузки из SalesDoctor: нужны для плановой себестоимости ---
-    box.appendChild(el('div', { class: 'cash-pnl-units' }, [
+    box.appendChild(unitsBlock(d));
+    box.appendChild(el('div', { class: 'cash-sub cash-pnl-note' },
+      'Это управленческая картина, а не бухгалтерский ОПиУ. Расходы попадают по дате оплаты, '
+      + 'амортизации нет, выручка считается по поступлению денег. Движение реальных денег — на вкладке «Кэш-флоу».'));
+  }
+
+  // Отгрузки из SalesDoctor — нужны для плановой себестоимости. Блок один
+  // на обе вкладки, чтобы кнопка не пряталась от того, кто смотрит дашборд.
+  function unitsBlock(d) {
+    return el('div', { class: 'cash-pnl-units' }, [
       el('div', {}, [
         el('b', {}, 'Отгружено за ' + monthLabelRu(d.period) + ': '),
         el('span', {}, d.units ? money(d.units) + ' шт' : 'не подтянуто'),
         d.units_at ? el('span', { class: 'cash-pnl-hint' }, ' обновлено ' + d.units_at) : null,
       ]),
-      // Класс cash-preset, а не btn-ghost: тот почти белый, он рассчитан на
-      // тёмную шапку и на светлом фоне отчёта пропадает.
       el('button', {
         class: 'cash-preset', title: 'Выгрузить количество отгрузок из SalesDoctor за этот месяц',
         onclick: async (e) => {
           const b = e.target;
           b.disabled = true;
           b.textContent = 'Тянем из SalesDoctor…';
-          // Выгрузка идёт постранично и занимает до полминуты — говорим об этом,
-          // иначе кажется, что кнопка не сработала.
           toast('Выгружаем отгрузки из SalesDoctor, это может занять до минуты…');
           try {
             const r = await post('/pnl/units', { period: d.period });
@@ -1006,11 +1026,7 @@
           }
         },
       }, '↻ обновить'),
-    ]));
-
-    box.appendChild(el('div', { class: 'cash-sub cash-pnl-note' },
-      'Это управленческая картина, а не бухгалтерский ОПиУ. Расходы попадают по дате оплаты, '
-      + 'амортизации нет, выручка считается по поступлению денег. Движение реальных денег — на вкладке «Кэш-флоу».'));
+    ]);
   }
 
   // ============ ОБЯЗАТЕЛЬСТВА (Этап 1) ============

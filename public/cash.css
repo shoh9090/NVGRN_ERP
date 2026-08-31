@@ -411,13 +411,6 @@ select.cb-cell { cursor: pointer; }
   font-size: 14px; line-height: 1.55; color: var(--ink);
 }
 
-.cash-pnl-more { margin-top: 6px; }
-.cash-pnl-more > summary {
-  cursor: pointer; font-size: 13.5px; font-weight: 700; color: var(--forest);
-  padding: 9px 0; user-select: none;
-}
-.cash-pnl-more > summary:hover { color: var(--ink); }
-.cash-pnl-details { padding-top: 6px; }
 
 /* ---------- P&L: графики ---------- */
 .cash-charts { display: grid; grid-template-columns: 1fr; gap: 12px; max-width: 900px; margin: 16px 0 6px; }
@@ -470,3 +463,22 @@ select.cb-cell { cursor: pointer; }
 }
 .cash-pl-tip .dim { color: #b9c4bb; }
 .cash-pl-tip i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; margin-right: 5px; }
+
+/* ---------- P&L: вкладки внутри отчёта ----------
+   Оформление то же, что у листов в «Калькуляции себестоимости»: одна система
+   на весь Hub, чтобы вкладки везде выглядели и вели себя одинаково. */
+.cash-pl-tabs {
+  display: flex; gap: 2px; align-items: flex-end; margin: 4px 0 18px;
+  border-bottom: 1px solid var(--line); overflow-x: auto;
+}
+.cash-pl-tab {
+  border: 1px solid var(--line); border-bottom: none; background: var(--surface-2);
+  border-radius: 9px 9px 0 0; padding: 9px 18px; font-size: 12.5px; font-weight: 700;
+  color: var(--ink-soft); cursor: pointer; white-space: nowrap; min-height: 40px;
+  margin-bottom: -1px; font-family: inherit;
+}
+.cash-pl-tab:hover { background: var(--surface); color: var(--ink); }
+.cash-pl-tab.on {
+  background: var(--surface); color: var(--forest);
+  box-shadow: inset 0 3px 0 var(--lime);
+}
