@@ -1,0 +1,136 @@
+/* tabs.css — единый вид вкладок для всего Hub.
+ *
+ * Зачем: в каждой плитке вкладки были свои. В Кассе и Претензиях —
+ * подчёркивание, в Кадрах — подчёркивание с подложкой, в Закупе — «таблетки»
+ * со скруглением, в Калькуляции — листы как в Excel. Один и тот же элемент
+ * выглядел и вёл себя по-разному на соседних экранах.
+ *
+ * За образец взят вид Кассы: значок и подпись в строку, активная вкладка
+ * подсвечена снизу лаймовой чертой и лёгкой подложкой.
+ *
+ * Файл подключается ПОСЛЕ стилей плитки, поэтому при равной силе правил
+ * побеждает он. Старые классы перечислены рядом с .hub-tab, чтобы плитки
+ * не пришлось переписывать: достаточно подключить этот файл.
+ *
+ * Новым плиткам достаточно разметки:
+ *   <div class="hub-tabs"><button class="hub-tab on">…</button>…</div>
+ * Активной вкладке ставится класс .on (или .active — поддерживаются оба).
+ */
+
+.hub-tabs,
+.cash-tabs,
+.cmp-tabs,
+.hr-tabs,
+.calc-tabs {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+}
+
+/* Закуп: вкладки лежат в шапке страницы и держат её ширину — раскладку
+   контейнера не трогаем, меняем только вид самих вкладок. */
+.pur-tabs {
+  border-bottom: 1px solid var(--line);
+  gap: 4px;
+  align-items: flex-end;
+}
+
+.hub-tab,
+.cash-tab,
+.cmp-tab,
+.hr-tab,
+.pur-tab,
+.calc-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 9px 9px 0 0;
+  padding: 10px 15px;
+  margin-bottom: -1px;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ink-soft);
+  cursor: pointer;
+  white-space: nowrap;
+  text-decoration: none;
+  transition: background .12s, color .12s, border-color .12s;
+}
+
+.hub-tab:hover,
+.cash-tab:hover,
+.cmp-tab:hover,
+.hr-tab:hover,
+.pur-tab:hover,
+.calc-tab:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+.hub-tab.on, .hub-tab.active,
+.cash-tab.on,
+.cmp-tab.on,
+.hr-tab.on,
+.pur-tab.active,
+.calc-tab.on {
+  background: var(--lime-soft);
+  color: var(--forest);
+  border-bottom-color: var(--lime);
+  box-shadow: none;
+}
+
+/* Вкладка листа, который ещё не собран (Калькуляция) — видно, что она
+   недоступна, но она остаётся в общем ряду. */
+.calc-tab.soon {
+  color: var(--ink-faint);
+  background: none;
+  /* Пунктирная рамка осталась от прежнего вида листов Excel и выбивалась
+     из общего ряда — недоступность показываем бледностью, а не рамкой. */
+  border: none;
+  border-bottom: 2px solid transparent;
+  opacity: .7;
+}
+
+/* Вкладки второго уровня — внутри отчёта, а не плитки (P&L). Тот же вид,
+   только мельче: иначе два ряда одинаковых вкладок спорят друг с другом. */
+.hub-subtabs,
+.cash-pl-tabs {
+  display: flex;
+  gap: 4px;
+  align-items: flex-end;
+  margin: 4px 0 18px;
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+}
+.hub-subtab,
+.cash-pl-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 8px 8px 0 0;
+  padding: 8px 14px;
+  margin-bottom: -1px;
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--ink-soft);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .12s, color .12s, border-color .12s;
+}
+.hub-subtab:hover,
+.cash-pl-tab:hover { background: var(--surface-2); color: var(--ink); }
+.hub-subtab.on,
+.cash-pl-tab.on {
+  background: var(--lime-soft);
+  color: var(--forest);
+  border-bottom-color: var(--lime);
+  box-shadow: none;
+}
