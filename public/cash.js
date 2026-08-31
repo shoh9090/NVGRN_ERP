@@ -527,7 +527,8 @@
     // --- Выручка ---
     row('Выручка', pnlMoney(d.revenue.total), {
       cls: 'cash-pnl-head',
-      hint: 'Поступления денег по доходным статьям. Выручка по отгрузке появится позже.',
+      hint: 'Приход денег ТОЛЬКО по статьям группы «Доходы и поступления» (обычно 200 «Выручка от продаж»). '
+        + 'Возвраты от поставщиков, конверсия валюты, кредиты и переводы сюда не входят — см. сверку внизу.',
     });
     d.revenue.items.forEach((x) => row('   ' + x.code + ' · ' + x.name, money(x.inc), { cls: 'cash-pnl-sub' }));
 
@@ -593,6 +594,15 @@
       el('td', { class: 'cash-pnl-lbl' }, [el('span', {}, label), hint ? el('div', { class: 'cash-pnl-hint' }, hint) : null]),
       el('td', { class: 'cash-pnl-val' }, value),
     ]));
+    if (ex.other_inflows && ex.other_inflows.total) {
+      exRow('Возвраты и прочие поступления', money(ex.other_inflows.total),
+        'Приход по расходным статьям: ' + ex.other_inflows.items.map((x) => x.code + ' ' + x.name).join(', ')
+        + '. В выручку не входит.');
+    }
+    if (ex.conversion && (ex.conversion.in || ex.conversion.out)) {
+      exRow('Конверсия валюты', money(ex.conversion.out) + ' ↓ / ' + money(ex.conversion.in) + ' ↑',
+        'Покупка и продажа собственной валюты. Ни доход, ни расход — как и в Кэш-флоу.');
+    }
     exRow('Оплачено поставщикам за сырьё и упаковку', money(ex.materials_paid.total),
       'Это движение денег. В прибыль вошло не оно, а списание со склада — иначе расход посчитался бы дважды.');
     exRow('Финансы: кредиты, займы, взносы', money(ex.finance.out) + ' ↓ / ' + money(ex.finance.in) + ' ↑',
@@ -603,6 +613,27 @@
       exRow('Операции без статьи', money(ex.unclassified.exp) + ' ↓ / ' + money(ex.unclassified.inc) + ' ↑',
         'Операций: ' + ex.unclassified.cnt + '. Пока не разнесены — в отчёт не попали.');
     }
+    // Сверка с Кэш-флоу: показываем арифметикой, из чего складывается разница,
+    // чтобы не выяснять «откуда эта цифра» в переписке.
+    const rc = d.reconcile;
+    if (rc) {
+      const recRows = [];
+      const recRow = (label, value, hint, cls) => recRows.push(el('tr', { class: cls || '' }, [
+        el('td', { class: 'cash-pnl-lbl' }, [el('span', {}, label), hint ? el('div', { class: 'cash-pnl-hint' }, hint) : null]),
+        el('td', { class: 'cash-pnl-val' }, value),
+      ]));
+      recRow('Всего пришло денег за месяц', money(rc.all_in),
+        'Столько же показывает приход на вкладке «Кэш-флоу (ДДС)».', 'cash-pnl-head');
+      recRow('− переводы между своими счетами', money(rc.transfers_in), 'Деньги не пришли извне, а переложены со счёта на счёт.');
+      recRow('− конверсия валюты', money(rc.conversion_in), 'Купили или продали свою же валюту. Ни доход, ни расход.');
+      recRow('− кредиты, займы, взносы учредителей', money(rc.finance_in), 'Это не заработок, а привлечённые деньги.');
+      recRow('− возвраты и прочие поступления', money(rc.other_inflows), 'Приход по расходным статьям: поставщик вернул деньги. Уменьшает расход, а не создаёт выручку.');
+      recRow('− приходы без статьи', money(rc.unclassified_in), 'Пока не разнесены по статьям.');
+      recRow('= Выручка в этом отчёте', money(rc.revenue), null, 'cash-pnl-total');
+      box.appendChild(el('div', { class: 'cash-h3' }, 'Сверка с Кэш-флоу — почему выручка меньше прихода'));
+      box.appendChild(el('table', { class: 'cash-pnl-t' }, el('tbody', {}, recRows)));
+    }
+
     box.appendChild(el('div', { class: 'cash-h3' }, 'Справочно — в прибыль не входит'));
     box.appendChild(el('table', { class: 'cash-pnl-t cash-pnl-ex' }, el('tbody', {}, exRows)));
 

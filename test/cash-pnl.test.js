@@ -24,6 +24,7 @@ function makePool(opts) {
       if (/FROM settings WHERE key/.test(q)) return { rows: o.settings || [] };
       if (/FROM cash_transactions t JOIN cash_categories/.test(q)) return { rows: o.cash || [] };
       if (/AND t\.category_id IS NULL/.test(q)) return { rows: [o.unclassified || { inc: 0, exp: 0, cnt: 0 }] };
+      if (/direction_hint = 'transfer'/.test(q)) return { rows: [{ inc: o.transfersIn || 0 }] };
       if (/reason = 'production'/.test(q)) return { rows: o.used || [] };
       if (/reason = 'receive'/.test(q)) return { rows: o.prices || [] };
       if (/FROM ref_raw_materials WHERE id = ANY/.test(q)) return { rows: o.rawNames || [] };
@@ -175,4 +176,41 @@ test('в запросы уходит дата в формате базы, а н�
   const r = await buildPnl(pool, '2026-08');
   assert.deepStrictEqual(seen, [], 'в параметры ушла дата в виде «Mon Aug 31»: ' + seen.join(', '));
   assert.strictEqual(r.to, '2026-08-31');
+});
+
+test('выручка — это доходные статьи, а не любой приход', async () => {
+  const pool = makePool({
+    cash: [
+      { code: '200', name: 'Выручка от продаж', group_name: 'Доходы и поступления', flow_type: 'operating', inc: 1481000000, exp: 0, cnt: 300 },
+      // возврат от поставщика приходит на РАСХОДНУЮ статью — это не выручка
+      { code: '10', name: 'Сырьё (зелень)', group_name: '1. Сырьё и переменные затраты', flow_type: 'operating', inc: 120000000, exp: 400000000, cnt: 40 },
+      { code: '50', name: 'Топливо', group_name: '5. Логистика', flow_type: 'operating', inc: 9000000, exp: 34000000, cnt: 20 },
+      // конверсия валюты — обе ноги, деньги никуда не делись
+      { code: '102', name: 'Конверсия валюты', group_name: '8. Прочее', flow_type: 'operating', inc: 500000000, exp: 500000000, cnt: 6 },
+      // кредит — привлечённые деньги, не заработок
+      { code: '202', name: 'Получение кредита', group_name: 'Доходы и поступления', flow_type: 'financing', inc: 30000000, exp: 0, cnt: 1 },
+    ],
+    transfersIn: 200000000,
+    used: [{ item_kind: 'raw', item_id: 1, qty: 1 }],
+    prices: [{ item_kind: 'raw', item_id: 1, avg_price: 1 }],
+  });
+  const r = await buildPnl(pool, '2026-07');
+
+  // Ровно статья 200 — как реализация в SalesDoctor, а не всё подряд
+  assert.strictEqual(r.revenue.total, 1481000000);
+  assert.strictEqual(r.revenue.items.length, 1);
+
+  // Возвраты по расходным статьям вынесены отдельно
+  assert.strictEqual(r.excluded.other_inflows.total, 129000000);
+  // Конверсия не раздувает ни выручку, ни затраты
+  assert.strictEqual(r.excluded.conversion.in, 500000000);
+  assert.ok(!r.opex.groups.some((g) => g.items.some((i) => i.code === '102')));
+  // Кредит — в финансовых, не в выручке
+  assert.strictEqual(r.excluded.finance.in, 30000000);
+
+  // Сверка сходится: всё, что пришло, разложено без остатка
+  const rc = r.reconcile;
+  assert.strictEqual(
+    rc.revenue + rc.finance_in + rc.other_inflows + rc.conversion_in + rc.transfers_in + rc.unclassified_in,
+    rc.all_in);
 });

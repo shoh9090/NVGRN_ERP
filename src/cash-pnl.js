@@ -22,6 +22,10 @@ const UNITS_KEY = (period) => 'pnl_units_' + period;
 // Группы классификатора ДДС. Первая — оплаты поставщикам за сырьё и упаковку:
 // в P&L они НЕ расход, иначе себестоимость посчиталась бы дважды (её мы берём
 // со склада). Шестая и седьмая — финансы и капекс, они вне прибыли.
+// Конверсия валюты: покупка/продажа собственных денег. Ни доход, ни расход.
+const CODE_CONVERSION = '102';
+const GRP_INCOME = 'Доходы и поступления';
+const isIncomeGroup = (g) => String(g || '') === GRP_INCOME;
 const GRP_MATERIALS = '1.';
 const GRP_FINANCE = '6.';
 const GRP_CAPEX = '7.';
@@ -61,38 +65,91 @@ async function cashSide(pool, from, to) {
       WHERE t.tx_date BETWEEN $1 AND $2 AND t.tx_type IN ('in', 'out')
         AND t.source <> 'opening' AND t.category_id IS NULL`, [from, to])).rows[0];
 
-  const revenue = [];      // операционные доходы = выручка
+  const revenue = [];      // выручка: ТОЛЬКО доходные операционные статьи
   const opex = new Map();  // операционные расходы по группам
   const materials = [];    // оплата за сырьё и упаковку (справочно)
   const finance = [];      // финансовые потоки (вне прибыли)
   const capex = [];        // инвестиции (вне прибыли)
+  const otherIn = [];      // приходы по РАСХОДНЫМ статьям — это возвраты, не выручка
+  const conversion = [];   // конверсия валюты: обе ноги, деньги никуда не делись
 
+  // Приход и расход по одной статье разбираем ОТДЕЛЬНО. Раньше статья целиком
+  // уходила в одну корзину, и возврат от поставщика сырья пропадал из сверки:
+  // расход попадал в «оплачено поставщикам», а приход не попадал никуда.
   for (const r of rows) {
     const item = {
       code: r.code, name: r.name, group_name: r.group_name,
       inc: num(r.inc), exp: num(r.exp), cnt: Number(r.cnt),
     };
-    if (isFinance(r.group_name) || r.flow_type === 'financing') { finance.push(item); continue; }
-    if (isCapex(r.group_name) || r.flow_type === 'investing') { capex.push(item); continue; }
-    if (isMaterials(r.group_name)) { materials.push(item); continue; }
-    if (item.inc > 0) revenue.push(item);
+    // Конверсия валюты — покупка/продажа своих же денег. В Кэш-флоу она тоже
+    // исключается; без этого приход по ней раздувал выручку, а расход — затраты.
+    if (String(r.code) === CODE_CONVERSION) { conversion.push(item); continue; }
+
+    const fin = isFinance(r.group_name) || r.flow_type === 'financing';
+    const cap = isCapex(r.group_name) || r.flow_type === 'investing';
+    const mat = isMaterials(r.group_name);
+    const inc = isIncomeGroup(r.group_name);
+
+    // --- приход ---
+    // Выручка — только доходные статьи. Возврат от поставщика приходит на
+    // расходную статью и выручкой не является: раньше он туда падал, и цифра
+    // расходилась и с Кэш-флоу, и с реализацией в SalesDoctor.
+    if (item.inc > 0) {
+      if (fin) finance.push(item);
+      else if (inc) revenue.push(item);
+      else otherIn.push(item);
+    }
+
+    // --- расход ---
     if (item.exp > 0) {
-      const key = r.group_name || 'Без группы';
-      if (!opex.has(key)) opex.set(key, { group_name: key, amount: 0, items: [] });
-      const g = opex.get(key);
-      g.amount += item.exp;
-      g.items.push(item);
+      if (fin) { if (item.inc <= 0) finance.push(item); }
+      else if (cap) capex.push(item);
+      else if (mat) materials.push(item);
+      else if (!inc) {
+        const key = r.group_name || 'Без группы';
+        if (!opex.has(key)) opex.set(key, { group_name: key, amount: 0, items: [] });
+        const g = opex.get(key);
+        g.amount += item.exp;
+        g.items.push(item);
+      }
     }
   }
 
+  // Переводы между своими счетами — для сверки с Кэш-флоу.
+  const tr = (await pool.query(
+    `SELECT COALESCE(SUM(t.amount) FILTER (WHERE t.tx_type = 'in'), 0) AS inc
+       FROM cash_transactions t
+       JOIN cash_categories c ON c.id = t.category_id
+      WHERE t.tx_date BETWEEN $1 AND $2 AND t.source <> 'opening'
+        AND c.direction_hint = 'transfer'`, [from, to])).rows[0];
+
   const sum = (list, f) => list.reduce((s, x) => s + x[f], 0);
+  const revenueTotal = sum(revenue, 'inc');
+  const financeIn = sum(finance, 'inc');
+  const otherInTotal = sum(otherIn, 'inc');
+  const convIn = sum(conversion, 'inc');
+  const transferIn = num(tr.inc);
+
   return {
-    revenue: { total: sum(revenue, 'inc'), items: revenue },
+    revenue: { total: revenueTotal, items: revenue },
     opex: { total: [...opex.values()].reduce((s, g) => s + g.amount, 0), groups: [...opex.values()] },
     materials_paid: { total: sum(materials, 'exp'), items: materials },
-    finance: { in: sum(finance, 'inc'), out: sum(finance, 'exp'), items: finance },
+    finance: { in: financeIn, out: sum(finance, 'exp'), items: finance },
     capex: { total: sum(capex, 'exp'), items: capex },
+    other_inflows: { total: otherInTotal, items: otherIn },
+    conversion: { in: convIn, out: sum(conversion, 'exp'), items: conversion },
     unclassified: { inc: num(un.inc), exp: num(un.exp), cnt: Number(un.cnt) },
+    // Сверка: из чего складывается расхождение с приходом в Кэш-флоу.
+    // Показываем арифметикой, чтобы не выяснять это в переписке.
+    reconcile: {
+      all_in: revenueTotal + financeIn + otherInTotal + convIn + transferIn + num(un.inc),
+      revenue: revenueTotal,
+      finance_in: financeIn,
+      other_inflows: otherInTotal,
+      conversion_in: convIn,
+      transfers_in: transferIn,
+      unclassified_in: num(un.inc),
+    },
   };
 }
 
@@ -284,7 +341,10 @@ async function buildPnl(pool, period) {
     opex: cash.opex,
     operating_profit: operating,
     operating_margin_pct: operating === null ? null : pct(operating, revenue),
+    reconcile: cash.reconcile,
     excluded: {
+      other_inflows: cash.other_inflows,
+      conversion: cash.conversion,
       materials_paid: cash.materials_paid,
       finance: cash.finance,
       capex: cash.capex,
