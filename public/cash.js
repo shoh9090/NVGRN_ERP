@@ -1198,6 +1198,34 @@
     box.appendChild(unitsBlock(d));
   }
 
+  // Выгрузка отгрузок за 12 месяцев: идём по месяцам, показывая, сколько
+  // осталось. Один месяц — один запрос; если что-то упадёт, уже подтянутые
+  // месяцы останутся сохранёнными.
+  async function pullYear(btn, endPeriod) {
+    const months = [];
+    const [y, m] = endPeriod.split('-').map(Number);
+    for (let i = 11; i >= 0; i--) {
+      const d = new Date(Date.UTC(y, m - 1 - i, 1));
+      months.push(d.toISOString().slice(0, 7));
+    }
+    btn.disabled = true;
+    let done = 0, failed = 0, total = 0;
+    for (const period of months) {
+      btn.textContent = 'Тянем ' + (done + failed + 1) + ' из 12…';
+      try {
+        const r = await post('/pnl/units', { period });
+        total += Number(r.amount) || 0;
+        done++;
+      } catch (e) {
+        failed++;
+      }
+    }
+    toast(failed
+      ? ('Подтянуто месяцев: ' + done + ', не удалось: ' + failed)
+      : ('Подтянуто 12 месяцев, отгружено всего ' + money(total) + ' сум'));
+    renderReport('pnl');
+  }
+
   // Отгрузки из SalesDoctor — нужны для плановой себестоимости. Блок один
   // на обе вкладки, чтобы кнопка не пряталась от того, кто смотрит дашборд.
   function unitsBlock(d) {
@@ -1209,25 +1237,33 @@
           : 'не подтянуто'),
         d.units_at ? el('span', { class: 'cash-pnl-hint' }, ' обновлено ' + d.units_at) : null,
       ]),
-      el('button', {
-        class: 'cash-preset', title: 'Выгрузить количество отгрузок из SalesDoctor за этот месяц',
-        onclick: async (e) => {
-          const b = e.target;
-          b.disabled = true;
-          b.textContent = 'Тянем из SalesDoctor…';
-          toast('Выгружаем отгрузки из SalesDoctor, это может занять до минуты…');
-          try {
-            const r = await post('/pnl/units', { period: d.period });
-            toast('Отгружено: ' + money(r.amount) + ' сум · ' + money(r.units) + ' шт'
-              + (r.truncated ? ' — данные неполные, SalesDoctor отдал не всё' : ''));
-            renderReport('pnl');
-          } catch (err) {
-            toast(err.message, true);
-            b.disabled = false;
-            b.textContent = '↻ обновить';
-          }
-        },
-      }, '↻ обновить'),
+      el('div', { class: 'cash-pnl-unit-btns' }, [
+        el('button', {
+          class: 'cash-preset', title: 'Выгрузить отгрузки из SalesDoctor за этот месяц',
+          onclick: async (e) => {
+            const b = e.target;
+            b.disabled = true;
+            b.textContent = 'Тянем…';
+            try {
+              const r = await post('/pnl/units', { period: d.period });
+              toast('Отгружено: ' + money(r.amount) + ' сум · ' + money(r.units) + ' шт'
+                + (r.truncated ? ' — данные неполные, SalesDoctor отдал не всё' : ''));
+              renderReport('pnl');
+            } catch (err) {
+              toast(err.message, true);
+              b.disabled = false;
+              b.textContent = '↻ месяц';
+            }
+          },
+        }, '↻ месяц'),
+        // Тянем помесячно в цикле, а не одним запросом: SalesDoctor отвечает
+        // до полуминуты на месяц, и один длинный запрос упёрся бы в таймаут.
+        // Заодно виден прогресс, а прерванная выгрузка не теряет уже собранное.
+        el('button', {
+          class: 'cash-preset', title: 'Выгрузить отгрузки за последние 12 месяцев подряд',
+          onclick: (e) => pullYear(e.target, d.period),
+        }, '↻ за год'),
+      ]),
     ]);
   }
 

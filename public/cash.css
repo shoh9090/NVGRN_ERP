@@ -530,3 +530,4 @@ select.cb-cell { cursor: pointer; }
 .cash-ratio-val { font-size: 16px; font-weight: 800; color: var(--ink); }
 .cash-ratio-note { font-size: 11px; color: var(--ink-faint); line-height: 1.4; margin-top: 3px; }
 .cash-obar-pct { font-size: 11px; color: var(--ink-faint); font-weight: 600; }
+.cash-pnl-unit-btns { display: flex; gap: 6px; flex-wrap: wrap; }
