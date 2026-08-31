@@ -6,6 +6,7 @@ const multer = require('multer');
 const XLSX = require('xlsx');
 const db = require('./db');
 const integrations = require('./integrations');
+const { buildPnl, UNITS_KEY } = require('./cash-pnl');
 const pfin = require('./purchase-finance'); // общий расчёт долга поставщикам (read-only в «Обязательствах»)
 
 const router = express.Router();
@@ -1436,6 +1437,37 @@ router.post('/api/reconcile', J, async (req, res) => {
 });
 
 // ---------- Отчёт: агрегация по статьям ДДС за период (для Кэш-флоу и P&L) ----------
+// ---------- P&L: управленческий отчёт о прибыли ----------
+// Считается помесячно. Себестоимость берётся со склада, а не из оплат
+// поставщикам, поэтому отчёт не совпадает с Кэш-флоу — и не должен.
+router.get('/api/pnl', async (req, res) => {
+  const period = /^\d{4}-\d{2}$/.test(req.query.period || '')
+    ? req.query.period : new Date().toISOString().slice(0, 7);
+  try {
+    res.json(await buildPnl(db.pool, period));
+  } catch (e) {
+    console.error('[КАССА] P&L:', e.message);
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Количество отгрузок за месяц из SalesDoctor — ТОЛЬКО по кнопке.
+// Внешний сервис отвечает медленно, поэтому при открытии вкладки не трогаем.
+router.post('/api/pnl/units', express.json(), async (req, res) => {
+  const period = /^\d{4}-\d{2}$/.test((req.body || {}).period || '')
+    ? req.body.period : new Date().toISOString().slice(0, 7);
+  try {
+    const r = await integrations.getMonthlySalesUnits(period, { maxMs: 20000, maxPages: 20 });
+    await db.setSetting(UNITS_KEY(period), String(Math.round(r.units || 0)));
+    await db.setSetting(UNITS_KEY(period) + '_at', new Date().toISOString().slice(0, 16).replace('T', ' '));
+    await db.log(req.user.id, 'pnl_units_refresh', { period, units: r.units, truncated: r.truncated });
+    res.json({ ok: true, units: r.units, orders: r.orders, truncated: r.truncated, took_ms: r.took_ms });
+  } catch (e) {
+    console.error('[КАССА] отгрузки из SD:', e.message);
+    res.status(400).json({ error: 'Не удалось получить отгрузки из SalesDoctor: ' + e.message });
+  }
+});
+
 router.get('/api/report', async (req, res) => {
   const from = req.query.from || '1900-01-01';
   const to = req.query.to || '2999-12-31';

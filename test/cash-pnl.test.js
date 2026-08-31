@@ -1,0 +1,137 @@
+// Проверка сборки управленческого P&L на поддельной базе.
+// Главное, что проверяем, — отчёт не врёт: не считает себестоимость дважды,
+// не прячет неоценённые позиции и не выдаёт ноль там, где данных нет.
+const test = require('node:test');
+const assert = require('node:assert');
+
+const db = require('../src/db');
+const { buildPnl } = require('../src/cash-pnl');
+
+// Поддельный пул: отвечает на запросы P&L заранее подготовленными строками.
+function makePool(opts) {
+  const o = opts || {};
+  return {
+    query: async (sql) => {
+      const q = String(sql).replace(/\s+/g, ' ');
+      if (/INTERVAL '1 month'/.test(q)) return { rows: [{ d: '2026-08-31' }] };
+      if (/FROM settings WHERE key/.test(q)) return { rows: o.settings || [] };
+      if (/FROM cash_transactions t JOIN cash_categories/.test(q)) return { rows: o.cash || [] };
+      if (/AND t\.category_id IS NULL/.test(q)) return { rows: [o.unclassified || { inc: 0, exp: 0, cnt: 0 }] };
+      if (/reason = 'production'/.test(q)) return { rows: o.used || [] };
+      if (/reason = 'receive'/.test(q)) return { rows: o.prices || [] };
+      if (/FROM ref_raw_materials WHERE id = ANY/.test(q)) return { rows: o.rawNames || [] };
+      if (/FROM ref_packaging WHERE id = ANY/.test(q)) return { rows: o.packNames || [] };
+      if (/FROM calc_sheet_products/.test(q)) return { rows: o.products || [] };
+      if (/FROM calc_pack_templates/.test(q)) return { rows: o.templates || [] };
+      if (/FROM calc_mix_items/.test(q)) return { rows: o.recipes || [] };
+      return { rows: [] };
+    },
+  };
+}
+
+const CASH = [
+  { code: '200', name: 'Выручка от продаж', group_name: 'Доходы и поступления', flow_type: 'operating', inc: 100000000, exp: 0, cnt: 12 },
+  { code: '10', name: 'Сырьё (зелень)', group_name: '1. Сырьё и переменные затраты', flow_type: 'operating', inc: 0, exp: 40000000, cnt: 8 },
+  { code: '23', name: 'Электричество', group_name: '2. Производственные затраты', flow_type: 'operating', inc: 0, exp: 5000000, cnt: 2 },
+  { code: '50', name: 'Топливо', group_name: '5. Логистика', flow_type: 'operating', inc: 0, exp: 3000000, cnt: 4 },
+  { code: '61', name: 'Возврат тела кредита', group_name: '6. Финансы', flow_type: 'financing', inc: 0, exp: 20000000, cnt: 1 },
+  { code: '70', name: 'Оборудование', group_name: '7. Капекс (инвестиции)', flow_type: 'investing', inc: 0, exp: 15000000, cnt: 1 },
+];
+
+test('оплата поставщикам за сырьё не считается расходом дважды', async () => {
+  const pool = makePool({
+    cash: CASH,
+    used: [{ item_kind: 'raw', item_id: 1, qty: 1000 }],
+    prices: [{ item_kind: 'raw', item_id: 1, avg_price: 30000 }],
+    rawNames: [{ id: 1, name: 'рукола' }],
+  });
+  const r = await buildPnl(pool, '2026-08');
+
+  // Себестоимость — со склада (1000 кг × 30 000), а не 40 млн оплаты поставщику
+  assert.strictEqual(r.cogs.fact.total, 30000000);
+  // Оплата поставщикам ушла в справочный блок, а не в операционные расходы
+  assert.strictEqual(r.excluded.materials_paid.total, 40000000);
+  // В расходах остались только производственные и логистика
+  assert.strictEqual(r.opex.total, 8000000);
+  assert.strictEqual(r.gross_profit, 70000000);
+  assert.strictEqual(r.operating_profit, 62000000);
+});
+
+test('кредит и капекс в прибыль не попадают', async () => {
+  const pool = makePool({ cash: CASH, used: [{ item_kind: 'raw', item_id: 1, qty: 1 }], prices: [{ item_kind: 'raw', item_id: 1, avg_price: 1 }] });
+  const r = await buildPnl(pool, '2026-08');
+  assert.strictEqual(r.excluded.finance.out, 20000000);
+  assert.strictEqual(r.excluded.capex.total, 15000000);
+  // ...и не сидят внутри операционных расходов
+  const names = r.opex.groups.map((g) => g.group_name);
+  assert.ok(!names.some((n) => n.startsWith('6.')));
+  assert.ok(!names.some((n) => n.startsWith('7.')));
+});
+
+test('позиция без цены прихода не занижает себестоимость молча', async () => {
+  const pool = makePool({
+    cash: CASH,
+    used: [
+      { item_kind: 'raw', item_id: 1, qty: 1000 },
+      { item_kind: 'raw', item_id: 2, qty: 500 },   // цены нет
+    ],
+    prices: [{ item_kind: 'raw', item_id: 1, avg_price: 30000 }],
+    rawNames: [{ id: 1, name: 'рукола' }, { id: 2, name: 'шпинат' }],
+  });
+  const r = await buildPnl(pool, '2026-08');
+  assert.strictEqual(r.cogs.fact.total, 30000000);
+  assert.strictEqual(r.cogs.fact.no_price.length, 1);
+  assert.strictEqual(r.cogs.fact.no_price[0].name, 'шпинат');
+  assert.ok(r.warnings.some((w) => w.includes('Не оценено позиций')));
+});
+
+test('нет списаний — прибыль не считается, а не показывается нулём', async () => {
+  const pool = makePool({ cash: CASH, used: [] });
+  const r = await buildPnl(pool, '2026-08');
+  assert.strictEqual(r.cogs.fact.has_data, false);
+  assert.strictEqual(r.gross_profit, null);
+  assert.strictEqual(r.operating_profit, null);
+  assert.strictEqual(r.gross_margin_pct, null);
+  assert.ok(r.warnings.some((w) => w.includes('нет списаний')));
+});
+
+test('неразнесённые операции попадают в предупреждения', async () => {
+  const pool = makePool({
+    cash: CASH, unclassified: { inc: 0, exp: 900000, cnt: 3 },
+    used: [{ item_kind: 'raw', item_id: 1, qty: 1 }],
+    prices: [{ item_kind: 'raw', item_id: 1, avg_price: 1 }],
+  });
+  const r = await buildPnl(pool, '2026-08');
+  assert.strictEqual(r.excluded.unclassified.cnt, 3);
+  assert.ok(r.warnings.some((w) => w.includes('без статьи')));
+});
+
+test('плановая себестоимость не считается без количества отгрузок', async () => {
+  const pool = makePool({ cash: CASH, used: [{ item_kind: 'raw', item_id: 1, qty: 1 }], prices: [{ item_kind: 'raw', item_id: 1, avg_price: 1 }] });
+  const r = await buildPnl(pool, '2026-08');
+  assert.strictEqual(r.cogs.plan.total, null);
+  assert.strictEqual(r.cogs.diff, null);
+  assert.ok(r.warnings.some((w) => w.includes('отгрузок')));
+});
+
+test('миксы по рецептуре не выпадают из плановой себестоимости', async () => {
+  const pool = makePool({
+    cash: CASH,
+    used: [{ item_kind: 'raw', item_id: 1, qty: 1 }],
+    prices: [{ item_kind: 'raw', item_id: 1, avg_price: 1 }],
+    settings: [{ key: 'pnl_units_2026-08', value: '1000' }],
+    // один обычный товар (граммаж) и один микс (рецептура)
+    products: [
+      { net_weight_g: 100, raw_price_per_kg: 30000, raw_cost: null, pack_template_id: 1, recipe_id: null },
+      { net_weight_g: null, raw_price_per_kg: null, raw_cost: null, pack_template_id: 1, recipe_id: 7 },
+    ],
+    templates: [{ id: 1, total: 1000 }],
+    recipes: [{ recipe_id: 7, total: 5000, priced: 3 }],
+  });
+  const r = await buildPnl(pool, '2026-08');
+  // Оба товара учтены: (3000+1000) и (5000+1000) → среднее 5000
+  assert.strictEqual(r.cogs.plan.products, 2);
+  assert.strictEqual(r.cogs.plan.skipped, 0);
+  assert.strictEqual(r.cogs.plan.unit_cost, 5000);
+  assert.strictEqual(r.cogs.plan.total, 5000000);
+});

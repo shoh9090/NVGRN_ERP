@@ -260,7 +260,7 @@
 
   async function renderReport(kind) {
     const c = $('#cash-content');
-    if (kind === 'pnl') { c.innerHTML = ''; renderPnl(c); return; }
+    if (kind === 'pnl') { c.innerHTML = ''; await renderPnl(c); return; }
     c.innerHTML = '<div class="cash-loading">Считаю…</div>';
     if (!repState.from) repState.from = monthStartStr();
     if (!repState.to) repState.to = todayStr();
@@ -466,17 +466,159 @@
     if (!rows.length) c.appendChild(el('div', { class: 'cash-empty' }, 'За период нет операций.'));
   }
 
-  function renderPnl(c) {
-    c.appendChild(el('div', { class: 'cash-head' }, [el('div', {}, [
-      el('div', { class: 'cash-h2' }, 'P&L — прибыль и убытки'),
-      el('div', { class: 'cash-sub' }, 'Реальный P&L — не только по деньгам, а с себестоимостью продукции.'),
-    ])]));
-    c.appendChild(el('div', { class: 'cash-pnl-stub' }, [
-      el('div', { class: 'cash-pnl-stub-ic' }, '📈'),
-      el('div', { class: 'cash-pnl-stub-h' }, 'Соберётся автоматически'),
-      el('div', { class: 'cash-pnl-stub-t' }, 'Честный P&L считается с себестоимостью: сырьё → выход готовой продукции → маржа. Эти данные дадут модули «Производство» и «Склад». Когда они заработают, P&L соберётся сам — из выручки, реальной себестоимости и расходов Кассы.'),
-      el('div', { class: 'cash-pnl-stub-t', style: 'margin-top:6px' }, 'Пока пользуйся вкладкой «Кэш-флоу (ДДС)» — там движение реальных денег за период.'),
+  // ============ P&L — управленческий отчёт о прибыли ============
+  // Считается по месяцам. Себестоимость берётся со склада (что реально
+  // списано), а не из оплат поставщикам, поэтому отчёт НЕ совпадает
+  // с Кэш-флоу — и не должен.
+  let PNL_PERIOD = new Date().toISOString().slice(0, 7);
+
+  const pnlMoney = (v) => (v === null || v === undefined ? '—' : money(v));
+  const pnlPct = (v) => (v === null || v === undefined ? '—' : (Math.round(v * 10) / 10).toLocaleString('ru-RU') + '%');
+  const monthLabelRu = (p) => {
+    const m = ['январь', 'февраль', 'март', 'апрель', 'май', 'июнь', 'июль',
+      'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь'];
+    const [y, mm] = String(p).split('-');
+    return (m[Number(mm) - 1] || p) + ' ' + y;
+  };
+
+  async function renderPnl(c) {
+    c.appendChild(el('div', { class: 'cash-head' }, [
+      el('div', {}, [
+        el('div', { class: 'cash-h2' }, 'P&L — прибыль и убытки'),
+        el('div', { class: 'cash-sub' }, 'Управленческий отчёт за месяц: выручка, себестоимость со склада и операционные расходы.'),
+      ]),
+      el('div', { class: 'cash-filters', style: 'margin-bottom:0' }, [
+        el('span', { class: 'cash-flab' }, 'Месяц'),
+        (() => {
+          const inp = el('input', { type: 'month', class: 'cashf-inp cash-filt', value: PNL_PERIOD });
+          inp.addEventListener('change', () => { PNL_PERIOD = inp.value || PNL_PERIOD; renderReport('pnl'); });
+          return inp;
+        })(),
+      ]),
     ]));
+
+    let d;
+    const box = el('div');
+    c.appendChild(box);
+    box.appendChild(el('div', { class: 'cash-sub' }, 'Считаем…'));
+    try { d = await api('/pnl?period=' + encodeURIComponent(PNL_PERIOD)); }
+    catch (e) { box.innerHTML = ''; box.appendChild(el('div', { class: 'cash-empty' }, 'Ошибка: ' + e.message)); return; }
+    box.innerHTML = '';
+
+    // Что в отчёте неполно — говорим сразу, до цифр.
+    if (d.warnings && d.warnings.length) {
+      box.appendChild(el('div', { class: 'cash-pnl-warn' },
+        d.warnings.map((w) => el('div', {}, '⚠️ ' + w))));
+    }
+
+    const rows = [];
+    const row = (label, value, opts) => {
+      const o = opts || {};
+      rows.push(el('tr', { class: 'cash-pnl-r' + (o.cls ? ' ' + o.cls : '') }, [
+        el('td', { class: 'cash-pnl-lbl' }, [
+          el('span', {}, label),
+          o.hint ? el('div', { class: 'cash-pnl-hint' }, o.hint) : null,
+        ]),
+        el('td', { class: 'cash-pnl-val' }, value),
+      ]));
+    };
+    const gap = () => rows.push(el('tr', { class: 'cash-pnl-gap' }, el('td', { colspan: '2' }, '')));
+
+    // --- Выручка ---
+    row('Выручка', pnlMoney(d.revenue.total), {
+      cls: 'cash-pnl-head',
+      hint: 'Поступления денег по доходным статьям. Выручка по отгрузке появится позже.',
+    });
+    d.revenue.items.forEach((x) => row('   ' + x.code + ' · ' + x.name, money(x.inc), { cls: 'cash-pnl-sub' }));
+
+    gap();
+
+    // --- Себестоимость ---
+    row('Себестоимость (материалы)', pnlMoney(d.cogs.fact.has_data ? d.cogs.fact.total : null), {
+      cls: 'cash-pnl-head',
+      hint: 'Сырьё и упаковка, списанные со склада в производство, по средней цене прихода.',
+    });
+    if (d.cogs.fact.has_data) {
+      row('   зелень и сырьё', money(d.cogs.fact.raw), { cls: 'cash-pnl-sub' });
+      row('   упаковка', money(d.cogs.fact.packaging), { cls: 'cash-pnl-sub' });
+    }
+    row('   план по Калькуляции', pnlMoney(d.cogs.plan.total), {
+      cls: 'cash-pnl-sub',
+      hint: d.cogs.plan.reason
+        || (money(d.cogs.plan.units) + ' шт × ' + money(d.cogs.plan.unit_cost) + ' (зелень + упаковка)'),
+    });
+    if (d.cogs.diff !== null) {
+      row('   расхождение факт − план', money(d.cogs.diff) + ' · ' + pnlPct(d.cogs.diff_pct), {
+        cls: 'cash-pnl-sub' + (d.cogs.diff > 0 ? ' cash-pnl-bad' : ''),
+        hint: d.cogs.diff > 0 ? 'Списали больше, чем должны были по калькуляции' : 'Списали меньше плана',
+      });
+    }
+
+    gap();
+    row('Валовая прибыль', pnlMoney(d.gross_profit), { cls: 'cash-pnl-total' });
+    row('Валовая маржа', pnlPct(d.gross_margin_pct), { cls: 'cash-pnl-sub' });
+
+    gap();
+
+    // --- Операционные расходы ---
+    row('Операционные расходы', money(d.opex.total), {
+      cls: 'cash-pnl-head',
+      hint: 'По дате оплаты. Начислений пока нет: аренда за квартал ляжет одним месяцем.',
+    });
+    d.opex.groups
+      .slice()
+      .sort((a, b) => b.amount - a.amount)
+      .forEach((g) => row('   ' + g.group_name, money(g.amount), { cls: 'cash-pnl-sub' }));
+
+    gap();
+    row('Операционная прибыль', pnlMoney(d.operating_profit), { cls: 'cash-pnl-total' });
+    row('Рентабельность', pnlPct(d.operating_margin_pct), { cls: 'cash-pnl-sub' });
+
+    box.appendChild(el('table', { class: 'cash-pnl-t' }, el('tbody', {}, rows)));
+
+    // --- Справочно: что в прибыль не входит ---
+    const ex = d.excluded;
+    const exRows = [];
+    const exRow = (label, value, hint) => exRows.push(el('tr', {}, [
+      el('td', { class: 'cash-pnl-lbl' }, [el('span', {}, label), hint ? el('div', { class: 'cash-pnl-hint' }, hint) : null]),
+      el('td', { class: 'cash-pnl-val' }, value),
+    ]));
+    exRow('Оплачено поставщикам за сырьё и упаковку', money(ex.materials_paid.total),
+      'Это движение денег. В прибыль вошло не оно, а списание со склада — иначе расход посчитался бы дважды.');
+    exRow('Финансы: кредиты, займы, взносы', money(ex.finance.out) + ' ↓ / ' + money(ex.finance.in) + ' ↑',
+      'Возврат тела кредита и взносы учредителей — не расход и не доход.');
+    exRow('Капитальные вложения', money(ex.capex.total),
+      'Покупка оборудования списывается через амортизацию, которой у нас пока нет.');
+    if (ex.unclassified.cnt) {
+      exRow('Операции без статьи', money(ex.unclassified.exp) + ' ↓ / ' + money(ex.unclassified.inc) + ' ↑',
+        'Операций: ' + ex.unclassified.cnt + '. Пока не разнесены — в отчёт не попали.');
+    }
+    box.appendChild(el('div', { class: 'cash-h3' }, 'Справочно — в прибыль не входит'));
+    box.appendChild(el('table', { class: 'cash-pnl-t cash-pnl-ex' }, el('tbody', {}, exRows)));
+
+    // --- Отгрузки из SalesDoctor: нужны для плановой себестоимости ---
+    box.appendChild(el('div', { class: 'cash-pnl-units' }, [
+      el('div', {}, [
+        el('b', {}, 'Отгружено за ' + monthLabelRu(d.period) + ': '),
+        el('span', {}, d.units ? money(d.units) + ' шт' : 'не подтянуто'),
+        d.units_at ? el('span', { class: 'cash-pnl-hint' }, ' обновлено ' + d.units_at) : null,
+      ]),
+      el('button', {
+        class: 'btn-ghost', title: 'Выгрузить количество отгрузок из SalesDoctor за этот месяц',
+        onclick: async (e) => {
+          const b = e.target; b.disabled = true; b.textContent = 'Тянем…';
+          try {
+            const r = await post('/pnl/units', { period: d.period });
+            toast('Отгружено: ' + money(r.units) + ' шт' + (r.truncated ? ' (данные неполные)' : ''));
+            renderReport('pnl');
+          } catch (err) { toast(err.message, true); b.disabled = false; b.textContent = '↻ обновить'; }
+        },
+      }, '↻ обновить'),
+    ]));
+
+    box.appendChild(el('div', { class: 'cash-sub cash-pnl-note' },
+      'Это управленческая картина, а не бухгалтерский ОПиУ. Расходы попадают по дате оплаты, '
+      + 'амортизации нет, выручка считается по поступлению денег. Движение реальных денег — на вкладке «Кэш-флоу».'));
   }
 
   // ============ ОБЯЗАТЕЛЬСТВА (Этап 1) ============
