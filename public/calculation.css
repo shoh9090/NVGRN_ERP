@@ -128,6 +128,32 @@ input.calc-cell:focus, input.calc-name:focus {
 }
 .calc-toast.bad { background: var(--red); }
 
+/* ---------- Сводка: все товары со всех листов ---------- */
+.calc-sum-bar {
+  display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 12px;
+  font-size: 12.5px; font-weight: 700; color: var(--ink-soft);
+}
+.calc-warn-txt { color: #8a6d1f; }
+.calc-filters-row { margin-bottom: 10px; }
+.calc-sum-wrap {
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: 12px; overflow: auto;
+}
+.calc-sum-t { width: 100%; border-collapse: collapse; font-size: 13px; }
+.calc-sum-t th {
+  position: sticky; top: 0; background: var(--surface-2); z-index: 2;
+  padding: 9px 12px; font-size: 11px; font-weight: 800; color: var(--ink-faint);
+  text-transform: uppercase; letter-spacing: .04em; white-space: nowrap;
+  border-bottom: 1px solid var(--line);
+}
+.calc-sum-t td { padding: 9px 12px; border-bottom: 1px solid var(--line-soft); }
+.calc-sum-t .tnum { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.calc-sum-row { cursor: pointer; }
+.calc-sum-row:hover td { background: var(--surface-2); }
+.calc-sum-row.bad td { background: var(--red-soft); }
+.calc-sum-row.bad:hover td { background: #f5d9d1; }
+.calc-sum-row.dim td { color: var(--ink-faint); }
+
 /* ---------- Утверждение расчёта: панель, плашка, история ---------- */
 .calc-tbtn {
   background: var(--surface); border: 1px solid var(--line); color: var(--ink);

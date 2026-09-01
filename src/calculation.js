@@ -1119,6 +1119,77 @@ router.post('/api/sheet/:sheet/approve', J, async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
+// ===========================================================================
+// Сводка: все товары со всех листов одним списком
+// ===========================================================================
+// Ничего нового не считает — собирает то, что уже посчитано для каждого листа,
+// и сортирует по марже: худшие сверху. Смысл в том, чтобы «где горит» было
+// видно за пять секунд, а не после просмотра семи вкладок.
+router.get('/api/summary', async (req, res) => {
+  const approved = String(req.query.mode || '') === 'approved';
+  try {
+    // Утверждённые версии — одним запросом на все листы.
+    const snaps = new Map();
+    if (approved) {
+      const rows = (await db.pool.query(
+        `SELECT DISTINCT ON (sheet) sheet, approved_at, data
+           FROM calc_sheet_approvals ORDER BY sheet, approved_at DESC, id DESC`)).rows;
+      rows.forEach((r) => snaps.set(r.sheet, r));
+    }
+
+    const items = [];
+    const noApproval = [];
+    for (const key of Object.keys(SHEETS)) {
+      let data = null, at = null;
+      if (approved) {
+        const s = snaps.get(key);
+        if (s) { data = s.data; at = s.approved_at; }
+        else { noApproval.push(SHEETS[key]); continue; } // не утверждали — не выдумываем цифры
+      } else {
+        data = await sheetPayload(key);
+      }
+      for (const p of (data.products || [])) {
+        const c = p.calc || {};
+        items.push({
+          id: p.id, name: p.name, barcode: p.barcode || '',
+          sheet: key, sheet_title: SHEETS[key], approved_at: at,
+          cost: c.cost === undefined ? null : c.cost,
+          cost_defect: c.cost_defect === undefined ? null : c.cost_defect,
+          defect_pct: p.defect_pct,
+          price: c.price === undefined ? null : c.price,
+          markup_pct: c.markup_pct === undefined ? null : c.markup_pct,
+          net_profit: c.net_profit === undefined ? null : c.net_profit,
+          net_pct: c.net_pct === undefined ? null : c.net_pct,
+          missing_keys: c.missing_keys || [],
+        });
+      }
+    }
+
+    // Худшие сверху. Товары без маржи (нет цены или нет себестоимости) — в самом
+    // верху: это не «хорошо», это «расчёт не готов», и смотреть надо в первую очередь.
+    items.sort((a, b) => {
+      const an = a.net_pct === null, bn = b.net_pct === null;
+      if (an !== bn) return an ? -1 : 1;
+      return (a.net_pct || 0) - (b.net_pct || 0);
+    });
+
+    res.json({
+      mode: approved ? 'approved' : 'current',
+      items,
+      no_approval: noApproval,
+      totals: {
+        count: items.length,
+        negative: items.filter((x) => x.net_profit !== null && x.net_profit < 0).length,
+        no_price: items.filter((x) => !(x.price > 0)).length,
+        incomplete: items.filter((x) => (x.missing_keys || []).length).length,
+      },
+    });
+  } catch (e) {
+    console.error('[КАЛЬКУЛЯЦИЯ] сводка:', e.message);
+    res.status(400).json({ error: e.message });
+  }
+});
+
 router.post('/api/sheet/:sheet/product', J, async (req, res) => {
   if (!canEdit(req)) return denyEdit(res);
   const sheet = String(req.params.sheet || '');
