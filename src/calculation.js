@@ -1139,63 +1139,117 @@ router.post('/api/sheet/:sheet/approve', J, async (req, res) => {
 // Ничего нового не считает — собирает то, что уже посчитано для каждого листа,
 // и сортирует по марже: худшие сверху. Смысл в том, чтобы «где горит» было
 // видно за пять секунд, а не после просмотра семи вкладок.
+// Порог «маржа низкая» до тех пор, пока Шох не назовёт целевую по направлениям.
+const SUMMARY_LOW_MARGIN = 10;
+// С какого расхождения считаем, что расчётная цена разошлась с прайсом СД.
+const SD_DIFF_PCT = 1;
+
+// Собрать снимок «цена/себестоимость по товару» из последнего утверждения —
+// чтобы показать, насколько текущий расчёт от него ушёл.
+async function approvedCostMap() {
+  const m = new Map();
+  const rows = (await db.pool.query(
+    `SELECT DISTINCT ON (sheet) sheet, approved_at, data
+       FROM calc_sheet_approvals ORDER BY sheet, approved_at DESC, id DESC`)).rows;
+  const at = new Map();
+  rows.forEach((r) => {
+    at.set(r.sheet, r.approved_at);
+    ((r.data && r.data.products) || []).forEach((p) => {
+      const c = p.calc || {};
+      m.set(p.id, { cost_defect: c.cost_defect === undefined ? null : c.cost_defect });
+    });
+  });
+  return { byProduct: m, atBySheet: at };
+}
+
 router.get('/api/summary', async (req, res) => {
   const approved = String(req.query.mode || '') === 'approved';
   try {
-    // Утверждённые версии — одним запросом на все листы.
-    const snaps = new Map();
-    if (approved) {
-      const rows = (await db.pool.query(
-        `SELECT DISTINCT ON (sheet) sheet, approved_at, data
-           FROM calc_sheet_approvals ORDER BY sheet, approved_at DESC, id DESC`)).rows;
-      rows.forEach((r) => snaps.set(r.sheet, r));
-    }
-
-    const items = [];
+    const snaps = await approvedCostMap();
+    const products = [];
     const noApproval = [];
+
     for (const key of Object.keys(SHEETS)) {
-      let data = null, at = null;
-      if (approved) {
-        const s = snaps.get(key);
-        if (s) { data = s.data; at = s.approved_at; }
-        else { noApproval.push(SHEETS[key]); continue; } // не утверждали — не выдумываем цифры
-      } else {
-        data = await sheetPayload(key);
-      }
-      for (const p of (data.products || [])) {
+      const got = await sheetData(key, approved);
+      if (!got) { noApproval.push(SHEETS[key]); continue; }
+      for (const p of (got.data.products || [])) {
         const c = p.calc || {};
-        items.push({
+        const comp = c.components || {};
+        const price = c.price === undefined ? null : c.price;
+        const sdPrice = p.sd_price === undefined ? null : p.sd_price;
+        // Расхождение с прайсом СД: посчитали одно, а продаём по другому.
+        const sdDiff = (price > 0 && sdPrice > 0) ? ((sdPrice - price) / price) * 100 : null;
+        const was = snaps.byProduct.get(p.id);
+        const wasCost = was ? was.cost_defect : null;
+        const delta = (wasCost > 0 && c.cost_defect !== undefined && c.cost_defect !== null)
+          ? ((c.cost_defect - wasCost) / wasCost) * 100 : null;
+        products.push({
           id: p.id, name: p.name, barcode: p.barcode || '',
-          sheet: key, sheet_title: SHEETS[key], approved_at: at,
+          sheet: key, sheet_title: SHEETS[key],
+          approved_at: got.at || snaps.atBySheet.get(key) || null,
           cost: c.cost === undefined ? null : c.cost,
           cost_defect: c.cost_defect === undefined ? null : c.cost_defect,
           defect_pct: p.defect_pct,
-          price: c.price === undefined ? null : c.price,
+          price,
           markup_pct: c.markup_pct === undefined ? null : c.markup_pct,
           net_profit: c.net_profit === undefined ? null : c.net_profit,
           net_pct: c.net_pct === undefined ? null : c.net_pct,
           missing_keys: c.missing_keys || [],
+          sd_price: sdPrice, sd_diff_pct: sdDiff,
+          delta_pct: delta,
+          components: {
+            raw: comp.raw === undefined ? null : comp.raw,
+            pack: comp.pack === undefined ? null : comp.pack,
+            production: comp.production === undefined ? null : comp.production,
+            labor: comp.labor === undefined ? null : comp.labor,
+          },
+          // Объёмы продаж появятся, когда товары свяжут с СД по id. Пока не
+          // выдумываем: null честнее нуля, который читался бы как «не продавали».
+          sold: null, earned: null,
         });
       }
     }
 
-    // Худшие сверху. Товары без маржи (нет цены или нет себестоимости) — в самом
-    // верху: это не «хорошо», это «расчёт не готов», и смотреть надо в первую очередь.
-    items.sort((a, b) => {
-      const an = a.net_pct === null, bn = b.net_pct === null;
-      if (an !== bn) return an ? -1 : 1;
-      return (a.net_pct || 0) - (b.net_pct || 0);
+    // Признаки для плиток-фильтров. Считаем один раз здесь, чтобы экран и
+    // счётчик всегда говорили одно и то же.
+    products.forEach((x) => {
+      x.not_ready = (x.missing_keys || []).length > 0 || !(x.price > 0);
+      x.negative = x.net_profit !== null && x.net_profit < 0;
+      x.low_margin = !x.not_ready && x.net_pct !== null && x.net_pct < SUMMARY_LOW_MARGIN && !x.negative;
+      x.sd_diff = x.sd_diff_pct !== null && Math.abs(x.sd_diff_pct) >= SD_DIFF_PCT;
     });
+
+    // Разрез по направлениям: те же товары, свёрнутые до одной строки на лист.
+    const avg = (arr) => (arr.length ? arr.reduce((s, v) => s + v, 0) / arr.length : null);
+    const sheets = [];
+    for (const key of Object.keys(SHEETS)) {
+      const list = products.filter((x) => x.sheet === key);
+      if (!list.length) continue;
+      const ready = list.filter((x) => !x.not_ready);
+      const sum = (f) => list.reduce((s, x) => s + (Number(x.components[f]) || 0), 0);
+      sheets.push({
+        sheet: key, title: SHEETS[key],
+        count: list.length, ready: ready.length,
+        not_ready: list.length - ready.length,
+        negative: list.filter((x) => x.negative).length,
+        avg_cost: avg(ready.map((x) => x.cost_defect).filter((v) => v !== null)),
+        avg_margin: avg(ready.map((x) => x.net_pct).filter((v) => v !== null)),
+        delta_pct: avg(list.map((x) => x.delta_pct).filter((v) => v !== null)),
+        approved_at: snaps.atBySheet.get(key) || null,
+        components: { raw: sum('raw'), pack: sum('pack'), production: sum('production'), labor: sum('labor') },
+        sold: null, earned: null,
+      });
+    }
 
     res.json({
       mode: approved ? 'approved' : 'current',
-      items,
-      no_approval: noApproval,
-      totals: {
-        count: items.length,
-        negative: items.filter((x) => x.net_profit !== null && x.net_profit < 0).length,
-        no_price: items.filter((x) => !(x.price > 0)).length,
-        incomplete: items.filter((x) => (x.missing_keys || []).length).length,
+      low_margin_pct: SUMMARY_LOW_MARGIN,
+      products, sheets, no_approval: noApproval,
+      flags: {
+        negative: products.filter((x) => x.negative).length,
+        low_margin: products.filter((x) => x.low_margin).length,
+        sd_diff: products.filter((x) => x.sd_diff).length,
+        not_ready: products.filter((x) => x.not_ready).length,
       },
     });
   } catch (e) {

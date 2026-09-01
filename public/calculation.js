@@ -686,11 +686,18 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Сводка: все товары со всех листов
+  // Сводка
   // ---------------------------------------------------------------------------
+  // Один экран отвечает на несколько вопросов, поэтому роли разведены:
+  //   • плитки сверху — это ФИЛЬТРЫ, а не просто счётчики;
+  //   • тумблер переключает разрез: по товарам или по направлениям;
+  //   • структура себестоимости и состав направления раскрываются внутри строки.
+  // Иначе получается стена цифр — так уже было в первой версии.
   let SUM = null;
-  let sumMode = 'current';   // current | approved
-  let sumSheet = '';         // фильтр по листу
+  let sumMode = 'current';    // current | approved
+  let sumView = 'sheets';     // sheets | products
+  let sumFlag = '';           // '' | negative | low_margin | sd_diff | not_ready
+  const sumOpen = new Set();  // раскрытые строки
 
   async function loadSummary() {
     let d;
@@ -702,14 +709,17 @@
       return;
     }
     SUM = d;
-    DATA = { can_edit: false };   // сводка только смотрит, править нечего
+    DATA = { can_edit: false };   // сводка только смотрит
     render();
   }
 
+  const sumPct = (v, dec) => (v === null || v === undefined ? '—' : money(v, dec === undefined ? 0 : dec) + '%');
+  const sumNum = (v) => (v === null || v === undefined ? '—' : money0(v));
+
   function summarySheet() {
-    const d = SUM || { items: [], totals: {} };
+    const d = SUM || { products: [], sheets: [], flags: {} };
     const box = el('div');
-    const t = d.totals || {};
+    const f = d.flags || {};
 
     box.appendChild(el('div', { class: 'calc-sheet-head' }, [
       el('div', { class: 'calc-sheet-top' }, [
@@ -720,75 +730,137 @@
           el('button', { class: 'calc-appr-mode' + (sumMode === 'approved' ? ' on' : ''),
             onclick: () => { if (sumMode !== 'approved') { sumMode = 'approved'; loadSummary(); } } }, 'Утверждённые'),
         ]),
-        // Два файла и две кнопки: прайс можно отдавать наружу, сводку — нет.
         el('button', { class: 'calc-tbtn', title: 'Сводка со всеми цифрами. Только для внутреннего пользования',
           onclick: () => { window.location = '/calculation/api/summary-export.xlsx?mode=' + sumMode; } }, '⬇ Сводка'),
         el('button', { class: 'calc-tbtn', title: 'Штрихкод, наименование и цены. Без себестоимости — можно отдавать агентам и клиентам',
           onclick: () => { window.location = '/calculation/api/price-export.xlsx?mode=' + sumMode; } }, '⬇ Прайс'),
       ]),
-      el('div', { class: 'calc-sub' }, sumMode === 'approved'
-        ? 'Цифры из утверждённых расчётов. Листы, которые ни разу не утверждали, сюда не попадают.'
-        : 'Все товары со всех листов, худшая маржа сверху. Красным — убыточные, серым — расчёт не готов.'),
     ]));
 
     if (sumMode === 'approved' && (d.no_approval || []).length) {
-      box.appendChild(el('div', { class: 'calc-msg warn' },
-        '⚠️ Не утверждались: ' + d.no_approval.join(', ')));
+      box.appendChild(el('div', { class: 'calc-msg warn' }, '⚠️ Не утверждались: ' + d.no_approval.join(', ')));
     }
 
-    // Короткая строка состояния — что вообще происходит на всех листах сразу.
-    box.appendChild(el('div', { class: 'calc-sum-bar' }, [
-      el('span', {}, 'товаров: ' + (t.count || 0)),
-      t.negative ? el('span', { class: 'calc-bad' }, 'в минусе: ' + t.negative) : null,
-      t.no_price ? el('span', { class: 'calc-warn-txt' }, 'без цены: ' + t.no_price) : null,
-      t.incomplete ? el('span', { class: 'calc-warn-txt' }, 'расчёт не готов: ' + t.incomplete) : null,
+    // --- Светофор: плитки работают как фильтры -------------------------------
+    const tile = (key, label, count, cls) => el('button', {
+      class: 'calc-tile calc-tile-' + cls + (sumFlag === key ? ' on' : ''),
+      onclick: () => { sumFlag = sumFlag === key ? '' : key; render(); },
+      title: sumFlag === key ? 'Снять фильтр' : 'Показать только эти товары',
+    }, [el('span', { class: 'calc-tile-l' }, label), el('span', { class: 'calc-tile-v' }, String(count || 0))]);
+    box.appendChild(el('div', { class: 'calc-tiles' }, [
+      tile('negative', 'В минусе', f.negative, 'red'),
+      tile('low_margin', 'Маржа ниже ' + (d.low_margin_pct || 10) + '%', f.low_margin, 'amber'),
+      tile('sd_diff', 'Расходится с СД', f.sd_diff, 'amber'),
+      tile('not_ready', 'Расчёт не готов', f.not_ready, 'grey'),
     ]));
 
-    // Фильтр по листу — чтобы можно было смотреть и «всю компанию», и одно направление.
-    const sheets = [...new Set(d.items.map((x) => x.sheet))];
-    const filt = el('select', { class: 'calc-sel', style: 'max-width:220px',
-      onchange: (e) => { sumSheet = e.target.value; render(); } },
-    [el('option', { value: '' }, 'Все листы')].concat(sheets.map((k) => {
-      const title = (d.items.find((x) => x.sheet === k) || {}).sheet_title || k;
-      const o = el('option', { value: k }, title);
-      if (sumSheet === k) o.setAttribute('selected', 'selected');
-      return o;
-    })));
-    box.appendChild(el('div', { class: 'calc-filters-row' }, filt));
+    // --- Разрез: по направлениям или по товарам ------------------------------
+    box.appendChild(el('div', { class: 'calc-sum-tools' }, [
+      el('div', { class: 'calc-appr-modes' }, [
+        el('button', { class: 'calc-appr-mode' + (sumView === 'sheets' ? ' on' : ''),
+          onclick: () => { sumView = 'sheets'; render(); } }, 'По направлениям'),
+        el('button', { class: 'calc-appr-mode' + (sumView === 'products' ? ' on' : ''),
+          onclick: () => { sumView = 'products'; render(); } }, 'По товарам'),
+      ]),
+      sumFlag ? el('button', { class: 'calc-tbtn small', onclick: () => { sumFlag = ''; render(); } }, '✕ снять фильтр') : null,
+    ]));
 
-    const items = sumSheet ? d.items.filter((x) => x.sheet === sumSheet) : d.items;
-    if (!items.length) {
-      box.appendChild(el('div', { class: 'calc-empty' }, 'Товаров нет.'));
-      return box;
-    }
+    const picked = (x) => !sumFlag || x[sumFlag];
+    box.appendChild(sumView === 'sheets' ? sheetsTable(d, picked) : productsTable(d.products.filter(picked)));
+    return box;
+  }
 
-    const head = el('tr', {}, ['Товар', 'Лист', 'с/с с браком', 'Цена', 'Наценка', 'Прибыль', 'Маржа']
+  // Полоска «из чего складывается себестоимость»: зелень, упаковка, завод, ФОТ.
+  function costBar(c) {
+    const parts = [
+      ['raw', 'зелень', 'calc-seg-raw'], ['pack', 'упаковка', 'calc-seg-pack'],
+      ['production', 'завод', 'calc-seg-prod'], ['labor', 'ФОТ', 'calc-seg-labor'],
+    ];
+    const total = parts.reduce((s, [k]) => s + (Number(c && c[k]) || 0), 0);
+    if (!(total > 0)) return el('div', { class: 'calc-dim', style: 'font-size:12px' }, 'нечего показать — расчёт не готов');
+    return el('div', {}, [
+      el('div', { class: 'calc-sum-note' }, 'Из чего складывается себестоимость'),
+      el('div', { class: 'calc-bar' }, parts.map(([k, label, cls]) => {
+        const share = ((Number(c[k]) || 0) / total) * 100;
+        if (share < 0.5) return null;
+        return el('div', { class: 'calc-seg ' + cls, style: 'width:' + share.toFixed(1) + '%',
+          title: label + ': ' + money(share, 0) + '%' }, share >= 12 ? (label + ' ' + money(share, 0) + '%') : '');
+      })),
+    ]);
+  }
+
+  function sheetsTable(d, picked) {
+    const head = el('tr', {}, ['Направление', 'с/с', 'Маржа', 'Продано', 'Заработано', 'Δ']
+      .map((h, i) => el('th', { style: i ? 'text-align:right' : '' }, h)));
+    const rows = [];
+    (d.sheets || []).forEach((s) => {
+      const list = (d.products || []).filter((x) => x.sheet === s.sheet && picked(x));
+      if (sumFlag && !list.length) return;   // фильтр включён — пустые направления прячем
+      const open = sumOpen.has(s.sheet);
+      rows.push(el('tr', { class: 'calc-sum-row', onclick: () => { if (open) sumOpen.delete(s.sheet); else sumOpen.add(s.sheet); render(); } }, [
+        el('td', {}, [
+          el('span', { class: 'calc-caret' }, open ? '▾ ' : '▸ '),
+          el('b', {}, s.title),
+          s.not_ready ? el('span', { class: 'calc-dim' }, ' · не готовы: ' + s.not_ready) : null,
+        ]),
+        el('td', { class: 'tnum' }, sumNum(s.avg_cost)),
+        el('td', { class: 'tnum', style: s.negative ? 'color:var(--red);font-weight:800' : '' }, sumPct(s.avg_margin)),
+        el('td', { class: 'tnum calc-dim' }, sumNum(s.sold)),
+        el('td', { class: 'tnum calc-dim' }, sumNum(s.earned)),
+        el('td', { class: 'tnum', style: (s.delta_pct > 0 ? 'color:var(--red)' : '') },
+          s.delta_pct === null ? '—' : (s.delta_pct > 0 ? '+' : '') + money(s.delta_pct, 0) + '%'),
+      ]));
+      if (open) {
+        rows.push(el('tr', { class: 'calc-sum-open' }, el('td', { colspan: '6' }, [
+          costBar(s.components),
+          el('div', { class: 'calc-sum-sub' }, productsTable(list, true)),
+        ])));
+      }
+    });
+    if (!rows.length) rows.push(el('tr', {}, el('td', { colspan: '6', class: 'calc-dim' }, 'Ничего не найдено.')));
+    return el('div', { class: 'calc-sum-wrap' },
+      el('table', { class: 'calc-sum-t' }, [el('thead', {}, head), el('tbody', {}, rows)]));
+  }
+
+  function productsTable(items, nested) {
+    const head = el('tr', {}, ['Товар', 'Направление', 'с/с с браком', 'Цена', 'Маржа', 'Продано', 'Заработано', 'Δ']
       .map((h, i) => el('th', { style: i >= 2 ? 'text-align:right' : '' }, h)));
     const rows = items.map((x) => {
-      const bad = x.net_profit !== null && x.net_profit < 0;
-      const notReady = (x.missing_keys || []).length || !(x.price > 0);
-      return el('tr', {
-        class: 'calc-sum-row' + (bad ? ' bad' : '') + (notReady ? ' dim' : ''),
-        title: 'Открыть лист «' + x.sheet_title + '»',
-        onclick: () => { sheet = x.sheet; skuMode = 'current'; load(); },
+      const open = sumOpen.has('p' + x.id);
+      const tr = el('tr', {
+        class: 'calc-sum-row' + (x.negative ? ' bad' : '') + (x.not_ready ? ' dim' : ''),
+        onclick: () => { if (open) sumOpen.delete('p' + x.id); else sumOpen.add('p' + x.id); render(); },
       }, [
         el('td', {}, [
-          el('div', { style: 'font-weight:700' }, x.name),
+          el('span', { class: 'calc-caret' }, open ? '▾ ' : '▸ '),
+          el('span', { style: 'font-weight:700' }, x.name),
           (x.missing_keys || []).length
             ? el('div', { class: 'calc-warn-mini' }, 'нет: ' + x.missing_keys.map((k) => COMP_NAMES[k] || k).join(', '))
             : (!(x.price > 0) ? el('div', { class: 'calc-warn-mini' }, 'не указана цена') : null),
+          // Расхождение с прайсом СД — прямо в строке, чтобы не искать отдельно.
+          x.sd_diff ? el('div', { class: 'calc-warn-mini calc-warn-txt' },
+            'в СД ' + money0(x.sd_price) + ' · ' + (x.sd_diff_pct > 0 ? 'дороже' : 'дешевле') + ' на ' + money(Math.abs(x.sd_diff_pct), 0) + '%') : null,
         ]),
         el('td', { class: 'calc-dim' }, x.sheet_title),
-        el('td', { class: 'tnum' }, x.cost_defect === null ? '—' : money0(x.cost_defect)),
-        el('td', { class: 'tnum' }, x.price === null ? '—' : money0(x.price)),
-        el('td', { class: 'tnum' }, x.markup_pct === null ? '—' : money(x.markup_pct, 0) + '%'),
-        el('td', { class: 'tnum' }, x.net_profit === null ? '—' : money0(x.net_profit)),
-        el('td', { class: 'tnum', style: 'font-weight:800' }, x.net_pct === null ? '—' : money(x.net_pct, 0) + '%'),
+        el('td', { class: 'tnum' }, sumNum(x.cost_defect)),
+        el('td', { class: 'tnum' }, sumNum(x.price)),
+        el('td', { class: 'tnum', style: 'font-weight:800' }, sumPct(x.net_pct)),
+        el('td', { class: 'tnum calc-dim' }, sumNum(x.sold)),
+        el('td', { class: 'tnum calc-dim' }, sumNum(x.earned)),
+        el('td', { class: 'tnum', style: (x.delta_pct > 0 ? 'color:var(--red)' : '') },
+          x.delta_pct === null ? '—' : (x.delta_pct > 0 ? '+' : '') + money(x.delta_pct, 0) + '%'),
       ]);
+      if (!open) return [tr];
+      return [tr, el('tr', { class: 'calc-sum-open' }, el('td', { colspan: '8' }, [
+        costBar(x.components),
+        el('button', { class: 'calc-tbtn small', onclick: (e) => { e.stopPropagation(); sheet = x.sheet; skuMode = 'current'; load(); } },
+          'Открыть лист «' + x.sheet_title + '»'),
+      ]))];
     });
-    box.appendChild(el('div', { class: 'calc-sum-wrap' },
-      el('table', { class: 'calc-sum-t' }, [el('thead', {}, head), el('tbody', {}, rows)])));
-    return box;
+    const flat = [].concat(...rows);
+    if (!flat.length) flat.push(el('tr', {}, el('td', { colspan: '8', class: 'calc-dim' }, 'Ничего не найдено.')));
+    return el('div', { class: 'calc-sum-wrap' + (nested ? ' nested' : '') },
+      el('table', { class: 'calc-sum-t' }, [el('thead', {}, head), el('tbody', {}, flat)]));
   }
 
   // ---------------------------------------------------------------------------
