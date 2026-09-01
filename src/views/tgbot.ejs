@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="/static/tabs.css?v=<%= V %>">
   <link rel="stylesheet" href="/static/filters.css?v=<%= V %>">
   <link rel="stylesheet" href="/static/chips.css?v=<%= V %>">
+  <link rel="stylesheet" href="/static/conn.css?v=<%= V %>">
   <style>
     :root { --brand: <%= settings.brand_color || '#2E7D32' %>; }
     .wrap { max-width: 860px; margin: 0 auto; padding: 24px; }
@@ -103,7 +104,8 @@
         <span class="company"><%= settings.company_name %></span>
       </a>
     </div>
-    <div class="topbar-right"><a class="btn-ghost" href="/">← На главную</a></div>
+    <div class="topbar-right">
+      <div id="conn-root" class="conn-root"></div><a class="btn-ghost" href="/">← На главную</a></div>
   </header>
 
   <main class="wrap">
@@ -488,5 +490,6 @@
       document.addEventListener('keydown',function(e){if(e.key==='Escape'){['staffOverlay','settingsOverlay','importOverlay','agentOverlay','replOverlay'].forEach(function(id){var o=document.getElementById(id);if(o)o.classList.remove('on');});}});
     })();
   </script>
+  <script src="/static/conn.js?v=<%= V %>"></script>
 </body>
 </html>

@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="/static/tabs.css?v=<%= V %>">
   <link rel="stylesheet" href="/static/filters.css?v=<%= V %>">
   <link rel="stylesheet" href="/static/chips.css?v=<%= V %>">
+  <link rel="stylesheet" href="/static/conn.css?v=<%= V %>">
   <style>
     :root { --brand: <%= settings.brand_color || '#2E7D32' %>; }
     .wrap { max-width: 980px; margin: 0 auto; padding: 24px; }
@@ -39,7 +40,8 @@
         <span class="company"><%= settings.company_name %></span>
       </a>
     </div>
-    <div class="topbar-right"><a class="btn-ghost" href="/">← На главную</a></div>
+    <div class="topbar-right">
+      <div id="conn-root" class="conn-root"></div><a class="btn-ghost" href="/">← На главную</a></div>
   </header>
 
   <main class="wrap">
@@ -95,5 +97,6 @@
       </div>
     <% } %>
   </main>
+  <script src="/static/conn.js?v=<%= V %>"></script>
 </body>
 </html>

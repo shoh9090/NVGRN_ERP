@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="/static/tabs.css?v=<%= V %>">
   <link rel="stylesheet" href="/static/filters.css?v=<%= V %>">
   <link rel="stylesheet" href="/static/chips.css?v=<%= V %>">
+  <link rel="stylesheet" href="/static/conn.css?v=<%= V %>">
   <style>:root { --brand: <%= settings.brand_color || '#2E7D32' %>; }</style>
 </head>
 <body class="admin-body dicts-body">
@@ -18,6 +19,7 @@
       <span class="company">Справочники</span>
     </div>
     <div class="topbar-right">
+      <div id="conn-root" class="conn-root"></div>
       <span style="color:#fff; font-size:14px"><%= user.name %></span>
     </div>
   </header>
@@ -63,6 +65,7 @@
   </div>
 
   <script>window.HUB_USER = { isAdmin: <%= user.isAdmin ? "true" : "false" %>, name: "<%= user.name %>" };</script>
+  <script src="/static/conn.js?v=<%= V %>"></script>
   <script src="/static/dicts.js?v=<%= V %>"></script>
 </body>
 </html>

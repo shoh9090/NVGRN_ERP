@@ -45,24 +45,62 @@ async function saveSdConfig({ url, login, password }) {
 }
 
 // Единый вызов SalesDoc API: POST {url}/api/v2, метод в теле
+// Состояние связи с SalesDoctor. Держим в памяти процесса — обращений много
+// (постраничные выгрузки), и писать в базу на каждое было бы расточительно.
+// В настройки сохраняем только смену состояния, чтобы после перезапуска
+// Hub показывал последнее известное, а не «неизвестно».
+let SD_STATE = { state: 'unknown', at: null, msg: null };
+
+function noteSd(ok, msg) {
+  const was = SD_STATE.state;
+  SD_STATE = { state: ok ? 'ok' : 'fail', at: new Date().toISOString(), msg: ok ? null : String(msg || '').slice(0, 300) };
+  if (was !== SD_STATE.state) {
+    db.setSetting('sd_health', JSON.stringify(SD_STATE)).catch(() => {});
+  }
+}
+
+// Состояние для шапки. Если процесс ещё ни разу не ходил в SD, поднимаем
+// последнее записанное — иначе после каждого передеплоя индикатор гас бы.
+async function sdHealth() {
+  if (SD_STATE.state !== 'unknown') return SD_STATE;
+  try {
+    const s = await db.getSettings();
+    if (s.sd_health) {
+      const saved = JSON.parse(s.sd_health);
+      if (saved && saved.state) return { ...saved, stale: true };
+    }
+  } catch (e) { /* нет записи — покажем «неизвестно» */ }
+  return SD_STATE;
+}
+
 async function sdRequest(baseUrl, body) {
-  const res = await fetch(baseUrl + '/api/v2', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(30000),
-  });
+  let res;
+  try {
+    res = await fetch(baseUrl + '/api/v2', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(30000),
+    });
+  } catch (e) {
+    // Сюда попадают обрыв сети и таймаут — самое частое, что видит пользователь.
+    noteSd(false, e && e.name === 'TimeoutError' ? 'SalesDoctor не ответил за 30 секунд' : (e && e.message));
+    throw e;
+  }
   let data;
   try {
     data = await res.json();
   } catch (e) {
+    noteSd(false, `SalesDoctor вернул не-JSON ответ (HTTP ${res.status})`);
     throw new Error(`SalesDoctor вернул не-JSON ответ (HTTP ${res.status})`);
   }
   if (data.status !== true) {
     const msg = (data.error && data.error.message) || 'неизвестная ошибка';
     const code = (data.error && data.error.code) || res.status;
+    noteSd(false, `ошибка ${code} — ${msg}`);
     throw new Error(`SalesDoctor: ошибка ${code} — ${msg}`);
   }
+  noteSd(true);
   return data;
 }
 
@@ -735,4 +773,4 @@ async function getMonthlySalesUnits(period, opts = {}) {
   };
 }
 
-module.exports = { getMonthlySalesUnits, getSdConfig, saveSdConfig, testConnection, syncFinishedGoods, syncPrices, diagSD, getHorecaPoints, getAgentCoverage, syncCrmAgents, syncCrmExpeditors, syncClientsToContacts, getSdProducts, syncCashClients, probeContragent };
+module.exports = { sdHealth, getMonthlySalesUnits, getSdConfig, saveSdConfig, testConnection, syncFinishedGoods, syncPrices, diagSD, getHorecaPoints, getAgentCoverage, syncCrmAgents, syncCrmExpeditors, syncClientsToContacts, getSdProducts, syncCashClients, probeContragent };

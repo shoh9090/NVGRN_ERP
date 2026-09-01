@@ -691,6 +691,10 @@ app.use('/hr', requireHrAccess, require('./src/hr'));
 const notificationsRouter = require('./src/notifications');
 app.use('/', requireAuth, notificationsRouter);
 
+// Состояние внешних связей (SalesDoctor, бот) — для индикаторов в шапке.
+const healthRouter = require('./src/health');
+app.use('/', requireAuth, healthRouter);
+
 const dict = express.Router();
 dict.use(requireDictAccess);
 

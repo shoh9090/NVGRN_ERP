@@ -12,6 +12,7 @@
   <link rel="stylesheet" href="/static/tabs.css?v=<%= V %>">
   <link rel="stylesheet" href="/static/filters.css?v=<%= V %>">
   <link rel="stylesheet" href="/static/chips.css?v=<%= V %>">
+  <link rel="stylesheet" href="/static/conn.css?v=<%= V %>">
   <style>:root { --brand: <%= settings.brand_color || '#2E7D32' %>; }</style>
 </head>
 <body class="admin-body pur-body">
@@ -21,6 +22,7 @@
       <span class="company">🛒 Закуп</span>
     </div>
     <div class="topbar-right">
+      <div id="conn-root" class="conn-root"></div>
       <div id="bell-root" class="bell-root"></div>
       <span style="font-size:13px; font-weight:700"><%= user.name %></span>
     </div>
@@ -40,6 +42,7 @@
   <div id="pur-modal-root"></div>
 
   <script>window.HUB_USER = { isAdmin: <%= user.isAdmin ? "true" : "false" %>, name: "<%= user.name %>", buyerEdit: <%= (user.roles && user.roles.indexOf('Правка заявок') >= 0) ? "true" : "false" %> };</script>
+  <script src="/static/conn.js?v=<%= V %>"></script>
   <script src="/static/bell.js?v=<%= V %>"></script>
   <script src="/static/daterange.js?v=<%= V %>"></script>
   <script src="/static/chips.js?v=<%= V %>"></script>

@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="/static/tabs.css?v=<%= V %>">
   <link rel="stylesheet" href="/static/filters.css?v=<%= V %>">
   <link rel="stylesheet" href="/static/chips.css?v=<%= V %>">
+  <link rel="stylesheet" href="/static/conn.css?v=<%= V %>">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Lora:wght@500;600&display=swap" rel="stylesheet">
   <style>:root { --brand: <%= settings.brand_color || '#163a28' %>; }</style>
@@ -23,6 +24,7 @@
       </a>
     </div>
     <div class="topbar-right">
+      <div id="conn-root" class="conn-root"></div>
       <span style="font-size:13px; font-weight:700"><%= user.name %></span>
     </div>
   </header>
@@ -31,6 +33,7 @@
   <div id="hr-modal-root"></div>
 
   <script>window.HUB_USER = { isAdmin: <%= user.isAdmin ? "true" : "false" %>, name: "<%= user.name %>" };</script>
+  <script src="/static/conn.js?v=<%= V %>"></script>
   <script src="/static/daterange.js?v=<%= V %>"></script>
   <script src="/static/hr.js?v=<%= V %>"></script>
 </body>

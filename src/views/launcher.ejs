@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="/static/tabs.css?v=<%= V %>">
   <link rel="stylesheet" href="/static/filters.css?v=<%= V %>">
   <link rel="stylesheet" href="/static/chips.css?v=<%= V %>">
+  <link rel="stylesheet" href="/static/conn.css?v=<%= V %>">
   <style>
     :root { --brand: <%= settings.brand_color || '#2E7D32' %>; }
     .section-title { display: flex; align-items: center; gap: 12px; margin: 30px 4px 12px; color: #f4f2ea; font-size: 13px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; opacity: .85; }
@@ -25,6 +26,7 @@
       <span class="company"><%= settings.company_name %></span>
     </div>
     <div class="topbar-right">
+      <div id="conn-root" class="conn-root"></div>
       <% if (user.isAdmin) { %><a class="btn-ghost" href="/admin/users">Админ-панель</a><% } %>
       <details class="user-menu">
         <summary><%= user.name %></summary>
@@ -63,5 +65,6 @@
       </div>
     <% }) %>
   </main>
+  <script src="/static/conn.js?v=<%= V %>"></script>
 </body>
 </html>
