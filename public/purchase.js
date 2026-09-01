@@ -88,15 +88,23 @@
     ]);
     ORD_ITEMS = new Set();
     const ordItems = itemMultiSelect(FOPTS.items, ORD_ITEMS, loadOrders);
-    const ordStatus = el('select', { id: 'ord-status', onchange: () => loadOrders() }, [
-      el('option', { value: 'all' }, 'Все статусы'),
-      el('option', { value: 'draft' }, 'Черновики'),
-      el('option', { value: 'ordered' }, 'Заказано'),
-      el('option', { value: 'received' }, 'Принято'),
-      el('option', { value: 'cancelled' }, 'Отменено'),
-    ]);
+    // Статус — таблетками со счётчиками (общий компонент, см. chips.js).
+    // Выпадающий список прятал главное: сколько заявок в каждом состоянии.
+    ORD_STATUS = ORD_STATUS || 'all';
+    const ordStatus = HubChips.create({
+      items: [
+        { key: 'all', label: 'Все' },
+        { key: 'draft', label: 'Черновики' },
+        { key: 'ordered', label: 'Заказано' },
+        { key: 'received', label: 'Принято' },
+        { key: 'cancelled', label: 'Отменено' },
+      ],
+      value: ORD_STATUS,
+      onChange: (key) => { ORD_STATUS = key; loadOrders(); },
+    });
+    ORD_CHIPS = ordStatus;
     const reset = el('button', {
-      onclick: () => { ordPc.value = ''; ordSup.value = ''; ORD_ITEMS.clear(); ordPeriod.from = ''; ordPeriod.to = ''; viewOrders(); },
+      onclick: () => { ordPc.value = ''; ordSup.value = ''; ORD_ITEMS.clear(); ORD_STATUS = 'all'; ordPeriod.from = ''; ordPeriod.to = ''; viewOrders(); },
     }, 'Сбросить');
 
     main.appendChild(el('div', { class: 'pur-bar' }, [
@@ -105,7 +113,7 @@
         mode: 'range', from: ordPeriod.from, to: ordPeriod.to,
         onChange: (v) => { ordPeriod.from = v.from; ordPeriod.to = v.to; loadOrders(); },
       }),
-      ordStatus, ordPc, ordSup, ordItems,
+      ordPc, ordSup, ordItems,
       el('input', { id: 'ord-q', class: 'pur-bar-q', placeholder: 'Поиск: номер, поставщик…', oninput: debounce(loadOrders, 300) }),
       reset,
       // Итог держим в той же строке и прижимаем вправо: раньше он жил
@@ -115,6 +123,7 @@
       // Кнопки «Очистить все заявки» здесь больше нет: она стирала всю историю
       // закупок одним нажатием и стояла рядом с обычными фильтрами.
     ]));
+    main.appendChild(ordStatus);
     main.appendChild(el('div', { id: 'ord-list', class: 'pur-content' }));
     await loadOrders();
   }
@@ -127,10 +136,12 @@
   // Пустой период не должен внезапно прятать половину заявок у того, кто
   // просто открыл вкладку.
   const ordPeriod = { from: '', to: '' };
+  let ORD_STATUS = 'all';   // выбранная таблетка статуса
+  let ORD_CHIPS = null;     // сам ряд таблеток — чтобы обновлять счётчики
 
   async function loadOrders() {
     const box = $('#ord-list');
-    const status = $('#ord-status') ? $('#ord-status').value : 'all';
+    const status = ORD_STATUS || 'all';
     const q = $('#ord-q') ? $('#ord-q').value.trim() : '';
     const params = new URLSearchParams({ status });
     if (q) params.set('q', q);
@@ -144,6 +155,7 @@
     // Итог по отобранным заявкам показываем в строке фильтров: считается на
     // сервере по всей выборке, а не по показанным строкам — список обрезан
     // тремястами, и сумма по ним вводила бы в заблуждение.
+    if (ORD_CHIPS && data.counts) ORD_CHIPS.setCounts(data.counts);
     const totalBox = $('#ord-total');
     if (totalBox && data.totals) {
       totalBox.innerHTML = '';

@@ -11,6 +11,7 @@
   <link rel="stylesheet" href="/static/complaints.css?v=<%= V %>">
   <link rel="stylesheet" href="/static/tabs.css?v=<%= V %>">
   <link rel="stylesheet" href="/static/filters.css?v=<%= V %>">
+  <link rel="stylesheet" href="/static/chips.css?v=<%= V %>">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Lora:wght@500;600&display=swap" rel="stylesheet">
   <style>:root { --brand: <%= settings.brand_color || '#2E7D32' %>; }</style>
@@ -33,6 +34,7 @@
   <script>window.HUB_USER = { isAdmin: <%= user.isAdmin ? "true" : "false" %>, canManage: <%= (user.isAdmin || (user.roles || []).includes('Руководитель продаж')) ? "true" : "false" %>, name: "<%= user.name %>" };</script>
   <script src="/static/bell.js?v=<%= V %>"></script>
   <script src="/static/daterange.js?v=<%= V %>"></script>
+  <script src="/static/chips.js?v=<%= V %>"></script>
   <script src="/static/complaints.js?v=<%= V %>"></script>
 </body>
 </html>

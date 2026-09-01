@@ -1057,10 +1057,6 @@ router.get('/api/orders', async (req, res) => {
   const status = req.query.status || 'all';
   const params = [];
   let where = '1=1';
-  if (status !== 'all') {
-    params.push(status);
-    where = `po.status = $${params.length}`;
-  }
   const q = (req.query.q || '').trim();
   if (q) {
     params.push('%' + q + '%');
@@ -1091,6 +1087,15 @@ router.get('/api/orders', async (req, res) => {
     params.push(itemIds);
     where += ` AND EXISTS (SELECT 1 FROM purchase_order_items pi WHERE pi.order_id = po.id AND pi.item_id = ANY($${params.length}))`;
   }
+  // Здесь фильтры закончились. Запоминаем условие БЕЗ статуса — по нему
+  // считаются количества для таблеток, чтобы соседние цифры не обнулялись.
+  const whereNoStatus = where;
+  const paramsNoStatus = params.slice();
+  if (status !== 'all') {
+    params.push(status);
+    where += ` AND po.status = $${params.length}`;
+  }
+
   const r = await db.pool.query(
     `SELECT po.id, po.number, po.status, po.payment_type, po.pay_condition, po.defer_days,
             po.delivery_date, po.delivery_window, po.created_at, po.received_at, po.comment,
@@ -1119,9 +1124,20 @@ router.get('/api/orders', async (req, res) => {
      LEFT JOIN purchase_order_items i ON i.order_id = po.id
      WHERE ${where}`, params)).rows[0];
 
+  // Количества по статусам — для таблеток над списком.
+  const cnt = (await db.pool.query(
+    `SELECT po.status, COUNT(*)::int AS n
+     FROM purchase_orders po
+     JOIN ref_counterparties c ON c.id = po.supplier_id
+     WHERE ${whereNoStatus}
+     GROUP BY po.status`, paramsNoStatus)).rows;
+  const counts = { all: 0 };
+  for (const x of cnt) { counts[x.status] = x.n; counts.all += x.n; }
+
   res.json({
     items: r.rows.map(enrichOrderFinance),
     totals: { orders: Number(tot.orders) || 0, total: Number(tot.total) || 0 },
+    counts,
     truncated: r.rows.length >= 300,
   });
 });

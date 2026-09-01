@@ -17,9 +17,6 @@
 .cmp-f-actions { display: flex; gap: 8px; margin-left: auto; }
 .cmp-btn { white-space: nowrap; }
 
-.cmp-counts { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
-.cmp-count { font-size: 12px; padding: 4px 10px; border-radius: 999px; background: #eef1ec; color: #2f3a31; }
-.cmp-count b { font-weight: 800; }
 .cmp-st-new { background: #fff3e0; color: #b25b00; }
 .cmp-st-agent { background: #e3f2fd; color: #0d5aa7; }
 .cmp-st-review { background: #ede7f6; color: #5b3da8; }

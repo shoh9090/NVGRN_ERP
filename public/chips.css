@@ -1,0 +1,84 @@
+/* chips.css — фильтры-таблетки со счётчиками, единые для всего Hub.
+ *
+ * Зачем: выпадающий список «Все статусы» прячет главное — сколько чего.
+ * Чтобы узнать, есть ли непринятые заявки, приходилось открывать список,
+ * выбирать пункт и ждать перезагрузки. Таблетки показывают все количества
+ * сразу и переключаются одним нажатием.
+ *
+ * Разметку рисует chips.js (HubChips.create). Стили держим отдельно,
+ * чтобы плитка могла подвинуть ряд, не трогая сам компонент.
+ */
+
+.hub-chips {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.hub-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink-soft);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background .12s, color .12s, border-color .12s;
+}
+
+.hub-chip:hover {
+  border-color: var(--lime);
+  color: var(--ink);
+}
+
+/* Выбранная таблетка — тёмная, как в шапке Hub: видно с одного взгляда,
+   какой срез сейчас на экране. */
+.hub-chip.on {
+  background: var(--forest);
+  border-color: var(--forest);
+  color: #fff;
+}
+
+/* Счётчик. Держим одинаковую ширину у однозначных и двузначных чисел,
+   чтобы ряд не «дёргался» при обновлении данных. */
+.hub-chip-n {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--line-soft);
+  font-size: 11.5px;
+  font-weight: 800;
+  color: var(--ink-soft);
+}
+
+.hub-chip.on .hub-chip-n {
+  background: rgba(255, 255, 255, .18);
+  border-color: rgba(255, 255, 255, .28);
+  color: #fff;
+}
+
+/* Пусто — цифра бледнее, чтобы взгляд цеплялся за непустые срезы. */
+.hub-chip-n.zero { color: var(--ink-faint); }
+.hub-chip.on .hub-chip-n.zero { color: rgba(255, 255, 255, .7); }
+
+/* Пока счётчики не пришли с сервера, показываем точки вместо нулей —
+   ноль означал бы «ничего нет», а это неправда. */
+.hub-chip-n.wait { color: var(--ink-faint); letter-spacing: 1px; }
+
+@media (max-width: 720px) {
+  .hub-chips { gap: 6px; }
+  .hub-chip { padding: 6px 11px; font-size: 12.5px; }
+}

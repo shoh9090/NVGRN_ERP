@@ -405,7 +405,6 @@
         onChange: (v) => { listState.from = v.from; listState.to = v.to; loadList(); },
       }),
       netSel, ptSel, agSel,
-      sel('status', DICTS.status, 'Все статусы'),
       sel('link', DICTS.link, 'Все звенья'),
       sel('type', DICTS.type, 'Все типы'),
       sel('severity', DICTS.severity, 'Любая степень'),
@@ -417,11 +416,21 @@
       ]),
     ]);
   }
-  function countsBar(counts) {
-    const map = {}; (counts || []).forEach((c) => (map[c.status] = c.n));
-    const order = ['new', 'agent_reacted', 'in_review', 'resolved'];
-    return el('div', { class: 'cmp-counts' }, order.map((s) =>
-      el('span', { class: 'cmp-count ' + STATUS_CLASS[s] }, [lbl('status', s) + ': ', el('b', {}, String(map[s] || 0))])));
+  // Статус — таблетками со счётчиками (общий компонент, см. chips.js): видно
+  // сразу, сколько где, и переключается одним нажатием. Раньше рядом стояли
+  // мёртвая полоска с цифрами и отдельный список «Все статусы».
+  // Количества сервер считает по тем же фильтрам, но без самого статуса —
+  // иначе в выбранном срезе все соседние цифры обнулялись бы.
+  function statusChips(counts) {
+    const map = {}; let all = 0;
+    (counts || []).forEach((c) => { map[c.status] = c.n; all += c.n; });
+    const chips = HubChips.create({
+      items: [{ key: '', label: 'Все' }].concat((DICTS.status || []).map((s) => ({ key: s.code, label: s.label_ru }))),
+      value: listState.status,
+      onChange: (key) => { listState.status = key; loadList(); },
+    });
+    chips.setCounts(Object.assign({ '': all }, map));
+    return chips;
   }
   function row(c, n) {
     return el('div', { class: 'cmp-row', onclick: () => openCard(c.id) }, [
@@ -451,7 +460,7 @@
     try { data = await api('/list?' + params.toString()); } catch (e) { toast(e.message, true); return; }
     wrap.innerHTML = '';
     wrap.appendChild(listFilterBar());
-    wrap.appendChild(countsBar(data.counts));
+    wrap.appendChild(statusChips(data.counts));
     const head = el('div', { class: 'cmp-row cmp-head' }, ['#', 'Дата', 'Продукт', 'Тип жалобы', 'Звено', 'Точка', 'Агент', 'Степень', '', 'Статус'].map((h) => el('div', { class: 'cmp-c' }, h)));
     wrap.appendChild(el('div', { class: 'cmp-list' }, [head, ...data.items.map((c, i) => row(c, i + 1))]));
     if (!data.items.length) wrap.appendChild(el('div', { class: 'cmp-empty' }, 'Претензий по фильтру нет. Если база пустая — откройте «Импорт истории» или дождитесь подачи из бота.'));
