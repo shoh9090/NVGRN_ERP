@@ -1185,18 +1185,6 @@
           try { await save(x.id, { barcode: e.target.value }); } catch (err) { toast(err.message, true); }
         },
       }) : el('div', { class: 'calc-bar calc-ro' }, x.barcode || ''),
-      // ID товара из СД: вписывается руками. По нему подтягивается цена из
-      // прайса SalesDoctor и в дальнейшем объёмы продаж. Нужен там, где
-      // штрихкода нет или он не совпадает.
-      canEdit() ? el('input', {
-        type: 'text', class: 'calc-bar', value: x.sd_product_id || '', placeholder: 'ID в СД',
-        title: 'Идентификатор товара в SalesDoctor',
-        onblur: async (e) => {
-          if (e.target.value.trim() === (x.sd_product_id || '')) return;
-          try { await save(x.id, { sd_product_id: e.target.value }); await load(); }
-          catch (err) { toast(err.message, true); }
-        },
-      }) : (x.sd_product_id ? el('div', { class: 'calc-bar calc-ro' }, x.sd_product_id) : null),
       canEdit() ? el('button', {
         class: 'calc-dots', title: 'Действия с товаром', 'aria-label': 'Действия с товаром',
         onclick: (e) => {
@@ -1215,6 +1203,7 @@
             ...(x.raw_price_source === 'manual' ? [{
               label: 'Убрать ручную цену', onClick: () => clearManualPrice(line, loadSku),
             }] : []),
+            { label: x.sd_product_id ? 'Изменить ID в СД' : 'Указать ID в СД', onClick: () => openSdId(x) },
             { label: 'Убрать с листа', danger: true, onClick: () => confirmRemoveProduct(x, d) },
           ]);
         },
@@ -1557,6 +1546,29 @@
     ]);
     const body = skuSheet();
     main.appendChild(el('div', { class: 'calc-sheet' }, [back, body]));
+  }
+
+  // ID товара из SalesDoctor. Держим его в меню, а не полем в шапке: подписей
+  // над столбцами и так много, а вписывают этот id один раз и надолго.
+  function openSdId(x) {
+    const inp = el('input', { type: 'text', class: 'calc-modal-inp', value: x.sd_product_id || '',
+      placeholder: 'например 0000000123' });
+    const body = el('div', {}, [
+      el('div', { class: 'calc-modal-facts' }, x.name + (x.barcode ? ' · ' + x.barcode : ' · без штрихкода')),
+      el('div', { style: 'margin-top:12px' }, [el('div', { class: 'calc-modal-lbl' }, 'ID товара в SalesDoctor'), inp]),
+      el('p', { class: 'calc-modal-note' },
+        'По этому id подтягивается цена из прайса SalesDoctor, а позже — объёмы продаж. Если id не указан, товар ищется по штрихкоду. Пустое поле убирает связь.'),
+    ]);
+    const ok = el('button', { class: 'calc-btn primary', onclick: async () => {
+      ok.disabled = true;
+      try {
+        await save(x.id, { sd_product_id: inp.value.trim() });
+        m.close(); toast(inp.value.trim() ? 'ID сохранён' : 'Связь убрана'); await loadSku();
+      } catch (e) { toast(e.message, true); ok.disabled = false; }
+    } }, 'Сохранить');
+    const m = calcModal('ID в SalesDoctor', body, [
+      el('button', { class: 'calc-btn', onclick: () => m.close() }, 'Отмена'), ok,
+    ]);
   }
 
   // Подключить микс к товару на листе, где строки «Рецептура» не видно.
