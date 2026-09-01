@@ -97,16 +97,7 @@
   </style>
 </head>
 <body>
-  <header class="topbar">
-    <div class="topbar-left">
-      <a href="/" title="На главную Hub" style="display:inline-flex;align-items:center;gap:10px;text-decoration:none;color:inherit;cursor:pointer">
-        <% if (settings.logo_file_id) { %><img class="topbar-logo" src="/file/<%= settings.logo_file_id %>" alt=""><% } %>
-        <span class="company"><%= settings.company_name %></span>
-      </a>
-    </div>
-    <div class="topbar-right">
-      <div id="conn-root" class="conn-root"></div><a class="btn-ghost" href="/">← На главную</a></div>
-  </header>
+  <%- include('partials/topbar', { title: '🤖 Телеграм-бот: ассистент продаж' }) %>
 
   <main class="wrap">
     <h2>Телеграм-бот: ассистент продаж</h2>
@@ -490,6 +481,7 @@
       document.addEventListener('keydown',function(e){if(e.key==='Escape'){['staffOverlay','settingsOverlay','importOverlay','agentOverlay','replOverlay'].forEach(function(id){var o=document.getElementById(id);if(o)o.classList.remove('on');});}});
     })();
   </script>
+  <script src="/static/bell.js?v=<%= V %>"></script>
   <script src="/static/conn.js?v=<%= V %>"></script>
 </body>
 </html>

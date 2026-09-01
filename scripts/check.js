@@ -119,6 +119,40 @@ for (const f of files) {
   }
 }
 
+// (е) Шапку плитки собирает только общий блок partials/topbar.ejs.
+// Раньше каждая страница писала свою: где-то была кнопка «На главную», где-то
+// нет, где-то логотип, а в Справочниках имя пользователя было белым по белому.
+// Лаунчер (главная) — законное исключение: там нет кнопки возврата, зато есть
+// меню пользователя.
+for (const f of files) {
+  const p4 = rel(f).split(path.sep).join('/');
+  if (!/^src\/views\/[^/]+\.ejs$/.test(p4)) continue;
+  if (/\/(launcher|login)\.ejs$/.test(p4)) continue;
+  const view = fs.readFileSync(f, 'utf8');
+  if (!/<header[^>]*class="[^"]*topbar/.test(view)) continue;
+  if (!view.includes("include('partials/topbar'")) {
+    errors.push(p4 + ': своя шапка вместо общей. Во всём Hub шапка одна — '
+      + "<%- include('partials/topbar', { title: '… Название' }) %> (см. src/views/partials/topbar.ejs).");
+  }
+}
+
+// (ж) Месяц как фильтр — тоже общим компонентом, а не своим списком.
+// Правило (г) ловит поля с датами, но период выбирали и выпадающим списком
+// месяцев — так было в Претензиях.
+for (const f of files) {
+  const p5 = rel(f).split(path.sep).join('/');
+  if (!/^public\/[^/]+\.js$/.test(p5)) continue;
+  if (p5.endsWith('daterange.js')) continue;
+  const src = stripComments(fs.readFileSync(f, 'utf8'));
+  const hit = src.split('\n').find((line) =>
+    /el\('select'|el\("select"/.test(line) && /\.(?:period|month) *= *e\.target\.value/.test(line));
+  if (hit) {
+    errors.push(p5 + ': месяц выбирается своим выпадающим списком. Во всём Hub период — '
+      + "HubDateRange.create({ mode: 'month', period, onChange }) из daterange.js. "
+      + 'Найдено: ' + hit.trim().slice(0, 90));
+  }
+}
+
 // ---- Итог ----
 console.log(`Проверено: ${jsCount} JS-файлов, ${ejsCount} EJS-шаблонов.`);
 if (errors.length) {

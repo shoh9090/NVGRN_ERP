@@ -268,3 +268,16 @@ tr:last-child td{border-bottom:none}
 details>summary{cursor:pointer;color:var(--forest-2);font-size:13px;font-weight:700}
 
 @media (prefers-reduced-motion:reduce){.tile,button{transition:none}}
+
+/* ---- Единая шапка плитки (см. src/views/partials/topbar.ejs) ----
+   Собиралась в каждой плитке заново: разный состав, разный порядок, а в
+   Справочниках имя пользователя было белым по белому — остаток от тёмной
+   шапки. Держим вид в одном месте. */
+.topbar-brand{display:inline-flex;align-items:center;gap:10px;text-decoration:none;color:inherit;cursor:pointer}
+.topbar-back{white-space:nowrap}
+.topbar-user{font-size:13px;font-weight:700;color:var(--ink)}
+@media (max-width:720px){
+  /* На узком экране название плитки важнее подписи кнопки возврата. */
+  .topbar-back{font-size:0;padding-left:10px;padding-right:10px}
+  .topbar-back::after{content:'←';font-size:15px}
+}

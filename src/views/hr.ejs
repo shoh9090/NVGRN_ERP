@@ -16,23 +16,13 @@
   <style>:root { --brand: <%= settings.brand_color || '#163a28' %>; }</style>
 </head>
 <body class="admin-body">
-  <header class="topbar admin-topbar">
-    <div class="topbar-left">
-      <a href="/" title="На главную Hub" style="display:inline-flex;align-items:center;gap:10px;text-decoration:none;color:inherit;cursor:pointer">
-        <% if (settings.logo_file_id) { %><img class="topbar-logo" src="/file/<%= settings.logo_file_id %>" alt=""><% } %>
-        <span class="company">👥 Персонал</span>
-      </a>
-    </div>
-    <div class="topbar-right">
-      <div id="conn-root" class="conn-root"></div>
-      <span style="font-size:13px; font-weight:700"><%= user.name %></span>
-    </div>
-  </header>
+  <%- include('partials/topbar', { title: '👥 Персонал' }) %>
 
   <main id="hr-main"></main>
   <div id="hr-modal-root"></div>
 
   <script>window.HUB_USER = { isAdmin: <%= user.isAdmin ? "true" : "false" %>, name: "<%= user.name %>" };</script>
+  <script src="/static/bell.js?v=<%= V %>"></script>
   <script src="/static/conn.js?v=<%= V %>"></script>
   <script src="/static/daterange.js?v=<%= V %>"></script>
   <script src="/static/hr.js?v=<%= V %>"></script>

@@ -15,17 +15,7 @@
   <style>:root { --brand: <%= settings.brand_color || '#2E7D32' %>; }</style>
 </head>
 <body class="admin-body pur-body">
-  <header class="topbar admin-topbar">
-    <div class="topbar-left">
-      <a class="btn-ghost" href="/">← На главную</a>
-      <span class="company">📦 Склад сырья</span>
-    </div>
-    <div class="topbar-right">
-      <div id="conn-root" class="conn-root"></div>
-      <div id="bell-root" class="bell-root"></div>
-      <span style="font-size:13px; font-weight:700"><%= user.name %></span>
-    </div>
-  </header>
+  <%- include('partials/topbar', { title: '📦 Склад сырья' }) %>
 
   <nav class="pur-tabs">
     <a href="#receiving" data-tab="receiving" class="pur-tab">📥 Приёмка сегодня</a>

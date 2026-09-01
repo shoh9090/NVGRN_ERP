@@ -508,15 +508,12 @@ router.get('/api/stats', async (req, res) => {
     };
   }
 
-  // Список доступных месяцев для селектора
-  const monthsAvail = (await one(
-    `SELECT DISTINCT to_char(date_trunc('month', created_at),'YYYY-MM') ym FROM tgbot.complaints ORDER BY ym DESC`)).map((r) => r.ym);
-  if (!monthsAvail.includes(ym)) monthsAvail.unshift(ym);
+  // Список доступных месяцев больше не нужен: месяц выбирается общим
+  // компонентом Hub, а он строит подписи сам и не зависит от данных.
 
   const pct = (a, b) => (b === 0 ? (a > 0 ? 100 : 0) : Math.round(((a - b) / b) * 100));
   res.json({
     month: ym, monthLabel: monthLabel(ym), prevLabel: monthLabel(prevTo.slice(0, 7)),
-    monthsAvail,
     kpi: {
       total, totalPrev, totalDelta: pct(total, totalPrev),
       zhivnost: zhiv, zhivnostPrev: zhivPrev, zhivnostDelta: pct(zhiv, zhivPrev),

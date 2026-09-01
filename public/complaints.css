@@ -89,7 +89,8 @@
 .cmp-dash-top { display: flex; align-items: flex-end; justify-content: space-between; gap: 14px; flex-wrap: wrap; margin-bottom: 16px; }
 .cmp-eyebrow { font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: #7c8579; font-weight: 700; }
 .cmp-h2 { font-family: 'Lora', Georgia, serif; font-weight: 600; font-size: 27px; margin: 3px 0 0; letter-spacing: -.01em; color: #14241b; }
-.cmp-month { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #5a665c; }
+/* Строку фильтров дашборда раскладывает общий filters.css (.hub-bar). */
+.cmp-month { font-size: 13px; color: #5a665c; }
 
 .cmp-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 14px; }
 .cmp-kpi { background: #fbfaf5; border: 1px solid #e3e0d4; border-radius: 16px; padding: 15px 17px; position: relative; }

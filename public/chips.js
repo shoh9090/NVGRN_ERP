@@ -18,8 +18,8 @@
 //   chips.setCounts({ '': 42, draft: 7, ordered: 12 });
 //
 // Счётчики приходят отдельно от списка намеренно: их считает сервер по всей
-// выборке, а список обрезан. Пока чисел нет, в таблетке стоит «·», а не 0 —
-// ноль читался бы как «ничего нет».
+// выборке, а список обрезан. До первого setCounts в таблетке стоит «·», а не
+// 0 — ноль читался бы как «ничего нет». После — ноль означает именно ноль.
 (function () {
   const el = (tag, attrs = {}, children = []) => {
     const n = document.createElement(tag);
@@ -65,10 +65,13 @@
     wrap.setCounts = (counts) => {
       const map = counts || {};
       Object.entries(nodes).forEach(([k, n]) => {
-        const v = map[k];
-        if (v == null) { n.num.className = 'hub-chip-n wait'; n.num.textContent = '·'; return; }
-        n.num.className = 'hub-chip-n' + (Number(v) ? '' : ' zero');
-        n.num.textContent = Number(v).toLocaleString('ru-RU');
+        // Счётчики пришли — значит про каждый срез теперь всё известно.
+        // Сервер перечисляет только непустые статусы, поэтому отсутствие
+        // ключа означает ноль, а не «ещё не знаем»: иначе на пустом статусе
+        // навсегда оставалась бы точка ожидания.
+        const v = map[k] == null ? 0 : Number(map[k]);
+        n.num.className = 'hub-chip-n' + (v ? '' : ' zero');
+        n.num.textContent = v.toLocaleString('ru-RU');
       });
     };
     // Выбрать таблетку снаружи (например, кнопкой «Сбросить»).

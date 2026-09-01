@@ -33,16 +33,7 @@
   </style>
 </head>
 <body>
-  <header class="topbar">
-    <div class="topbar-left">
-      <a href="/" title="На главную Hub" style="display:inline-flex;align-items:center;gap:10px;text-decoration:none;color:inherit;cursor:pointer">
-        <% if (settings.logo_file_id) { %><img class="topbar-logo" src="/file/<%= settings.logo_file_id %>" alt=""><% } %>
-        <span class="company"><%= settings.company_name %></span>
-      </a>
-    </div>
-    <div class="topbar-right">
-      <div id="conn-root" class="conn-root"></div><a class="btn-ghost" href="/">← На главную</a></div>
-  </header>
+  <%- include('partials/topbar', { title: '📊 Аналитика' }) %>
 
   <main class="wrap">
     <h2>Аналитика продаж — покрытие АКБ/ОКБ</h2>
@@ -97,6 +88,7 @@
       </div>
     <% } %>
   </main>
+  <script src="/static/bell.js?v=<%= V %>"></script>
   <script src="/static/conn.js?v=<%= V %>"></script>
 </body>
 </html>

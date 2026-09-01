@@ -1,0 +1,26 @@
+<%#
+  topbar.ejs — единая шапка Hub. Раньше каждая плитка собирала её заново:
+  где-то была кнопка «На главную», где-то нет; где-то логотип, где-то только
+  название; в Справочниках имя пользователя было белым по белому — остаток от
+  тёмной шапки. За образец взят Закуп.
+
+  Параметры (все необязательные, кроме title):
+    title    — иконка и название плитки, например '🛒 Закуп'
+    backHref — куда ведёт кнопка слева (по умолчанию '/')
+    backText — подпись кнопки (по умолчанию 'На главную')
+    bell     — показывать колокольчик (по умолчанию да)
+%>
+<header class="topbar admin-topbar">
+  <div class="topbar-left">
+    <a class="btn-ghost topbar-back" href="<%= typeof backHref !== 'undefined' ? backHref : '/' %>">← <%= typeof backText !== 'undefined' ? backText : 'На главную' %></a>
+    <a class="topbar-brand" href="/" title="На главную Hub">
+      <% if (settings && settings.logo_file_id) { %><img class="topbar-logo" src="/file/<%= settings.logo_file_id %>" alt=""><% } %>
+      <span class="company"><%= title %></span>
+    </a>
+  </div>
+  <div class="topbar-right">
+    <div id="conn-root" class="conn-root"></div>
+    <% if (typeof bell === 'undefined' || bell) { %><div id="bell-root" class="bell-root"></div><% } %>
+    <span class="topbar-user"><%= user.name %></span>
+  </div>
+</header>

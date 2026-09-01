@@ -116,17 +116,20 @@
     dashMonth = s.month;
     c.innerHTML = '';
 
-    const monthSel = el('select', { class: 'cmp-f', onchange: (e) => { dashMonth = e.target.value; renderDashboard(); } },
-      s.monthsAvail.map((m) => el('option', { value: m, selected: m === s.month || null }, monthLabelRu(m))));
+    // Месяц — общим компонентом Hub (см. daterange.js), как на всех экранах.
+    const monthSel = HubDateRange.create({
+      mode: 'month', period: s.month,
+      onChange: (v) => { dashMonth = v.period; renderDashboard(); },
+    });
     // Фильтр по контрагенту (ИНН) → точке — с поиском по первым буквам.
     const netSel = searchSelect(netItems(), dashInn, 'Все контрагенты', (v) => { dashInn = v; dashPoint = ''; renderDashboard(); });
     const pointSel = searchSelect(pointItems(dashInn), dashPoint, dashInn ? 'Все точки контрагента' : 'Все точки', (v) => { dashPoint = v; renderDashboard(); });
     const agentSel = searchSelect(agentItems(), dashAgent, 'Все агенты', (v) => { dashAgent = v; renderDashboard(); });
     c.appendChild(el('div', { class: 'cmp-dash-top' }, [
       el('div', {}, [el('div', { class: 'cmp-eyebrow' }, 'Контроль качества'), el('h2', { class: 'cmp-h2' }, 'Претензии — где течёт'), el('div', { class: 'cmp-dash-hint' }, 'Кликните по цифре, типу, звену, контрагенту или ячейке — покажу сами претензии')]),
-      el('div', { class: 'cmp-month', style: 'flex-wrap:wrap;gap:8px' }, [
-        el('span', {}, 'Контрагент:'), netSel, pointSel, agentSel,
-        el('span', {}, 'Месяц:'), monthSel,
+      el('div', { class: 'hub-bar cmp-month', style: 'margin-bottom:0' }, [
+        // Период первым, дальше срезы — порядок такой же, как в Закупе и Кассе.
+        monthSel, netSel, pointSel, agentSel,
         (dashInn || dashPoint || dashAgent) ? el('button', { class: 'cmp-f', style: 'cursor:pointer', onclick: () => { dashInn = ''; dashPoint = ''; dashAgent = ''; renderDashboard(); } }, 'Сбросить') : null,
         el('button', { class: 'cmp-f', style: 'cursor:pointer', title: 'Выгрузить отфильтрованные претензии в Excel', onclick: () => { const ep = new URLSearchParams(monthRange(s.month)); if (dashInn) ep.set('inn', dashInn); if (dashPoint) ep.set('point', dashPoint); if (dashAgent) ep.set('agent', dashAgent); window.location = '/complaints/api/export.xlsx?' + ep.toString(); } }, '📥 Excel'),
       ]),

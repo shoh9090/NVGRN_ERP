@@ -12,16 +12,7 @@
   <style>:root { --brand: <%= settings.brand_color || '#2E7D32' %>; }</style>
 </head>
 <body class="admin-body">
-  <header class="topbar admin-topbar">
-    <div class="topbar-left">
-      <a class="btn-ghost" href="/">← На главную</a>
-      <span class="company">Справочники</span>
-    </div>
-    <div class="topbar-right">
-      <div id="conn-root" class="conn-root"></div>
-      <span class="muted" style="color:#fff"><%= user.name %></span>
-    </div>
-  </header>
+  <%- include('partials/topbar', { title: '📚 Справочники' }) %>
   <main class="admin-main">
 
   <p class="muted">Общие данные для всех блоков: контрагенты, номенклатура, единицы. Можно вносить вручную или загружать из Excel.</p>
@@ -105,6 +96,7 @@
   </section>
 
   </main>
+  <script src="/static/bell.js?v=<%= V %>"></script>
   <script src="/static/conn.js?v=<%= V %>"></script>
 </body>
 </html>
