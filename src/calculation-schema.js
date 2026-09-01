@@ -497,6 +497,10 @@ async function ensureCalculationSchema(pool) {
     // Рецептура вместо одного сырья: микс салата собирается на листе «Рецептуры».
     // Не выбрана — товар считается по-старому (одно сырьё × граммаж).
     ['recipe_id', 'INTEGER'],
+    // Явная связь с товаром SalesDoctor. Раньше держались только на штрихкоде:
+    // нет штрихкода — цена и объёмы из SD не подтянутся, а два одинаковых
+    // штрихкода молча подставят чужие цифры.
+    ['finished_good_id', 'INTEGER'],
   ]) {
     await q(`ALTER TABLE calc_sheet_products ADD COLUMN IF NOT EXISTS ${col} ${type}`)
       .catch((e) => console.error('calc_sheet_products ' + col + ':', e.message));

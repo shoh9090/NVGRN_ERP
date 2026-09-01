@@ -650,21 +650,28 @@ const K_SD_PRICE_TYPE = (sheet) => 'sd_price_type_' + sheet;
 // он есть и у нас, и в справочнике готовой продукции, который приходит из SD.
 // Сами цены попадают в ref_prices при синхронизации — здесь только читаем.
 async function sdPricesByBarcode(priceTypeId) {
-  if (!priceTypeId) return new Map();
+  const out = { byBarcode: new Map(), byGood: new Map() };
+  if (!priceTypeId) return out;
   const r = await db.pool.query(
-    `SELECT g.barcode, p.price,
+    `SELECT g.id AS good_id, g.barcode, p.price,
             to_char(p.last_sync_at, 'DD.MM.YYYY') AS last_sync_at
        FROM ref_prices p
        JOIN ref_finished_goods g ON g.id = p.product_id
-      WHERE p.price_type_id = $1 AND COALESCE(g.barcode, '') <> ''`, [priceTypeId]);
-  const m = new Map();
-  r.rows.forEach((x) => m.set(String(x.barcode).trim(), {
-    price: Number(x.price) || null,
-    // Дату форматирует база: Postgres отдаёт timestamp объектом Date, и
-    // обрезка его строки давала «Wed Aug 20» вместо нормальной даты.
-    at: x.last_sync_at || null,
-  }));
-  return m;
+      WHERE p.price_type_id = $1`, [priceTypeId]);
+  r.rows.forEach((x) => {
+    const v = {
+      price: Number(x.price) || null,
+      // Дату форматирует база: Postgres отдаёт timestamp объектом Date, и
+      // обрезка его строки давала «Wed Aug 20» вместо нормальной даты.
+      at: x.last_sync_at || null,
+    };
+    // Прямая связь надёжнее штрихкода, поэтому храним обе карты: сначала
+    // ищем по выбранному товару SD, а штрихкод остаётся запасным вариантом.
+    out.byGood.set(Number(x.good_id), v);
+    const bc = String(x.barcode || '').trim();
+    if (bc) out.byBarcode.set(bc, v);
+  });
+  return out;
 }
 
 // Фонд оплаты труда — та же цифра, что на плитке «Персонал» → «Сотрудники»,
@@ -808,6 +815,11 @@ async function sheetPayload(sheet) {
     const settingsAll = await calcSettings();
     const sdTypeId = intOrNull(settingsAll[K_SD_PRICE_TYPE(sheet)]);
     const sdPrices = await sdPricesByBarcode(sdTypeId);
+    // Справочник готовой продукции — для выбора «с каким товаром SD связан».
+    const goods = (await db.pool.query(
+      `SELECT id, name, COALESCE(barcode,'') AS barcode FROM ref_finished_goods
+        WHERE COALESCE(status,'active') <> 'archived' ORDER BY name`)).rows;
+    const goodById = new Map(goods.map((g) => [g.id, g]));
 
     const products = rows.map((p) => {
       const tpl = p.pack_template_id ? tplById.get(p.pack_template_id) : null;
@@ -860,7 +872,10 @@ async function sheetPayload(sheet) {
       const opts = { components: engine.SKU_SHEET_COMPONENTS };
       const calc = engine.skuEconomics({ ...inputs, price: numOrNull(p.price) }, opts);
       const calc2 = engine.skuEconomics({ ...inputs, price: numOrNull(p.price2) }, opts);
-      const sd = sdPrices.get(String(p.barcode || '').trim()) || null;
+      // Сначала по явной связи с товаром SD, затем по штрихкоду.
+      const sd = (p.finished_good_id ? sdPrices.byGood.get(Number(p.finished_good_id)) : null)
+        || sdPrices.byBarcode.get(String(p.barcode || '').trim()) || null;
+      const good = p.finished_good_id ? goodById.get(Number(p.finished_good_id)) : null;
 
       const rawMat = p.raw_material_id ? rawMats.find((m) => m.id === p.raw_material_id) : null;
 
@@ -897,6 +912,10 @@ async function sheetPayload(sheet) {
         retro_pct: Number(p.retro_pct) || 0,
         vat_pct: Number(p.vat_pct) || 0,
         profit_tax_pct: Number(p.profit_tax_pct) || 0,
+        finished_good_id: p.finished_good_id || null,
+        sd_name: good ? good.name : '',
+        // Как нашли товар в SD: выбран руками, подхвачен по штрихкоду или никак.
+        sd_link: p.finished_good_id ? 'good' : (sd ? 'barcode' : 'none'),
         sd_price: sd ? sd.price : null,
         sd_price_at: sd ? sd.at : null,
         calc,
@@ -921,6 +940,7 @@ async function sheetPayload(sheet) {
         missing_prices: Number(t.missing_prices),
       })),
       recipes: recipes.map((r) => ({ id: r.id, name: r.name, total: r.total, total_g: r.total_g })),
+      finished_goods: goods.map((g) => ({ id: g.id, name: g.name, barcode: g.barcode })),
       sd_price_types: priceTypes.map((t) => ({ id: t.id, name: t.name })),
       sd_price_type_id: sdTypeId,
       raw_materials: rawMats.map((m) => ({
@@ -1250,6 +1270,9 @@ router.post('/api/sheet-product/:id(\\d+)', J, async (req, res) => {
     }
     if (b.recipe_id !== undefined) {
       vals.push(intOrNull(b.recipe_id)); sets.push(`recipe_id = $${vals.length}`);
+    }
+    if (b.finished_good_id !== undefined) {
+      vals.push(intOrNull(b.finished_good_id)); sets.push(`finished_good_id = $${vals.length}`);
     }
     if (!sets.length) return res.json({ ok: true });
     vals.push(req.user.id); sets.push(`updated_by = $${vals.length}`);
