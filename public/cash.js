@@ -196,9 +196,14 @@
       el('div', {}, [el('div', { class: 'cash-h2' }, 'Разбор «Не разобрано»'),
         el('div', { class: 'cash-sub' }, 'Неразобранные операции сгруппированы по контрагенту. Поставь статью и «Разобери» пачкой; «Запомнить» — правило для будущих импортов.')]),
     ]));
-    const dinp = (k) => el('input', { type: 'date', class: 'cashf-inp cash-filt', value: triageState[k], onchange: (e) => { triageState[k] = e.target.value; renderTriage(); } });
     const walletSel = el('select', { class: 'cashf-inp cash-filt', onchange: (e) => { triageState.wallet = e.target.value; renderTriage(); } }, [el('option', { value: '' }, 'Все кошельки'), ...(DICTS.wallets || []).map((w) => el('option', { value: w.id, selected: String(w.id) === triageState.wallet || null }, w.name))]);
-    c.appendChild(el('div', { class: 'cash-filters' }, [el('span', { class: 'cash-flab' }, 'С'), dinp('from'), el('span', { class: 'cash-flab' }, 'по'), dinp('to'), walletSel]));
+    c.appendChild(el('div', { class: 'cash-filters' }, [
+      HubDateRange.create({
+        mode: 'range', from: triageState.from, to: triageState.to,
+        onChange: (v) => { triageState.from = v.from; triageState.to = v.to; renderTriage(); },
+      }),
+      walletSel,
+    ]));
     const box = el('div', { id: 'cash-triage-box' }); c.appendChild(box);
     box.appendChild(el('div', { class: 'cash-empty' }, 'Считаю…'));
     let d; try { const p = new URLSearchParams(); ['from', 'to', 'wallet'].forEach((k) => { if (triageState[k]) p.set(k, triageState[k]); }); d = await api('/triage/groups?' + p.toString()); }
@@ -2176,8 +2181,9 @@
     });
     const pill = (icon, ctrl) => el('span', { class: 'obl-pill' }, [el('span', { class: 'obl-ic' }, icon), ctrl]);
     box.appendChild(el('div', { class: 'obl-filt' }, [
-      pill('🔎', qIn), pill('🏷', catSel), pill('⚑', stSel),
+      // Период — общим компонентом Hub (см. daterange.js), первым в строке.
       oblPeriod,
+      pill('🔎', qIn), pill('🏷', catSel), pill('⚑', stSel),
       (oblSup.from || oblSup.to || oblSup.cat || oblSup.status || oblSup.q)
         ? el('button', { class: 'obl-reset', title: 'Сбросить фильтры', onclick: () => { oblSup.q = ''; oblSup.cat = ''; oblSup.status = ''; oblSup.from = ''; oblSup.to = ''; oblSuppliers(box); } }, '✕ сброс') : null,
     ]));

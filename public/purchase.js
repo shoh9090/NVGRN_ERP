@@ -1445,7 +1445,10 @@
       onChange: (v) => { fromIn.value = v.from; toIn.value = v.to; reloadPrices(); },
     });
     const resetBtn = el('button', {
-      onclick: () => { supSel.value = ''; catSel.value = ''; fromIn.value = ''; toIn.value = ''; $('#pr-q').value = ''; reloadPrices(); },
+      onclick: () => {
+        supSel.value = ''; catSel.value = ''; $('#pr-q').value = '';
+        fromIn.value = ''; toIn.value = ''; reloadPrices();
+      },
     }, 'Сбросить');
     main.appendChild(el('div', { class: 'pur-filters' }, [
       el('label', {}, ['Поставщик', supSel]),

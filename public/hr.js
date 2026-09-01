@@ -164,7 +164,7 @@
       mode: 'range', from: evState.from, to: evState.to,
       onChange: (v) => { evState.from = v.from; evState.to = v.to; loadEv(); },
     });
-    c.appendChild(el('div', { class: 'hr-filters' }, [typeSel, dSel, period, q]));
+    c.appendChild(el('div', { class: 'hr-filters' }, [period, typeSel, dSel, q]));
     c.appendChild(el('div', { id: 'hr-ev-box' }));
     loadEv();
   }
@@ -257,8 +257,11 @@
     const c = $('#hr-content');
     if (!dashState.period) dashState.period = curMonth();
     c.appendChild(el('div', { class: 'hr-head' }, [el('div', {}, [el('div', { class: 'hr-h2' }, 'Дашборд — ' + monthLabel(dashState.period)), el('div', { class: 'hr-sub' }, 'ФОТ и персонал за месяц.')])]));
-    const mInp = el('input', { type: 'month', class: 'hrf-inp hr-filt', value: dashState.period, onchange: (e) => { dashState.period = e.target.value || curMonth(); render(); } });
-    c.appendChild(el('div', { class: 'hr-filters' }, [el('span', { class: 'hr-flab' }, 'Месяц:'), mInp]));
+    const mInp = HubDateRange.create({
+      mode: 'month', period: dashState.period,
+      onChange: (v) => { dashState.period = v.period || curMonth(); render(); },
+    });
+    c.appendChild(el('div', { class: 'hr-filters' }, [mInp]));
     const box = el('div', {}); c.appendChild(box);
     box.innerHTML = '<div class="hr-loading">Считаю…</div>';
     let d; try { d = await api('/dashboard?period=' + dashState.period); } catch (e) { box.innerHTML = ''; box.appendChild(el('div', { class: 'hr-empty' }, 'Ошибка: ' + e.message)); return; }
@@ -329,12 +332,15 @@
       ]),
     ]));
     showHrLockBadge();
-    const mInp = el('input', { type: 'month', class: 'hrf-inp hr-filt', value: payState.period, onchange: (e) => { payState.period = e.target.value || curMonth(); render(); } });
+    const mInp = HubDateRange.create({
+      mode: 'month', period: payState.period,
+      onChange: (v) => { payState.period = v.period || curMonth(); render(); },
+    });
     const dSel = deptMulti(payState, 'department', load);
     const stSel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { payState.status = e.target.value; load(); } }, [{ v: '', t: 'Все статусы' }, { v: 'pending', t: 'Ожидает' }, { v: 'partial', t: 'Частично' }, { v: 'overdue', t: 'Просрочено' }, { v: 'paid', t: 'Оплачено' }, { v: 'no_accrual', t: 'Без начисления' }].map((o) => el('option', { value: o.v, selected: o.v === payState.status || null }, o.t)));
     const q = el('input', { class: 'hrf-inp hr-filt hr-filt-q', placeholder: 'Поиск по ФИО', value: payState.q, oninput: (e) => { payState.q = e.target.value; clearTimeout(window.__hrP); window.__hrP = setTimeout(load, 300); } });
     const exportBtn = el('button', { class: 'btn-ghost', onclick: () => { const sp = new URLSearchParams({ period: payState.period }); ['department', 'status', 'q'].forEach((k) => { if (payState[k]) sp.set(k, payState[k]); }); window.location = '/hr/api/payouts-export.xlsx?' + sp.toString(); }, title: 'Скачать «К выплате» в Excel (с учётом фильтров)' }, '📥 Excel');
-    c.appendChild(el('div', { class: 'hr-filters' }, [el('span', { class: 'hr-flab' }, 'Месяц:'), mInp, dSel, stSel, q, exportBtn]));
+    c.appendChild(el('div', { class: 'hr-filters' }, [mInp, dSel, stSel, q, exportBtn]));
     const box = el('div', {}); c.appendChild(box);
     load();
 
@@ -850,10 +856,13 @@
         el('button', { class: 'btn-ghost hr-add', onclick: () => openTimesheetImport(tsState.period) }, '📥 Загрузить из Excel'),
       ]),
     ]));
-    const mInp = el('input', { type: 'month', class: 'hrf-inp hr-filt', value: tsState.period, onchange: (e) => { tsState.period = e.target.value || curMonth(); render(); } });
+    const mInp = HubDateRange.create({
+      mode: 'month', period: tsState.period,
+      onChange: (v) => { tsState.period = v.period || curMonth(); render(); },
+    });
     const dSel = deptMulti(tsState, 'department', load);
     const q = el('input', { class: 'hrf-inp hr-filt hr-filt-q', placeholder: 'Поиск по ФИО', value: tsState.q, oninput: (e) => { tsState.q = e.target.value; clearTimeout(window.__hrT); window.__hrT = setTimeout(load, 300); } });
-    c.appendChild(el('div', { class: 'hr-filters' }, [el('span', { class: 'hr-flab' }, 'Месяц:'), mInp, dSel, q]));
+    c.appendChild(el('div', { class: 'hr-filters' }, [mInp, dSel, q]));
     const box = el('div', { id: 'hr-ts-box' }); c.appendChild(box);
     load();
 
@@ -1216,7 +1225,10 @@
       ]),
     ]));
     showHrLockBadge();
-    const mInp = el('input', { type: 'month', class: 'hrf-inp hr-filt', value: salState.period, onchange: (e) => { salState.period = e.target.value || curMonth(); render(); } });
+    const mInp = HubDateRange.create({
+      mode: 'month', period: salState.period,
+      onChange: (v) => { salState.period = v.period || curMonth(); render(); },
+    });
     const dSel = deptMulti(salState, 'department', load);
     // Состояние расчёта — по живым цифрам (не по служебной пометке строки):
     // «К выплате» = мы ещё должны сотруднику, включая частично выплаченных.
@@ -1225,7 +1237,7 @@
       { v: 'topay', t: 'К выплате' }, { v: 'paid', t: 'Выплачено' },
     ].map((o) => el('option', { value: o.v, selected: o.v === salState.status || null }, o.t)));
     const q = el('input', { class: 'hrf-inp hr-filt hr-filt-q', placeholder: 'Поиск по ФИО', value: salState.q, oninput: (e) => { salState.q = e.target.value; clearTimeout(window.__hrS); window.__hrS = setTimeout(load, 300); } });
-    c.appendChild(el('div', { class: 'hr-filters' }, [el('span', { class: 'hr-flab' }, 'Месяц:'), mInp, dSel, stSel, q]));
+    c.appendChild(el('div', { class: 'hr-filters' }, [mInp, dSel, stSel, q]));
     const box = el('div', { id: 'hr-sal-box' }); c.appendChild(box);
     load();
 
@@ -1483,14 +1495,17 @@
       el('div', {}, [el('div', { class: 'hr-h2' }, 'Массовые операции — ' + monthLabel(massState.period)),
         el('div', { class: 'hr-sub' }, 'Выбери операцию и период, отметь сотрудников, впиши суммы — начислит всем разом. Попадает в расчёт зарплаты за месяц.')]),
     ]));
-    const mInp = el('input', { type: 'month', class: 'hrf-inp hr-filt', value: massState.period, onchange: (e) => { massState.period = e.target.value || curMonth(); render(); } });
+    const mInp = HubDateRange.create({
+      mode: 'month', period: massState.period,
+      onChange: (v) => { massState.period = v.period || curMonth(); render(); },
+    });
     const opSel = fsel(MASS_OPS.map((o) => ({ v: o[0], t: o[1] })), massState.field);
     opSel.classList.add('hr-filt'); opSel.onchange = (e) => { massState.field = e.target.value; load(); };
     const modeSel = fsel([{ v: 'add', t: 'Добавить к текущему' }, { v: 'set', t: 'Заменить' }], massState.mode);
     modeSel.classList.add('hr-filt'); modeSel.onchange = (e) => { massState.mode = e.target.value; };
     const dSel = deptMulti(massState, 'department', load);
     const q = el('input', { class: 'hrf-inp hr-filt hr-filt-q', placeholder: 'Поиск по ФИО', value: massState.q, oninput: (e) => { massState.q = e.target.value; clearTimeout(window.__hrM); window.__hrM = setTimeout(load, 300); } });
-    c.appendChild(el('div', { class: 'hr-filters' }, [el('span', { class: 'hr-flab' }, 'Операция:'), opSel, modeSel, el('span', { class: 'hr-flab' }, 'Месяц:'), mInp, dSel, q]));
+    c.appendChild(el('div', { class: 'hr-filters' }, [el('span', { class: 'hr-flab' }, 'Операция:'), opSel, modeSel, mInp, dSel, q]));
     const box = el('div', { id: 'hr-mass-box' }); c.appendChild(box);
     load();
 

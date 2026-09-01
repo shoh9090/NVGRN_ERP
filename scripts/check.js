@@ -79,6 +79,46 @@ if (srv.includes("'/file/:id'") || srv.includes('"/file/:id"')) {
   }
 }
 
+// (г) Выбор периода — только общим компонентом daterange.js (вид как в SalesDoctor).
+// Раньше каждая плитка рисовала свои два поля «с … по …»: они выглядели по-разному,
+// не подсказывали готовых вариантов и молча показывали пустой отчёт, если даты
+// перепутать местами. Правило ловит попытку снова завести такую пару.
+// Одиночное поле даты (дата документа, «перейти к дню») правилом не задевается —
+// оно ищет именно поле, привязанное к from/to фильтра.
+// Ищем поле даты, которое ЗАПИСЫВАЕТ границу периода: «state.from = …», «state.to = …»
+// или обобщённое «state[k] = …» у помощника вроде dateInp('from'). Поле, которое
+// лишь берёт дату по умолчанию (дата новой операции), под правило не подпадает.
+const DATE_FIELD = /type: *'date'/;
+const WRITES_PERIOD = /\.(?:from|to) *= *[^=]|\[[A-Za-z_$]+\] *= *e\.target\.value/;
+for (const f of files) {
+  const p2 = rel(f).split(path.sep).join('/');
+  if (!/^public\/[^/]+\.js$/.test(p2)) continue;
+  if (p2.endsWith('daterange.js')) continue; // сам компонент такие поля и рисует
+  const src = stripComments(fs.readFileSync(f, 'utf8'));
+  const hit = src.split('\n').find((line) => DATE_FIELD.test(line) && WRITES_PERIOD.test(line));
+  if (hit) {
+    errors.push(p2 + ': период выбирается своими полями с датами. Во всём Hub период — только '
+      + "HubDateRange.create({ mode: 'range'|'month', from, to, onChange }) из daterange.js. "
+      + 'Найдено: ' + hit.trim().slice(0, 90));
+  }
+}
+
+// (д) Экран, который зовёт HubDateRange, обязан подключить сам компонент,
+// иначе фильтр молча не отрисуется у пользователя.
+for (const f of files) {
+  const p3 = rel(f).split(path.sep).join('/');
+  if (!/^src\/views\/[^/]+\.ejs$/.test(p3)) continue;
+  const view = fs.readFileSync(f, 'utf8');
+  const scripts = (view.match(/\/static\/([a-z0-9-]+)\.js/g) || []).map((m) => m.split('/').pop());
+  const usesDr = scripts.some((name) => {
+    const js = path.join(ROOT, 'public', name);
+    return fs.existsSync(js) && fs.readFileSync(js, 'utf8').includes('HubDateRange');
+  });
+  if (usesDr && !view.includes('daterange.js')) {
+    errors.push(p3 + ': экран использует HubDateRange, но не подключает /static/daterange.js — фильтр периода не появится.');
+  }
+}
+
 // ---- Итог ----
 console.log(`Проверено: ${jsCount} JS-файлов, ${ejsCount} EJS-шаблонов.`);
 if (errors.length) {

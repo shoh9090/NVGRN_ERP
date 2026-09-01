@@ -1,0 +1,61 @@
+/* filters.css — единый вид строки фильтров во всём Hub.
+ *
+ * Зачем: в каждой плитке строка над таблицей собиралась заново. В Закупе поля
+ * были ростом 38px, в Кадрах и Кассе — как получится, где-то фильтры стояли
+ * в два ряда с подписями сверху. Один и тот же элемент выглядел по-разному
+ * на соседних экранах, и глазу приходилось заново искать, где что.
+ *
+ * Правило простое: все фильтры — одной строкой, одной высоты, слева направо;
+ * период — всегда первым (кнопкой HubDateRange, см. daterange.js).
+ *
+ * Файл подключается ПОСЛЕ стилей плитки, поэтому при равной силе правил
+ * побеждает он. Старые классы перечислены рядом с .hub-bar, чтобы плитки
+ * не пришлось переписывать.
+ *
+ * Новым плиткам достаточно разметки:
+ *   <div class="hub-bar"> …период, списки, поиск, кнопки… </div>
+ */
+
+.hub-bar,
+.pur-bar,
+.hr-filters,
+.cash-filters,
+.cmp-filters,
+.obl-filt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+/* Только ПРЯМЫЕ дети: иначе правило достаёт до галочек внутри выпадашек
+   и растягивает их по высоте вместе с полями фильтров. */
+.hub-bar > select, .hub-bar > input, .hub-bar > button,
+.pur-bar > select, .pur-bar > input, .pur-bar > button,
+.hr-filters > select, .hr-filters > input, .hr-filters > button,
+.cash-filters > select, .cash-filters > input, .cash-filters > button,
+.cmp-filters > select, .cmp-filters > input, .cmp-filters > button,
+.obl-filt > select, .obl-filt > input, .obl-filt > button {
+  min-height: 38px;
+  width: auto;
+}
+
+/* Списки не должны сжиматься до нечитаемой ширины и не должны растягиваться
+   на всю строку, отодвигая соседей. */
+.hub-bar > select,
+.pur-bar > select,
+.hr-filters > select,
+.cash-filters > select,
+.cmp-filters > select,
+.obl-filt > select {
+  min-width: 140px;
+}
+
+/* Итог периода прижимается вправо — он относится ко всей строке, а не
+   к соседнему полю. */
+.hub-bar-total { margin-left: auto; white-space: nowrap; padding: 0 4px; font-size: 13.5px; }
+
+@media (max-width: 900px) {
+  .hub-bar-total { margin-left: 0; }
+}
