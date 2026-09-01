@@ -128,15 +128,6 @@ input.calc-cell:focus, input.calc-name:focus {
 }
 .calc-toast.bad { background: var(--red); }
 
-/* метка связи товара с SalesDoctor в шапке столбца */
-.calc-sdlink {
-  font-size: 10px; line-height: 1.25; margin-top: 2px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.calc-sdlink-good { color: #3f6a16; }
-.calc-sdlink-barcode { color: var(--ink-faint); }
-.calc-sdlink-none { color: var(--red); font-weight: 600; }
-
 /* ---------- Сводка: все товары со всех листов ---------- */
 .calc-sum-bar {
   display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 12px;

@@ -1185,13 +1185,6 @@
           try { await save(x.id, { barcode: e.target.value }); } catch (err) { toast(err.message, true); }
         },
       }) : el('div', { class: 'calc-bar calc-ro' }, x.barcode || ''),
-      // Видно, нашёлся ли товар в SalesDoctor и как именно: без этого дыры в
-      // ценах и объёмах обнаруживались бы уже в отчёте.
-      el('div', { class: 'calc-sdlink calc-sdlink-' + (x.sd_link || 'none'),
-        title: x.sd_link === 'good' ? ('Связан с товаром SalesDoctor: ' + (x.sd_name || ''))
-          : (x.sd_link === 'barcode' ? 'Найден в SalesDoctor по штрихкоду' : 'В SalesDoctor не найден') },
-      x.sd_link === 'good' ? ('SD: ' + (x.sd_name || 'связан'))
-        : (x.sd_link === 'barcode' ? 'SD: по штрихкоду' : 'не связан с SD')),
       canEdit() ? el('button', {
         class: 'calc-dots', title: 'Действия с товаром', 'aria-label': 'Действия с товаром',
         onclick: (e) => {
