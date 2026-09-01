@@ -1185,6 +1185,18 @@
           try { await save(x.id, { barcode: e.target.value }); } catch (err) { toast(err.message, true); }
         },
       }) : el('div', { class: 'calc-bar calc-ro' }, x.barcode || ''),
+      // ID товара из СД: вписывается руками. По нему подтягивается цена из
+      // прайса SalesDoctor и в дальнейшем объёмы продаж. Нужен там, где
+      // штрихкода нет или он не совпадает.
+      canEdit() ? el('input', {
+        type: 'text', class: 'calc-bar', value: x.sd_product_id || '', placeholder: 'ID в СД',
+        title: 'Идентификатор товара в SalesDoctor',
+        onblur: async (e) => {
+          if (e.target.value.trim() === (x.sd_product_id || '')) return;
+          try { await save(x.id, { sd_product_id: e.target.value }); await load(); }
+          catch (err) { toast(err.message, true); }
+        },
+      }) : (x.sd_product_id ? el('div', { class: 'calc-bar calc-ro' }, x.sd_product_id) : null),
       canEdit() ? el('button', {
         class: 'calc-dots', title: 'Действия с товаром', 'aria-label': 'Действия с товаром',
         onclick: (e) => {
@@ -1203,8 +1215,6 @@
             ...(x.raw_price_source === 'manual' ? [{
               label: 'Убрать ручную цену', onClick: () => clearManualPrice(line, loadSku),
             }] : []),
-            { label: x.finished_good_id ? 'Изменить связь с SalesDoctor' : 'Связать с товаром SalesDoctor',
-              onClick: () => openSdLink(x, d) },
             { label: 'Убрать с листа', danger: true, onClick: () => confirmRemoveProduct(x, d) },
           ]);
         },
@@ -1547,53 +1557,6 @@
     ]);
     const body = skuSheet();
     main.appendChild(el('div', { class: 'calc-sheet' }, [back, body]));
-  }
-
-  // Связь товара с готовой продукцией SalesDoctor. Явная связь надёжнее
-  // штрихкода: без неё товар без штрихкода не найдётся в SD совсем, а два
-  // одинаковых штрихкода молча подставят чужую цену.
-  function openSdLink(x, d) {
-    const goods = d.finished_goods || [];
-    if (!goods.length) {
-      const m0 = calcModal('Справочник SalesDoctor пуст',
-        el('p', { class: 'calc-modal-note' },
-          'Товары из SalesDoctor ещё не загружены. Сначала выполните синхронизацию готовой продукции в разделе «Интеграции».'),
-        [el('button', { class: 'calc-btn', onclick: () => m0.close() }, 'Понятно')]);
-      return;
-    }
-    const q = el('input', { type: 'text', class: 'calc-modal-inp', placeholder: 'Поиск по названию или штрихкоду' });
-    const sel = el('select', { class: 'calc-modal-inp', size: '8', style: 'height:auto;margin-top:8px' });
-    const fill = () => {
-      const needle = q.value.trim().toLowerCase();
-      const list = needle
-        ? goods.filter((g) => (g.name + ' ' + g.barcode).toLowerCase().includes(needle))
-        : goods;
-      sel.innerHTML = '';
-      sel.appendChild(el('option', { value: '' }, '— не связан —'));
-      list.slice(0, 300).forEach((g) => {
-        const o = el('option', { value: String(g.id) }, g.name + (g.barcode ? ' · ' + g.barcode : ''));
-        if (Number(x.finished_good_id) === g.id) o.setAttribute('selected', 'selected');
-        sel.appendChild(o);
-      });
-    };
-    q.addEventListener('input', fill);
-    fill();
-    const body = el('div', {}, [
-      el('div', { class: 'calc-modal-facts' }, x.name + (x.barcode ? ' · ' + x.barcode : ' · без штрихкода')),
-      el('p', { class: 'calc-modal-note' },
-        'По этой связи подтягивается цена из прайса SalesDoctor, а позже — объёмы продаж. Пока связи нет, товар ищется по штрихкоду, и без него не находится совсем.'),
-      el('div', { style: 'margin-top:12px' }, [el('div', { class: 'calc-modal-lbl' }, 'Товар в SalesDoctor'), q, sel]),
-    ]);
-    const ok = el('button', { class: 'calc-btn primary', onclick: async () => {
-      ok.disabled = true;
-      try {
-        await save(x.id, { finished_good_id: sel.value || null });
-        m.close(); toast(sel.value ? 'Связь сохранена' : 'Связь убрана'); await loadSku();
-      } catch (e) { toast(e.message, true); ok.disabled = false; }
-    } }, 'Сохранить');
-    const m = calcModal('Связь с SalesDoctor', body, [
-      el('button', { class: 'calc-btn', onclick: () => m.close() }, 'Отмена'), ok,
-    ]);
   }
 
   // Подключить микс к товару на листе, где строки «Рецептура» не видно.
