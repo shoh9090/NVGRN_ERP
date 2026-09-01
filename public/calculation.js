@@ -1129,7 +1129,13 @@
     }));
 
     rows.push(skuRow('наименование', '', (x) => {
-      if (x.recipe_id) return el('span', { class: 'calc-dim' }, 'по рецептуре');
+      // Микс: показываем его название и вес, а не безликое «по рецептуре».
+      if (x.recipe_id) {
+        return el('div', {}, [
+          el('div', {}, x.recipe_name || 'рецептура'),
+          el('div', { class: 'calc-src-mini' }, 'микс' + (x.recipe_total_g ? ' · ' + money(x.recipe_total_g, 0) + ' гр' : '')),
+        ]);
+      }
       if (!canEdit()) return el('span', {}, x.raw_material_name || '—');
       const sel = el('select', { class: 'calc-sel' }, [el('option', { value: '' }, '— не выбрано —')]
         .concat(rawOptions.map((m) => {
@@ -1147,7 +1153,18 @@
     // Цена за кг: из Закупа, если позиция связана и цена там есть. Иначе
     // вписывается вручную — тогда поле открыто для ввода.
     rows.push(skuRow('Стоимость зелени', 'сум/кг', (x) => {
-      if (x.recipe_id) return el('span', { class: 'calc-dim' }, 'по рецептуре');
+      // Микс: цифра в единицах строки — средняя цена за кг самого микса,
+      // под ней итог рецептуры, чтобы обе цифры были на виду.
+      if (x.recipe_id) {
+        if (x.recipe_price_per_kg === null || x.recipe_price_per_kg === undefined) {
+          return el('span', { class: 'calc-warn-mini' }, 'в рецептуре нет цен');
+        }
+        return el('div', {}, [
+          el('div', {}, money0(x.recipe_price_per_kg)),
+          el('div', { class: 'calc-src-mini' },
+            'по рецептуре · ' + money0(x.calc.components.raw) + ' за ' + money(x.recipe_total_g, 0) + ' гр'),
+        ]);
+      }
       if (x.raw_price_source === 'purchase') {
         return el('div', {}, [
           el('div', {}, money0(x.raw_price_per_kg)),

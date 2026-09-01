@@ -878,6 +878,11 @@ async function sheetPayload(sheet) {
         recipe_id: p.recipe_id || null,
         recipe_name: recipe ? recipe.name : '',
         recipe_total_g: recipe ? recipe.total_g : null,
+        // Средняя цена за кг самого микса: итог рецептуры ÷ её вес. Нужна, чтобы
+        // строка «Стоимость зелени» показывала цифру в своих единицах (сум/кг),
+        // а не пустое «по рецептуре» — иначе непонятно, дорогой микс или нет.
+        recipe_price_per_kg: (recipe && recipe.total_g > 0 && rawCost !== null)
+          ? rawCost / (recipe.total_g / 1000) : null,
         recipe_missing_prices: recipe ? recipe.missing_prices : 0,
         recipe_empty: !!(recipe && !recipe.items.length),
         net_weight_g: weight,
