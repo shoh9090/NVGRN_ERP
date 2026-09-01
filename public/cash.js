@@ -2170,12 +2170,14 @@
     const stSel = el('select', { class: 'obl-f', title: 'Статус', onchange: (e) => { oblSup.status = e.target.value; drawSup(); } },
       [['', 'Все статусы'], ['debt', 'С долгом'], ['overdue', 'Просроченные'], ['advance', 'Авансы']].map(([v, t]) => el('option', { value: v, selected: oblSup.status === v || null }, t)));
     const qIn = el('input', { class: 'obl-f', style: 'min-width:150px', placeholder: 'Поиск…', value: oblSup.q, oninput: (e) => { oblSup.q = e.target.value; drawSup(); } });
-    const fromIn = el('input', { class: 'obl-f', type: 'date', title: 'Период с', value: oblSup.from, onchange: (e) => { oblSup.from = e.target.value; loadSup(); } });
-    const toIn = el('input', { class: 'obl-f', type: 'date', title: 'Период по', value: oblSup.to, onchange: (e) => { oblSup.to = e.target.value; loadSup(); } });
+    const oblPeriod = HubDateRange.create({
+      mode: 'range', from: oblSup.from, to: oblSup.to,
+      onChange: (v) => { oblSup.from = v.from; oblSup.to = v.to; loadSup(); },
+    });
     const pill = (icon, ctrl) => el('span', { class: 'obl-pill' }, [el('span', { class: 'obl-ic' }, icon), ctrl]);
     box.appendChild(el('div', { class: 'obl-filt' }, [
       pill('🔎', qIn), pill('🏷', catSel), pill('⚑', stSel),
-      pill('📅', el('span', { style: 'display:inline-flex;align-items:center;gap:4px' }, [fromIn, el('span', { class: 'muted' }, '–'), toIn])),
+      oblPeriod,
       (oblSup.from || oblSup.to || oblSup.cat || oblSup.status || oblSup.q)
         ? el('button', { class: 'obl-reset', title: 'Сбросить фильтры', onclick: () => { oblSup.q = ''; oblSup.cat = ''; oblSup.status = ''; oblSup.from = ''; oblSup.to = ''; oblSuppliers(box); } }, '✕ сброс') : null,
     ]));
@@ -2304,14 +2306,18 @@
       ]),
     ]));
     const reload1 = () => { txState.page = 1; loadTx(); };
-    const dateInp = (k) => el('input', { type: 'date', class: 'cashf-inp cash-filt', value: txState[k], onchange: (e) => { txState[k] = e.target.value; reload1(); } });
+    // Период — общим компонентом Hub, как на остальных экранах.
+    const txPeriod = HubDateRange.create({
+      mode: 'range', from: txState.from, to: txState.to,
+      onChange: (v) => { txState.from = v.from; txState.to = v.to; reload1(); },
+    });
     const walletSel = el('select', { class: 'cashf-inp cash-filt', onchange: (e) => { txState.wallet = e.target.value; reload1(); } }, [el('option', { value: '' }, 'Все кошельки'), ...(DICTS.wallets || []).map((x) => el('option', { value: x.id, selected: String(x.id) === txState.wallet || null }, x.name))]);
     const typeSel = el('select', { class: 'cashf-inp cash-filt', onchange: (e) => { txState.type = e.target.value; reload1(); } }, [{ v: '', t: 'Все типы' }, { v: 'in', t: 'Приходы' }, { v: 'out', t: 'Расходы' }, { v: 'transfer', t: 'Переводы' }].map((o) => el('option', { value: o.v, selected: o.v === txState.type || null }, o.t)));
     const catSel = el('select', { class: 'cashf-inp cash-filt', onchange: (e) => { txState.category = e.target.value; txState.catgroup = ''; reload1(); } }, [el('option', { value: '' }, 'Все статьи ДДС'), ...(DICTS.categories || []).map((x) => el('option', { value: x.id, selected: String(x.id) === txState.category || null }, x.code + ' · ' + x.name))]);
     const classSel = el('select', { class: 'cashf-inp cash-filt', onchange: (e) => { txState.classified = e.target.value; reload1(); } }, [{ v: '', t: 'Все' }, { v: 'no', t: 'Не разобрано' }, { v: 'yes', t: 'Разобрано' }].map((o) => el('option', { value: o.v, selected: o.v === txState.classified || null }, o.t)));
     const search = el('input', { type: 'search', class: 'cashf-inp cash-filt cash-filt-q', placeholder: 'Поиск по назначению / от кого…', value: txState.q, oninput: (e) => { txState.q = e.target.value; clearTimeout(window.__cashT); window.__cashT = setTimeout(reload1, 350); } });
     const sizeSel = el('select', { class: 'cashf-inp cash-filt', onchange: (e) => { txState.pageSize = parseInt(e.target.value); txState.page = 1; loadTx(); } }, [10, 20, 50, 100, 200].map((n) => el('option', { value: n, selected: n === txState.pageSize || null }, 'по ' + n)));
-    c.appendChild(el('div', { class: 'cash-filters' }, [el('span', { class: 'cash-flab' }, 'С'), dateInp('from'), el('span', { class: 'cash-flab' }, 'по'), dateInp('to'), walletSel, typeSel, catSel, classSel, search, sizeSel]));
+    c.appendChild(el('div', { class: 'cash-filters' }, [txPeriod, walletSel, typeSel, catSel, classSel, search, sizeSel]));
     c.appendChild(el('div', { id: 'cash-tx-wrap' }));
     loadTx();
   }
@@ -2675,8 +2681,10 @@
     const typeBtn = (v, label) => el('button', { class: 'btn-ghost cash-add cb-typebtn cb-' + v + (cbState.type === v ? ' cb-on' : ''), onclick: () => { cbState.type = v; cbState.selected = {}; cbState.page = 1; renderCashbox(); } }, label);
     const walletSel = el('select', { class: 'cashf-inp', onchange: (e) => { cbState.wallet = e.target.value; cbState.page = 1; renderCashbox(); } },
       cashWallets.map((w) => el('option', { value: w.id, selected: String(w.id) === cbState.wallet || null }, w.name)));
-    const fromInp = el('input', { type: 'date', class: 'cashf-inp cash-filt', value: cbState.from, onchange: (e) => { cbState.from = e.target.value; cbState.page = 1; loadCashbox(); } });
-    const toInp = el('input', { type: 'date', class: 'cashf-inp cash-filt', value: cbState.to, onchange: (e) => { cbState.to = e.target.value; cbState.page = 1; loadCashbox(); } });
+    const cbPeriod = HubDateRange.create({
+      mode: 'range', from: cbState.from, to: cbState.to,
+      onChange: (v) => { cbState.from = v.from; cbState.to = v.to; cbState.page = 1; loadCashbox(); },
+    });
     const catSel = el('select', { class: 'cashf-inp cash-filt', onchange: (e) => { cbState.category = e.target.value; cbState.page = 1; loadCashbox(); } },
       [el('option', { value: '' }, 'Все статьи ДДС')].concat((DICTS.categories || []).map((x) => el('option', { value: x.id, selected: String(x.id) === cbState.category || null }, x.code + ' · ' + x.name))));
     const search = el('input', { type: 'search', class: 'cashf-inp cash-filt cash-filt-q', placeholder: 'Поиск по назначению…', value: cbState.q, oninput: (e) => { cbState.q = e.target.value; cbState.page = 1; clearTimeout(window.__cbQ); window.__cbQ = setTimeout(loadCashbox, 350); } });
@@ -2696,7 +2704,7 @@
       return;
     }
     c.appendChild(el('div', { class: 'cash-filters', style: 'margin-bottom:0' }, [
-      el('span', { class: 'cash-flab' }, 'C'), fromInp, el('span', { class: 'cash-flab' }, 'по'), toInp,
+      cbPeriod,
       catSel, classSel, search, sizeSel,
     ]));
     const wrap = el('div', { id: 'cashbox-wrap' }); c.appendChild(wrap);

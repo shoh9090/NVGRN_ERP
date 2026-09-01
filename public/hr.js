@@ -159,9 +159,12 @@
     const typeSel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { evState.type = e.target.value; loadEv(); } }, [{ v: '', t: 'Все события' }].concat(Object.keys(EV).map((k) => ({ v: k, t: EV[k].t }))).map((o) => el('option', { value: o.v, selected: o.v === evState.type || null }, o.t)));
     const dSel = deptMulti(evState, 'department', loadEv);
     const q = el('input', { class: 'hrf-inp hr-filt hr-filt-q', placeholder: 'Поиск по ФИО', value: evState.q, oninput: (e) => { evState.q = e.target.value; clearTimeout(window.__evS); window.__evS = setTimeout(loadEv, 300); } });
-    const fromInp = el('input', { type: 'date', class: 'hrf-inp hr-filt', value: evState.from, onchange: (e) => { evState.from = e.target.value; loadEv(); } });
-    const toInp = el('input', { type: 'date', class: 'hrf-inp hr-filt', value: evState.to, onchange: (e) => { evState.to = e.target.value; loadEv(); } });
-    c.appendChild(el('div', { class: 'hr-filters' }, [typeSel, dSel, el('span', { class: 'hr-flab' }, 'с'), fromInp, el('span', { class: 'hr-flab' }, 'по'), toInp, q]));
+    // Период — общим компонентом Hub, как в Кассе, Закупе и Претензиях.
+    const period = HubDateRange.create({
+      mode: 'range', from: evState.from, to: evState.to,
+      onChange: (v) => { evState.from = v.from; evState.to = v.to; loadEv(); },
+    });
+    c.appendChild(el('div', { class: 'hr-filters' }, [typeSel, dSel, period, q]));
     c.appendChild(el('div', { id: 'hr-ev-box' }));
     loadEv();
   }

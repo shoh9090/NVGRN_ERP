@@ -1119,72 +1119,10 @@
   }
 
   // ================= ВЗАИМОРАСЧЁТЫ =================
-  // --- Период: готовые интервалы + «Выбрать дату» ---
-  const MON_SHORT = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
   // Дату собираем из локальных частей (не через toISOString) — иначе Ташкент даёт минус день.
   function isoDate(y, m, d) { return y + '-' + String(m + 1).padStart(2, '0') + '-' + String(d).padStart(2, '0'); }
-  function dayShift(n) { const t = new Date(); const x = new Date(t.getFullYear(), t.getMonth(), t.getDate() - n); return isoDate(x.getFullYear(), x.getMonth(), x.getDate()); }
-  function todayStr() { return dayShift(0); }
+  function todayStr() { const t = new Date(); return isoDate(t.getFullYear(), t.getMonth(), t.getDate()); }
   function monthStartStr() { const t = new Date(); return isoDate(t.getFullYear(), t.getMonth(), 1); }
-  function rangePresets() {
-    const t = new Date();
-    const prevEnd = new Date(t.getFullYear(), t.getMonth(), 0); // последний день прошлого месяца
-    return [
-      ['Сегодня', dayShift(0), dayShift(0)],
-      ['Вчера', dayShift(1), dayShift(1)],
-      ['Последние 7 дней', dayShift(6), dayShift(0)],
-      ['Последние 30 дней', dayShift(29), dayShift(0)],
-      ['Этот месяц', monthStartStr(), dayShift(0)],
-      ['Прошлый месяц', isoDate(prevEnd.getFullYear(), prevEnd.getMonth(), 1), isoDate(prevEnd.getFullYear(), prevEnd.getMonth(), prevEnd.getDate())],
-      ['Этот год', isoDate(t.getFullYear(), 0, 1), dayShift(0)],
-      ['Всё время', '', ''],
-    ];
-  }
-  function rangeLabel(from, to) {
-    const hit = rangePresets().find((p) => p[1] === (from || '') && p[2] === (to || ''));
-    if (hit) return hit[0];
-    const short = (s) => { if (!s) return '…'; const p = s.split('-'); return Number(p[2]) + ' ' + MON_SHORT[Number(p[1]) - 1]; };
-    return short(from) + ' – ' + short(to);
-  }
-  // Кнопка с выпадающим списком периодов. onChange вызывается после выбора.
-  function periodPicker(state, onChange) {
-    const btn = el('button', { class: 'pur-tbtn pur-range-btn' }, '🗓 ' + rangeLabel(state.from, state.to));
-    const pop = el('div', { class: 'pur-range-pop' });
-    const wrap = el('div', { class: 'pur-range' }, [btn, pop]);
-    let open = false;
-    const outside = (e) => { if (!wrap.contains(e.target)) toggle(false); };
-    function toggle(v) {
-      open = v === undefined ? !open : v;
-      pop.classList.toggle('open', open);
-      if (open) document.addEventListener('click', outside);
-      else document.removeEventListener('click', outside);
-    }
-    function apply(from, to) {
-      state.from = from; state.to = to;
-      btn.textContent = '🗓 ' + rangeLabel(from, to);
-      toggle(false);
-      onChange();
-    }
-    btn.onclick = (e) => { e.stopPropagation(); toggle(); };
-    rangePresets().forEach(([label, f, t2]) => {
-      const on = (state.from || '') === f && (state.to || '') === t2;
-      pop.appendChild(el('div', { class: 'pur-range-it' + (on ? ' on' : ''), onclick: () => apply(f, t2) }, label));
-    });
-    // «Выбрать дату» — раскрывает ручной интервал.
-    const custom = el('div', { class: 'pur-range-custom' });
-    const fIn = el('input', { type: 'date', value: state.from || '' });
-    const tIn = el('input', { type: 'date', value: state.to || '' });
-    custom.appendChild(el('div', { class: 'pur-range-row' }, [el('span', {}, 'с'), fIn]));
-    custom.appendChild(el('div', { class: 'pur-range-row' }, [el('span', {}, 'по'), tIn]));
-    custom.appendChild(el('div', { class: 'pur-range-row' }, [
-      el('button', { class: 'btn-primary', onclick: () => { if (fIn.value || tIn.value) apply(fIn.value, tIn.value); } }, 'ОК'),
-      el('button', { class: 'btn-ghost', onclick: () => toggle(false) }, 'Отменить'),
-    ]));
-    const custHead = el('div', { class: 'pur-range-it pur-range-more', onclick: () => custom.classList.toggle('open') }, 'Выбрать дату');
-    pop.appendChild(custHead);
-    pop.appendChild(custom);
-    return wrap;
-  }
 
   // Период по умолчанию — с начала месяца по сегодня (движение за текущий месяц).
   const setState = { q: '', pc: '', status: '', from: monthStartStr(), to: todayStr() };
@@ -1234,8 +1172,11 @@
     main.appendChild(el('div', { class: 'pur-filters' }, [
       el('label', {}, ['Категория', pcSel]),
       el('label', {}, ['Статус', stSel]),
-      // Не <label>: внутри пикера есть поля дат, и клик по пункту списка уводил бы фокус в них.
-      el('div', { class: 'pur-fld' }, [el('span', {}, 'Период'), periodPicker(setState, loadSettlements)]),
+      // Период — общим компонентом Hub, как в Заявках, Кассе и Претензиях.
+      el('div', { class: 'pur-fld' }, [el('span', {}, 'Период'), HubDateRange.create({
+        mode: 'range', from: setState.from, to: setState.to,
+        onChange: (v) => { setState.from = v.from; setState.to = v.to; loadSettlements(); },
+      })]),
       el('label', { style: 'flex:1 1 180px' }, ['Поиск', qIn]),
     ]));
     main.appendChild(el('div', { id: 'set-list', class: 'pur-content', style: 'overflow-x:auto' }));
@@ -1495,16 +1436,22 @@
       el('option', { value: '' }, 'Все категории'),
       ...opts.categories.map((c) => el('option', { value: c.id }, (c.branch === 'Упаковка' ? '📦 ' : '🌿 ') + c.name)),
     ]);
-    const fromIn = el('input', { id: 'pr-from', type: 'date', onchange: reloadPrices });
-    const toIn = el('input', { id: 'pr-to', type: 'date', onchange: reloadPrices });
+    // Скрытые поля: запрос цен читает их по id, а видимый выбор периода —
+    // общий компонент Hub.
+    const fromIn = el('input', { id: 'pr-from', type: 'hidden' });
+    const toIn = el('input', { id: 'pr-to', type: 'hidden' });
+    const period = HubDateRange.create({
+      mode: 'range', from: monthStartStr(), to: todayStr(),
+      onChange: (v) => { fromIn.value = v.from; toIn.value = v.to; reloadPrices(); },
+    });
     const resetBtn = el('button', {
       onclick: () => { supSel.value = ''; catSel.value = ''; fromIn.value = ''; toIn.value = ''; $('#pr-q').value = ''; reloadPrices(); },
     }, 'Сбросить');
     main.appendChild(el('div', { class: 'pur-filters' }, [
       el('label', {}, ['Поставщик', supSel]),
       el('label', {}, ['Категория', catSel]),
-      el('label', {}, ['Период с', fromIn]),
-      el('label', {}, ['по', toIn]),
+      el('div', { class: 'pur-fld' }, [el('span', {}, 'Период'), period]),
+      fromIn, toIn,
       resetBtn,
     ]));
     main.appendChild(el('div', { id: 'pr-list', class: 'pur-content' }));
@@ -1947,14 +1894,17 @@
     if (!actState.from) actState.from = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-01';
     if (!actState.to) actState.to = now.toISOString().slice(0, 10);
     const supSel = el('select', { onchange: (e) => { actState.supplier = e.target.value; loadAct(); } }, suppliers.map((s) => el('option', { value: s.id, selected: String(s.id) === actState.supplier || null }, s.name)));
-    const fromIn = el('input', { type: 'date', value: actState.from, onchange: (e) => { actState.from = e.target.value; loadAct(); } });
-    const toIn = el('input', { type: 'date', value: actState.to, onchange: (e) => { actState.to = e.target.value; loadAct(); } });
+    const period = HubDateRange.create({
+      mode: 'range', from: actState.from, to: actState.to,
+      onChange: (v) => { actState.from = v.from; actState.to = v.to; loadAct(); },
+    });
     main.appendChild(el('div', { class: 'pur-toolbar' }, [
       el('h2', {}, 'Акт сверки'),
       el('div', { class: 'pur-toolbar-right' }, [el('button', { class: 'btn-primary', onclick: printAct }, '🖨 Печать')]),
     ]));
     main.appendChild(el('div', { class: 'pur-filters' }, [
-      el('label', {}, ['Поставщик', supSel]), el('label', {}, ['Период с', fromIn]), el('label', {}, ['по', toIn]),
+      el('label', {}, ['Поставщик', supSel]),
+      el('div', { class: 'pur-fld' }, [el('span', {}, 'Период'), period]),
     ]));
     main.appendChild(el('div', { id: 'act-body', class: 'pur-content', style: 'margin-top:10px' }));
     if (actState.supplier) loadAct();
