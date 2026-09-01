@@ -14,6 +14,7 @@
 // Ответственность файла: маршруты, права, сбор ответа.
 // Формулы — только в calculation-engine.js, чтение источников — в calculation-sources.js.
 const express = require('express');
+const XLSX = require('xlsx');
 const db = require('./db');
 const engine = require('./calculation-engine');
 const integrations = require('./integrations');
@@ -1208,6 +1209,135 @@ router.get('/api/summary', async (req, res) => {
     console.error('[КАЛЬКУЛЯЦИЯ] сводка:', e.message);
     res.status(400).json({ error: e.message });
   }
+});
+
+// ===========================================================================
+// Выгрузка в Excel
+// ===========================================================================
+// Файлов два, и путать их нельзя:
+//   • ПРАЙС — штрихкод, наименование, цены. Себестоимости НЕТ, его можно
+//     отдавать агентам и клиентам;
+//   • КАЛЬКУЛЯЦИЯ — все строки листа, включая себестоимость и маржу. Только
+//     для внутреннего пользования.
+const xlsxSend = (res, wb, filename) => {
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.send(buf);
+};
+const rnd = (v) => (v === null || v === undefined || Number.isNaN(Number(v)) ? '' : Math.round(Number(v)));
+const pct = (v) => (v === null || v === undefined || Number.isNaN(Number(v)) ? '' : Math.round(Number(v) * 10) / 10);
+const dateRu = (v) => { try { return v ? new Date(v).toLocaleDateString('ru-RU') : ''; } catch (e) { return ''; } };
+
+// Данные листа: текущий расчёт или последний утверждённый снимок.
+async function sheetData(sheet, approved) {
+  if (!approved) return { data: await sheetPayload(sheet), at: null };
+  const last = await lastApproval(sheet);
+  return last ? { data: last.data, at: last.approved_at } : null;
+}
+
+// ПРАЙС по всем листам — без единой цифры себестоимости.
+router.get('/api/price-export.xlsx', async (req, res) => {
+  const approved = String(req.query.mode || '') === 'approved';
+  try {
+    const aoa = [['Направление', 'Штрихкод', 'Наименование', 'Прайс 1', 'Прайс 2 (КАМ)', 'Цена в SalesDoctor', 'Утверждено']];
+    for (const key of Object.keys(SHEETS)) {
+      const got = await sheetData(key, approved);
+      if (!got) continue;
+      for (const p of (got.data.products || [])) {
+        aoa.push([SHEETS[key], p.barcode || '', p.name || '',
+          rnd(p.price), rnd(p.price2), rnd(p.sd_price), dateRu(got.at)]);
+      }
+    }
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = [{ wch: 18 }, { wch: 16 }, { wch: 30 }, { wch: 13 }, { wch: 15 }, { wch: 18 }, { wch: 13 }];
+    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Прайс');
+    xlsxSend(res, wb, `prays_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  } catch (e) { res.status(400).send('Ошибка выгрузки: ' + e.message); }
+});
+
+// СВОДКА — то же, что на экране: себестоимость, цена, маржа. Внутренний файл.
+router.get('/api/summary-export.xlsx', async (req, res) => {
+  const approved = String(req.query.mode || '') === 'approved';
+  try {
+    const aoa = [['Товар', 'Штрихкод', 'Направление', 'с/с', 'Брак, %', 'с/с с браком',
+      'Цена', 'Наценка, %', 'Прибыль', 'Маржа, %']];
+    const rows = [];
+    for (const key of Object.keys(SHEETS)) {
+      const got = await sheetData(key, approved);
+      if (!got) continue;
+      for (const p of (got.data.products || [])) {
+        const c = p.calc || {};
+        rows.push({ np: c.net_pct === undefined ? null : c.net_pct, r: [p.name || '', p.barcode || '', SHEETS[key],
+          rnd(c.cost), pct(p.defect_pct), rnd(c.cost_defect), rnd(c.price),
+          pct(c.markup_pct), rnd(c.net_profit), pct(c.net_pct)] });
+      }
+    }
+    // Порядок как на экране: сначала то, где расчёт не готов, потом худшая маржа.
+    rows.sort((a, b) => {
+      const an = a.np === null, bn = b.np === null;
+      if (an !== bn) return an ? -1 : 1;
+      return (a.np || 0) - (b.np || 0);
+    });
+    rows.forEach((x) => aoa.push(x.r));
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = [{ wch: 30 }, { wch: 16 }, { wch: 18 }, { wch: 12 }, { wch: 9 }, { wch: 14 },
+      { wch: 12 }, { wch: 11 }, { wch: 12 }, { wch: 10 }];
+    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Сводка');
+    xlsxSend(res, wb, `svodka_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  } catch (e) { res.status(400).send('Ошибка выгрузки: ' + e.message); }
+});
+
+// КАЛЬКУЛЯЦИЯ одного листа — строки расчёта, столбцы товары, как на экране.
+router.get('/api/sheet/:sheet/export.xlsx', async (req, res) => {
+  const sheet = String(req.params.sheet || '');
+  if (!SHEETS[sheet]) return res.status(404).send('Такого листа нет');
+  const approved = String(req.query.mode || '') === 'approved';
+  try {
+    const got = await sheetData(sheet, approved);
+    if (!got) return res.status(400).send('Этот лист ещё не утверждали');
+    const d = got.data;
+    const P = d.products || [];
+    const line = (label, unit, fn) => [label, unit, ...P.map(fn)];
+    const c = (p) => p.calc || {};
+    const c2 = (p) => p.calc2 || {};
+
+    const aoa = [
+      ['Лист', SHEETS[sheet], ...P.map((p) => p.name || '')],
+      ['Штрихкод', '', ...P.map((p) => p.barcode || '')],
+      line('Граммаж', 'гр', (p) => rnd(p.net_weight_g)),
+      line('Рецептура', '', (p) => p.recipe_name || ''),
+      line('Наименование сырья', '', (p) => (p.recipe_id ? 'по рецептуре' : (p.raw_material_name || ''))),
+      line('Стоимость зелени', 'сум/кг', (p) => rnd(p.recipe_id ? p.recipe_price_per_kg : p.raw_price_per_kg)),
+      line('Зелень в упаковке', 'сум', (p) => rnd(c(p).components ? c(p).components.raw : null)),
+      line('Тип упаковки', '', (p) => p.pack_template_name || ''),
+      line('Упаковка', 'сум', (p) => rnd(c(p).components ? c(p).components.pack : null)),
+      line('Производ. затраты / накладные', 'сум', (p) => rnd(c(p).components ? c(p).components.production : null)),
+      line('Доля затрат', '', (p) => p.prod_factor),
+      line('ФОТ', 'сум', (p) => rnd(c(p).components ? c(p).components.labor : null)),
+      line('с/с', 'сум', (p) => rnd(c(p).cost)),
+      line('Брак', '%', (p) => pct(p.defect_pct)),
+      line('с/с с браком', 'сум', (p) => rnd(c(p).cost_defect)),
+      line('Цена в SalesDoctor', 'сум', (p) => rnd(p.sd_price)),
+    ];
+    // Два прайса — одинаковыми блоками, как на экране.
+    [['Прайс 1', c], ['Прайс 2 (КАМ)', c2]].forEach(([title, calc]) => {
+      aoa.push([title, 'сум', ...P.map((p) => rnd(calc(p).price))]);
+      aoa.push(line('  Наценка', '%', (p) => pct(calc(p).markup_pct)));
+      aoa.push(line('  Ретро бонусы', 'сум', (p) => rnd(calc(p).retro)));
+      aoa.push(line('  НДС', 'сум', (p) => rnd(calc(p).vat)));
+      aoa.push(line('  Прибыль', 'сум', (p) => rnd(calc(p).profit)));
+      aoa.push(line('  Налог на прибыль', 'сум', (p) => rnd(calc(p).profit_tax)));
+      aoa.push(line('  Чистая прибыль', 'сум', (p) => rnd(calc(p).net_profit)));
+      aoa.push(line('  ЧП', '%', (p) => pct(calc(p).net_pct)));
+    });
+    if (approved && got.at) aoa.push([], ['Утверждено', dateRu(got.at)]);
+
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = [{ wch: 30 }, { wch: 8 }, ...P.map(() => ({ wch: 15 }))];
+    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, SHEETS[sheet].slice(0, 28));
+    xlsxSend(res, wb, `kalkulyaciya_${sheet}_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  } catch (e) { res.status(400).send('Ошибка выгрузки: ' + e.message); }
 });
 
 router.post('/api/sheet/:sheet/product', J, async (req, res) => {

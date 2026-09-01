@@ -720,6 +720,11 @@
           el('button', { class: 'calc-appr-mode' + (sumMode === 'approved' ? ' on' : ''),
             onclick: () => { if (sumMode !== 'approved') { sumMode = 'approved'; loadSummary(); } } }, 'Утверждённые'),
         ]),
+        // Два файла и две кнопки: прайс можно отдавать наружу, сводку — нет.
+        el('button', { class: 'calc-tbtn', title: 'Сводка со всеми цифрами. Только для внутреннего пользования',
+          onclick: () => { window.location = '/calculation/api/summary-export.xlsx?mode=' + sumMode; } }, '⬇ Сводка'),
+        el('button', { class: 'calc-tbtn', title: 'Штрихкод, наименование и цены. Без себестоимости — можно отдавать агентам и клиентам',
+          onclick: () => { window.location = '/calculation/api/price-export.xlsx?mode=' + sumMode; } }, '⬇ Прайс'),
       ]),
       el('div', { class: 'calc-sub' }, sumMode === 'approved'
         ? 'Цифры из утверждённых расчётов. Листы, которые ни разу не утверждали, сюда не попадают.'
@@ -1420,6 +1425,13 @@
     }
 
     const btns = el('div', { class: 'calc-appr-btns' }, [
+      // Полная калькуляция листа: строки — расчёт, столбцы — товары, как на экране.
+      el('button', { class: 'calc-tbtn', title: 'Выгрузить лист в Excel (внутренний файл, с себестоимостью)',
+        onclick: () => {
+          // Лист ни разу не утверждали — выгружаем текущий расчёт, а не ошибку.
+          const m = (skuMode === 'approved' && a.has) ? 'approved' : 'current';
+          window.location = '/calculation/api/sheet/' + sheet + '/export.xlsx?mode=' + m;
+        } }, '⬇ Excel'),
       el('button', { class: 'calc-tbtn', onclick: openApprovalHistory }, 'История'),
       canEditUser() ? el('button', { class: 'calc-tbtn primary', onclick: () => openApprove(d) }, '✓ Утвердить') : null,
     ]);
