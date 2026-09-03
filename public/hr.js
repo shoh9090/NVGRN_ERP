@@ -924,7 +924,8 @@
   const ACCR_FIELDS = [['accr_fact', 'Факт по табелю'], ['accr_bonus', 'Бонусы KPI'], ['accr_premium', 'Премия'], ['accr_gsm', 'ГСМ / компенсации'], ['accr_sick', 'Больничные'], ['accr_vacation', 'Отпускные'], ['accr_mataid', 'Матпомощь'], ['accr_comp_vac', 'Компенсация отпуска'], ['accr_other', 'Другое начисление']];
   // Операции для вкладки «Массовые операции» (поле payroll → подпись).
   const MASS_OPS = [['accr_bonus', 'Бонусы KPI'], ['accr_premium', 'Премия'], ['accr_gsm', 'ГСМ / компенсации'], ['accr_sick', 'Больничные'], ['accr_vacation', 'Отпускные'], ['accr_mataid', 'Матпомощь'], ['accr_comp_vac', 'Компенсация за неисп. отпуск'], ['accr_company_debt', 'Долг компании'], ['accr_other', 'Другое начисление'],
-    ['ded_fine', 'Штрафы'], ['ded_hold', 'Удержания']];
+    ['ded_fine', 'Штрафы'], ['ded_hold', 'Удержания'],
+    ['ded_advance_cash', 'Аванс наличными'], ['ded_advance_card', 'Аванс на карту']];
   const DED_FIELDS = [['ded_fine', 'Штраф за опоздание'], ['ded_advance_card', 'Аванс на карту'], ['ded_advance_cash', 'Аванс наличными'], ['ded_hold', 'Удержание'], ['accr_company_debt', 'Долг компании'], ['ded_emp_debt', 'Долг сотрудника'], ['ded_other', 'Другое удержание']];
   const PAID_FIELDS = [['paid_cash', 'Выплачено наличными'], ['paid_card', 'Выплачено на карту']];
   const salState = { period: '', department: '', schedule: '', status: '', q: '' };
@@ -1519,10 +1520,14 @@
       const field = massState.field;
       const rowsModel = d.items.map((r) => ({ employee_id: r.emp_id }));
       const fillAll = el('input', { class: 'hrf-inp hr-filt', type: 'number', style: 'width:120px', placeholder: 'сумма' });
-      const fillBtn = el('button', { class: 'btn-ghost', onclick: () => { if (fillAll.value === '') return; rowsModel.forEach((m) => { if (m.amountInp) m.amountInp.value = fillAll.value; }); toast('Проставлено всем — не забудьте «Начислить»'); } }, 'Заполнить всем');
-      const applyBtn = el('button', { class: 'btn-primary', onclick: apply }, '⚡ Начислить');
+      // Удержания и авансы «начислить» нельзя — они уменьшают выплату, поэтому
+      // подписи у них свои.
+      const isDed = field.indexOf('ded_') === 0;
+      const actWord = isDed ? 'Внести' : 'Начислить';
+      const fillBtn = el('button', { class: 'btn-ghost', onclick: () => { if (fillAll.value === '') return; rowsModel.forEach((m) => { if (m.amountInp) m.amountInp.value = fillAll.value; }); toast('Проставлено всем — не забудьте «' + actWord + '»'); } }, 'Заполнить всем');
+      const applyBtn = el('button', { class: 'btn-primary', onclick: apply }, '⚡ ' + actWord);
       box.appendChild(el('div', { class: 'hr-filters', style: 'justify-content:flex-end' }, [el('span', { class: 'hr-flab' }, 'Сумма всем:'), fillAll, fillBtn, applyBtn]));
-      const head = el('div', { class: 'hr-row head hr-mass' }, ['#', 'ФИО', 'Отдел', 'Оклад', 'Текущее «' + opLabel + '»', 'Сумма к начислению'].map((h) => el('span', {}, h)));
+      const head = el('div', { class: 'hr-row head hr-mass' }, ['#', 'ФИО', 'Отдел', 'Оклад', 'Текущее «' + opLabel + '»', isDed ? 'Сумма' : 'Сумма к начислению'].map((h) => el('span', {}, h)));
       box.appendChild(el('div', { class: 'hr-list' }, [head, ...d.items.map((r, i) => {
         const m = rowsModel[i];
         const inpAmt = el('input', { class: 'hrf-inp hr-mass-inp', type: 'number', step: '1', placeholder: '0' });
@@ -1541,9 +1546,9 @@
         const items = rowsModel.map((m) => ({ employee_id: m.employee_id, amount: m.amountInp.value })).filter((x) => String(x.amount).trim() !== '' && Number(x.amount));
         if (!items.length) return toast('Впишите суммы хотя бы одному сотруднику', true);
         const label = (MASS_OPS.find((o) => o[0] === field) || ['', ''])[1];
-        if (!confirm((massState.mode === 'set' ? 'Заменить' : 'Начислить') + ' «' + label + '» ' + items.length + ' сотрудникам за ' + monthLabel(massState.period) + '?')) return;
-        applyBtn.disabled = true; applyBtn.textContent = 'Начисляю…';
-        try { const rr = await post('/mass-op', { period: massState.period, field, mode: massState.mode, items }); toast('Начислено: ' + rr.applied); load(); }
+        if (!confirm((massState.mode === 'set' ? 'Заменить' : actWord) + ' «' + label + '» ' + items.length + ' сотрудникам за ' + monthLabel(massState.period) + '?')) return;
+        applyBtn.disabled = true; applyBtn.textContent = 'Сохраняю…';
+        try { const rr = await post('/mass-op', { period: massState.period, field, mode: massState.mode, items }); toast('Готово: ' + rr.applied); load(); }
         catch (e) { toast(e.message, true); applyBtn.disabled = false; }
       }
     }

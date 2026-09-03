@@ -1183,8 +1183,10 @@ router.post('/api/salary/cash-hide', J, async (req, res) => {
 // ---------- Массовые операции ----------
 // Начислить выбранным сотрудникам за период по одной статье (бонусы/ГСМ/больничные/…).
 // Массовые операции: начисления + удержания (штрафы/удержания). Оклад (accr_fact) — только авторасчёт.
+// Авансы тоже здесь: их выдают сразу многим и обычно одинаковой суммой,
+// а до этого приходилось открывать карточку каждого сотрудника.
 const MASS_FIELDS = new Set(['accr_bonus', 'accr_premium', 'accr_gsm', 'accr_company_debt', 'accr_other', ...ACCR_EXTRA,
-  'ded_fine', 'ded_hold']);
+  'ded_fine', 'ded_hold', 'ded_advance_cash', 'ded_advance_card']);
 router.post('/api/mass-op', J, async (req, res) => {
   const period = /^\d{4}-\d{2}$/.test(req.body.period) ? req.body.period : null;
   const field = req.body.field;
