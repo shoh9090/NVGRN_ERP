@@ -513,6 +513,10 @@ async function recipesData() {
         price_per_kg: price,
         price_at: info.at,
         price_source: info.source,
+        purchase_price: info.purchase_price,
+        purchase_at: info.purchase_at,
+        price_diff_pct: info.diff_pct,
+        price_stale: info.diff_pct !== null && Math.abs(info.diff_pct) >= RAW_PRICE_DIFF_PCT,
         // Цены нет в Закупе — строка не превращается в ноль, иначе микс
         // выглядел бы дешевле, чем он есть.
         line_cost: price === null ? null : (qty / 1000) * price,
@@ -742,15 +746,25 @@ async function manualRawPrices() {
   return m;
 }
 
-// Цена сырья одним правилом для всех экранов: сначала Закуп, потом ручная.
-// Ручная НЕ перебивает Закуп — иначе лист годами жил бы на выдуманной цифре,
-// хотя приёмки идут и настоящая цена рядом.
+// Цена сырья одним правилом для всех экранов. Вписанная руками ПЕРЕБИВАЕТ
+// Закуп: цена последней приёмки бывает старой, разовой или от другого
+// поставщика, и считать по ней неправильно. Чтобы ручная не забылась, рядом
+// всегда видно цену из Закупа и насколько она разошлась.
+const RAW_PRICE_DIFF_PCT = 10;   // с какого расхождения подсвечиваем
+
 function rawPriceOf(rawId, purchaseMap, manualMap) {
   const p = rawId ? purchaseMap.get(rawId) : null;
-  if (p) return { price: p.price, at: p.at, source: 'purchase' };
   const m = rawId ? manualMap.get(rawId) : null;
-  if (m) return { price: m.price, at: m.at, source: 'manual' };
-  return { price: null, at: null, source: 'none' };
+  const base = {
+    purchase_price: p ? p.price : null,
+    purchase_at: p ? p.at : null,
+  };
+  if (m) {
+    const diff = (p && p.price > 0) ? ((m.price - p.price) / p.price) * 100 : null;
+    return { ...base, price: m.price, at: m.at, source: 'manual', diff_pct: diff };
+  }
+  if (p) return { ...base, price: p.price, at: p.at, source: 'purchase', diff_pct: null };
+  return { ...base, price: null, at: null, source: 'none', diff_pct: null };
 }
 
 // Ручная цена: вписать / убрать. Правит тот же, кто правит калькуляцию.
@@ -902,6 +916,12 @@ async function sheetPayload(sheet) {
         raw_price_per_kg: rawPricePerKg,
         raw_price_source: rawPriceSource,
         raw_price_at: rawInfo.at,
+        // Цена из Закупа показывается рядом даже когда считаем по ручной —
+        // чтобы вписанная цифра не забылась и было видно расхождение.
+        raw_purchase_price: rawInfo.purchase_price,
+        raw_purchase_at: rawInfo.purchase_at,
+        raw_price_diff_pct: rawInfo.diff_pct,
+        raw_price_stale: rawInfo.diff_pct !== null && Math.abs(rawInfo.diff_pct) >= RAW_PRICE_DIFF_PCT,
         raw_cost: rawCost,
         labor_cost: numOrNull(p.labor_cost),
         defect_pct: Number(p.defect_pct) || 0,

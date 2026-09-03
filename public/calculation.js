@@ -653,16 +653,22 @@
     ]);
   }
 
+  // Вернуться к цене из Закупа — то есть просто убрать ручную.
   function clearManualPrice(line, after) {
-    const body = el('p', { class: 'calc-modal-note' },
-      'Ручная цена сырья «' + (line.raw_material_name || '') + '» будет убрана. Пока по нему нет приёмки в Закупе, '
-      + 'строки с этим сырьём останутся без цены и в себестоимость не войдут.');
-    const ok = el('button', { class: 'calc-btn danger', onclick: async () => {
+    const has = line.purchase_price !== null && line.purchase_price !== undefined;
+    const body = el('div', {}, [
+      el('div', { class: 'calc-modal-facts' }, (line.raw_material_name || 'сырьё')
+        + (has ? ' · в Закупе ' + money0(line.purchase_price) + (line.purchase_at ? ' от ' + line.purchase_at : '') : '')),
+      el('p', { class: 'calc-modal-note' }, has
+        ? 'Расчёт вернётся к цене последней приёмки. Вписанная вручную цена будет убрана.'
+        : 'Ручная цена будет убрана. По этому сырью в Закупе цены нет, поэтому строки с ним останутся без цены и в себестоимость не войдут.'),
+    ]);
+    const ok = el('button', { class: 'calc-btn primary', onclick: async () => {
       ok.disabled = true;
-      try { await api('/raw-price/' + line.raw_material_id, { method: 'DELETE' }); m.close(); toast('Ручная цена убрана'); await after(); }
+      try { await api('/raw-price/' + line.raw_material_id, { method: 'DELETE' }); m.close(); toast(has ? 'Взяли цену из Закупа' : 'Ручная цена убрана'); await after(); }
       catch (e) { toast(e.message, true); ok.disabled = false; }
-    } }, 'Убрать');
-    const m = calcModal('Убрать ручную цену?', body, [
+    } }, has ? 'Взять из Закупа' : 'Убрать');
+    const m = calcModal(has ? 'Взять цену из Закупа?' : 'Убрать ручную цену?', body, [
       el('button', { class: 'calc-btn', onclick: () => m.close() }, 'Отмена'), ok,
     ]);
   }
@@ -924,11 +930,15 @@
         canEdit() ? sel : el('div', { class: 'calc-tpl-nm' }, line.raw_material_name || '—'),
         cell(line.qty_g, (v) => post('/recipes/line/' + line.id, { qty_g: v }), { dec: 0, placeholder: 'гр' }),
         el('div', { class: 'calc-tpl-cost calc-dim' }, line.pct === null ? '—' : money(line.pct, 0) + '%'),
-        el('div', { class: 'calc-tpl-cost' }, line.price_per_kg === null
+        el('div', { class: 'calc-tpl-cost' + (line.price_stale ? ' calc-price-stale' : '') }, line.price_per_kg === null
           ? el('span', { class: 'calc-warn-mini' }, 'нет цены')
           : el('span', {}, [money0(line.price_per_kg),
             el('div', { class: 'calc-src-mini' },
-              (line.price_source === 'manual' ? 'вручную' : 'из Закупа') + (line.price_at ? ' · ' + line.price_at : ''))])),
+              (line.price_source === 'manual' ? 'вручную' : 'из Закупа') + (line.price_at ? ' · ' + line.price_at : '')),
+            (line.price_source === 'manual' && line.purchase_price !== null && line.purchase_price !== undefined)
+              ? el('div', { class: 'calc-src-mini' }, 'в Закупе ' + money0(line.purchase_price)
+                + (line.price_diff_pct !== null ? ' · ' + (line.price_diff_pct > 0 ? '+' : '') + money(line.price_diff_pct, 0) + '%' : ''))
+              : null])),
         el('div', { class: 'calc-tpl-cost' }, line.line_cost === null ? el('span', { class: 'calc-dim' }, '—') : money(line.line_cost)),
         canEdit() ? el('button', {
           class: 'calc-dots', title: 'Действия с компонентом', 'aria-label': 'Действия с компонентом',
@@ -943,7 +953,11 @@
                 onClick: () => openManualPrice(line, loadRecipes),
               });
               if (line.price_source === 'manual') {
-                items.push({ label: 'Убрать ручную цену', onClick: () => clearManualPrice(line, loadRecipes) });
+                items.push({
+                  label: (line.purchase_price !== null && line.purchase_price !== undefined)
+                    ? 'Взять цену из Закупа' : 'Убрать ручную цену',
+                  onClick: () => clearManualPrice(line, loadRecipes),
+                });
               }
             }
             items.push({
@@ -1263,7 +1277,8 @@
           e.stopPropagation();
           // Ручная цена — то же окно, что в рецептуре: сырьё одно, цена одна.
           const line = { raw_material_id: x.raw_material_id, raw_material_name: x.raw_material_name,
-            price_per_kg: x.raw_price_per_kg, price_source: x.raw_price_source };
+            price_per_kg: x.raw_price_per_kg, price_source: x.raw_price_source,
+            purchase_price: x.raw_purchase_price, purchase_at: x.raw_purchase_at };
           dotsMenu(e.currentTarget, [
             // Пункт нужен только когда строки «Рецептура» на листе нет: иначе
             // подключить микс было бы негде.
@@ -1273,7 +1288,9 @@
               onClick: () => openManualPrice(line, loadSku),
             }] : []),
             ...(x.raw_price_source === 'manual' ? [{
-              label: 'Убрать ручную цену', onClick: () => clearManualPrice(line, loadSku),
+              label: (x.raw_purchase_price !== null && x.raw_purchase_price !== undefined)
+                ? 'Взять цену из Закупа' : 'Убрать ручную цену',
+              onClick: () => clearManualPrice(line, loadSku),
             }] : []),
             { label: x.sd_product_id ? 'Изменить ID в СД' : 'Указать ID в СД', onClick: () => openSdId(x) },
             { label: 'Убрать с листа', danger: true, onClick: () => confirmRemoveProduct(x, d) },
@@ -1355,11 +1372,16 @@
         ]);
       }
       // Цена вписана вручную у самого сырья — одна на все листы и рецептуры.
-      // Правится тем же окном, что и в рецептуре: через меню «⋯» у товара.
+      // Рядом всегда показываем цену из Закупа: так ручная не забудется, и
+      // видно, насколько она разошлась с последней приёмкой.
       if (x.raw_price_source === 'manual') {
-        return el('div', {}, [
+        return el('div', { class: x.raw_price_stale ? 'calc-price-stale' : '' }, [
           el('div', {}, money0(x.raw_price_per_kg)),
           el('div', { class: 'calc-src-mini' }, 'вручную' + (x.raw_price_at ? ' · ' + x.raw_price_at : '')),
+          x.raw_purchase_price !== null && x.raw_purchase_price !== undefined
+            ? el('div', { class: 'calc-src-mini' }, 'в Закупе ' + money0(x.raw_purchase_price)
+              + (x.raw_price_diff_pct !== null ? ' · ' + (x.raw_price_diff_pct > 0 ? '+' : '') + money(x.raw_price_diff_pct, 0) + '%' : ''))
+            : null,
         ]);
       }
       return el('div', {}, [
