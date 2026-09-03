@@ -1278,55 +1278,111 @@ function periodsSince(start) {
   return out;
 }
 
+// Расчёты ведём по годам: 2026-й — с июня по декабрь, дальше календарные.
+// Долг на границе года НЕ обнуляется: сколько не доплатили в декабре, столько
+// и переходит на 1 января входящим остатком — как стартовый долг у поставщиков.
+const HR_YEAR_FIRST = 2026;
+
 router.get('/api/settlements', async (req, res) => {
   try {
-    const periods = periodsSince(HR_SETTLE_START);
-    const byEmp = new Map();
-    for (const period of periods) {
-      const rows = await computePayouts(period);
-      for (const r of rows) {
-        // Месяц без движения не показываем в лицевом счёте: пустые строки
-        // только удлиняют его и ничего не объясняют.
+    const now = new Date();
+    const curYear = now.getFullYear();
+    const curMonthNo = now.getMonth() + 1;
+    const years = [];
+    for (let y = HR_YEAR_FIRST; y <= Math.max(curYear, HR_YEAR_FIRST); y++) years.push(y);
+
+    let year = parseInt(req.query.year, 10);
+    if (!years.includes(year)) year = years[years.length - 1];
+    const lastMonthOfYear = year === curYear ? curMonthNo : 12;
+    let upto = parseInt(req.query.upto, 10);
+    if (!(upto >= 1 && upto <= lastMonthOfYear)) upto = lastMonthOfYear;
+
+    const firstMonthOfYear = year === HR_YEAR_FIRST ? Number(HR_SETTLE_START.slice(5, 7)) : 1;
+    const ym = (y, m) => y + '-' + String(m).padStart(2, '0');
+    const yearPeriods = [];
+    for (let m = firstMonthOfYear; m <= upto; m++) yearPeriods.push(ym(year, m));
+    // Всё, что было до выбранного года, нужно только чтобы получить входящий остаток.
+    const before = periodsSince(HR_SETTLE_START).filter((p) => p < ym(year, firstMonthOfYear));
+
+    const emp = new Map();      // emp_id → карточка
+    const touch = (r) => {
+      let e = emp.get(r.emp_id);
+      if (!e) {
+        e = { emp_id: r.emp_id, full_name: r.full_name, department_id: r.department_id,
+          department_name: r.department_name, emp_status: r.emp_status,
+          opening: 0, accrued: 0, deducted: 0, net: 0, paid: 0, months: [] };
+        emp.set(r.emp_id, e);
+      }
+      return e;
+    };
+
+    // 1) Входящий остаток: прогоняем прошлые годы, но в лицевой счёт их не кладём.
+    for (const period of before) {
+      for (const r of await computePayouts(period)) {
+        if (!(r.accrued > 0.5 || r.deducted > 0.5 || r.paid > 0.5)) continue;
+        touch(r).opening += r.net - r.paid;
+      }
+    }
+    // 2) Месяцы выбранного года — с движениями и накопленным остатком.
+    const chart = yearPeriods.map((period) => ({ period, accrued: 0, paid: 0, balance: 0 }));
+    for (let i = 0; i < yearPeriods.length; i++) {
+      const period = yearPeriods[i];
+      for (const r of await computePayouts(period)) {
+        const e = touch(r);
         const empty = !(r.accrued > 0.5 || r.deducted > 0.5 || r.paid > 0.5);
-        let e = byEmp.get(r.emp_id);
-        if (!e) {
-          e = { emp_id: r.emp_id, full_name: r.full_name, department_id: r.department_id,
-            department_name: r.department_name, emp_status: r.emp_status,
-            accrued: 0, deducted: 0, net: 0, paid: 0, months: [] };
-          byEmp.set(r.emp_id, e);
-        }
         if (empty) continue;
         e.accrued += r.accrued; e.deducted += r.deducted; e.net += r.net; e.paid += r.paid;
         e.months.push({ period, accrued: r.accrued, deducted: r.deducted, net: r.net, paid: r.paid,
           remainder: r.net - r.paid, pay_dates: (r.payouts || []).map((p) => p.pay_date).filter(Boolean) });
+        chart[i].accrued += r.accrued; chart[i].paid += r.paid;
       }
     }
 
     const items = [];
-    byEmp.forEach((e) => {
-      // Баланс копим сквозным итогом: переплата одного месяца гасит долг
-      // другого — иначе у одного человека были бы одновременно долг и переплата.
-      let run = 0;
+    emp.forEach((e) => {
+      // Остаток копим сквозным итогом от входящего: переплата одного месяца
+      // гасит долг другого, иначе у человека были бы сразу долг и переплата.
+      let run = e.opening;
       e.months.forEach((m) => { run += m.remainder; m.balance = run; });
       const balance = run;
-      // «Тянется с» — первый месяц, с которого долг больше не обнулялся.
       let since = null;
       for (let i = e.months.length - 1; i >= 0; i--) {
         if (e.months[i].balance <= 0.5) break;
         since = e.months[i].period;
       }
+      if (!e.months.length && Math.abs(balance) < 0.5) return;   // ни движений, ни долга
       const lastPay = e.months.reduce((acc, m) => m.pay_dates.reduce((a, d) => (a && a > d ? a : d), acc), null);
-      if (!e.months.length && Math.abs(balance) < 0.5) return;   // ни движения, ни долга — не показываем
-      items.push({ ...e, balance, since, last_pay_date: lastPay });
+      items.push({ ...e, balance, since: since || (e.opening > 0.5 && !e.months.length ? 'opening' : since), last_pay_date: lastPay });
+    });
+
+    // Общий долг компании на конец каждого месяца — для линии на графике.
+    chart.forEach((c, i) => {
+      c.balance = items.reduce((s, x) => {
+        const m = x.months.filter((mm) => mm.period <= chart[i].period);
+        return s + (m.length ? m[m.length - 1].balance : x.opening);
+      }, 0);
     });
 
     items.sort((a, b) => b.balance - a.balance || a.full_name.localeCompare(b.full_name));
     const totals = items.reduce((s, x) => ({
-      accrued: s.accrued + x.accrued, paid: s.paid + x.paid,
+      opening: s.opening + x.opening, accrued: s.accrued + x.accrued, paid: s.paid + x.paid,
       debt: s.debt + Math.max(0, x.balance), overpaid: s.overpaid + Math.max(0, -x.balance),
-    }), { accrued: 0, paid: 0, debt: 0, overpaid: 0 });
+    }), { opening: 0, accrued: 0, paid: 0, debt: 0, overpaid: 0 });
 
-    res.json({ start: HR_SETTLE_START, periods, items, totals, count: items.length });
+    // Где долг сосредоточен — по отделам.
+    const byDeptMap = new Map();
+    items.forEach((x) => {
+      const key = x.department_name || 'Без отдела';
+      const d = byDeptMap.get(key) || { name: key, people: 0, accrued: 0, paid: 0, debt: 0 };
+      d.people += 1; d.accrued += x.accrued; d.paid += x.paid; d.debt += Math.max(0, x.balance);
+      byDeptMap.set(key, d);
+    });
+    const byDept = [...byDeptMap.values()].sort((a, b) => b.debt - a.debt || b.accrued - a.accrued);
+
+    res.json({
+      start: HR_SETTLE_START, years, year, upto, last_month: lastMonthOfYear,
+      first_month: firstMonthOfYear, items, totals, by_dept: byDept, chart, count: items.length,
+    });
   } catch (e) {
     console.error('[КАДРЫ] расчёты:', e.message);
     res.status(400).json({ error: e.message });

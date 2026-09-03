@@ -142,40 +142,74 @@
   // ================= РАСЧЁТЫ С СОТРУДНИКАМИ =================
   // Накопительно за всё время: сколько начислили, сколько выдали и сколько
   // остались должны. Кадры считают помесячно, и этот вопрос задать было негде.
-  const setlState = { department: '', q: '', only: '' };   // only: '' | debt | overpaid
+  // Год выбирается отдельно: 2026-й идёт с июня, дальше календарные. Долг на
+  // границе года не обнуляется — переходит входящим остатком.
+  const setlState = { department: '', q: '', only: '', year: 0, upto: 0 };
   let SETL = null;
+  const MON_RU = ['', 'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
+  const dtRu = (s) => { try { return new Date(s).toLocaleDateString('ru-RU'); } catch (e) { return String(s || ''); } };
 
   async function renderSettlements() {
     const c = $('#hr-content');
     c.appendChild(el('div', { class: 'hr-head' }, [
       el('div', {}, [el('div', { class: 'hr-h2' }, 'Расчёты с сотрудниками'),
-        el('div', { class: 'hr-sub' }, 'Сколько начислили, сколько выдали и сколько остались должны — за всё время с июня 2026. Клик по строке — помесячная история.')]),
+        el('div', { class: 'hr-sub' }, 'Сколько начислили, сколько выдали и сколько остались должны. Долг на конец года переходит на следующий. Клик по строке — лицевой счёт помесячно.')]),
     ]));
-    const dSel = deptMulti(setlState, 'department', () => draw(), true);
-    const q = el('input', { class: 'hrf-inp hr-filt hr-filt-q', placeholder: 'Поиск по ФИО', value: setlState.q,
-      oninput: (e) => { setlState.q = e.target.value; clearTimeout(window.__setlT); window.__setlT = setTimeout(draw, 250); } });
-    c.appendChild(el('div', { class: 'hr-filters' }, [dSel, q]));
+    const bar = el('div', { class: 'hr-filters', id: 'hr-setl-bar' }); c.appendChild(bar);
     const box = el('div', { id: 'hr-setl-box' }); c.appendChild(box);
+    await load();
 
-    box.innerHTML = '<div class="hr-loading">Считаю за все месяцы…</div>';
-    try { SETL = await api('/settlements'); }
-    catch (e) { box.innerHTML = ''; box.appendChild(el('div', { class: 'hr-empty' }, 'Ошибка: ' + e.message)); return; }
-    draw();
+    async function load() {
+      const box2 = $('#hr-setl-box');
+      box2.innerHTML = '<div class="hr-loading">Считаю по месяцам…</div>';
+      const p = new URLSearchParams();
+      if (setlState.year) p.set('year', setlState.year);
+      if (setlState.upto) p.set('upto', setlState.upto);
+      try { SETL = await api('/settlements?' + p.toString()); }
+      catch (e) { box2.innerHTML = ''; box2.appendChild(el('div', { class: 'hr-empty' }, 'Ошибка: ' + e.message)); return; }
+      setlState.year = SETL.year; setlState.upto = SETL.upto;
+      drawBar(); draw();
+    }
+
+    function drawBar() {
+      bar.innerHTML = '';
+      const ySel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { setlState.year = Number(e.target.value); setlState.upto = 0; load(); } },
+        (SETL.years || []).map((y) => el('option', { value: String(y), selected: y === SETL.year || null }, String(y) + ' год')));
+      const months = [];
+      for (let m = SETL.first_month; m <= SETL.last_month; m++) months.push(m);
+      const mSel = el('select', { class: 'hrf-inp hr-filt', onchange: (e) => { setlState.upto = Number(e.target.value); load(); } },
+        months.map((m) => el('option', { value: String(m), selected: m === SETL.upto || null }, MON_RU[m])));
+      const dSel = deptMulti(setlState, 'department', draw, true);
+      const q = el('input', { class: 'hrf-inp hr-filt hr-filt-q', placeholder: 'Поиск по ФИО', value: setlState.q,
+        oninput: (e) => { setlState.q = e.target.value; clearTimeout(window.__setlT); window.__setlT = setTimeout(draw, 250); } });
+      bar.appendChild(el('span', { class: 'hr-flab' }, 'Год:')); bar.appendChild(ySel);
+      bar.appendChild(el('span', { class: 'hr-flab' }, 'По состоянию на:')); bar.appendChild(mSel);
+      bar.appendChild(dSel); bar.appendChild(q);
+    }
 
     function draw() {
       const box2 = $('#hr-setl-box'); if (!box2) return;
       box2.innerHTML = '';
       const t = SETL.totals || {};
       box2.appendChild(el('div', { class: 'hr-kpis' }, [
-        kpi('Начислено всего', money(t.accrued), 'ink'),
-        kpi('Выплачено всего', money(t.paid), 'green'),
-        kpi('Должны сотрудникам', money(t.debt), 'red', () => { setlState.only = setlState.only === 'debt' ? '' : 'debt'; draw(); }),
-        kpi('Переплата', money(t.overpaid), 'muted', () => { setlState.only = setlState.only === 'overpaid' ? '' : 'overpaid'; draw(); }),
+        kpi('Долг на начало года', money(t.opening), 'muted'),
+        kpi('Начислено за год', money(t.accrued), 'ink'),
+        kpi('Выплачено за год', money(t.paid), 'green'),
+        kpi('Должны сейчас', money(t.debt), 'red', () => { setlState.only = setlState.only === 'debt' ? '' : 'debt'; draw(); }),
       ]));
+      if (t.overpaid > 0.5) {
+        box2.appendChild(el('div', { class: 'hr-note' }, [
+          'Переплата: ' + money(t.overpaid) + '. ',
+          el('a', { href: 'javascript:void(0)', onclick: () => { setlState.only = setlState.only === 'overpaid' ? '' : 'overpaid'; draw(); } }, 'показать'),
+        ]));
+      }
+
+      box2.appendChild(setlChart(SETL.chart || []));
+      box2.appendChild(setlDepts(SETL.by_dept || []));
 
       const depts = String(setlState.department || '').split(',').filter(Boolean);
       const needle = setlState.q.trim().toLowerCase();
-      let items = SETL.items.filter((x) => {
+      const items = (SETL.items || []).filter((x) => {
         if (depts.length) {
           const ok = depts.includes(String(x.department_id)) || (depts.includes('__none__') && !x.department_id);
           if (!ok) return false;
@@ -187,14 +221,14 @@
       });
       if (setlState.only) {
         box2.appendChild(el('div', { class: 'hr-note' }, [
-          setlState.only === 'debt' ? 'Показаны только те, кому должны.' : 'Показаны только переплаты.',
-          ' ', el('a', { href: 'javascript:void(0)', onclick: () => { setlState.only = ''; draw(); } }, 'показать всех'),
+          setlState.only === 'debt' ? 'Показаны только те, кому должны. ' : 'Показаны только переплаты. ',
+          el('a', { href: 'javascript:void(0)', onclick: () => { setlState.only = ''; draw(); } }, 'показать всех'),
         ]));
       }
       if (!items.length) { box2.appendChild(el('div', { class: 'hr-empty' }, 'Никого не найдено.')); return; }
 
       const head = el('div', { class: 'hr-row head hr-setl' },
-        ['#', 'ФИО', 'Отдел', 'Начислено', 'Выплачено', 'Остаток', 'Тянется с', 'Последняя выплата'].map((h) => el('span', {}, h)));
+        ['#', 'ФИО', 'Отдел', 'На начало', 'Начислено', 'Выплачено', 'Остаток', 'Тянется с'].map((h) => el('span', {}, h)));
       box2.appendChild(el('div', { class: 'hr-list' }, [head, ...items.map((x, i) => el('div', {
         class: 'hr-row hr-setl' + (x.emp_status !== 'active' ? ' dim' : ''),
         style: 'cursor:pointer', onclick: () => openSettlementCard(x),
@@ -202,28 +236,78 @@
         el('span', { class: 'hr-idx' }, String(i + 1)),
         el('span', { style: 'font-weight:700' }, x.full_name),
         el('span', { class: 'muted' }, x.department_name || '—'),
+        el('span', { class: 'tnum muted' }, x.opening ? money(x.opening) : '—'),
         el('span', { class: 'tnum' }, money(x.accrued)),
         el('span', { class: 'tnum' }, money(x.paid)),
         el('span', { class: 'tnum', style: 'font-weight:800;' + (x.balance > 0.5 ? 'color:var(--red)' : (x.balance < -0.5 ? 'color:#8a6d1f' : '')) },
           money(x.balance)),
-        el('span', { class: 'muted' }, x.since ? monthLabel(x.since) : '—'),
-        el('span', { class: 'muted' }, x.last_pay_date ? dtRu(x.last_pay_date) : '—'),
+        el('span', { class: 'muted' }, x.since === 'opening' ? 'с прошлого года' : (x.since ? monthLabel(x.since) : '—')),
       ]))]));
     }
   }
 
-  const dtRu = (s) => { try { return new Date(s).toLocaleDateString('ru-RU'); } catch (e) { return String(s || ''); } };
+  // График по месяцам: столбики «начислено / выплачено» и линия общего долга.
+  // Рисуем своим SVG — как на дашборде Претензий, без внешних библиотек.
+  function setlChart(rows) {
+    if (!rows.length) return el('div');
+    const W = 780, H = 190, padL = 8, padB = 26, padT = 10;
+    const innerW = W - padL * 2, innerH = H - padB - padT;
+    const maxVal = Math.max(1, ...rows.map((r) => Math.max(r.accrued, r.paid, r.balance)));
+    const step = innerW / rows.length;
+    const bw = Math.min(26, step / 3);
+    const y = (v) => padT + innerH - (v / maxVal) * innerH;
+    const parts = [];
+    rows.forEach((r, i) => {
+      const cx = padL + step * i + step / 2;
+      parts.push('<rect x="' + (cx - bw - 2) + '" y="' + y(r.accrued) + '" width="' + bw + '" height="' + (padT + innerH - y(r.accrued)) + '" rx="3" fill="#c8d9bd"></rect>');
+      parts.push('<rect x="' + (cx + 2) + '" y="' + y(r.paid) + '" width="' + bw + '" height="' + (padT + innerH - y(r.paid)) + '" rx="3" fill="#8cc63f"></rect>');
+      parts.push('<text x="' + cx + '" y="' + (H - 8) + '" text-anchor="middle" font-size="10" fill="#7c8a7f">'
+        + (MON_RU[Number(r.period.slice(5, 7))] || '').slice(0, 3) + '</text>');
+    });
+    const pts = rows.map((r, i) => (padL + step * i + step / 2) + ',' + y(r.balance)).join(' ');
+    parts.push('<polyline points="' + pts + '" fill="none" stroke="#bf3f28" stroke-width="2"></polyline>');
+    rows.forEach((r, i) => parts.push('<circle cx="' + (padL + step * i + step / 2) + '" cy="' + y(r.balance) + '" r="3" fill="#bf3f28"></circle>'));
+    return el('div', { class: 'hr-card', style: 'margin-bottom:12px' }, [
+      el('div', { class: 'hr-chart-legend' }, [
+        el('span', {}, [el('i', { style: 'background:#c8d9bd' }), ' начислено']),
+        el('span', {}, [el('i', { style: 'background:#8cc63f' }), ' выплачено']),
+        el('span', {}, [el('i', { style: 'background:#bf3f28' }), ' долг на конец месяца']),
+      ]),
+      el('div', { html: '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" style="width:100%;height:190px">' + parts.join('') + '</svg>' }),
+    ]);
+  }
+
+  function setlDepts(rows) {
+    if (!rows.length) return el('div');
+    const max = Math.max(1, ...rows.map((r) => r.debt));
+    return el('div', { class: 'hr-card', style: 'margin-bottom:12px' }, [
+      el('div', { class: 'hr-card-h' }, 'Долг по отделам'),
+      ...rows.filter((r) => r.debt > 0.5 || r.accrued > 0.5).slice(0, 10).map((r) => el('div', { class: 'hr-dbar' }, [
+        el('span', { class: 'hr-dbar-n' }, r.name + ' · ' + r.people + ' чел.'),
+        el('span', { class: 'hr-dbar-t' }, el('span', { class: 'hr-dbar-f', style: 'width:' + Math.max(2, (r.debt / max) * 100) + '%' })),
+        el('span', { class: 'hr-dbar-v' }, money(r.debt)),
+      ])),
+    ]);
+  }
+
 
   // Лицевой счёт: помесячно, с накопленным остатком в последнем столбце.
   function openSettlementCard(x) {
-    const rows = (x.months || []).map((m) => el('tr', {}, [
+    // Первой строкой — что перешло с прошлого года, иначе непонятно, откуда
+    // взялся остаток, если в этом году движений почти не было.
+    const rows = (x.opening ? [el('tr', { style: 'color:var(--ink-faint)' }, [
+      el('td', {}, 'На начало года'),
+      el('td', { class: 'tnum' }, '—'), el('td', { class: 'tnum' }, '—'),
+      el('td', { class: 'tnum' }, '—'), el('td', { class: 'tnum' }, '—'),
+      el('td', { class: 'tnum', style: 'font-weight:800' }, money(x.opening)),
+    ])] : []).concat((x.months || []).map((m) => el('tr', {}, [
       el('td', {}, monthLabel(m.period)),
       el('td', { class: 'tnum' }, money(m.accrued)),
       el('td', { class: 'tnum' }, money(m.deducted)),
       el('td', { class: 'tnum' }, money(m.net)),
       el('td', { class: 'tnum' }, money(m.paid)),
       el('td', { class: 'tnum', style: 'font-weight:800;' + (m.balance > 0.5 ? 'color:var(--red)' : '') }, money(m.balance)),
-    ]));
+    ])));
     const body = el('div', {}, [
       el('div', { class: 'hr-note' }, x.full_name + ' · ' + (x.department_name || '—')
         + (x.emp_status !== 'active' ? ' · уволен' : '')),
@@ -233,7 +317,7 @@
             .map((h, i) => el('th', { style: i ? 'text-align:right' : '' }, h)))),
           el('tbody', {}, rows),
         ]))
-        : el('div', { class: 'hr-empty' }, 'Движений с июня 2026 не было.'),
+        : el('div', { class: 'hr-empty' }, 'В этом году движений не было.'),
       el('div', { class: 'hr-formula', style: 'margin-top:10px' }, [
         el('div', {}, 'Начислено всего: ' + money(x.accrued)),
         el('div', {}, '− Выплачено всего: ' + money(x.paid)),
