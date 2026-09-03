@@ -1249,9 +1249,90 @@ async function computePayouts(period) {
     else if (overdue) status = 'overdue';
     else if (paid > 0.5) status = 'partial';
     else status = 'pending';
-    return { emp_id: r.emp_id, full_name: r.full_name, department_id: r.department_id, department_name: r.department_name || null, emp_status: r.emp_status, net, paid, remainder, status, payouts: byEmp[r.emp_id] || [] };
+    return { emp_id: r.emp_id, full_name: r.full_name, department_id: r.department_id, department_name: r.department_name || null, emp_status: r.emp_status,
+      accrued: Number(r.accrued) || 0, deducted: Number(r.deducted) || 0,
+      net, paid, remainder, status, payouts: byEmp[r.emp_id] || [] };
   });
 }
+// ===========================================================================
+// Расчёты с сотрудниками: накопительно за всё время
+// ===========================================================================
+// Кадры живут помесячно, и вопрос «сколько мы вообще должны человеку» задать
+// было негде. Считаем тем же кодом, что и вкладка «Выплаты» (computePayouts),
+// просто по всем месяцам сразу — иначе две правды разойдутся при первой правке.
+//
+// Старт — июнь 2026: раньше данные неполные, и накопленный остаток был бы
+// выдуман. Ровно та же причина, по которой в Закупе есть SETTLE_START.
+const HR_SETTLE_START = '2026-06';
+
+function periodsSince(start) {
+  const out = [];
+  const [sy, sm] = start.split('-').map(Number);
+  const now = new Date();
+  let y = sy, m = sm;
+  for (let i = 0; i < 120; i++) {
+    out.push(y + '-' + String(m).padStart(2, '0'));
+    if (y > now.getFullYear() || (y === now.getFullYear() && m >= now.getMonth() + 1)) break;
+    m += 1; if (m > 12) { m = 1; y += 1; }
+  }
+  return out;
+}
+
+router.get('/api/settlements', async (req, res) => {
+  try {
+    const periods = periodsSince(HR_SETTLE_START);
+    const byEmp = new Map();
+    for (const period of periods) {
+      const rows = await computePayouts(period);
+      for (const r of rows) {
+        // Месяц без движения не показываем в лицевом счёте: пустые строки
+        // только удлиняют его и ничего не объясняют.
+        const empty = !(r.accrued > 0.5 || r.deducted > 0.5 || r.paid > 0.5);
+        let e = byEmp.get(r.emp_id);
+        if (!e) {
+          e = { emp_id: r.emp_id, full_name: r.full_name, department_id: r.department_id,
+            department_name: r.department_name, emp_status: r.emp_status,
+            accrued: 0, deducted: 0, net: 0, paid: 0, months: [] };
+          byEmp.set(r.emp_id, e);
+        }
+        if (empty) continue;
+        e.accrued += r.accrued; e.deducted += r.deducted; e.net += r.net; e.paid += r.paid;
+        e.months.push({ period, accrued: r.accrued, deducted: r.deducted, net: r.net, paid: r.paid,
+          remainder: r.net - r.paid, pay_dates: (r.payouts || []).map((p) => p.pay_date).filter(Boolean) });
+      }
+    }
+
+    const items = [];
+    byEmp.forEach((e) => {
+      // Баланс копим сквозным итогом: переплата одного месяца гасит долг
+      // другого — иначе у одного человека были бы одновременно долг и переплата.
+      let run = 0;
+      e.months.forEach((m) => { run += m.remainder; m.balance = run; });
+      const balance = run;
+      // «Тянется с» — первый месяц, с которого долг больше не обнулялся.
+      let since = null;
+      for (let i = e.months.length - 1; i >= 0; i--) {
+        if (e.months[i].balance <= 0.5) break;
+        since = e.months[i].period;
+      }
+      const lastPay = e.months.reduce((acc, m) => m.pay_dates.reduce((a, d) => (a && a > d ? a : d), acc), null);
+      if (!e.months.length && Math.abs(balance) < 0.5) return;   // ни движения, ни долга — не показываем
+      items.push({ ...e, balance, since, last_pay_date: lastPay });
+    });
+
+    items.sort((a, b) => b.balance - a.balance || a.full_name.localeCompare(b.full_name));
+    const totals = items.reduce((s, x) => ({
+      accrued: s.accrued + x.accrued, paid: s.paid + x.paid,
+      debt: s.debt + Math.max(0, x.balance), overpaid: s.overpaid + Math.max(0, -x.balance),
+    }), { accrued: 0, paid: 0, debt: 0, overpaid: 0 });
+
+    res.json({ start: HR_SETTLE_START, periods, items, totals, count: items.length });
+  } catch (e) {
+    console.error('[КАДРЫ] расчёты:', e.message);
+    res.status(400).json({ error: e.message });
+  }
+});
+
 router.get('/api/payouts', async (req, res) => {
   try {
     const period = /^\d{4}-\d{2}$/.test(req.query.period) ? req.query.period : new Date().toISOString().slice(0, 7);

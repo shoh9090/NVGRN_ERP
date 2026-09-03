@@ -125,6 +125,10 @@
 .hr-pr-paid { background: #e8f5e9; color: #2e7d32; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px; }
 .hr-pr-cancelled { background: #fdecea; color: #c0392b; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px; }
 .hr-pay { grid-template-columns: 26px 1.6fr 1fr 1fr 1fr 1fr 1fr 100px; }
+/* Расчёты с сотрудниками: накопительно за всё время */
+.hr-setl { grid-template-columns: 34px 1.6fr 1fr 1fr 1fr 1fr 0.9fr 1fr; }
+.hr-setl .tnum { text-align: right; }
+@media (max-width: 900px) { .hr-setl { grid-template-columns: 28px 1.4fr 1fr 1fr 1fr; } }
 .hr-payst-pending { background: #fff8e1; color: #b25b00; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px; }
 .hr-payst-partial { background: #e8f0fe; color: #1a56c4; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px; }
 .hr-payst-paid { background: #e8f5e9; color: #2e7d32; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px; }
