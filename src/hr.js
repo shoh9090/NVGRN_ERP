@@ -1251,7 +1251,12 @@ async function computePayouts(period) {
      WHERE e.status <> 'archived' ORDER BY e.full_name`, [period])).rows.map(withTotals);
   try {
     const cs = await computeCashSalary(period);
-    rows.forEach((r) => { const b = cs.byEmp[r.emp_id]; r.paid = (Number(r.paid) || 0) + (b ? b.paid : 0); r.deducted = (Number(r.deducted) || 0) + (b ? b.advance : 0); });
+    rows.forEach((r) => {
+      const b = cs.byEmp[r.emp_id];
+      r.paid = (Number(r.paid) || 0) + (b ? b.paid : 0);
+      r.deducted = (Number(r.deducted) || 0) + (b ? b.advance : 0);
+      r.cash_advance = b ? b.advance : 0;
+    });
   } catch (e) { /* ignore */ }
   const pos = (await db.pool.query(
     "SELECT employee_id, id, amount, method, to_char(pay_date,'YYYY-MM-DD') pay_date, comment FROM hr_payouts WHERE period = $1 ORDER BY pay_date, id", [period])).rows;
@@ -1270,8 +1275,13 @@ async function computePayouts(period) {
     else if (overdue) status = 'overdue';
     else if (paid > 0.5) status = 'partial';
     else status = 'pending';
+    // Аванс — это удержание: он уже вычтен из «К выплате». Но деньги человек
+    // получил, поэтому цифру отдаём отдельно: без неё вкладка показывает
+    // «выплачено 13 млн» там, где на руки ушло больше ста.
+    const advance = (Number(r.ded_advance_card) || 0) + (Number(r.ded_advance_cash) || 0)
+      + (Number(r.cash_advance) || 0);
     return { emp_id: r.emp_id, full_name: r.full_name, department_id: r.department_id, department_name: r.department_name || null, emp_status: r.emp_status,
-      accrued: Number(r.accrued) || 0, deducted: Number(r.deducted) || 0,
+      accrued: Number(r.accrued) || 0, deducted: Number(r.deducted) || 0, advance,
       net, paid, remainder, status, payouts: byEmp[r.emp_id] || [] };
   });
 }
@@ -1421,13 +1431,18 @@ router.get('/api/payouts', async (req, res) => {
       || (x.status !== 'none' && !(x.emp_status === 'fired' && x.remainder <= 0.5)));
     items = deptFilterMem(req.query.department, items);
     if (req.query.q) { const q = String(req.query.q).trim().toLowerCase(); items = items.filter((x) => (x.full_name || '').toLowerCase().includes(q)); }
-    const summary = items.reduce((s, x) => ({ net: s.net + x.net, paid: s.paid + x.paid, remainder: s.remainder + x.remainder, overdue: s.overdue + (x.status === 'overdue' ? x.remainder : 0) }), { net: 0, paid: 0, remainder: 0, overdue: 0 });
+    const summary = items.reduce((s, x) => ({ net: s.net + x.net, paid: s.paid + x.paid, advance: s.advance + (Number(x.advance) || 0), remainder: s.remainder + x.remainder, overdue: s.overdue + (x.status === 'overdue' ? x.remainder : 0) }), { net: 0, paid: 0, advance: 0, remainder: 0, overdue: 0 });
+    // Список авансов собираем ДО фильтра по статусу — иначе плитка и её разрез
+    // показывали бы разные суммы.
+    const advances = items.filter((x) => (Number(x.advance) || 0) > 0.5)
+      .map((x) => ({ full_name: x.full_name, department_name: x.department_name, advance: Number(x.advance) }))
+      .sort((a, b) => b.advance - a.advance);
     if (req.query.status) items = items.filter((x) => x.status === req.query.status);
     // Наличные выплаты из Кассы, которые не удалось привязать к сотруднику по ФИО —
     // показываем во вкладке «Выплаты» (это про выдачу денег, а не про расчёт).
     let cashUnmatched = [];
     try { cashUnmatched = (await computeCashSalary(period)).unmatched; } catch (e) { /* не критично */ }
-    res.json({ period, due: payoutDue(period), items, summary, count: items.length, cash_unmatched: cashUnmatched });
+    res.json({ period, due: payoutDue(period), items, summary, advances, count: items.length, cash_unmatched: cashUnmatched });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 // Выгрузка «К выплате» в Excel (те же фильтры, что в списке; уволенных без остатка и «нет начисления» не берём).

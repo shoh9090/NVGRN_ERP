@@ -556,10 +556,21 @@
       let d; try { d = await api('/payouts?' + p.toString()); } catch (e) { box.innerHTML = ''; box.appendChild(el('div', { class: 'hr-empty' }, 'Ошибка: ' + e.message)); return; }
       box.innerHTML = '';
       const s = d.summary;
-      box.appendChild(el('div', { class: 'hr-kpis hr-kpis-4', style: 'margin-bottom:12px' }, [
-        kpi('К выплате (всего)', money(s.net), 'green'), kpi('Выплачено', money(s.paid), 'ink'),
+      // Аванс — удержание: он уже вычтен из «К выплате», но деньги человек
+      // получил. Без отдельной плитки вкладка показывала «выплачено 13 млн»
+      // там, где на руки ушло больше ста, и цифра выглядела ошибкой.
+      const adv = Number(s.advance) || 0;
+      box.appendChild(el('div', { class: 'hr-kpis ' + (adv > 0.5 ? 'hr-kpis-5' : 'hr-kpis-4'), style: 'margin-bottom:12px' }, [
+        kpi('К выплате (всего)', money(s.net), 'green', null, adv > 0.5 ? 'уже без аванса' : ''),
+        adv > 0.5 ? kpi('Аванс выдан', money(adv), 'ink', () => openAdvances(d.advances), 'клик — кому сколько') : null,
+        kpi('Выплачено', money(s.paid), 'ink', null, adv > 0.5 ? 'сверх аванса' : ''),
         kpi('Остаток', money(s.remainder), 'green'), kpi('Просрочено', money(s.overdue), 'muted'),
       ]));
+      if (adv > 0.5) {
+        box.appendChild(el('div', { class: 'hr-sub', style: 'margin:-6px 0 10px' },
+          'На руки за месяц ушло ' + money(adv + (Number(s.paid) || 0))
+          + ' — аванс ' + money(adv) + ' плюс выплаты ' + money(s.paid) + '.'));
+      }
       // Наличные выплаты из Кассы без привязки к сотруднику — разбираются здесь.
       const unmatchedBox = cashUnmatchedBlock(d.cash_unmatched);
       if (unmatchedBox) box.appendChild(unmatchedBox);
@@ -781,6 +792,24 @@
     ]);
     modal(title + ' — в разрезе', body, [el('button', { class: 'btn-primary', onclick: closeModal }, 'Закрыть')]);
   }
+  // Кому выдан аванс (клик по плитке «Аванс выдан» во вкладке «Выплаты»).
+  function openAdvances(items) {
+    const list = (items || []).map((r) => ({ name: r.full_name, dept: r.department_name || '—', val: Number(r.advance) || 0 }))
+      .filter((x) => x.val > 0.5).sort((a, b) => b.val - a.val);
+    const total = list.reduce((s, x) => s + x.val, 0);
+    const body = el('div', {}, [
+      el('div', { class: 'hr-note' }, 'Аванс за месяц · ' + list.length + ' чел. · итого ' + money(total)),
+      list.length ? el('div', { class: 'oe-table-wrap', style: 'max-height:56vh;margin-top:8px' }, el('table', { class: 'dict-table' }, [
+        el('thead', {}, el('tr', {}, [el('th', {}, '#'), el('th', {}, 'ФИО'), el('th', {}, 'Отдел'), el('th', { style: 'text-align:right' }, 'Аванс')].map((x) => x))),
+        el('tbody', {}, [...list.map((x, i) => el('tr', {}, [
+          el('td', { class: 'muted' }, String(i + 1)), el('td', {}, x.name), el('td', { class: 'muted' }, x.dept),
+          el('td', { class: 'tnum', style: 'text-align:right;font-weight:700' }, money(x.val))])),
+        el('tr', { style: 'background:#f2f5f1;font-weight:800' }, [el('td', {}, ''), el('td', {}, 'ИТОГО'), el('td', {}, ''), el('td', { class: 'tnum', style: 'text-align:right' }, money(total))])]),
+      ])) : el('div', { class: 'hr-empty' }, 'Авансов нет.'),
+    ]);
+    modal('Кому выдан аванс', body, [el('button', { class: 'btn-primary', onclick: closeModal }, 'Закрыть')]);
+  }
+
   // Кому переплачено (клик по «переплата» на дашборде).
   function openOverpaid(list) {
     const total = (list || []).reduce((s, x) => s + (Number(x.amount) || 0), 0);
