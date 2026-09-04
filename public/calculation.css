@@ -691,3 +691,26 @@ input.calc-rate-inp:focus { border-color: var(--lime-d); background: var(--surfa
   display: flex; justify-content: space-between; gap: 18px;
   font-size: 10.5px; color: var(--ink-faint); margin-top: 3px; line-height: 1.3;
 }
+
+/* Порядок действий прямо на экране: наведение раскрывает подробность */
+.calc-sb-steps { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.calc-sb-step {
+  display: flex; align-items: center; gap: 7px; cursor: help;
+  background: var(--surface-2); border: 1px solid var(--line-soft);
+  border-radius: 999px; padding: 5px 12px 5px 6px; font-size: 12.5px; color: var(--ink-soft);
+}
+.calc-sb-step:hover { border-color: var(--lime-d); color: var(--ink); }
+.calc-sb-step-n {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; border-radius: 50%;
+  background: var(--forest); color: #fff; font-size: 11px; font-weight: 700;
+}
+/* Почему проценты поехали, а суммы нет — самый частый вопрос по этой таблице */
+.calc-sb-why {
+  font-size: 12.5px; color: var(--ink-soft); line-height: 1.5;
+  padding: 8px 10px; margin-bottom: 8px;
+  background: var(--surface); border-radius: 8px;
+}
+.calc-sb-parts tbody tr[data-hint] { cursor: help; }
+.calc-sb-parts tbody tr[data-hint]:hover td { background: var(--surface); }
+.calc-sb-t thead th[data-hint] { cursor: help; text-decoration: underline dotted var(--ink-faint); text-underline-offset: 3px; }
