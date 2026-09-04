@@ -1417,6 +1417,16 @@ const mul = (v, k) => (v === null || v === undefined ? null : v * k);
 const sumRu = (v) => Math.round(v).toLocaleString('ru-RU');
 function sandboxVerdict(lines, delta, minMargin) {
   if (!lines.length) return null;
+  // Без объёма «сейчас» сравнивать не с чем: «было» посчиталось бы от нуля или
+  // от случайной единицы, и любая скидка выглядела бы выгодной.
+  const noQty = lines.filter((x) => !(x.qty > 0));
+  if (noQty.length) {
+    return {
+      level: 'warn',
+      text: 'Впишите объём, который клиент берёт сейчас' + (lines.length > 1 ? ' («' + noQty.map((x) => x.name).join('», «') + '»)' : '')
+        + '. Без него не с чем сравнивать: скидка будет выглядеть выгодной при любых цифрах.',
+    };
+  }
   if (lines.some((x) => x.now.incomplete)) {
     return { level: 'warn', text: 'В сценарии есть позиции с незаполненной себестоимостью — вывод по ним делать не из чего.' };
   }

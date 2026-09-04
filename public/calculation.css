@@ -685,3 +685,9 @@ input.calc-rate-inp:focus { border-color: var(--lime-d); background: var(--surfa
 .calc-sb-verdict.good { background: var(--lime-soft); color: var(--forest); border: 1px solid var(--lime-d); }
 .calc-sb-verdict.bad { background: var(--red-soft); color: var(--red); border: 1px solid #e8c7bd; }
 .calc-sb-verdict.warn { background: var(--amber-soft); color: #8a5a00; border: 1px solid #eddcae; }
+
+/* Подписи под парой «было → стало»: без них непонятно, какое поле какое */
+.calc-sb-hint {
+  display: flex; justify-content: space-between; gap: 18px;
+  font-size: 10.5px; color: var(--ink-faint); margin-top: 3px; line-height: 1.3;
+}

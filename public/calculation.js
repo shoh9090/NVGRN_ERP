@@ -2071,6 +2071,17 @@
     ]);
   }
 
+  // Пара «было → стало» с подписями под полями. Без подписей непонятно, какое
+  // из двух полей какое: в первый раз объём «сейчас» приняли за «сколько дать».
+  function pairCell(nodes, leftLabel, rightLabel) {
+    return el('div', {}, [
+      el('div', { class: 'calc-sb-pair' }, nodes),
+      el('div', { class: 'calc-sb-hint' }, [
+        el('span', {}, leftLabel), el('span', {}, rightLabel),
+      ]),
+    ]);
+  }
+
   const sbNum = (v, dec) => (v === null || v === undefined ? dash() : el('span', {}, money(v, dec === undefined ? 0 : dec)));
   const sbPct = (v) => (v === null || v === undefined ? '—' : (v > 0 ? '+' : '') + money(v, 1) + '%');
 
@@ -2093,17 +2104,17 @@
           el('div', { class: 'calc-dim calc-sb-sub' }, x.sheet_title
             + (x.approved ? '' : ' · не утверждён')),
         ]),
-        el('td', { class: 'tnum' }, el('div', { class: 'calc-sb-pair' }, [
-          sbInput(line.qty, (v) => { line.qty = v; }),
+        el('td', { class: 'tnum' }, pairCell([
+          sbInput(line.qty, (v) => { line.qty = v; }, { placeholder: 'сейчас' }),
           el('span', { class: 'calc-dim' }, '→'),
-          sbInput(line.qty_new, (v) => { line.qty_new = v; }, { placeholder: String(line.qty || '') }),
-        ])),
-        el('td', { class: 'tnum' }, el('div', { class: 'calc-sb-pair' }, [
+          sbInput(line.qty_new, (v) => { line.qty_new = v; }, { placeholder: 'в сценарии' }),
+        ], 'берёт сейчас', 'обещает взять')),
+        el('td', { class: 'tnum' }, pairCell([
           el('span', { class: 'calc-dim' }, x.price === null ? 'нет цены' : money0(x.price)),
           el('span', { class: 'calc-dim' }, '→'),
           sbInput(line.price_new, (v) => { line.price_new = v; },
             { step: '100', placeholder: x.price === null ? '' : String(Math.round(x.price)) }),
-        ])),
+        ], 'по прайсу', 'просит')),
         el('td', { class: 'tnum' + (x.discount_pct < 0 ? ' calc-sb-bad' : '') }, sbPct(x.discount_pct)),
         el('td', {
           class: 'tnum' + (x.below_min ? ' calc-sb-bad' : ''),
@@ -2213,7 +2224,10 @@
       items.slice(0, 200).forEach((it) => list.appendChild(el('div', {
         class: 'calc-sb-pick-it',
         onclick: () => {
-          sb.lines.push({ product_id: it.id, sheet: it.sheet, qty: 1, qty_new: null, price_new: null });
+          // Объём НЕ заполняем единицей: тогда «было» считалось от одной штуки,
+          // и любой сценарий выглядел выгодным. Пусто — значит человек ещё не
+          // сказал, сколько клиент берёт сейчас, и сравнивать не с чем.
+          sb.lines.push({ product_id: it.id, sheet: it.sheet, qty: null, qty_new: null, price_new: null });
           m.close(); sbRecalc();
         },
       }, [
