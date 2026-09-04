@@ -695,9 +695,30 @@ router.post('/api/events', J, async (req, res) => {
     for (const pr of affected) await recomputeAccrFact(empId, pr.period);
     recalcNote = affected.filter((p) => p.was_accrued).map((p) => p.period);
   }
+  // Увольнение и приём РЕАЛЬНО меняют карточку — как перевод меняет отдел.
+  // Раньше событие ложилось только в журнал: в истории человек уволен, а в
+  // «Сотрудниках» он активен и сидит в ФОТ. Одно и то же действие должно
+  // давать один и тот же результат, из какого бы места его ни сделали.
+  let statusNote = '';
+  if (type === 'fire') {
+    const cur = (await db.pool.query('SELECT status FROM hr_employees WHERE id=$1', [empId])).rows[0];
+    if (!cur) return res.status(404).json({ error: 'Сотрудник не найден' });
+    await db.pool.query(
+      "UPDATE hr_employees SET status='fired', fire_date=$1, updated_at=now() WHERE id=$2", [b.event_date, empId]);
+    statusNote = cur.status === 'fired' ? 'Дата увольнения обновлена' : 'Сотрудник переведён в уволенные';
+  } else if (type === 'hire') {
+    const cur = (await db.pool.query('SELECT status FROM hr_employees WHERE id=$1', [empId])).rows[0];
+    if (!cur) return res.status(404).json({ error: 'Сотрудник не найден' });
+    if (cur.status === 'fired') {
+      await db.pool.query(
+        "UPDATE hr_employees SET status='active', fire_date=NULL, hire_date=$1, updated_at=now() WHERE id=$2",
+        [b.event_date, empId]);
+      statusNote = 'Сотрудник возвращён в активные';
+    }
+  }
   await addEvent(empId, type, b.event_date, { date_to: b.date_to || null, from_text: fromText, to_text: toText, comment: b.comment || null, created_by: req.user.id });
   await db.log(req.user.id, 'hr_event_add', `${type} emp#${empId}`);
-  res.json({ ok: true, recalculated: recalcNote });
+  res.json({ ok: true, recalculated: recalcNote, status_note: statusNote });
 });
 router.post('/api/events/:id(\\d+)/delete', async (req, res) => {
   await db.pool.query('DELETE FROM hr_events WHERE id=$1', [req.params.id]);

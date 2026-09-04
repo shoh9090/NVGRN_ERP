@@ -420,6 +420,9 @@
       try {
         const rr = await post('/events', { employee_id: empSel.value, event_type: typeSel.value, event_date: dFrom.value, date_to: (dToRow.style.display !== 'none' ? dTo.value : null) || null, to_department_id: (typeSel.value === 'transfer' ? deptSel.value : null), to_position: (typeSel.value === 'transfer' ? posInp.value : null), to_schedule: (typeSel.value === 'transfer' ? schedSel.value : null), new_salary: (typeSel.value === 'salary' ? mval(salInp) : null), comment: comment.value });
         toast(typeSel.value === 'transfer' ? 'Сотрудник переведён ✅' : (typeSel.value === 'salary' ? 'Оклад изменён ✅' : 'Событие добавлено'));
+        // Увольнение/приём меняют и карточку — говорим об этом вслух, чтобы не
+        // пришлось идти проверять вкладку «Сотрудники».
+        if (rr && rr.status_note) toast(rr.status_note + ' ✅');
         // Смена оклада пересчитывает и уже начисленные месяцы — честно предупреждаем какие.
         if (rr && rr.recalculated && rr.recalculated.length) {
           toast('⚠ Пересчитаны уже начисленные месяцы: ' + rr.recalculated.map(monthLabel).join(', ') + ' — проверьте суммы', true);
