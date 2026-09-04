@@ -467,12 +467,23 @@
       kpi('Начислено (ФОТ)', moneyShort(t.accrued), 'green', () => openBreakdown('Начислено', d.emps || [], (r) => r.accrued, dashState.period)),
       kpi('− Удержания', moneyShort(uderzh), 'muted', () => openBreakdown('Удержания', d.emps || [], (r) => (Number(r.deducted) || 0) - (Number(r.advances) || 0), dashState.period)),
       kpi('− Выплачено', moneyShort(vyplacheno), 'ink', () => openBreakdown('Выплачено (с авансами)', d.emps || [], (r) => (Number(r.paid) || 0) + (Number(r.advances) || 0), dashState.period), t.advances ? 'в т.ч. аванс ' + moneyShort(t.advances) : ''),
-      // Переплату показываем только если она реальная (не копейки от округления) и есть кому.
+      // Клик по плитке всегда показывает то, что на ней написано: кому сколько
+      // осталось выплатить. Переплата — сноска рядом, у неё своя ссылка: раньше
+      // она подменяла собой разрез по плитке, и вместо остатков открывался
+      // список из одного человека.
       kpi('= К выплате', moneyShort(t.to_pay), 'green',
-        (t.overpay >= 1 && (d.overpaid || []).length) ? () => openOverpaid(d.overpaid) : () => openBreakdown('К выплате (остаток)', d.emps || [], (r) => Math.max(0, r.to_pay), dashState.period),
-        (t.overpay >= 1 && (d.overpaid || []).length) ? 'переплата ' + moneyShort(t.overpay) + ' · клик' : 'клик'),
+        () => openBreakdown('К выплате (остаток)', d.emps || [], (r) => Math.max(0, r.to_pay), dashState.period),
+        'клик — кому сколько'),
     ]));
-    box.appendChild(el('div', { class: 'hr-sub', style: 'margin:2px 0 6px' }, 'Начислено − Удержания − Выплачено (с авансами) = К выплате.' + (t.overpay >= 1 ? ' Переплата ' + moneyShort(t.overpay) + ' (кому-то выдали больше — на общий остаток не влияет).' : '') + '  ·  Сотрудников: ' + t.count));
+    const hasOverpay = t.overpay >= 1 && (d.overpaid || []).length;
+    box.appendChild(el('div', { class: 'hr-sub', style: 'margin:2px 0 6px' }, [
+      'Начислено − Удержания − Выплачено (с авансами) = К выплате.',
+      hasOverpay ? ' ' : null,
+      hasOverpay ? el('a', { href: 'javascript:void(0)', onclick: () => openOverpaid(d.overpaid) },
+        'Переплата ' + moneyShort(t.overpay)) : null,
+      hasOverpay ? ' (кому-то выдали больше — на общий остаток не влияет).' : null,
+      '  ·  Сотрудников: ' + t.count,
+    ]));
     // Налоги на ФОТ (ручной ввод по видам): ИНПС, НДФЛ, соцналог + итог и % от ФОТ.
     let tax; try { tax = await api('/fot-taxes?period=' + dashState.period); } catch (e) { tax = { inps: 0, ndfl: 0, social: 0 }; }
     const taxInps = minp(tax.inps || '', { placeholder: '0' });
