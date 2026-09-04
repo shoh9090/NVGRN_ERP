@@ -2280,6 +2280,12 @@
           usd ? el('div', { style: 'font-size:11px;color:var(--muted);margin-top:-4px' },
             'в т.ч. валюта: $' + money(usd) + (rate ? ' по ' + money(rate) : '') + (usdInUzs ? ' ≈ ' + money(usdInUzs) + ' сум' : '')) : null,
           usd ? el('div', { style: 'font-size:11px;color:var(--muted)' }, 'всего ≈ ' + money(x.balance) + ' сум') : null,
+          // Обнал без подтверждения: с банка списано, в кассу не зачислено.
+          // Из-за него касса уходит в минус, и без подписи это выглядит ошибкой.
+          Number(x.pending_in) > 0.5 ? el('div', {
+            style: 'font-size:11px;color:#8a5a00;margin-top:3px;line-height:1.4',
+            title: 'Перевод в кассу ждёт подтверждения фактической суммы. Пока не подтвердите — в остаток не входит.',
+          }, '⏳ ждёт подтверждения ' + money(x.pending_in) + ' сум') : null,
         ];
       })(),
       // Правка кошелька и выгрузка — иконками без подписей: карточка должна показывать деньги,

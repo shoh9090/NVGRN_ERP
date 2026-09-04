@@ -684,12 +684,20 @@ async function walletBalances() {
         WHEN t.tx_type='transfer' AND t.wallet_to_id=w.id AND NOT t.needs_cash_confirm THEN COALESCE(t.fx_amount,0)
         WHEN t.tx_type='out' AND t.wallet_id=w.id THEN -COALESCE(t.fx_amount,0)
         WHEN t.tx_type='transfer' AND t.wallet_id=w.id THEN -COALESCE(t.fx_amount,0)
-        ELSE 0 END) ELSE 0 END), 0) AS usd
+        ELSE 0 END) ELSE 0 END), 0) AS usd,
+      -- Обнал, который ещё не подтвердили фактической суммой. С банка деньги
+      -- уже списаны, а в кассу не зачислены — из-за этого касса может уйти в
+      -- минус, и без этой цифры непонятно, почему.
+      COALESCE(SUM(CASE WHEN t.tx_type='transfer' AND t.wallet_to_id=w.id
+        AND t.needs_cash_confirm AND t.currency <> 'USD' THEN t.amount ELSE 0 END), 0) AS pending_in
     FROM cash_wallets w
     LEFT JOIN cash_transactions t ON (t.wallet_id = w.id OR t.wallet_to_id = w.id)
     WHERE w.status='active'
     GROUP BY w.id ORDER BY w.sort_order, w.id`);
-  return r.rows.map((x) => { const uzs = Number(x.uzs) || 0, usd = Number(x.usd) || 0; return { ...x, uzs, usd, rate, balance: uzs + usd * rate }; });
+  return r.rows.map((x) => {
+    const uzs = Number(x.uzs) || 0, usd = Number(x.usd) || 0;
+    return { ...x, uzs, usd, rate, pending_in: Number(x.pending_in) || 0, balance: uzs + usd * rate };
+  });
 }
 router.get('/api/wallets', async (req, res) => { res.json({ wallets: await walletBalances() }); });
 
