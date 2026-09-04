@@ -2254,6 +2254,45 @@
     }
   }
 
+  // Из чего сложился остаток кошелька. Нужен, когда цифра выглядит неправильной:
+  // отрицательная касса без объяснения читается как поломка системы, а причина
+  // обычно скучная — не введён начальный остаток или обнал не подтверждён.
+  function openWalletWhy(x) {
+    const b = x.breakdown || {};
+    const rows = [
+      ['Начальный остаток', b.opening, 'Введён кнопкой «Начальные остатки» на вкладке «Транзакции». Не введён — система знает только то, что потрачено после её запуска.'],
+      ['Приход', b.inflow, 'Поступления, записанные на этот кошелёк.'],
+      ['Переводы в кошелёк', b.transfer_in, 'Подтверждённые переводы с других кошельков. Неподтверждённый обнал сюда не входит.'],
+      ['Расход', b.outflow === undefined ? null : -b.outflow, 'Выплаты и оплаты с этого кошелька.'],
+      ['Переводы из кошелька', b.transfer_out === undefined ? null : -b.transfer_out, 'Переводы отсюда на другие кошельки.'],
+    ];
+    const line = (label, val, hint) => el('tr', { title: hint }, [
+      el('td', {}, label),
+      el('td', { class: 'tnum', style: 'text-align:right;font-weight:700;' + (val < 0 ? 'color:var(--red)' : '') },
+        val === null || val === undefined ? '—' : money(val)),
+    ]);
+    const body = el('div', {}, [
+      el('div', { class: 'cash-sub', style: 'margin-bottom:8px' },
+        'Остаток — это сумма всех движений по кошельку за всё время, а не за месяц.'),
+      el('table', { class: 'dict-table' }, [
+        el('tbody', {}, rows.map((r) => line(r[0], r[1], r[2])).concat([
+          el('tr', { style: 'background:#f2f5f1;font-weight:800' }, [
+            el('td', {}, 'Остаток в сумах'),
+            el('td', { class: 'tnum', style: 'text-align:right;' + (Number(x.uzs) < 0 ? 'color:var(--red)' : '') }, money(x.uzs)),
+          ]),
+        ])),
+      ]),
+      Number(x.pending_in) > 0.5 ? el('div', { class: 'cash-pnl-warn', style: 'margin-top:10px' },
+        '⏳ Ещё ' + money(x.pending_in) + ' сум переведено сюда, но не подтверждено фактической суммой. '
+        + 'До подтверждения в остаток не входит.') : null,
+      !Number(b.opening) ? el('div', { class: 'cash-sub', style: 'margin-top:10px' },
+        'Начальный остаток не введён. Если наличные были до запуска системы, впишите их: '
+        + '«Транзакции» → «💼 Начальные остатки». Иначе в журнале есть только расходы, и остаток уходит в минус.') : null,
+    ]);
+    modal('Из чего сложился остаток — ' + x.name, body,
+      [el('button', { class: 'btn-primary', onclick: closeModal }, 'Закрыть')]);
+  }
+
   async function renderWallets() {
     const c = $('#cash-content'); c.innerHTML = '<div class="cash-loading">Загрузка…</div>';
     let data; try { data = await api('/wallets'); } catch (e) { c.innerHTML = ''; c.appendChild(el('div', { class: 'cash-empty' }, 'Ошибка: ' + e.message)); return; }
@@ -2286,6 +2325,12 @@
             style: 'font-size:11px;color:#8a5a00;margin-top:3px;line-height:1.4',
             title: 'Перевод в кассу ждёт подтверждения фактической суммы. Пока не подтвердите — в остаток не входит.',
           }, '⏳ ждёт подтверждения ' + money(x.pending_in) + ' сум') : null,
+          // Отрицательный остаток без объяснения выглядит поломкой. Ссылка
+          // показывает, из чего он сложился, — не листая весь журнал.
+          el('a', {
+            href: 'javascript:void(0)', style: 'font-size:11px;color:var(--muted);margin-top:3px;display:inline-block',
+            onclick: (e) => { e.stopPropagation(); openWalletWhy(x); },
+          }, 'почему столько'),
         ];
       })(),
       // Правка кошелька и выгрузка — иконками без подписей: карточка должна показывать деньги,

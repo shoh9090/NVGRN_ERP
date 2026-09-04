@@ -689,14 +689,33 @@ async function walletBalances() {
       -- уже списаны, а в кассу не зачислены — из-за этого касса может уйти в
       -- минус, и без этой цифры непонятно, почему.
       COALESCE(SUM(CASE WHEN t.tx_type='transfer' AND t.wallet_to_id=w.id
-        AND t.needs_cash_confirm AND t.currency <> 'USD' THEN t.amount ELSE 0 END), 0) AS pending_in
+        AND t.needs_cash_confirm AND t.currency <> 'USD' THEN t.amount ELSE 0 END), 0) AS pending_in,
+      -- Разбор остатка: из чего он сложился. Без него отрицательный остаток
+      -- невозможно объяснить, не листая весь журнал руками.
+      COALESCE(SUM(CASE WHEN t.currency <> 'USD' AND t.source='opening' AND t.wallet_id=w.id
+        THEN (CASE WHEN t.tx_type='out' THEN -t.amount ELSE t.amount END) ELSE 0 END), 0) AS b_opening,
+      COALESCE(SUM(CASE WHEN t.currency <> 'USD' AND t.source<>'opening' AND t.tx_type='in' AND t.wallet_id=w.id
+        THEN t.amount ELSE 0 END), 0) AS b_in,
+      COALESCE(SUM(CASE WHEN t.currency <> 'USD' AND t.source<>'opening' AND t.tx_type='out' AND t.wallet_id=w.id
+        THEN t.amount ELSE 0 END), 0) AS b_out,
+      COALESCE(SUM(CASE WHEN t.currency <> 'USD' AND t.tx_type='transfer' AND t.wallet_to_id=w.id
+        AND NOT t.needs_cash_confirm THEN t.amount ELSE 0 END), 0) AS b_tr_in,
+      COALESCE(SUM(CASE WHEN t.currency <> 'USD' AND t.tx_type='transfer' AND t.wallet_id=w.id
+        THEN t.amount ELSE 0 END), 0) AS b_tr_out
     FROM cash_wallets w
     LEFT JOIN cash_transactions t ON (t.wallet_id = w.id OR t.wallet_to_id = w.id)
     WHERE w.status='active'
     GROUP BY w.id ORDER BY w.sort_order, w.id`);
   return r.rows.map((x) => {
     const uzs = Number(x.uzs) || 0, usd = Number(x.usd) || 0;
-    return { ...x, uzs, usd, rate, pending_in: Number(x.pending_in) || 0, balance: uzs + usd * rate };
+    const n = (k) => Number(x[k]) || 0;
+    return {
+      ...x, uzs, usd, rate, pending_in: n('pending_in'), balance: uzs + usd * rate,
+      breakdown: {
+        opening: n('b_opening'), inflow: n('b_in'), outflow: n('b_out'),
+        transfer_in: n('b_tr_in'), transfer_out: n('b_tr_out'),
+      },
+    };
   });
 }
 router.get('/api/wallets', async (req, res) => { res.json({ wallets: await walletBalances() }); });
