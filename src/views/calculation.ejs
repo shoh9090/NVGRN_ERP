@@ -20,6 +20,9 @@
   <main id="calc-main"></main>
 
   <script>window.HUB_USER = { isAdmin: <%= user.isAdmin ? "true" : "false" %>, isFinance: <%= user.isFinance ? "true" : "false" %>, name: "<%= user.name %>" };</script>
+  <!-- Разрешённые вкладки. null — все; список — только они. Решает сервер, экран
+       только не рисует лишнее: данные каждой вкладки закрыты отдельно. -->
+  <script>window.HUB_TABS = <%- JSON.stringify(allowedTabs) %>;</script>
   <script src="/static/conn.js?v=<%= V %>"></script>
   <script src="/static/bell.js?v=<%= V %>"></script>
   <script src="/static/calculation.js?v=<%= V %>"></script>

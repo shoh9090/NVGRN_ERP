@@ -25,6 +25,27 @@
             <input type="checkbox" name="tile_ids" value="<%= t.id %>" <%= checked ? 'checked' : '' %>>
             <%= t.icon %> <%= t.title %>
           </label>
+          <%
+            // Вкладки есть не у всех плиток: показываем их там, где доступ к вкладке
+            // реально проверяется на сервере. Иначе галочка ничего бы не значила.
+            var myTabs = (tileTabs || []).filter(function(x){ return x.tile_url === t.url; });
+            var onTabs = myTabs.filter(function(x){ return (roleTabs || []).some(function(y){ return y.role_id === r.id && y.tab_id === x.id; }); });
+          %>
+          <% if (myTabs.length) { %>
+            <details class="tabs-box" <%= onTabs.length ? 'open' : '' %>>
+              <summary><%= onTabs.length ? ('Вкладки — отмечено ' + onTabs.length + ' из ' + myTabs.length) : 'Все вкладки — настроить' %></summary>
+              <div class="tabs-grid">
+                <% myTabs.forEach(function(tab) { %>
+                  <% var tabOn = onTabs.some(function(x){ return x.id === tab.id; }); %>
+                  <label class="check">
+                    <input type="checkbox" name="tab_ids" value="<%= tab.id %>" <%= tabOn ? 'checked' : '' %>>
+                    <%= tab.name %>
+                  </label>
+                <% }) %>
+              </div>
+              <p class="muted tabs-note">Не отмечено ни одной вкладки — доступны все. Отметили хотя бы одну — видны только отмеченные.</p>
+            </details>
+          <% } %>
         <% }) %>
         <button type="submit">Сохранить доступ</button>
       </form>

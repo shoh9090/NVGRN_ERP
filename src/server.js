@@ -223,12 +223,19 @@ admin.get('/roles', async (req, res) => {
   );
   const tiles = await db.pool.query('SELECT * FROM tiles ORDER BY sort_order, id');
   const roleTiles = await db.pool.query('SELECT * FROM role_tiles');
+  // Вкладки показываем только у тех плиток, где доступ к ним ДЕЙСТВИТЕЛЬНО
+  // проверяется на сервере. Галочка, которая ничего не закрывает, хуже её
+  // отсутствия: администратор был бы уверен, что доступ закрыт.
+  const tileTabs = await db.pool.query('SELECT * FROM tile_tabs ORDER BY tile_url, sort, id').catch(() => ({ rows: [] }));
+  const roleTabs = await db.pool.query('SELECT * FROM role_tile_tabs').catch(() => ({ rows: [] }));
   res.render('admin/roles', {
     ...(await adminContext('roles')),
     user: req.user,
     roles: roles.rows,
     tiles: tiles.rows,
     roleTiles: roleTiles.rows,
+    tileTabs: tileTabs.rows,
+    roleTabs: roleTabs.rows,
   });
 });
 
@@ -251,6 +258,15 @@ admin.post('/roles/:id/tiles', async (req, res) => {
   await db.pool.query('DELETE FROM role_tiles WHERE role_id = $1', [req.params.id]);
   for (const tid of tileIds) {
     await db.pool.query('INSERT INTO role_tiles (role_id, tile_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [req.params.id, tid]);
+  }
+  // Вкладки сохраняются той же формой. Не отмечено ни одной — ограничения нет,
+  // доступны все вкладки плитки.
+  let tabIds = req.body.tab_ids || [];
+  if (!Array.isArray(tabIds)) tabIds = [tabIds];
+  await db.pool.query('DELETE FROM role_tile_tabs WHERE role_id = $1', [req.params.id]).catch(() => {});
+  for (const tabId of tabIds) {
+    await db.pool.query('INSERT INTO role_tile_tabs (role_id, tab_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+      [req.params.id, tabId]).catch(() => {});
   }
   await db.log(req.user.id, 'set_role_tiles', req.params.id);
   res.redirect('/admin/roles');

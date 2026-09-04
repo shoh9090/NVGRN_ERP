@@ -109,8 +109,18 @@
   };
   // Товарные листы устроены одинаково, поэтому у них общий загрузчик и общий вид.
   const SKU_SHEETS = ['retail', 'horeca250', 'horeca500', 'salads', 'bunches', 'culinary', 'cutveg'];
+  // Доступ по вкладкам: сервер прислал список разрешённых (null — все). Экран
+  // просто не рисует лишние кнопки; сами данные закрыты на сервере отдельно,
+  // иначе защиты бы не было — адрес можно набрать руками.
+  const TABS_OK = (window.HUB_TABS === null || window.HUB_TABS === undefined)
+    ? null : new Set(window.HUB_TABS);
+  const tabAllowed = (key) => TABS_OK === null || TABS_OK.has(key);
+  const VISIBLE_SHEETS = SHEETS.filter((s) => tabAllowed(s.key));
+
   // Открываем плитку на сводке: первое, что нужно увидеть, — где горит.
-  let sheet = 'summary';
+  // Если сводка закрыта — на первой доступной вкладке.
+  let sheet = tabAllowed('summary') ? 'summary'
+    : (VISIBLE_SHEETS[0] ? VISIBLE_SHEETS[0].key : 'summary');
   let DATA = null;
   const canEdit = () => !!(DATA && DATA.can_edit);
 
@@ -374,7 +384,7 @@
 
   // Вкладки листов — внизу, как в Excel
   function sheetTabs() {
-    return el('div', { class: 'calc-tabs' }, SHEETS.map((s) => el('button', {
+    return el('div', { class: 'calc-tabs' }, VISIBLE_SHEETS.map((s) => el('button', {
       class: 'calc-tab' + (sheet === s.key ? ' on' : '') + (s.ready ? '' : ' soon'),
       title: s.ready ? s.title : 'Этот лист ещё не собран',
       onclick: () => {
@@ -862,8 +872,8 @@
       if (!open) return [tr];
       return [tr, el('tr', { class: 'calc-sum-open' }, el('td', { colspan: '8' }, [
         costBar(x.components),
-        el('button', { class: 'calc-tbtn small', onclick: (e) => { e.stopPropagation(); sheet = x.sheet; skuMode = 'current'; load(); } },
-          'Открыть лист «' + x.sheet_title + '»'),
+        tabAllowed(x.sheet) ? el('button', { class: 'calc-tbtn small', onclick: (e) => { e.stopPropagation(); sheet = x.sheet; skuMode = 'current'; load(); } },
+          'Открыть лист «' + x.sheet_title + '»') : null,
       ]))];
     });
     const flat = [].concat(...rows);
@@ -2109,7 +2119,9 @@
         el('td', {}, el('button', { class: 'calc-dots', title: 'Действия', onclick: (e) => {
           e.stopPropagation();
           dotsMenu(e.currentTarget, [
-            { label: 'Открыть лист «' + x.sheet_title + '»', onClick: () => { sheet = x.sheet; skuMode = 'approved'; load(); } },
+            // Лист может быть закрыт доступом — тогда и предлагать его незачем.
+            ...(tabAllowed(x.sheet) ? [{ label: 'Открыть лист «' + x.sheet_title + '»',
+              onClick: () => { sheet = x.sheet; skuMode = 'approved'; load(); } }] : []),
             { label: 'Убрать позицию', danger: true, onClick: () => { sb.lines.splice(i, 1); sbRecalc(); } },
           ]);
         } }, '⋯')),

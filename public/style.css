@@ -87,6 +87,14 @@ label input,label select{margin-top:5px;font-weight:500;text-transform:none;lett
 .checks{display:flex;flex-wrap:wrap;gap:10px;border:none;padding:8px 0;margin:0;align-items:center}
 .check{display:inline-flex;gap:7px;align-items:center;font-weight:600;font-size:13px;text-transform:none;letter-spacing:0}
 .check input{width:16px;height:16px;margin:0;accent-color:var(--lime-d)}
+/* Вкладки внутри плитки: свой блок под галочкой плитки, на всю ширину строки */
+.checks .tabs-box{flex:0 0 100%;margin:0 0 4px 24px;padding:0 0 0 14px;border-left:2px solid var(--lime-d)}
+.tabs-box>summary{cursor:pointer;font-size:12px;color:var(--ink-soft);padding:5px 0;list-style:none}
+.tabs-box>summary::-webkit-details-marker{display:none}
+.tabs-box>summary::before{content:'▸ ';color:var(--ink-faint)}
+.tabs-box[open]>summary::before{content:'▾ '}
+.tabs-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:4px 14px;padding:4px 0 2px}
+.tabs-note{font-size:12px;margin:6px 0 8px}
 .error{
   background:var(--red-soft);color:var(--red);border:1px solid #e8c7bd;
   padding:11px 14px;border-radius:var(--radius-s);margin-bottom:12px;font-size:13px;font-weight:600;

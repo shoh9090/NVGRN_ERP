@@ -18,6 +18,7 @@ const XLSX = require('xlsx');
 const db = require('./db');
 const engine = require('./calculation-engine');
 const integrations = require('./integrations');
+const tabs = require('./tab-access');
 
 const router = express.Router();
 const J = express.json({ limit: '1mb' });
@@ -80,9 +81,42 @@ router.use(async (req, res, next) => {
   next();
 });
 
+// Какая вкладка стоит за адресом. Нужно, чтобы закрыть данные вкладки на
+// сервере, а не только спрятать кнопку: иначе адрес можно набрать руками.
+// null — маршрут общий для всей плитки (справочные данные, ручная цена сырья);
+// такие защищены своими проверками прав.
+async function calcTabOf(req) {
+  const p = req.path;
+  if (p.startsWith('/api/sandbox')) return 'sandbox';
+  if (p.startsWith('/api/summary') || p.startsWith('/api/price-export')) return 'summary';
+  if (p.startsWith('/api/production') || p.startsWith('/api/output')
+    || p.startsWith('/api/costs') || p.startsWith('/api/sales-fact')) return 'production';
+  if (p.startsWith('/api/packaging')) return 'packaging';
+  if (p.startsWith('/api/recipes')) return 'recipes';
+  const m = p.match(/^\/api\/sheet\/([a-z0-9]+)/i);
+  if (m && SHEETS[m[1]]) return m[1];
+  // Правка товара идёт по его id, без листа в адресе. Спрашиваем лист у базы:
+  // иначе ограничение обходилось бы — зная id, можно было бы править товар
+  // с закрытого листа.
+  const prod = p.match(/^\/api\/sheet-product\/(\d+)/);
+  if (prod) {
+    const r = await db.pool.query('SELECT sheet FROM calc_sheet_products WHERE id = $1', [prod[1]]);
+    const s = r.rows[0] && r.rows[0].sheet;
+    return SHEETS[s] ? s : null;
+  }
+  return null;
+}
+router.use(tabs.requireTab(db.pool, '/calculation', calcTabOf));
+
 router.get('/', async (req, res) => {
   const settings = await db.getSettings();
-  res.render('calculation', { settings, user: req.user });
+  // Экран сам не решает, что показывать: список разрешённых вкладок приходит
+  // с сервера, тем же кодом, что закрывает данные.
+  const allowed = await tabs.allowedTabs(db.pool, req.user, '/calculation');
+  res.render('calculation', {
+    settings, user: req.user,
+    allowedTabs: allowed === null ? null : Array.from(allowed),
+  });
 });
 
 // ===========================================================================
@@ -1851,3 +1885,6 @@ router.post('/api/sd-prices/refresh', J, async (req, res) => {
 });
 
 module.exports = router;
+// Открыто для тестов: именно это соответствие решает, данные какой вкладки
+// закрывать. Промах здесь тихо открыл бы чужой лист.
+module.exports.calcTabOf = calcTabOf;
