@@ -84,6 +84,7 @@
   // Листы, как внизу в Excel. Готовые открываются, остальные пока недоступны.
   const SHEETS = [
     { key: 'summary', title: 'Сводка', ready: true },
+    { key: 'sandbox', title: 'Песочница', ready: true },
     { key: 'production', title: 'Производство', ready: true },
     { key: 'packaging', title: 'Упаковка', ready: true },
     { key: 'recipes', title: 'Рецептуры', ready: true },
@@ -324,6 +325,7 @@
   async function load() {
     showLoading();
     if (sheet === 'summary') return loadSummary();
+    if (sheet === 'sandbox') return loadSandbox();
     if (sheet === 'packaging') return loadPackaging();
     if (sheet === 'recipes') return loadRecipes();
     if (SKU_SHEETS.includes(sheet)) return loadSku();
@@ -363,9 +365,10 @@
     main.innerHTML = '';
     main.appendChild(sheetTabs());              // вкладки листов — сверху
     const body = sheet === 'summary' ? summarySheet()
-      : sheet === 'packaging' ? packagingSheet()
-        : sheet === 'recipes' ? recipesSheet()
-          : SKU_SHEETS.includes(sheet) ? skuSheet() : production();
+      : sheet === 'sandbox' ? sandboxSheet()
+        : sheet === 'packaging' ? packagingSheet()
+          : sheet === 'recipes' ? recipesSheet()
+            : SKU_SHEETS.includes(sheet) ? skuSheet() : production();
     main.appendChild(el('div', { class: 'calc-sheet' }, body));
   }
 
@@ -1876,6 +1879,238 @@
       toast('Цены обновлены');
       await load();
     } catch (e) { toast(e.message, true); }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Песочница: «а что если»
+  // ---------------------------------------------------------------------------
+  // Черновик поверх утверждённого расчёта: меняем цену и объём, смотрим, что
+  // будет с деньгами. Ничего не сохраняется — закрыл вкладку, и сценария нет.
+  // Все цифры считает сервер тем же двигателем, что и лист.
+  const sb = { mode: 'approved', priceList: 'price', lines: [], open: {} };
+  let SB = null;        // каталог товаров со всех листов
+  let SB_CALC = null;   // посчитанный сценарий
+
+  async function loadSandbox() {
+    try { SB = await api('/sandbox?mode=' + sb.mode); }
+    catch (e) {
+      const main = $('#calc-main'); main.innerHTML = '';
+      main.appendChild(sheetTabs());
+      main.appendChild(el('div', { class: 'calc-empty' }, 'Не удалось загрузить: ' + e.message));
+      return;
+    }
+    await sbRecalc();
+  }
+
+  async function sbRecalc() {
+    if (!sb.lines.length) { SB_CALC = null; return render(); }
+    try {
+      SB_CALC = await post('/sandbox/calc', {
+        mode: sb.mode, price_list: sb.priceList,
+        lines: sb.lines.map((l) => ({
+          product_id: l.product_id, sheet: l.sheet,
+          qty: l.qty, qty_new: l.qty_new, price_new: l.price_new,
+        })),
+      });
+    } catch (e) { toast(e.message, true); }
+    render();
+  }
+
+  // Поле ввода в строке сценария. Пересчитываем по уходу из поля, а не на
+  // каждую цифру: иначе таблица перерисовывалась бы под курсором.
+  function sbInput(value, onSet, opts = {}) {
+    return el('input', {
+      type: 'number', class: 'calc-sb-in', min: '0', step: opts.step || '1',
+      value: (value === null || value === undefined) ? '' : value,
+      placeholder: opts.placeholder || '',
+      onchange: (e) => {
+        const v = e.target.value.trim();
+        onSet(v === '' ? null : Number(v));
+        sbRecalc();
+      },
+    });
+  }
+
+  function sandboxSheet() {
+    const box = el('div');
+    box.appendChild(el('div', { class: 'calc-sheet-head' }, [
+      el('div', { class: 'calc-sheet-top' }, [
+        el('h1', { class: 'calc-h1' }, 'Песочница'),
+        el('button', { class: 'calc-add', onclick: openSbPicker }, '+ позиция'),
+      ]),
+      el('div', { class: 'calc-sub' },
+        'Черновик «а что если»: меняем цену и объём и смотрим, что будет с деньгами. '
+        + 'Ничего не сохраняется и на утверждённый расчёт не влияет.'),
+    ]));
+
+    // Панель: от какой версии считаем и по какому прайсу.
+    const modes = el('div', { class: 'calc-appr-modes' }, [
+      el('button', { class: 'calc-appr-mode' + (sb.mode === 'approved' ? ' on' : ''),
+        onclick: () => { if (sb.mode !== 'approved') { sb.mode = 'approved'; loadSandbox(); } } }, 'Утверждённый'),
+      el('button', { class: 'calc-appr-mode' + (sb.mode === 'current' ? ' on' : ''),
+        onclick: () => { if (sb.mode !== 'current') { sb.mode = 'current'; loadSandbox(); } } }, 'Текущий'),
+    ]);
+    const priceSel = el('select', { class: 'calc-sel', onchange: (e) => { sb.priceList = e.target.value; sbRecalc(); } },
+      (SB.price_lists || []).map((p) => el('option', { value: p.code, selected: sb.priceList === p.code }, p.label)));
+    box.appendChild(el('div', { class: 'calc-appr' }, [
+      modes,
+      el('div', { class: 'calc-appr-info' }, sb.mode === 'approved'
+        ? 'считаем от утверждённых версий листов'
+        : 'считаем по сегодняшним ценам — цифры могут поехать завтра'),
+      el('div', { class: 'calc-appr-btns' }, [el('span', { class: 'calc-dim' }, 'Прайс'), priceSel]),
+    ]));
+
+    if (sb.mode === 'approved' && (SB.not_approved || []).length) {
+      box.appendChild(el('div', { class: 'calc-msg warn' },
+        '⚠️ Не утверждали: ' + SB.not_approved.join(', ') + ' — по этим листам взят текущий расчёт.'));
+    }
+
+    if (!sb.lines.length) {
+      box.appendChild(el('div', { class: 'calc-empty' }, el('div', {},
+        'Добавьте товар кнопкой «+ позиция» вверху. Впишите объём и новую цену — посчитаем, окупается ли скидка.')));
+      return box;
+    }
+    if (!SB_CALC) { box.appendChild(el('div', { class: 'calc-empty' }, 'Считаем…')); return box; }
+
+    box.appendChild(sbTable());
+    box.appendChild(sbTotals());
+    return box;
+  }
+
+  const sbNum = (v, dec) => (v === null || v === undefined ? dash() : el('span', {}, money(v, dec === undefined ? 0 : dec)));
+  const sbPct = (v) => (v === null || v === undefined ? '—' : (v > 0 ? '+' : '') + money(v, 1) + '%');
+
+  function sbTable() {
+    const head = el('tr', {}, ['Товар', 'Объём', 'Цена', 'Скидка', 'Вклад с ед.', 'Вклад всего', '']
+      .map((t, i) => el('th', { class: i && i < 6 ? 'tnum' : '' }, t)));
+
+    const rows = [];
+    SB_CALC.lines.forEach((x, i) => {
+      const line = sb.lines[i] || {};
+      const open = !!sb.open[x.product_id];
+      const bad = x.delta_total !== null && x.delta_total < 0;
+
+      rows.push(el('tr', { class: 'calc-sb-row' + (open ? ' on' : ''), onclick: (e) => {
+        if (e.target.closest('input, select, button')) return;
+        sb.open[x.product_id] = !open; render();
+      } }, [
+        el('td', {}, [
+          el('div', { class: 'calc-sb-name' }, (open ? '▾ ' : '▸ ') + x.name),
+          el('div', { class: 'calc-dim calc-sb-sub' }, x.sheet_title
+            + (x.approved ? '' : ' · не утверждён')),
+        ]),
+        el('td', { class: 'tnum' }, el('div', { class: 'calc-sb-pair' }, [
+          sbInput(line.qty, (v) => { line.qty = v; }),
+          el('span', { class: 'calc-dim' }, '→'),
+          sbInput(line.qty_new, (v) => { line.qty_new = v; }, { placeholder: String(line.qty || '') }),
+        ])),
+        el('td', { class: 'tnum' }, el('div', { class: 'calc-sb-pair' }, [
+          el('span', { class: 'calc-dim' }, x.price === null ? 'нет цены' : money0(x.price)),
+          el('span', { class: 'calc-dim' }, '→'),
+          sbInput(line.price_new, (v) => { line.price_new = v; },
+            { step: '100', placeholder: x.price === null ? '' : String(Math.round(x.price)) }),
+        ])),
+        el('td', { class: 'tnum' + (x.discount_pct < 0 ? ' calc-sb-bad' : '') }, sbPct(x.discount_pct)),
+        el('td', { class: 'tnum' }, [sbNum(x.was.contribution), el('span', { class: 'calc-dim' }, ' → '), sbNum(x.now.contribution)]),
+        el('td', { class: 'tnum' + (bad ? ' calc-sb-bad' : '') },
+          [sbNum(x.was_total), el('span', { class: 'calc-dim' }, ' → '), sbNum(x.now_total)]),
+        el('td', {}, el('button', { class: 'calc-dots', title: 'Действия', onclick: (e) => {
+          e.stopPropagation();
+          dotsMenu(e.currentTarget, [
+            { label: 'Открыть лист «' + x.sheet_title + '»', onClick: () => { sheet = x.sheet; skuMode = 'approved'; load(); } },
+            { label: 'Убрать позицию', danger: true, onClick: () => { sb.lines.splice(i, 1); sbRecalc(); } },
+          ]);
+        } }, '⋯')),
+      ]));
+
+      if (open) rows.push(el('tr', { class: 'calc-sum-open' }, el('td', { colspan: '7' }, sbParts(x))));
+    });
+
+    return el('div', { class: 'calc-sum-wrap' },
+      el('table', { class: 'calc-sum-t calc-sb-t' }, [el('thead', {}, head), el('tbody', {}, rows)]));
+  }
+
+  // Структура цены в процентах. Все строки плюс маржа дают ровно 100%:
+  // считаем доли от цены, потому что скидка режет именно её.
+  function sbParts(x) {
+    if (x.now.incomplete) {
+      return el('div', { class: 'calc-msg warn' },
+        '⚠️ Расчёт неполный — не хватает: '
+        + (x.now.missing_keys || []).map((k) => COMP_NAMES[k] || k).join(', ')
+        + '. Пока не заполнят, доли и вклад посчитать не из чего.');
+    }
+    const wasBy = new Map((x.was.parts || []).map((p) => [p.key, p]));
+    const rows = (x.now.parts || []).map((p) => {
+      const w = wasBy.get(p.key);
+      return el('tr', { class: p.key === 'margin' ? 'calc-sb-margin' : '' }, [
+        el('td', {}, p.label),
+        el('td', { class: 'tnum calc-dim' }, w ? money(w.pct, 1) + '%' : '—'),
+        el('td', { class: 'tnum calc-dim' }, w ? money0(w.value) : '—'),
+        el('td', { class: 'tnum' }, money(p.pct, 1) + '%'),
+        el('td', { class: 'tnum' }, money0(p.value)),
+      ]);
+    });
+    const head = el('tr', {}, ['Из чего складывается цена', 'было %', 'было', 'стало %', 'стало']
+      .map((t, i) => el('th', { class: i ? 'tnum' : '' }, t)));
+    const note = [];
+    if (x.need_qty !== null && x.delta_total !== null && x.delta_total < 0) {
+      note.push(el('div', { class: 'calc-sb-note' },
+        'Чтобы вернуть прежний вклад по этой позиции, объём должен быть '
+        + money(x.need_qty, 0) + ' вместо ' + money(x.qty_new, 0) + '.'));
+    }
+    return el('div', {}, [
+      el('table', { class: 'calc-sb-parts' }, [el('thead', {}, head), el('tbody', {}, rows)]),
+    ].concat(note));
+  }
+
+  function sbTotals() {
+    const t = SB_CALC.totals || {};
+    const bad = t.delta !== null && t.delta < 0;
+    const tile = (label, value, cls) => el('div', { class: 'calc-tile' + (cls ? ' ' + cls : '') }, [
+      el('div', { class: 'calc-tile-l' }, label),
+      el('div', { class: 'calc-tile-v' }, value === null || value === undefined ? '—' : money0(value)),
+    ]);
+    const box = el('div', { class: 'calc-tiles calc-sb-tiles' }, [
+      tile('Вклад сейчас', t.was),
+      tile('Вклад в сценарии', t.now),
+      tile('Разница', t.delta, bad ? 'calc-tile-red' : ''),
+    ]);
+    const wrap = el('div', {}, box);
+    if (t.incomplete) {
+      wrap.appendChild(el('div', { class: 'calc-msg warn' },
+        '⚠️ В сценарии есть позиции с незаполненной себестоимостью — итог по ним не считается.'));
+    }
+    return wrap;
+  }
+
+  // Выбор товара: одним списком со всех листов — продажник не обязан помнить,
+  // на каком листе лежит Айсберг.
+  function openSbPicker() {
+    const q = el('input', { type: 'text', class: 'calc-sb-q', placeholder: 'Поиск по названию' });
+    const list = el('div', { class: 'calc-sb-pick' });
+    const draw = () => {
+      const s = q.value.trim().toLowerCase();
+      list.innerHTML = '';
+      const used = new Set(sb.lines.map((l) => l.product_id));
+      const items = (SB.items || []).filter((it) => !used.has(it.id)
+        && (!s || it.name.toLowerCase().includes(s)));
+      if (!items.length) return list.appendChild(el('div', { class: 'calc-dim' }, 'Ничего не найдено.'));
+      items.slice(0, 200).forEach((it) => list.appendChild(el('div', {
+        class: 'calc-sb-pick-it',
+        onclick: () => {
+          sb.lines.push({ product_id: it.id, sheet: it.sheet, qty: 1, qty_new: null, price_new: null });
+          m.close(); sbRecalc();
+        },
+      }, [
+        el('div', {}, it.name),
+        el('div', { class: 'calc-dim calc-sb-sub' }, it.sheet_title),
+      ])));
+    };
+    q.addEventListener('input', draw);
+    draw();
+    const m = calcModal('Добавить позицию', el('div', {}, [q, list]),
+      [el('button', { class: 'calc-btn', onclick: () => m.close() }, 'Закрыть')]);
+    setTimeout(() => q.focus(), 30);
   }
 
   // ---------------------------------------------------------------------------

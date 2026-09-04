@@ -621,3 +621,46 @@ input.calc-rate-inp:focus { border-color: var(--lime-d); background: var(--surfa
 .calc-sd-row td { color: var(--ink-soft); }
 .calc-sd-tools { display: flex; align-items: center; gap: 5px; margin-top: 4px; }
 .calc-sd-sel { flex: 1; min-width: 0; font-size: 11px; }
+
+/* ---------------------------------------------------------------------------
+   Песочница «а что если»
+   --------------------------------------------------------------------------- */
+.calc-sb-t td { vertical-align: middle; }
+.calc-sb-row { cursor: pointer; }
+.calc-sb-row:hover td { background: #fbfaf4; }
+.calc-sb-row.on td { background: var(--surface-2); }
+.calc-sb-name { font-weight: 700; }
+.calc-sb-sub { font-size: 11px; margin-top: 2px; }
+.calc-sb-bad { color: var(--red); font-weight: 700; }
+.calc-sb-pair { display: flex; align-items: center; justify-content: flex-end; gap: 5px; }
+.calc-sb-in {
+  width: 74px; border: 1px solid var(--line-soft); background: var(--surface);
+  font-family: inherit; font-size: 13px; text-align: right; padding: 5px 7px;
+  border-radius: 7px; color: var(--ink); font-variant-numeric: tabular-nums;
+}
+.calc-sb-in:hover { border-color: var(--line); }
+.calc-sb-in:focus { border-color: var(--lime-d); outline: none; }
+.calc-sb-tiles { margin-top: 14px; }
+
+/* Из чего складывается цена: доли считаются от цены, поэтому строки с маржой
+   в сумме дают ровно 100% */
+.calc-sb-parts { width: 100%; border-collapse: collapse; font-size: 13px; }
+.calc-sb-parts th {
+  text-align: left; font-size: 11px; font-weight: 700; color: var(--ink-soft);
+  padding: 0 10px 6px; text-transform: uppercase; letter-spacing: .3px;
+}
+.calc-sb-parts th.tnum, .calc-sb-parts td.tnum { text-align: right; font-variant-numeric: tabular-nums; }
+.calc-sb-parts td { padding: 5px 10px; border-top: 1px solid var(--line-soft); }
+.calc-sb-parts .calc-sb-margin td { font-weight: 800; background: var(--lime-soft); }
+.calc-sb-note { margin-top: 10px; font-size: 12.5px; color: #8a5a00; }
+
+/* Выбор товара в сценарий */
+.calc-sb-q {
+  width: 100%; box-sizing: border-box; border: 1px solid var(--line-soft);
+  background: var(--surface); font-family: inherit; font-size: 14px;
+  padding: 9px 11px; border-radius: 9px; color: var(--ink); margin-bottom: 10px;
+}
+.calc-sb-q:focus { border-color: var(--lime-d); outline: none; }
+.calc-sb-pick { max-height: 340px; overflow: auto; }
+.calc-sb-pick-it { padding: 8px 10px; border-radius: 8px; cursor: pointer; }
+.calc-sb-pick-it:hover { background: var(--lime-soft); }

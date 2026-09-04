@@ -447,12 +447,76 @@ function skuEconomics(input, opts) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Песочница: разбор цены на доли и «вклад»
+// ---------------------------------------------------------------------------
+// Отвечает на вопрос «можно ли дать скидку». Для этого цену надо разложить на
+// две разные по природе части:
+//   • ПЕРЕМЕННЫЕ — сырьё, упаковка, ретро и НДС. Растут вместе с объёмом:
+//     сделали вдвое больше — потратили вдвое больше.
+//   • ПОСТОЯННЫЕ — ФОТ и производственные на штуку. Они пришли с листа
+//     «Производство» уже поделёнными на общий выпуск: аренда и зарплаты за
+//     месяц одни и те же, сколько бы пачек мы ни сделали.
+// ВКЛАД = цена − переменные. Это то, что позиция приносит на покрытие
+// постоянных расходов. Скидка окупается, если общий вклад не упал.
+//
+// Собственных денежных правил здесь нет: считаем через skuEconomics, а сверху
+// только раскладываем уже посчитанное. Иначе песочница разошлась бы с листом.
+function sandboxLine(input, opts) {
+  const e = skuEconomics(input, opts);
+  const c = e.components;
+  const price = e.price;
+  const val = (k) => (c[k] === null || c[k] === undefined ? null : c[k]);
+
+  // Чего-то не хватает — «вклад» посчитать нельзя. Ноль вместо пропуска дал бы
+  // красивую, но неправдивую картинку: скидка выглядела бы посильной.
+  const incomplete = e.missing > 0 || e.cost === null || price === null;
+
+  const d = num(input && input.defect_pct) / 100;
+  const varCost = incomplete ? null : (num(val('pack')) + num(val('raw'))) * (1 + d);
+  const fixCost = incomplete ? null : (num(val('production')) + num(val('labor'))) * (1 + d);
+  const contribution = incomplete ? null : price - varCost - num(e.retro) - num(e.vat);
+
+  // Доли от ЦЕНЫ: все строки плюс маржа дают ровно 100%. Считаем от цены, а не
+  // от себестоимости, потому что скидка режет именно цену — так их можно
+  // сравнивать напрямую.
+  const share = (v) => (price > 0 && v !== null && v !== undefined ? (v / price) * 100 : null);
+  const line = (key, label, value) => ({ key, label, value, pct: share(value) });
+  const parts = [
+    line('raw', 'Зелень', val('raw')),
+    line('pack', 'Упаковка', val('pack')),
+    line('labor', 'Оплата труда', val('labor')),
+    line('production', 'Производ. и накладные', val('production')),
+    line('defect', 'Брак', e.cost === null ? null : e.cost * d),
+    line('retro', 'Ретро', e.retro),
+    line('vat', 'НДС', e.vat),
+    line('tax', 'Налог на прибыль', e.profit_tax),
+    line('margin', 'Маржа', e.net_profit),
+  ].filter((p) => p.value !== null && p.value !== undefined && p.value !== 0);
+
+  return {
+    price,
+    cost: e.cost,
+    cost_defect: e.cost_defect,
+    missing: e.missing,
+    missing_keys: e.missing_keys,
+    incomplete,
+    var_cost: varCost,
+    fix_cost: fixCost,
+    contribution,
+    net_profit: e.net_profit,
+    net_pct: e.net_pct,
+    parts,
+  };
+}
+
 module.exports = {
   FORMULA_VERSION,
   perUnit,
   SKU_COMPONENTS,
   SKU_SHEET_COMPONENTS,
   skuEconomics,
+  sandboxLine,
   STALE_PRICE_DAYS,
   calculateProduct,
   calcRecipeRow,

@@ -1279,6 +1279,151 @@ router.get('/api/summary', async (req, res) => {
 });
 
 // ===========================================================================
+// Песочница: «а что если»
+// ===========================================================================
+// Черновик поверх утверждённого расчёта. НИЧЕГО не сохраняет и ничего не
+// меняет: покрутил цены и объёмы, посмотрел, закрыл. Поэтому здесь нет ни
+// одной операции записи — только чтение и счёт.
+//
+// Отправная точка — утверждённая версия листа: она стабильна, вчера и сегодня
+// одинаковая. Если лист ещё ни разу не утверждали, берём текущий расчёт и
+// честно об этом пишем.
+const PRICE_LISTS = [
+  { code: 'price', label: 'Прайс 1' },
+  { code: 'price2', label: 'Прайс 2 (КАМ)' },
+  { code: 'sd', label: 'Цена в SalesDoctor' },
+];
+
+async function sandboxSource(sheet, approved) {
+  if (approved) {
+    const last = await lastApproval(sheet);
+    if (last) return { data: last.data, at: last.approved_at, approved: true };
+  }
+  return { data: await sheetPayload(sheet), at: null, approved: false };
+}
+
+// Товары листа в том виде, в каком их считает песочница. Себестоимость берём
+// уже посчитанную (снимок или лист) — заново не пересчитываем, иначе цифры
+// разошлись бы с листом.
+function sandboxItems(sheet, got) {
+  const output = (got.data && got.data.base && got.data.base.output) || null;
+  return ((got.data && got.data.products) || []).map((p) => {
+    const c = (p.calc && p.calc.components) || {};
+    const n = (v) => (v === undefined ? null : v);
+    return {
+      id: p.id, name: p.name, sheet, sheet_title: SHEETS[sheet],
+      approved: !!got.approved, approved_at: got.at,
+      output,
+      components: { pack: n(c.pack), raw: n(c.raw), production: n(c.production), labor: n(c.labor) },
+      defect_pct: Number(p.defect_pct) || 0,
+      retro_pct: Number(p.retro_pct) || 0,
+      vat_pct: Number(p.vat_pct) || 0,
+      profit_tax_pct: Number(p.profit_tax_pct) || 0,
+      price: n(p.price), price2: n(p.price2), sd_price: n(p.sd_price),
+    };
+  });
+}
+
+// Каталог для выбора товара. Собирается по всем листам сразу — продажник не
+// обязан помнить, на каком листе лежит Айсберг.
+router.get('/api/sandbox', async (req, res) => {
+  const approved = String(req.query.mode || 'approved') !== 'current';
+  try {
+    const items = [];
+    const notApproved = [];
+    for (const key of Object.keys(SHEETS)) {
+      const got = await sandboxSource(key, approved);
+      if (approved && !got.approved) notApproved.push(SHEETS[key]);
+      items.push(...sandboxItems(key, got));
+    }
+    const base = await perUnitByKind();
+    res.json({
+      mode: approved ? 'approved' : 'current',
+      price_lists: PRICE_LISTS,
+      output_now: base.output,
+      not_approved: notApproved,
+      items,
+    });
+  } catch (e) {
+    console.error('[КАЛЬКУЛЯЦИЯ] песочница:', e.message);
+    res.status(400).json({ error: e.message });
+  }
+});
+
+const PRICE_FIELD = { price: 'price', price2: 'price2', sd: 'sd_price' };
+
+router.post('/api/sandbox/calc', J, async (req, res) => {
+  const b = req.body || {};
+  const approved = String(b.mode || 'approved') !== 'current';
+  const field = PRICE_FIELD[String(b.price_list || 'price')] || 'price';
+  const lines = Array.isArray(b.lines) ? b.lines.slice(0, 50) : [];
+  try {
+    // Тянем только те листы, товары с которых реально в сценарии.
+    const wanted = new Set(lines.map((l) => String(l.sheet || '')).filter((s) => SHEETS[s]));
+    const byId = new Map();
+    for (const key of wanted) {
+      const got = await sandboxSource(key, approved);
+      sandboxItems(key, got).forEach((it) => byId.set(it.id, it));
+    }
+
+    const opts = { components: engine.SKU_SHEET_COMPONENTS };
+    const out = [];
+    for (const l of lines) {
+      const it = byId.get(Number(l.product_id));
+      if (!it) continue;
+      const basePrice = numOrNull(it[field]);
+      const newPrice = l.price_new === undefined || l.price_new === null || l.price_new === ''
+        ? basePrice : numOrNull(l.price_new);
+      const qty = Math.max(0, asNum(l.qty));
+      const qtyNew = l.qty_new === undefined || l.qty_new === null || l.qty_new === ''
+        ? qty : Math.max(0, asNum(l.qty_new));
+
+      const common = {
+        ...it.components,
+        defect_pct: it.defect_pct, retro_pct: it.retro_pct,
+        vat_pct: it.vat_pct, profit_tax_pct: it.profit_tax_pct,
+      };
+      const was = engine.sandboxLine({ ...common, price: basePrice }, opts);
+      const now = engine.sandboxLine({ ...common, price: newPrice }, opts);
+
+      const wasTotal = was.contribution === null ? null : was.contribution * qty;
+      const nowTotal = now.contribution === null ? null : now.contribution * qtyNew;
+      out.push({
+        product_id: it.id, name: it.name, sheet: it.sheet, sheet_title: it.sheet_title,
+        approved: it.approved, approved_at: it.approved_at,
+        qty, qty_new: qtyNew,
+        price: basePrice, price_new: newPrice,
+        discount_pct: (basePrice > 0 && newPrice !== null) ? ((newPrice - basePrice) / basePrice) * 100 : null,
+        was, now,
+        was_total: wasTotal, now_total: nowTotal,
+        delta_total: (wasTotal === null || nowTotal === null) ? null : nowTotal - wasTotal,
+        // Сколько нужно продать по новой цене, чтобы вернуть прежний вклад.
+        need_qty: (wasTotal !== null && now.contribution > 0) ? wasTotal / now.contribution : null,
+      });
+    }
+
+    const sum = (f) => {
+      const vals = out.map((x) => x[f]).filter((v) => v !== null && v !== undefined);
+      return vals.length ? vals.reduce((s, v) => s + v, 0) : null;
+    };
+    const wasSum = sum('was_total');
+    const nowSum = sum('now_total');
+    res.json({
+      mode: approved ? 'approved' : 'current',
+      lines: out,
+      totals: {
+        was: wasSum, now: nowSum,
+        delta: (wasSum === null || nowSum === null) ? null : nowSum - wasSum,
+        incomplete: out.some((x) => x.was.incomplete || x.now.incomplete),
+      },
+    });
+  } catch (e) {
+    console.error('[КАЛЬКУЛЯЦИЯ] песочница-расчёт:', e.message);
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// ===========================================================================
 // Выгрузка в Excel
 // ===========================================================================
 // Файлов два, и путать их нельзя:
