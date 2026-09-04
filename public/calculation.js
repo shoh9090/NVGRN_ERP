@@ -1957,7 +1957,10 @@
       el('div', { class: 'calc-appr-info' }, sb.mode === 'approved'
         ? 'считаем от утверждённых версий листов'
         : 'считаем по сегодняшним ценам — цифры могут поехать завтра'),
-      el('div', { class: 'calc-appr-btns' }, [el('span', { class: 'calc-dim' }, 'Прайс'), priceSel]),
+      el('div', { class: 'calc-appr-btns' }, [
+        el('span', { class: 'calc-dim' }, 'Прайс'), priceSel,
+        el('button', { class: 'calc-tbtn', title: 'Выгрузить сценарий в Excel', onclick: sbExport }, '⬇ Excel'),
+      ]),
     ]));
 
     box.appendChild(sbLevers());
@@ -1977,6 +1980,30 @@
     box.appendChild(sbTable());
     box.appendChild(sbTotals());
     return box;
+  }
+
+  // Сценарий нигде не хранится, поэтому показать его Шоху можно только файлом.
+  // Отправляем те же данные, что и на расчёт, — файл и экран считает один код.
+  async function sbExport() {
+    if (!sb.lines.length) return toast('Сначала добавьте позиции', true);
+    try {
+      const r = await fetch('/calculation/api/sandbox/export.xlsx', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mode: sb.mode, price_list: sb.priceList, output_new: sb.outputNew,
+          lines: sb.lines.map((l) => ({
+            product_id: l.product_id, sheet: l.sheet,
+            qty: l.qty, qty_new: l.qty_new, price_new: l.price_new,
+          })),
+        }),
+      });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Ошибка сервера');
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      const a = el('a', { href: url, download: 'Песочница.xlsx' });
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    } catch (e) { toast(e.message, true); }
   }
 
   // Два рычага и граница маржи. Выпуск — общий на всю компанию: постоянные

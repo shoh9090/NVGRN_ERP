@@ -1419,13 +1419,14 @@ function sandboxVerdict(lines, delta, minMargin) {
   return { level: 'bad', text: parts.join(' ') };
 }
 
-router.post('/api/sandbox/calc', J, async (req, res) => {
-  const b = req.body || {};
+// Весь сценарий одной функцией: её же берёт выгрузка в Excel, чтобы файл и
+// экран не могли показать разные цифры.
+async function sandboxScenario(b) {
   const approved = String(b.mode || 'approved') !== 'current';
   const field = PRICE_FIELD[String(b.price_list || 'price')] || 'price';
   const lines = Array.isArray(b.lines) ? b.lines.slice(0, 50) : [];
   const outputNew = asNum(b.output_new);
-  try {
+  {
     const settings = await calcSettings();
     const minMargin = numOrNull(settings[K_MIN_MARGIN]);
     // Тянем только те листы, товары с которых реально в сценарии.
@@ -1495,8 +1496,9 @@ router.post('/api/sandbox/calc', J, async (req, res) => {
     const wasSum = sum('was_total');
     const nowSum = sum('now_total');
     const delta = (wasSum === null || nowSum === null) ? null : nowSum - wasSum;
-    res.json({
+    return {
       mode: approved ? 'approved' : 'current',
+      price_list: String(b.price_list || 'price'),
       min_margin_pct: minMargin,
       output_new: outputNew || null,
       lines: out,
@@ -1506,9 +1508,73 @@ router.post('/api/sandbox/calc', J, async (req, res) => {
         below_min: out.filter((x) => x.below_min).map((x) => x.name),
       },
       verdict: sandboxVerdict(out, delta, minMargin),
-    });
+    };
+  }
+}
+
+router.post('/api/sandbox/calc', J, async (req, res) => {
+  try {
+    res.json(await sandboxScenario(req.body || {}));
   } catch (e) {
     console.error('[КАЛЬКУЛЯЦИЯ] песочница-расчёт:', e.message);
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Сценарий в Excel. Сам сценарий нигде не хранится, поэтому показать его
+// Шоху можно только файлом — отправляем POST'ом те же данные, что на экране.
+router.post('/api/sandbox/export.xlsx', J, async (req, res) => {
+  try {
+    const s = await sandboxScenario(req.body || {});
+    const listName = (PRICE_LISTS.find((p) => p.code === s.price_list) || {}).label || s.price_list;
+
+    const aoa = [
+      ['ПЕСОЧНИЦА — черновой расчёт «а что если»'],
+      ['Составлен', new Date().toLocaleString('ru-RU')],
+      ['Основа', s.mode === 'approved' ? 'утверждённые расчёты листов' : 'текущий расчёт (цены сегодняшние)'],
+      ['Прайс', listName],
+      ['Выпуск завода, шт/мес', s.output_new ? ('изменён на ' + s.output_new) : 'без изменений'],
+      ['Минимальная маржа, %', s.min_margin_pct === null ? 'не задана' : s.min_margin_pct],
+      [],
+      ['Товар', 'Направление', 'Объём было', 'Объём стало', 'Цена было', 'Цена стало', 'Скидка, %',
+        'Маржа было, %', 'Маржа стало, %', 'Вклад с ед. было', 'Вклад с ед. стало',
+        'Вклад всего было', 'Вклад всего стало', 'Разница', 'Предельная цена', 'Нужный объём'],
+    ];
+    s.lines.forEach((x) => aoa.push([
+      x.name, x.sheet_title, rnd(x.qty), rnd(x.qty_new), rnd(x.price), rnd(x.price_new),
+      pct(x.discount_pct), pct(x.was.net_pct), pct(x.now.net_pct),
+      rnd(x.was.contribution), rnd(x.now.contribution),
+      rnd(x.was_total), rnd(x.now_total), rnd(x.delta_total),
+      rnd(x.price_floor), rnd(x.need_qty),
+    ]));
+    const t = s.totals || {};
+    aoa.push([]);
+    aoa.push(['ИТОГО', '', '', '', '', '', '', '', '', '', '', rnd(t.was), rnd(t.now), rnd(t.delta)]);
+    if (s.verdict) { aoa.push([]); aoa.push(['Вывод', s.verdict.text]); }
+
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = [{ wch: 30 }, { wch: 18 }].concat(new Array(14).fill({ wch: 15 }));
+    XLSX.utils.book_append_sheet(wb, ws, 'Сценарий');
+
+    // Второй лист — из чего складывается цена по каждой позиции. Доли считаются
+    // от цены, поэтому строки вместе с маржой дают ровно 100%.
+    const parts = [['Товар', 'Статья', 'Было, сум', 'Было, %', 'Стало, сум', 'Стало, %']];
+    s.lines.forEach((x) => {
+      const wasBy = new Map((x.was.parts || []).map((p) => [p.key, p]));
+      (x.now.parts || []).forEach((p) => {
+        const w = wasBy.get(p.key);
+        parts.push([x.name, p.label, w ? rnd(w.value) : '', w ? pct(w.pct) : '', rnd(p.value), pct(p.pct)]);
+      });
+      parts.push([]);
+    });
+    const ws2 = XLSX.utils.aoa_to_sheet(parts);
+    ws2['!cols'] = [{ wch: 30 }, { wch: 24 }, { wch: 14 }, { wch: 10 }, { wch: 14 }, { wch: 10 }];
+    XLSX.utils.book_append_sheet(wb, ws2, 'Структура цены');
+
+    xlsxSend(res, wb, 'sandbox.xlsx');
+  } catch (e) {
+    console.error('[КАЛЬКУЛЯЦИЯ] песочница-выгрузка:', e.message);
     res.status(400).json({ error: e.message });
   }
 });
