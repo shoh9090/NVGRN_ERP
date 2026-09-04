@@ -664,3 +664,24 @@ input.calc-rate-inp:focus { border-color: var(--lime-d); background: var(--surfa
 .calc-sb-pick { max-height: 340px; overflow: auto; }
 .calc-sb-pick-it { padding: 8px 10px; border-radius: 8px; cursor: pointer; }
 .calc-sb-pick-it:hover { background: var(--lime-soft); }
+
+/* Рычаги песочницы: общий выпуск (двигает себестоимость всех товаров)
+   и нижняя граница маржи */
+.calc-sb-levers { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+.calc-sb-lever {
+  background: var(--surface-2); border: 1px solid var(--line-soft);
+  border-radius: 12px; padding: 9px 13px; cursor: help;
+}
+.calc-sb-ll { font-size: 11.5px; font-weight: 700; color: var(--ink-soft); margin-bottom: 4px; }
+.calc-sb-lv { display: flex; align-items: center; gap: 5px; }
+.calc-sb-in.wide { width: 96px; }
+.calc-sb-in:disabled { background: var(--surface-2); color: var(--ink-soft); cursor: not-allowed; }
+
+/* Вердикт: не «да/нет», а что предложить клиенту взамен */
+.calc-sb-verdict {
+  font-size: 13.5px; padding: 11px 14px; border-radius: 10px;
+  margin-top: 12px; font-weight: 600; line-height: 1.5;
+}
+.calc-sb-verdict.good { background: var(--lime-soft); color: var(--forest); border: 1px solid var(--lime-d); }
+.calc-sb-verdict.bad { background: var(--red-soft); color: var(--red); border: 1px solid #e8c7bd; }
+.calc-sb-verdict.warn { background: var(--amber-soft); color: #8a5a00; border: 1px solid #eddcae; }

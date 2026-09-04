@@ -1887,7 +1887,7 @@
   // Черновик поверх утверждённого расчёта: меняем цену и объём, смотрим, что
   // будет с деньгами. Ничего не сохраняется — закрыл вкладку, и сценария нет.
   // Все цифры считает сервер тем же двигателем, что и лист.
-  const sb = { mode: 'approved', priceList: 'price', lines: [], open: {} };
+  const sb = { mode: 'approved', priceList: 'price', lines: [], open: {}, outputNew: null };
   let SB = null;        // каталог товаров со всех листов
   let SB_CALC = null;   // посчитанный сценарий
 
@@ -1906,7 +1906,7 @@
     if (!sb.lines.length) { SB_CALC = null; return render(); }
     try {
       SB_CALC = await post('/sandbox/calc', {
-        mode: sb.mode, price_list: sb.priceList,
+        mode: sb.mode, price_list: sb.priceList, output_new: sb.outputNew,
         lines: sb.lines.map((l) => ({
           product_id: l.product_id, sheet: l.sheet,
           qty: l.qty, qty_new: l.qty_new, price_new: l.price_new,
@@ -1960,6 +1960,8 @@
       el('div', { class: 'calc-appr-btns' }, [el('span', { class: 'calc-dim' }, 'Прайс'), priceSel]),
     ]));
 
+    box.appendChild(sbLevers());
+
     if (sb.mode === 'approved' && (SB.not_approved || []).length) {
       box.appendChild(el('div', { class: 'calc-msg warn' },
         '⚠️ Не утверждали: ' + SB.not_approved.join(', ') + ' — по этим листам взят текущий расчёт.'));
@@ -1977,12 +1979,67 @@
     return box;
   }
 
+  // Два рычага и граница маржи. Выпуск — общий на всю компанию: постоянные
+  // расходы за месяц те же, меняется только то, на сколько штук они делятся,
+  // поэтому он двигает себестоимость СРАЗУ ВСЕХ товаров. Объёмы по позициям
+  // (в таблице ниже) — про одну сделку.
+  function sbLevers() {
+    const outHint = 'Общий выпуск завода, шт/мес. На него делятся аренда, ФОТ и '
+      + 'производственные расходы, поэтому он меняет себестоимость всех товаров сразу.\n\n'
+      + 'Объём по конкретной сделке вписывается в строке товара — это другой рычаг.';
+    const out = el('input', {
+      type: 'number', class: 'calc-sb-in wide', min: '0', step: '1000',
+      value: sb.outputNew === null ? '' : sb.outputNew,
+      placeholder: SB.output_now ? String(SB.output_now) : '',
+      onchange: (e) => {
+        const v = e.target.value.trim();
+        sb.outputNew = v === '' ? null : Number(v);
+        sbRecalc();
+      },
+    });
+
+    const mm = el('input', {
+      type: 'number', class: 'calc-sb-in', min: '0', max: '99', step: '1',
+      value: SB.min_margin_pct === null || SB.min_margin_pct === undefined ? '' : SB.min_margin_pct,
+      placeholder: 'не задана', disabled: SB.can_edit ? null : 'disabled',
+      onchange: async (e) => {
+        const v = e.target.value.trim();
+        try {
+          const r = await post('/sandbox/min-margin', { pct: v === '' ? null : Number(v) });
+          SB.min_margin_pct = r.min_margin_pct;
+          toast(r.min_margin_pct === null ? 'Граница маржи убрана' : 'Минимальная маржа: ' + r.min_margin_pct + '%');
+          sbRecalc();
+        } catch (err) { toast(err.message, true); }
+      },
+    });
+
+    const field = (label, node, hint, suffix) => el('div', {
+      class: 'calc-sb-lever', 'data-hint': hint || null,
+    }, [
+      el('div', { class: 'calc-sb-ll' }, label),
+      el('div', { class: 'calc-sb-lv' }, [node, suffix ? el('span', { class: 'calc-dim' }, suffix) : null]),
+    ]);
+
+    return el('div', { class: 'calc-sb-levers' }, [
+      field('Выпуск завода, шт/мес',
+        el('div', { class: 'calc-sb-pair' }, [
+          el('span', { class: 'calc-dim' }, SB.output_now ? money0(SB.output_now) : '—'),
+          el('span', { class: 'calc-dim' }, '→'), out,
+        ]), outHint),
+      field('Минимальная маржа', mm,
+        SB.can_edit
+          ? 'Ниже этой маржи скидку давать нельзя — песочница остановит.\n\nЦифра общая для компании: её видят все, менять может финансовый сотрудник или администратор.'
+          : 'Ниже этой маржи скидку давать нельзя. Менять цифру может финансовый сотрудник или администратор.',
+        '%'),
+    ]);
+  }
+
   const sbNum = (v, dec) => (v === null || v === undefined ? dash() : el('span', {}, money(v, dec === undefined ? 0 : dec)));
   const sbPct = (v) => (v === null || v === undefined ? '—' : (v > 0 ? '+' : '') + money(v, 1) + '%');
 
   function sbTable() {
-    const head = el('tr', {}, ['Товар', 'Объём', 'Цена', 'Скидка', 'Вклад с ед.', 'Вклад всего', '']
-      .map((t, i) => el('th', { class: i && i < 6 ? 'tnum' : '' }, t)));
+    const head = el('tr', {}, ['Товар', 'Объём', 'Цена', 'Скидка', 'Маржа', 'Вклад с ед.', 'Вклад всего', '']
+      .map((t, i) => el('th', { class: i && i < 7 ? 'tnum' : '' }, t)));
 
     const rows = [];
     SB_CALC.lines.forEach((x, i) => {
@@ -2011,6 +2068,14 @@
             { step: '100', placeholder: x.price === null ? '' : String(Math.round(x.price)) }),
         ])),
         el('td', { class: 'tnum' + (x.discount_pct < 0 ? ' calc-sb-bad' : '') }, sbPct(x.discount_pct)),
+        el('td', {
+          class: 'tnum' + (x.below_min ? ' calc-sb-bad' : ''),
+          'data-hint': x.below_min ? 'Ниже минимальной маржи ' + SB_CALC.min_margin_pct + '% — такую скидку давать нельзя.' : null,
+        }, [
+          el('span', { class: 'calc-dim' }, x.was.net_pct === null ? '—' : money(x.was.net_pct, 1) + '%'),
+          el('span', { class: 'calc-dim' }, ' → '),
+          el('span', {}, x.now.net_pct === null ? '—' : money(x.now.net_pct, 1) + '%'),
+        ]),
         el('td', { class: 'tnum' }, [sbNum(x.was.contribution), el('span', { class: 'calc-dim' }, ' → '), sbNum(x.now.contribution)]),
         el('td', { class: 'tnum' + (bad ? ' calc-sb-bad' : '') },
           [sbNum(x.was_total), el('span', { class: 'calc-dim' }, ' → '), sbNum(x.now_total)]),
@@ -2023,7 +2088,7 @@
         } }, '⋯')),
       ]));
 
-      if (open) rows.push(el('tr', { class: 'calc-sum-open' }, el('td', { colspan: '7' }, sbParts(x))));
+      if (open) rows.push(el('tr', { class: 'calc-sum-open' }, el('td', { colspan: '8' }, sbParts(x))));
     });
 
     return el('div', { class: 'calc-sum-wrap' },
@@ -2052,11 +2117,17 @@
     });
     const head = el('tr', {}, ['Из чего складывается цена', 'было %', 'было', 'стало %', 'стало']
       .map((t, i) => el('th', { class: i ? 'tnum' : '' }, t)));
+    // Не «нельзя», а что предложить взамен: объём или предельная цена.
     const note = [];
-    if (x.need_qty !== null && x.delta_total !== null && x.delta_total < 0) {
-      note.push(el('div', { class: 'calc-sb-note' },
-        'Чтобы вернуть прежний вклад по этой позиции, объём должен быть '
-        + money(x.need_qty, 0) + ' вместо ' + money(x.qty_new, 0) + '.'));
+    if (x.delta_total !== null && x.delta_total < 0) {
+      const how = [];
+      if (x.need_qty !== null) how.push('объём ' + money(x.need_qty, 0) + ' вместо ' + money(x.qty_new, 0));
+      if (x.price_floor !== null && x.max_discount_pct !== null && x.max_discount_pct < 0) {
+        how.push('или цена не ниже ' + money0(x.price_floor)
+          + ' (скидка не больше ' + Math.floor(-x.max_discount_pct) + '%)');
+      }
+      if (how.length) note.push(el('div', { class: 'calc-sb-note' },
+        'Чтобы вернуть прежний вклад по этой позиции: ' + how.join(', ') + '.'));
     }
     return el('div', {}, [
       el('table', { class: 'calc-sb-parts' }, [el('thead', {}, head), el('tbody', {}, rows)]),
@@ -2076,6 +2147,11 @@
       tile('Разница', t.delta, bad ? 'calc-tile-red' : ''),
     ]);
     const wrap = el('div', {}, box);
+    const v = SB_CALC.verdict;
+    if (v) {
+      wrap.appendChild(el('div', { class: 'calc-sb-verdict ' + v.level },
+        (v.level === 'good' ? '✓ ' : v.level === 'bad' ? '⚠️ ' : 'ℹ️ ') + v.text));
+    }
     if (t.incomplete) {
       wrap.appendChild(el('div', { class: 'calc-msg warn' },
         '⚠️ В сценарии есть позиции с незаполненной себестоимостью — итог по ним не считается.'));

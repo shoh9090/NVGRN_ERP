@@ -510,8 +510,20 @@ function sandboxLine(input, opts) {
   };
 }
 
+// Обратная задача к вкладу: какой должна быть цена, чтобы вклад с единицы был
+// ровно target. Вклад = цена × (1 − ретро% − НДС%) − переменные, поэтому цена
+// выражается формулой, а не подбирается перебором.
+// varFixed — переменные, не зависящие от цены (сырьё и упаковка с браком).
+function priceForContribution(target, varFixed, retroPct, vatPct) {
+  if (target === null || target === undefined || varFixed === null || varFixed === undefined) return null;
+  const k = 1 - (num(retroPct) + num(vatPct)) / 100;
+  if (!(k > 0)) return null;
+  return (num(target) + num(varFixed)) / k;
+}
+
 module.exports = {
   FORMULA_VERSION,
+  priceForContribution,
   perUnit,
   SKU_COMPONENTS,
   SKU_SHEET_COMPONENTS,

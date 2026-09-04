@@ -36,6 +36,9 @@ const K_OUTPUT = 'monthly_units';        // среднемесячное про�
 const K_OUTPUT_PLAN = 'monthly_units_plan'; // план продаж, шт (появится позже)
 // Факт производства из SalesDoctor: тянем по кнопке и запоминаем, чтобы не
 // дёргать внешний сервис при каждом открытии экрана.
+// Нижняя граница маржи: ниже неё скидку давать нельзя. Цифра компании, а не
+// сценария, поэтому живёт в настройках и переживает перезагрузку страницы.
+const K_MIN_MARGIN = 'min_margin_pct';
 const K_FACT_UNITS = 'output_fact_units';
 const K_FACT_NOTE = 'output_fact_note';
 const K_FACT_AT = 'output_fact_at';
@@ -1337,10 +1340,13 @@ router.get('/api/sandbox', async (req, res) => {
       items.push(...sandboxItems(key, got));
     }
     const base = await perUnitByKind();
+    const settings = await calcSettings();
     res.json({
       mode: approved ? 'approved' : 'current',
       price_lists: PRICE_LISTS,
       output_now: base.output,
+      min_margin_pct: numOrNull(settings[K_MIN_MARGIN]),
+      can_edit: canEdit(req),
       not_approved: notApproved,
       items,
     });
@@ -1352,12 +1358,76 @@ router.get('/api/sandbox', async (req, res) => {
 
 const PRICE_FIELD = { price: 'price', price2: 'price2', sd: 'sd_price' };
 
+// Нижняя граница маржи. Меняет тот же, кто правит калькуляцию: цифра общая
+// для компании, а не личная настройка продажника.
+router.post('/api/sandbox/min-margin', J, async (req, res) => {
+  if (!canEdit(req)) return denyEdit(res);
+  const raw = (req.body || {}).pct;
+  const pct = (raw === null || raw === undefined || raw === '') ? null : numOrNull(raw);
+  if (pct !== null && (pct < 0 || pct >= 100)) {
+    return res.status(400).json({ error: 'Маржа должна быть от 0 до 100%' });
+  }
+  try {
+    await setCalcSetting(K_MIN_MARGIN, pct === null ? '' : pct, req.user.id);
+    await db.log(req.user.id, 'calc_min_margin_set', { pct });
+    res.json({ ok: true, min_margin_pct: pct });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+
+// Умножение, которое не превращает «неизвестно» в ноль.
+const mul = (v, k) => (v === null || v === undefined ? null : v * k);
+
+// Вердикт словами. Смысл не в «да/нет», а в том, ЧТО предложить клиенту
+// взамен: какой объём вернёт прежние деньги и до какой цены можно опуститься.
+const sumRu = (v) => Math.round(v).toLocaleString('ru-RU');
+function sandboxVerdict(lines, delta, minMargin) {
+  if (!lines.length) return null;
+  if (lines.some((x) => x.now.incomplete)) {
+    return { level: 'warn', text: 'В сценарии есть позиции с незаполненной себестоимостью — вывод по ним делать не из чего.' };
+  }
+  const below = lines.filter((x) => x.below_min);
+  if (below.length) {
+    return {
+      level: 'bad',
+      text: 'Маржа ниже минимальной (' + minMargin + '%): ' + below.map((x) => x.name).join(', ')
+        + '. Такую скидку давать нельзя, даже если объём её окупает.',
+    };
+  }
+  if (delta === null) return null;
+  if (delta >= 0) {
+    return {
+      level: 'good',
+      text: delta > 0
+        ? 'Скидка окупается: вклад вырастет на ' + sumRu(delta) + ' сум.'
+        : 'Вклад не изменится — сделка равнозначна прежней.',
+    };
+  }
+  // Не окупается: советуем по позиции, которая теряет больше всех.
+  const worst = lines.filter((x) => x.delta_total !== null && x.delta_total < 0)
+    .sort((a, b) => a.delta_total - b.delta_total)[0];
+  const parts = ['Скидка не окупается: не хватает ' + sumRu(-delta) + ' сум.'];
+  if (worst) {
+    const how = [];
+    if (worst.need_qty !== null) how.push('объём ' + sumRu(worst.need_qty) + ' вместо ' + sumRu(worst.qty_new));
+    if (worst.price_floor !== null && worst.max_discount_pct !== null && worst.max_discount_pct < 0) {
+      how.push('или цена не ниже ' + sumRu(worst.price_floor)
+        + ' (скидка не больше ' + Math.floor(-worst.max_discount_pct) + '%)');
+    }
+    if (how.length) parts.push('По «' + worst.name + '» нужен ' + how.join(', ') + '.');
+  }
+  return { level: 'bad', text: parts.join(' ') };
+}
+
 router.post('/api/sandbox/calc', J, async (req, res) => {
   const b = req.body || {};
   const approved = String(b.mode || 'approved') !== 'current';
   const field = PRICE_FIELD[String(b.price_list || 'price')] || 'price';
   const lines = Array.isArray(b.lines) ? b.lines.slice(0, 50) : [];
+  const outputNew = asNum(b.output_new);
   try {
+    const settings = await calcSettings();
+    const minMargin = numOrNull(settings[K_MIN_MARGIN]);
     // Тянем только те листы, товары с которых реально в сценарии.
     const wanted = new Set(lines.map((l) => String(l.sheet || '')).filter((s) => SHEETS[s]));
     const byId = new Map();
@@ -1383,11 +1453,24 @@ router.post('/api/sandbox/calc', J, async (req, res) => {
         defect_pct: it.defect_pct, retro_pct: it.retro_pct,
         vat_pct: it.vat_pct, profit_tax_pct: it.profit_tax_pct,
       };
+      // Рычаг общего выпуска. Постоянные расходы за месяц те же — меняется
+      // только то, на сколько штук они делятся, поэтому «на штуку» просто
+      // масштабируется. Переменные (сырьё, упаковка) от выпуска не зависят.
+      const scaled = outputNew > 0 && it.output > 0
+        ? { ...common, production: mul(common.production, it.output / outputNew),
+          labor: mul(common.labor, it.output / outputNew) }
+        : common;
+
       const was = engine.sandboxLine({ ...common, price: basePrice }, opts);
-      const now = engine.sandboxLine({ ...common, price: newPrice }, opts);
+      const now = engine.sandboxLine({ ...scaled, price: newPrice }, opts);
 
       const wasTotal = was.contribution === null ? null : was.contribution * qty;
       const nowTotal = now.contribution === null ? null : now.contribution * qtyNew;
+      // Цена, при которой на новом объёме вклад вернётся к прежнему.
+      // var_cost — только сырьё и упаковка с браком: ретро и НДС считаются от
+      // цены и в обратной формуле участвуют коэффициентом, а не слагаемым.
+      const floor = (wasTotal !== null && qtyNew > 0 && !now.incomplete)
+        ? engine.priceForContribution(wasTotal / qtyNew, now.var_cost, it.retro_pct, it.vat_pct) : null;
       out.push({
         product_id: it.id, name: it.name, sheet: it.sheet, sheet_title: it.sheet_title,
         approved: it.approved, approved_at: it.approved_at,
@@ -1399,6 +1482,9 @@ router.post('/api/sandbox/calc', J, async (req, res) => {
         delta_total: (wasTotal === null || nowTotal === null) ? null : nowTotal - wasTotal,
         // Сколько нужно продать по новой цене, чтобы вернуть прежний вклад.
         need_qty: (wasTotal !== null && now.contribution > 0) ? wasTotal / now.contribution : null,
+        price_floor: floor,
+        max_discount_pct: (floor !== null && basePrice > 0) ? ((floor - basePrice) / basePrice) * 100 : null,
+        below_min: minMargin !== null && now.net_pct !== null && now.net_pct < minMargin,
       });
     }
 
@@ -1408,14 +1494,18 @@ router.post('/api/sandbox/calc', J, async (req, res) => {
     };
     const wasSum = sum('was_total');
     const nowSum = sum('now_total');
+    const delta = (wasSum === null || nowSum === null) ? null : nowSum - wasSum;
     res.json({
       mode: approved ? 'approved' : 'current',
+      min_margin_pct: minMargin,
+      output_new: outputNew || null,
       lines: out,
       totals: {
-        was: wasSum, now: nowSum,
-        delta: (wasSum === null || nowSum === null) ? null : nowSum - wasSum,
+        was: wasSum, now: nowSum, delta,
         incomplete: out.some((x) => x.was.incomplete || x.now.incomplete),
+        below_min: out.filter((x) => x.below_min).map((x) => x.name),
       },
+      verdict: sandboxVerdict(out, delta, minMargin),
     });
   } catch (e) {
     console.error('[КАЛЬКУЛЯЦИЯ] песочница-расчёт:', e.message);

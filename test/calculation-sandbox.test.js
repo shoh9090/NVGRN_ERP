@@ -5,7 +5,7 @@
 //     разошлась бы с калькуляцией, и по ней нельзя было бы принимать решения.
 const test = require('node:test');
 const assert = require('node:assert');
-const { sandboxLine, skuEconomics, SKU_SHEET_COMPONENTS } = require('../src/calculation-engine');
+const { sandboxLine, skuEconomics, priceForContribution, SKU_SHEET_COMPONENTS } = require('../src/calculation-engine');
 
 const opts = { components: SKU_SHEET_COMPONENTS };
 const round2 = (v) => Math.round(v * 100) / 100;
@@ -40,6 +40,21 @@ test('скидка режет только вклад, постоянные ра
   assert.ok(now.contribution < was.contribution);
   // Ретро и НДС считаются от цены, поэтому вклад падает не на всю сумму скидки.
   assert.strictEqual(round2(was.contribution - now.contribution), round2(2100 * (1 - 0.21 - 0.12)));
+});
+
+test('предельная цена возвращает ровно заданный вклад', () => {
+  const r = sandboxLine(LATUK, opts);
+  // Клиент обещает вдвое больший объём: значит вклад с единицы может упасть
+  // вдвое, и общий останется прежним.
+  const target = r.contribution / 2;
+  const floor = priceForContribution(target, r.var_cost, LATUK.retro_pct, LATUK.vat_pct);
+  const at = sandboxLine({ ...LATUK, price: floor }, opts);
+  assert.strictEqual(round2(at.contribution), round2(target));
+  assert.ok(floor < LATUK.price);
+});
+
+test('удержания съедают всю цену — предельной цены нет, а не бесконечность', () => {
+  assert.strictEqual(priceForContribution(1000, 500, 60, 40), null);
 });
 
 test('незаполненный компонент не превращается в ноль', () => {
