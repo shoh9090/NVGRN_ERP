@@ -1013,6 +1013,9 @@ router.get('/api/sheet/:sheet', async (req, res) => {
     // Действующее утверждение и расхождение с текущим расчётом.
     payload.approval = await approvalState(sheet, payload);
     payload.approval_reasons = APPROVAL_REASONS;
+    // Утверждение по каждому товару: дата, кто, и ушёл ли расчёт от неё.
+    const appr = await productApprovals(sheet);
+    payload.products.forEach((p) => { p.approval = productApprovalState(p, appr.get(p.id)); });
     res.json(payload);
   } catch (e) {
     console.error('[КАЛЬКУЛЯЦИЯ] товарный лист:', e.message);
@@ -1121,6 +1124,123 @@ async function approvalState(sheet, nowPayload) {
     changes: describeChanges(last.data, nowPayload),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Утверждение ПО ТОВАРУ
+// ---------------------------------------------------------------------------
+// Подорожала одна рукола — переутверждаем её, а не весь лист. Фиксируем весь
+// расчёт товара: цену вместе с себестоимостью, из которой она получена.
+async function productApprovals(sheet) {
+  const m = new Map();
+  try {
+    const rows = (await db.pool.query(
+      `SELECT DISTINCT ON (product_id) product_id, id, approved_at, approved_by_name,
+              reason, comment, price, price2, cost_defect, net_pct
+         FROM calc_product_approvals WHERE sheet = $1
+        ORDER BY product_id, approved_at DESC, id DESC`, [sheet])).rows;
+    rows.forEach((r) => m.set(r.product_id, r));
+  } catch (e) { console.error('[КАЛЬКУЛЯЦИЯ] утверждения товаров:', e.message); }
+  return m;
+}
+
+// Насколько текущий расчёт товара ушёл от его утверждения.
+function productApprovalState(now, appr) {
+  if (!appr) return { has: false };
+  const wasCost = appr.cost_defect === null ? null : Number(appr.cost_defect);
+  const nowCost = (now.calc && now.calc.cost_defect) === undefined ? null : now.calc.cost_defect;
+  const diff = (wasCost > 0 && nowCost !== null) ? ((nowCost - wasCost) / wasCost) * 100 : null;
+  const wasPrice = appr.price === null ? null : Number(appr.price);
+  return {
+    has: true,
+    id: appr.id,
+    approved_at: appr.approved_at,
+    approved_by_name: appr.approved_by_name || '',
+    reason: appr.reason || '',
+    reason_label: REASON_LABEL(appr.reason),
+    comment: appr.comment || '',
+    price: wasPrice,
+    cost_defect: wasCost,
+    net_pct: appr.net_pct === null ? null : Number(appr.net_pct),
+    cost_diff_pct: diff,
+    // «Цена поехала» — отдельный признак: её меняют руками, и это заметнее.
+    price_changed: wasPrice !== null && now.price !== null && Math.abs(now.price - wasPrice) > 0.5,
+    stale: (diff !== null && Math.abs(diff) >= APPROVAL_DIFF_PCT)
+      || (wasPrice !== null && now.price !== null && Math.abs(now.price - wasPrice) > 0.5),
+  };
+}
+
+router.post('/api/product/:id(\\d+)/approve', J, async (req, res) => {
+  if (!canEdit(req)) return denyEdit(res);
+  const b = req.body || {};
+  const reason = String(b.reason || '');
+  if (!APPROVAL_REASONS.some((r) => r.code === reason)) {
+    return res.status(400).json({ error: 'Выберите причину утверждения' });
+  }
+  try {
+    const row = (await db.pool.query(
+      'SELECT sheet FROM calc_sheet_products WHERE id = $1', [req.params.id])).rows[0];
+    if (!row || !SHEETS[row.sheet]) return res.status(404).json({ error: 'Товар не найден' });
+    const payload = await sheetPayload(row.sheet);
+    const p = (payload.products || []).find((x) => x.id === Number(req.params.id));
+    if (!p) return res.status(404).json({ error: 'Товар не найден на листе' });
+    if (!(p.price > 0)) return res.status(400).json({ error: 'У товара не указана цена — утверждать нечего' });
+
+    const prev = (await productApprovals(row.sheet)).get(p.id) || null;
+    const changes = describeProductChanges(prev, p);
+    const c = p.calc || {};
+    const r = await db.pool.query(
+      `INSERT INTO calc_product_approvals
+         (product_id, sheet, approved_by, approved_by_name, reason, comment,
+          price, price2, cost_defect, net_pct, changes, data)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
+      [p.id, row.sheet, req.user.id, req.user.name || '', reason,
+        String(b.comment || '').trim().slice(0, 300),
+        p.price, p.price2, c.cost_defect === undefined ? null : c.cost_defect,
+        c.net_pct === undefined ? null : c.net_pct, changes, JSON.stringify(p)]);
+    await db.log(req.user.id, 'calc_product_approve', { product_id: p.id, sheet: row.sheet });
+    res.json({ ok: true, id: r.rows[0].id, changes });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Что изменилось у товара против его прошлого утверждения. Пишем сами: человек
+// объясняет ЗАЧЕМ утверждает, а ЧТО поехало система должна найти без него.
+function describeProductChanges(prev, now) {
+  if (!prev) return 'первое утверждение товара';
+  const parts = [];
+  const wasPrice = prev.price === null ? null : Number(prev.price);
+  if (wasPrice !== null && now.price !== null && Math.abs(now.price - wasPrice) > 0.5) {
+    parts.push('цена ' + Math.round(wasPrice) + ' → ' + Math.round(now.price));
+  }
+  const wasCost = prev.cost_defect === null ? null : Number(prev.cost_defect);
+  const nowCost = (now.calc && now.calc.cost_defect) === undefined ? null : now.calc.cost_defect;
+  if (wasCost > 0 && nowCost !== null) {
+    const d = ((nowCost - wasCost) / wasCost) * 100;
+    if (Math.abs(d) >= 0.5) parts.push('себестоимость ' + (d > 0 ? '+' : '') + Math.round(d) + '%');
+  }
+  return parts.length ? parts.join(' · ') : 'без изменений в цифрах';
+}
+
+// История утверждений одного товара.
+router.get('/api/product/:id(\\d+)/approvals', async (req, res) => {
+  try {
+    const rows = (await db.pool.query(
+      `SELECT id, approved_at, approved_by_name, reason, comment, changes,
+              price, price2, cost_defect, net_pct
+         FROM calc_product_approvals WHERE product_id = $1
+        ORDER BY approved_at DESC, id DESC LIMIT 60`, [req.params.id])).rows;
+    res.json({
+      items: rows.map((r) => ({
+        id: r.id, approved_at: r.approved_at, approved_by_name: r.approved_by_name || '',
+        reason: r.reason || '', reason_label: REASON_LABEL(r.reason),
+        comment: r.comment || '', changes: r.changes || '',
+        price: r.price === null ? null : Number(r.price),
+        price2: r.price2 === null ? null : Number(r.price2),
+        cost_defect: r.cost_defect === null ? null : Number(r.cost_defect),
+        net_pct: r.net_pct === null ? null : Number(r.net_pct),
+      })),
+    });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
 
 // Список утверждений (без тяжёлого data — он нужен только при открытии версии).
 router.get('/api/sheet/:sheet/approvals', async (req, res) => {

@@ -714,3 +714,16 @@ input.calc-rate-inp:focus { border-color: var(--lime-d); background: var(--surfa
 .calc-sb-parts tbody tr[data-hint] { cursor: help; }
 .calc-sb-parts tbody tr[data-hint]:hover td { background: var(--surface); }
 .calc-sb-t thead th[data-hint] { cursor: help; text-decoration: underline dotted var(--ink-faint); text-underline-offset: 3px; }
+
+/* Дата утверждения под товаром: главный вопрос к столбцу — «по этим ли цифрам
+   мы продаём» — должен решаться взглядом */
+.calc-appr-line {
+  font-size: 10.5px; color: var(--forest); margin-top: 3px; cursor: help;
+  white-space: nowrap; font-weight: 700;
+}
+.calc-appr-line.stale { color: #8a5a00; }
+.calc-appr-line.none { color: var(--ink-faint); font-weight: 600; }
+.calc-appr-was {
+  font-size: 12.5px; color: var(--ink-soft); line-height: 1.6;
+  background: var(--surface); border-radius: 8px; padding: 8px 10px;
+}

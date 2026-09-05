@@ -404,6 +404,60 @@ async function ensureCalculationSchema(pool) {
       .catch((e) => console.error('calc_sheet_approvals ' + col + ':', e.message));
   }
 
+  // --- Утверждение ПО ТОВАРУ ----------------------------------------------
+  // Подорожала одна рукола — переутверждать надо её, а не весь лист. Снимок
+  // здесь тоже самодостаточный, но по одному товару: цена, себестоимость и все
+  // цифры, из которых она получена. Утверждать только цену нельзя — тогда
+  // себестоимость останется плавающей и сравнивать «сколько было в тот день»
+  // будет не с чем.
+  await q(`CREATE TABLE IF NOT EXISTS calc_product_approvals (
+    id SERIAL PRIMARY KEY,
+    product_id INT NOT NULL,
+    sheet TEXT NOT NULL,
+    approved_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    approved_by INT,
+    approved_by_name TEXT DEFAULT '',
+    reason TEXT DEFAULT '',
+    comment TEXT DEFAULT '',
+    price NUMERIC,
+    price2 NUMERIC,
+    cost_defect NUMERIC,
+    net_pct NUMERIC,
+    changes TEXT DEFAULT '',
+    data JSONB
+  )`).catch((e) => console.error('calc_product_approvals:', e.message));
+  await q(`CREATE INDEX IF NOT EXISTS idx_calc_product_approvals
+           ON calc_product_approvals (product_id, approved_at DESC, id DESC)`)
+    .catch((e) => console.error('idx_calc_product_approvals:', e.message));
+  for (const [col, type] of [
+    ['sheet', "TEXT DEFAULT ''"], ['approved_by', 'INT'], ['approved_by_name', "TEXT DEFAULT ''"],
+    ['reason', "TEXT DEFAULT ''"], ['comment', "TEXT DEFAULT ''"],
+    ['price', 'NUMERIC'], ['price2', 'NUMERIC'], ['cost_defect', 'NUMERIC'], ['net_pct', 'NUMERIC'],
+    ['changes', "TEXT DEFAULT ''"], ['data', 'JSONB'],
+  ]) {
+    await q(`ALTER TABLE calc_product_approvals ADD COLUMN IF NOT EXISTS ${col} ${type}`)
+      .catch((e) => console.error('calc_product_approvals ' + col + ':', e.message));
+  }
+  // Первый запуск: переносим утверждения с листов на товары, чтобы уже
+  // утверждённые позиции не выглядели «никогда не утверждёнными». Только когда
+  // таблица пуста — повторно не выполняется и ничего не перезаписывает.
+  await q(`INSERT INTO calc_product_approvals
+             (product_id, sheet, approved_at, approved_by, approved_by_name, reason, comment,
+              price, price2, cost_defect, net_pct, changes, data)
+           SELECT (p->>'id')::int, a.sheet, a.approved_at, a.approved_by, a.approved_by_name,
+                  a.reason, a.comment,
+                  NULLIF(p->>'price','')::numeric, NULLIF(p->>'price2','')::numeric,
+                  NULLIF(p->'calc'->>'cost_defect','')::numeric,
+                  NULLIF(p->'calc'->>'net_pct','')::numeric,
+                  'перенесено с утверждения листа', p
+             FROM (SELECT DISTINCT ON (sheet) sheet, approved_at, approved_by, approved_by_name,
+                          reason, comment, data
+                     FROM calc_sheet_approvals ORDER BY sheet, approved_at DESC, id DESC) a
+             CROSS JOIN LATERAL jsonb_array_elements(a.data->'products') p
+            WHERE NOT EXISTS (SELECT 1 FROM calc_product_approvals)
+              AND (p->>'id') ~ '^[0-9]+$'`)
+    .catch((e) => console.error('calc_product_approvals seed:', e.message));
+
   // --- Рецептуры (миксы салатов) ------------------------------------------
   // Устроены как комплекты упаковки, только строки — сырьё в граммах на одну
   // упаковку. Цена за кг НЕ хранится: она приходит из Закупа (последняя принятая

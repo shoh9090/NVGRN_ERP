@@ -1284,6 +1284,9 @@
           try { await save(x.id, { barcode: e.target.value }); } catch (err) { toast(err.message, true); }
         },
       }) : el('div', { class: 'calc-bar calc-ro' }, x.barcode || ''),
+      // Дата утверждения — прямо под товаром: главный вопрос к столбцу
+      // «по этим ли цифрам мы продаём» должен решаться взглядом, а не поиском.
+      approvedLine(x),
       canEdit() ? el('button', {
         class: 'calc-dots', title: 'Действия с товаром', 'aria-label': 'Действия с товаром',
         onclick: (e) => {
@@ -1305,6 +1308,9 @@
                 ? 'Взять цену из Закупа' : 'Убрать ручную цену',
               onClick: () => clearManualPrice(line, loadSku),
             }] : []),
+            { label: (x.approval && x.approval.has) ? '✓ Переутвердить цену' : '✓ Утвердить цену',
+              onClick: () => openApproveProduct(x) },
+            ...((x.approval && x.approval.has) ? [{ label: 'История утверждений', onClick: () => openProductHistory(x) }] : []),
             { label: x.sd_product_id ? 'Изменить ID в СД' : 'Указать ID в СД', onClick: () => openSdId(x) },
             { label: 'Убрать с листа', danger: true, onClick: () => confirmRemoveProduct(x, d) },
           ]);
@@ -1653,6 +1659,86 @@
     ]);
     const body = skuSheet();
     main.appendChild(el('div', { class: 'calc-sheet' }, [back, body]));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Утверждение ПО ТОВАРУ
+  // ---------------------------------------------------------------------------
+  // Подорожала одна рукола — переутверждаем её, а не весь лист.
+  function approvedLine(x) {
+    const a = x.approval || { has: false };
+    if (!a.has) {
+      return el('div', { class: 'calc-appr-line none', 'data-hint': 'Цена этого товара ещё не утверждалась. Утвердить — в меню «⋯».' },
+        'не утверждён');
+    }
+    const hint = 'Утверждено ' + dtRu(a.approved_at)
+      + (a.approved_by_name ? ' · ' + a.approved_by_name : '')
+      + (a.reason_label ? ' · ' + a.reason_label : '')
+      + (a.comment ? ' · «' + a.comment + '»' : '')
+      + '\n\nТогда цена была ' + (a.price === null ? '—' : money0(a.price))
+      + ', себестоимость ' + (a.cost_defect === null ? '—' : money0(a.cost_defect))
+      + (a.stale ? '\n\nС тех пор цифры уехали — стоит переутвердить.' : '');
+    return el('div', { class: 'calc-appr-line' + (a.stale ? ' stale' : ''), 'data-hint': hint }, [
+      el('span', {}, (a.stale ? '⚠ ' : '✓ ') + dtRu(a.approved_at)),
+    ]);
+  }
+
+  function openApproveProduct(x) {
+    const a = x.approval || { has: false };
+    const reasons = (SKU && SKU.approval_reasons) || [{ code: 'planned', label: 'Плановое утверждение' }];
+    const rsn = el('select', { class: 'calc-modal-inp' },
+      reasons.map((r) => el('option', { value: r.code }, r.label)));
+    const cmt = el('input', { type: 'text', class: 'calc-modal-inp', maxlength: '300',
+      placeholder: 'например: после подорожания руколы' });
+    const was = a.has ? el('div', { class: 'calc-appr-was' }, [
+      el('div', {}, 'Утверждено ' + dtRu(a.approved_at) + (a.approved_by_name ? ' · ' + a.approved_by_name : '')),
+      el('div', {}, 'Было: цена ' + (a.price === null ? '—' : money0(a.price))
+        + ', себестоимость ' + (a.cost_defect === null ? '—' : money0(a.cost_defect))),
+      el('div', {}, 'Стало: цена ' + (x.price === null ? '—' : money0(x.price))
+        + ', себестоимость ' + (x.calc && x.calc.cost_defect !== null ? money0(x.calc.cost_defect) : '—')),
+    ]) : el('div', { class: 'calc-appr-was' }, 'Этот товар утверждается впервые.');
+    const body = el('div', {}, [
+      el('div', { class: 'calc-sub', style: 'margin-bottom:10px' },
+        'Фиксируем расчёт этого товара: цену вместе с себестоимостью, из которой она получена. '
+        + 'Остальные товары листа не трогаем.'),
+      was,
+      el('div', { style: 'margin-top:10px' }, [el('div', { class: 'calc-dim', style: 'margin-bottom:4px' }, 'Причина'), rsn]),
+      el('div', { style: 'margin-top:8px' }, cmt),
+    ]);
+    const ok = el('button', { class: 'calc-btn primary', onclick: async () => {
+      ok.disabled = true;
+      try {
+        const r = await post('/product/' + x.id + '/approve', { reason: rsn.value, comment: cmt.value });
+        m.close(); toast('Цена утверждена');
+        if (r.changes) toast(r.changes);
+        await loadSku();
+      } catch (e) { toast(e.message, true); ok.disabled = false; }
+    } }, 'Утвердить');
+    const m = calcModal('Утвердить цену — ' + x.name, body, [
+      el('button', { class: 'calc-btn', onclick: () => m.close() }, 'Отмена'), ok,
+    ]);
+  }
+
+  async function openProductHistory(x) {
+    let d;
+    try { d = await api('/product/' + x.id + '/approvals'); }
+    catch (e) { return toast(e.message, true); }
+    const rows = (d.items || []).map((r) => el('tr', {}, [
+      el('td', {}, dtRu(r.approved_at)),
+      el('td', {}, r.approved_by_name || '—'),
+      el('td', {}, r.reason_label || '—'),
+      el('td', { class: 'tnum' }, r.price === null ? '—' : money0(r.price)),
+      el('td', { class: 'tnum' }, r.cost_defect === null ? '—' : money0(r.cost_defect)),
+      el('td', { class: 'tnum' }, r.net_pct === null ? '—' : money(r.net_pct, 1) + '%'),
+      el('td', { class: 'calc-dim' }, [r.changes, r.comment ? ' · «' + r.comment + '»' : ''].join('')),
+    ]));
+    const head = el('tr', {}, ['Дата', 'Кто', 'Причина', 'Цена', 'С/с с браком', 'Маржа', 'Что изменилось']
+      .map((t, i) => el('th', { class: i >= 3 && i <= 5 ? 'tnum' : '' }, t)));
+    const body = rows.length
+      ? el('div', { class: 'calc-sum-wrap' }, el('table', { class: 'calc-sum-t' }, [el('thead', {}, head), el('tbody', {}, rows)]))
+      : el('div', { class: 'calc-empty' }, 'Этот товар ещё не утверждали.');
+    const m = calcModal('История утверждений — ' + x.name, body,
+      [el('button', { class: 'calc-btn', onclick: () => m.close() }, 'Закрыть')]);
   }
 
   // ID товара из SalesDoctor. Держим его в меню, а не полем в шапке: подписей
