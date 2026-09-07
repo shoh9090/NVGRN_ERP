@@ -191,3 +191,50 @@
   .hr-emp > *:nth-child(2), .hr-emp > *:nth-child(5), .hr-emp > *:nth-child(7) { display: none; }
   .hrf-row { grid-template-columns: 1fr; gap: 4px; }
 }
+
+/* ---------------------------------------------------------------------------
+   Табель производства: сетка «сотрудники × дни месяца»
+   --------------------------------------------------------------------------- */
+.hr-ts-wrap { overflow-x: auto; border: 1px solid var(--line-soft); border-radius: 12px; background: #fff; }
+.hr-ts-t { border-collapse: collapse; font-size: 12.5px; white-space: nowrap; min-width: 100%; }
+.hr-ts-t th {
+  font-size: 11px; font-weight: 700; color: var(--ink-soft); text-transform: uppercase;
+  letter-spacing: .3px; padding: 8px 4px; border-bottom: 1px solid var(--line-soft);
+  background: #fff; position: sticky; top: 0; z-index: 2;
+}
+/* Имя не должно уезжать при прокрутке по дням — иначе непонятно, чья строка */
+.hr-ts-t th.hr-ts-name, .hr-ts-t td.hr-ts-name {
+  position: sticky; left: 0; background: #fff; z-index: 3;
+  text-align: left; min-width: 210px; padding-left: 12px; padding-right: 10px;
+  border-right: 1px solid var(--line-soft);
+}
+.hr-ts-t th.hr-ts-name { z-index: 4; }
+.hr-ts-t th.hr-ts-d { min-width: 34px; text-align: center; }
+.hr-ts-t th.hr-ts-d.wk { color: var(--red); }
+.hr-ts-t th.hr-ts-d.now, .hr-ts-t td.hr-ts-c.now { background: var(--lime-soft); }
+.hr-ts-t th.hr-ts-sum { text-align: right; padding-right: 10px; }
+.hr-ts-t td { padding: 7px 4px; border-bottom: 1px solid var(--line-soft); }
+.hr-ts-t tbody tr:hover td { background: #fbfaf4; }
+.hr-ts-t tbody tr:hover td.hr-ts-name { background: #fbfaf4; }
+
+.hr-ts-c {
+  text-align: center; cursor: pointer; font-variant-numeric: tabular-nums;
+  min-width: 34px; border-radius: 6px;
+}
+.hr-ts-c:hover { outline: 1px solid var(--lime-d); outline-offset: -1px; }
+.hr-ts-c.wk { background: #faf8f0; }
+.hr-ts-c.future { cursor: default; color: var(--ink-faint); }
+.hr-ts-c.future:hover { outline: none; }
+.hr-ts-c.ot { color: #b25b00; font-weight: 700; }
+.hr-ts-c.mk-off { color: var(--ink-faint); }
+.hr-ts-c.mk-vacation { color: #0d7d8c; font-weight: 700; }
+.hr-ts-c.mk-sick { color: #b25b00; font-weight: 700; }
+.hr-ts-c.mk-absent { color: var(--red); font-weight: 700; }
+.hr-ts-t td.hr-ts-sum { text-align: right; padding-right: 10px; }
+
+.hr-ts-legend {
+  display: flex; flex-wrap: wrap; gap: 14px; margin-top: 10px;
+  font-size: 11.5px; color: var(--ink-soft);
+}
+.hr-ts-marks { display: flex; flex-wrap: wrap; gap: 8px; }
+.hr-ts-marks .btn-ghost.on { border-color: var(--lime-d); background: var(--lime-soft); color: var(--forest); }

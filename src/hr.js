@@ -11,11 +11,13 @@ const intOrNull = (v) => (v === '' || v == null ? null : parseInt(v, 10));
 const numOrNull = (v) => (v === '' || v == null ? null : Number(v));
 
 // Типы графика — фиксированный набор (не текстом, чтобы не расползалось).
+// shift_hours — длина смены по умолчанию: столько подставляется в табеле, когда
+// отмечают выход. Правится в самой отметке, если день был короче или длиннее.
 const SCHEDULES = [
-  { code: 'day5', name: '5-дневка' },
-  { code: 'day6', name: '6-дневка' },
-  { code: 'day6h12', name: '6/1 по 12 ч' },
-  { code: 'shift22', name: 'Смена 2/2' },
+  { code: 'day5', name: '5-дневка', shift_hours: 8 },
+  { code: 'day6', name: '6-дневка', shift_hours: 8 },
+  { code: 'day6h12', name: '6/1 по 12 ч', shift_hours: 12 },
+  { code: 'shift22', name: 'Смена 2/2', shift_hours: 12 },
 ];
 const SCHEDULE_CODES = SCHEDULES.map((s) => s.code);
 const STATUSES = ['active', 'fired', 'archived'];
@@ -149,6 +151,34 @@ async function ensureSchema() {
               AND (pr.plan_days IS NOT NULL OR pr.plan_hours IS NOT NULL)
             GROUP BY pr.period, e.schedule_type
            ON CONFLICT (period, schedule_type) DO NOTHING`).catch(() => {});
+  // --- Табель производства -------------------------------------------------
+  // Реестр отметок по дням. Факт-дни и факт-часы в ведомости — СУММА этих
+  // отметок, а не отдельная цифра: иначе появятся две правды и разойдутся.
+  // Один день — одна отметка на человека (уникальность ниже).
+  await q(`CREATE TABLE IF NOT EXISTS hr_timesheet (
+    id SERIAL PRIMARY KEY,
+    employee_id INT REFERENCES hr_employees(id) ON DELETE CASCADE,
+    work_date DATE NOT NULL,
+    mark TEXT NOT NULL DEFAULT 'work',             -- work | off | vacation | sick | absent
+    hours NUMERIC,
+    overtime_hours NUMERIC,
+    comment TEXT DEFAULT '',
+    created_by INT,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (employee_id, work_date)
+  )`);
+  await q(`CREATE INDEX IF NOT EXISTS idx_hr_timesheet_date ON hr_timesheet (work_date)`);
+  // Утверждение табеля начальником смены. До него зарплату начислять нельзя,
+  // после — правит только админ.
+  await q(`CREATE TABLE IF NOT EXISTS hr_timesheet_submits (
+    period TEXT NOT NULL,                          -- YYYY-MM
+    department_id INT REFERENCES hr_departments(id) ON DELETE CASCADE,
+    submitted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    submitted_by INT,
+    submitted_by_name TEXT DEFAULT '',
+    comment TEXT DEFAULT '',
+    PRIMARY KEY (period, department_id)
+  )`);
   // Налоги на ФОТ по месяцам (вписываются вручную, платятся позже начисления): ИНПС, НДФЛ, соцналог.
   await q(`CREATE TABLE IF NOT EXISTS hr_fot_taxes (
     period TEXT PRIMARY KEY,
@@ -878,6 +908,165 @@ router.get('/api/payroll', async (req, res) => {
     cash_advance: sum('cash_advance'), cash_paid: sum('cash_paid'),
   };
   res.json({ period, items, summary, cash_unmatched: cashUnmatched });
+});
+
+// ===========================================================================
+// Табель производства
+// ===========================================================================
+// Отметки по дням — реестр. Факт-дни, факт-часы и переработка в ведомости
+// пересчитываются из него и руками не вводятся.
+const TS_MARKS = ['work', 'off', 'vacation', 'sick', 'absent'];
+// Что означает отметка в деньгах. Отпуск и больничный оплачиваются отдельными
+// начислениями (решение Арианны), поэтому в табеле они дают ноль часов —
+// иначе человек получил бы дважды.
+const TS_MARK_LABEL = { work: 'Отработано', off: 'Выходной', vacation: 'Отпуск', sick: 'Больничный', absent: 'Неявка' };
+
+function monthDays(period) {
+  const [y, m] = period.split('-').map(Number);
+  return new Date(Date.UTC(y, m, 0)).getUTCDate();
+}
+
+// Пересчитать факт месяца из табеля. Если отметок за месяц НЕТ ни одной —
+// ведомость не трогаем: там могут стоять цифры, введённые руками до табеля,
+// и обнулить их значило бы потерять данные.
+async function recomputeTimesheetFact(empId, period) {
+  const r = (await db.pool.query(
+    `SELECT COUNT(*)::int AS marks,
+            COUNT(*) FILTER (WHERE mark='work')::int AS days,
+            COALESCE(SUM(hours) FILTER (WHERE mark='work'), 0) AS hours,
+            COALESCE(SUM(overtime_hours) FILTER (WHERE mark='work'), 0) AS ot
+       FROM hr_timesheet
+      WHERE employee_id = $1 AND to_char(work_date, 'YYYY-MM') = $2`, [empId, period])).rows[0];
+  if (!r || !r.marks) return null;
+  await db.pool.query(
+    `INSERT INTO hr_payroll (employee_id, period, fact_days, fact_hours, overtime_hours)
+     VALUES ($1,$2,$3,$4,$5)
+     ON CONFLICT (employee_id, period) DO UPDATE
+        SET fact_days = EXCLUDED.fact_days, fact_hours = EXCLUDED.fact_hours,
+            overtime_hours = EXCLUDED.overtime_hours, updated_at = now()`,
+    [empId, period, r.days, Number(r.hours), Number(r.ot)]);
+  // Уже начисленный месяц не пересчитываем молча — как и «Заполнить нормы».
+  const accrued = (await db.pool.query(
+    'SELECT accrued_at FROM hr_payroll WHERE employee_id=$1 AND period=$2', [empId, period])).rows[0];
+  if (accrued && accrued.accrued_at) return { recomputed: false };
+  await recomputeAccrFact(empId, period);
+  return { recomputed: true };
+}
+
+// Сетка табеля за месяц.
+router.get('/api/timesheet', async (req, res) => {
+  try {
+    const period = /^\d{4}-\d{2}$/.test(req.query.period) ? req.query.period : new Date().toISOString().slice(0, 7);
+    // Фильтр отделов умеет несколько значений и «Без отдела» — фильтруем тем же
+    // помощником, что и остальные вкладки, чтобы вести себя одинаково.
+    const emps = deptFilterMem(req.query.department, (await db.pool.query(
+      `SELECT e.id, e.full_name, e.schedule_type, e.base_salary, e.department_id, d.name AS department_name,
+              pr.plan_days, pr.plan_hours, pr.accr_fact, (pr.accrued_at IS NOT NULL) AS accrued
+         FROM hr_employees e
+         LEFT JOIN hr_departments d ON d.id = e.department_id
+         LEFT JOIN hr_payroll pr ON pr.employee_id = e.id AND pr.period = $1
+        WHERE e.status = 'active' ORDER BY e.full_name`, [period])).rows);
+
+    const ids = emps.map((e) => e.id);
+    const marks = ids.length ? (await db.pool.query(
+      `SELECT employee_id, to_char(work_date,'DD') AS d, mark, hours, overtime_hours, comment
+         FROM hr_timesheet
+        WHERE to_char(work_date,'YYYY-MM') = $1 AND employee_id = ANY($2)`, [period, ids])).rows : [];
+    const byEmp = {};
+    marks.forEach((m) => {
+      (byEmp[m.employee_id] = byEmp[m.employee_id] || {})[m.d] = {
+        mark: m.mark, hours: m.hours === null ? null : Number(m.hours),
+        overtime: m.overtime_hours === null ? null : Number(m.overtime_hours),
+        comment: m.comment || '',
+      };
+    });
+
+    const items = emps.map((e) => {
+      const cells = byEmp[e.id] || {};
+      let days = 0, hours = 0, ot = 0;
+      Object.values(cells).forEach((c) => {
+        if (c.mark !== 'work') return;
+        days += 1; hours += Number(c.hours) || 0; ot += Number(c.overtime) || 0;
+      });
+      const sch = SCHEDULES.find((s) => s.code === e.schedule_type) || null;
+      return {
+        emp_id: e.id, full_name: e.full_name, department_name: e.department_name || '—',
+        schedule_type: e.schedule_type || '', schedule_name: sch ? sch.name : '—',
+        hourly: POCHASOVOY.has(e.schedule_type), shift_hours: sch ? sch.shift_hours : 8,
+        plan_days: e.plan_days === null ? null : Number(e.plan_days),
+        plan_hours: e.plan_hours === null ? null : Number(e.plan_hours),
+        marks: cells, days, hours, overtime: ot,
+        // «Начислено на сегодня» — та же цифра, что в ведомости: свою здесь не
+        // считаем, иначе табель и зарплата разошлись бы.
+        accrued: Number(e.accr_fact) || 0,
+        accrued_locked: !!e.accrued,
+      };
+    });
+
+    const days = [];
+    const dn = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
+    const total = monthDays(period);
+    for (let i = 1; i <= total; i++) {
+      const dt = new Date(Date.UTC(Number(period.slice(0, 4)), Number(period.slice(5, 7)) - 1, i));
+      days.push({ d: String(i).padStart(2, '0'), n: i, dow: dn[dt.getUTCDay()], weekend: dt.getUTCDay() === 0 });
+    }
+
+    // Утверждение табеля — по одному отделу. Показываем его, только когда выбран
+    // ровно один отдел: иначе непонятно, чей табель утверждён.
+    const one = String(req.query.department || '').split(',').filter(Boolean);
+    const dept = (one.length === 1 && /^\d+$/.test(one[0])) ? Number(one[0]) : null;
+    const sub = dept ? (await db.pool.query(
+      'SELECT * FROM hr_timesheet_submits WHERE period=$1 AND department_id=$2', [period, dept])).rows[0] : null;
+
+    res.json({
+      period, department: dept, days,
+      today: new Date().toISOString().slice(0, 10),
+      items,
+      totals: items.reduce((s, x) => ({
+        days: s.days + x.days, hours: s.hours + x.hours,
+        overtime: s.overtime + x.overtime, accrued: s.accrued + x.accrued,
+      }), { days: 0, hours: 0, overtime: 0, accrued: 0 }),
+      marks: TS_MARKS.map((m) => ({ code: m, label: TS_MARK_LABEL[m] })),
+      submitted: sub ? { at: sub.submitted_at, by: sub.submitted_by_name || '' } : null,
+      locked: !!(await hrLockError(period)),
+    });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Одна отметка. Сразу пересчитывает факт месяца и начисление — иначе цифра
+// наверху отстаёт от табеля и ей нельзя верить.
+router.post('/api/timesheet/mark', J, async (req, res) => {
+  const b = req.body || {};
+  const empId = intOrNull(b.employee_id);
+  const date = String(b.date || '').trim();
+  if (!empId || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'Укажите сотрудника и дату' });
+  const period = date.slice(0, 7);
+  { const _e = await hrLockError(period); if (_e) return res.status(423).json({ error: _e }); }
+  if (date > new Date().toISOString().slice(0, 10)) {
+    return res.status(400).json({ error: 'Нельзя отмечать день, который ещё не наступил' });
+  }
+  try {
+    if (b.mark === null || b.mark === '') {
+      await db.pool.query('DELETE FROM hr_timesheet WHERE employee_id=$1 AND work_date=$2', [empId, date]);
+    } else {
+      const mark = TS_MARKS.includes(b.mark) ? b.mark : null;
+      if (!mark) return res.status(400).json({ error: 'Неизвестная отметка' });
+      const hours = mark === 'work' ? numOrNull(b.hours) : null;
+      const ot = mark === 'work' ? numOrNull(b.overtime_hours) : null;
+      if (mark === 'work' && !(hours > 0)) return res.status(400).json({ error: 'Укажите отработанные часы' });
+      if (hours !== null && hours > 24) return res.status(400).json({ error: 'В сутках не больше 24 часов' });
+      if (ot !== null && ot < 0) return res.status(400).json({ error: 'Переработка не может быть отрицательной' });
+      await db.pool.query(
+        `INSERT INTO hr_timesheet (employee_id, work_date, mark, hours, overtime_hours, comment, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)
+         ON CONFLICT (employee_id, work_date) DO UPDATE
+            SET mark=$3, hours=$4, overtime_hours=$5, comment=$6, updated_at=now()`,
+        [empId, date, mark, hours, ot, String(b.comment || '').trim().slice(0, 200), req.user.id]);
+    }
+    const r = await recomputeTimesheetFact(empId, period);
+    await db.log(req.user.id, 'hr_timesheet_mark', `${date} emp#${empId} ${b.mark || 'clear'}`);
+    res.json({ ok: true, accrual_locked: !!(r && r.recomputed === false) });
+  } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 // Нормы месяца: сначала сохранённые (hr_norms), если их нет — то, что фактически стоит

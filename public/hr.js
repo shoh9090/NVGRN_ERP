@@ -116,6 +116,7 @@
     main.appendChild(el('div', { class: 'hr-tabs' }, [
       tab('dashboard', '📊 Дашборд'),
       tab('employees', '👥 Сотрудники'),
+      tab('timesheet', '🗓 Табель'),
       tab('salary', '💵 Зарплата'),
       tab('massops', '⚡ Массовые операции'),
       tab('payouts', '💳 Выплаты'),
@@ -1108,14 +1109,22 @@
 
   // ================= ТАБЕЛЬ =================
   const tsState = { period: '', department: '', schedule: '', q: '' };
+  // ================= ТАБЕЛЬ ПРОИЗВОДСТВА =================
+  // Отметки по дням — реестр, из которого складывается зарплата. Раньше здесь
+  // вводили факт-дни одной цифрой за месяц: проверить её было нельзя, ошибку
+  // не найти, спор «я работал, а мне не поставили» разрешить нечем.
+  const TS_LETTER = { off: 'В', vacation: 'О', sick: 'Б', absent: 'НБ' };
+  const TS_MARK_NAME = { work: 'Отработано', off: 'Выходной', vacation: 'Отпуск', sick: 'Больничный', absent: 'Неявка' };
+  const nH = (v) => String(Math.round((Number(v) || 0) * 10) / 10);
+
   async function renderTimesheet() {
     const c = $('#hr-content');
     c.innerHTML = '';
     if (!tsState.period) tsState.period = curMonth();
     c.appendChild(el('div', { class: 'hr-head' }, [
-      el('div', {}, [el('div', { class: 'hr-h2' }, 'Табель — ' + monthLabel(tsState.period)), el('div', { class: 'hr-sub' }, 'Часы/дни за месяц. Переработка = факт − план часов (оплата ×2 — механизм расчёта настроим позже). Деньги начислений не затрагиваются.')]),
-      el('div', { class: 'hr-head-btns' }, [
-        el('button', { class: 'btn-ghost hr-add', onclick: () => openTimesheetImport(tsState.period) }, '📥 Загрузить из Excel'),
+      el('div', {}, [
+        el('div', { class: 'hr-h2' }, 'Табель — ' + monthLabel(tsState.period)),
+        el('div', { class: 'hr-sub' }, 'Клик по ячейке — отметить день. Факт-дни и часы в зарплате складываются отсюда, вводить их руками не нужно.'),
       ]),
     ]));
     const mInp = HubDateRange.create({
@@ -1131,52 +1140,125 @@
     async function load() {
       box.innerHTML = '<div class="hr-loading">Загружаю…</div>';
       const p = new URLSearchParams({ period: tsState.period });
-      ['department', 'schedule', 'q'].forEach((k) => { if (tsState[k]) p.set(k, tsState[k]); });
-      let d; try { d = await api('/payroll?' + p.toString()); } catch (e) { box.innerHTML = ''; box.appendChild(el('div', { class: 'hr-empty' }, 'Ошибка: ' + e.message)); return; }
+      if (tsState.department) p.set('department', tsState.department);
+      let d;
+      try { d = await api('/timesheet?' + p.toString()); }
+      catch (e) { box.innerHTML = ''; box.appendChild(el('div', { class: 'hr-empty' }, 'Ошибка: ' + e.message)); return; }
+      const qq = (tsState.q || '').trim().toLowerCase();
+      const items = qq ? d.items.filter((x) => (x.full_name || '').toLowerCase().includes(qq)) : d.items;
       box.innerHTML = '';
-      if (!d.items.length) { box.appendChild(el('div', { class: 'hr-empty' }, 'Нет сотрудников по фильтру.')); return; }
-      const rowsModel = d.items.map((r) => ({ employee_id: r.emp_id, inputs: {} }));
-      // Быстрое заполнение плана дней всем сразу.
-      const planAll = el('input', { class: 'hrf-inp hr-filt', type: 'number', min: '0', style: 'width:90px', placeholder: 'напр. 26' });
-      const fillBtn = el('button', { class: 'btn-ghost', onclick: () => { const v = planAll.value; if (v === '') return; rowsModel.forEach((m) => { m.inputs.plan_days.value = v; }); toast('План проставлен всем — не забудьте сохранить'); } }, 'Заполнить план');
-      const saveBtn = el('button', { class: 'btn-primary', onclick: save }, '💾 Сохранить табель');
-      box.appendChild(el('div', { class: 'hr-filters', style: 'justify-content:flex-end' }, [el('span', { class: 'hr-flab' }, 'План дней всем:'), planAll, fillBtn, saveBtn]));
-      const numIn = (m, key, val) => { const i = el('input', { class: 'hrf-inp hr-ts-inp', type: 'number', min: '0', step: key.indexOf('hours') >= 0 ? '0.5' : '1', value: val == null ? '' : String(val) }); m.inputs[key] = i; return i; };
-      const nH = (v) => String(Math.round((Number(v) || 0) * 10) / 10);
-      const head = el('div', { class: 'hr-row head hr-ts' }, ['#', 'ФИО', 'Отдел', 'План дн.', 'Факт дн.', 'План ч.', 'Факт ч.', 'Стандарт ч.', 'Переработка ч.'].map((h) => el('span', {}, h)));
-      box.appendChild(el('div', { class: 'hr-list' }, [head, ...d.items.map((r, i) => {
-        const m = rowsModel[i];
-        const ph = numIn(m, 'plan_hours', r.plan_hours), fh = numIn(m, 'fact_hours', r.fact_hours);
-        const std = el('span', { class: 'tnum muted' }, '—'), ot = el('span', { class: 'tnum' }, '—');
-        const recompute = () => {
-          const p = Number(ph.value) || 0, f = Number(fh.value) || 0;
-          if (!f) { std.textContent = '—'; ot.textContent = '—'; ot.style.color = ''; return; }
-          const over = p > 0 ? Math.max(0, f - p) : 0;
-          std.textContent = nH(f - over);
-          ot.textContent = over ? '+' + nH(over) : '—';
-          ot.style.color = over ? '#b25b00' : '';
-        };
-        ph.addEventListener('input', recompute); fh.addEventListener('input', recompute);
-        const row = el('div', { class: 'hr-row hr-ts' }, [
-          el('span', { class: 'hr-idx' }, String(i + 1)),
-          el('span', { style: 'font-weight:700' }, r.full_name),
-          el('span', { class: 'muted' }, r.department_name || '—'),
-          numIn(m, 'plan_days', r.plan_days), numIn(m, 'fact_days', r.fact_days),
-          ph, fh, std, ot,
-        ]);
-        recompute();
-        return row;
-      })]));
+      if (!items.length) { box.appendChild(el('div', { class: 'hr-empty' }, 'Нет сотрудников по фильтру.')); return; }
 
-      async function save() {
-        const rows = rowsModel.map((m) => ({ employee_id: m.employee_id, plan_days: m.inputs.plan_days.value, fact_days: m.inputs.fact_days.value, plan_hours: m.inputs.plan_hours.value, fact_hours: m.inputs.fact_hours.value }));
-        saveBtn.disabled = true; saveBtn.textContent = 'Сохраняю…';
-        // Табель сохраняется целиком — возвращаем прокрутку, чтобы не искать строку заново.
-        const sy = window.scrollY;
-        try { const rr = await post('/timesheet', { period: tsState.period, rows }); toast('Сохранено: ' + rr.saved); await load(); requestAnimationFrame(() => window.scrollTo(0, sy)); }
-        catch (e) { toast(e.message, true); saveBtn.disabled = false; saveBtn.textContent = '💾 Сохранить табель'; }
+      const t = d.totals;
+      box.appendChild(el('div', { class: 'hr-kpis hr-kpis-4', style: 'margin-bottom:12px' }, [
+        kpi('Отмечено дней', String(t.days), 'ink'),
+        kpi('Часов', nH(t.hours), 'ink'),
+        kpi('Переработка, ч', t.overtime ? '+' + nH(t.overtime) : '0', t.overtime > 0 ? 'amber' : 'muted'),
+        kpi('Начислено на сегодня', money(t.accrued), 'green'),
+      ]));
+      if (d.locked) box.appendChild(el('div', { class: 'hr-note' }, 'Месяц закрыт — правка табеля запрещена.'));
+
+      const today = d.today.slice(8, 10);
+      const isThisMonth = d.today.slice(0, 7) === d.period;
+
+      // Ячейка дня. Клик открывает окно отметки — с часами, переработкой и статусами.
+      function tsCell(r, day) {
+        const m = r.marks[day.d] || null;
+        const date = d.period + '-' + day.d;
+        const future = date > d.today;
+        const txt = !m ? '' : m.mark === 'work'
+          ? (nH(m.hours) + (m.overtime ? ' +' + nH(m.overtime) : ''))
+          : TS_LETTER[m.mark];
+        const cls = ['hr-ts-c'];
+        if (day.weekend) cls.push('wk');
+        if (isThisMonth && day.d === today) cls.push('now');
+        if (m && m.mark !== 'work') cls.push('mk-' + m.mark);
+        if (m && m.overtime) cls.push('ot');
+        if (future) cls.push('future');
+        return el('td', {
+          class: cls.join(' '),
+          title: m ? (TS_MARK_NAME[m.mark] + (m.comment ? ' · ' + m.comment : '')) : (future ? 'День ещё не наступил' : 'Отметить'),
+          onclick: (future || d.locked) ? null : () => openMarkDialog(r, day, d, load),
+        }, txt);
       }
+
+      const head = el('tr', {}, [el('th', { class: 'hr-ts-name' }, 'Сотрудник')]
+        .concat(d.days.map((x) => el('th', {
+          class: 'hr-ts-d' + (x.weekend ? ' wk' : '') + (isThisMonth && x.d === today ? ' now' : ''),
+        }, String(x.n))))
+        .concat(['Дней', 'Часов', 'Перераб.', 'Начислено'].map((x) => el('th', { class: 'hr-ts-sum' }, x))));
+
+      const rows = items.map((r) => el('tr', {}, [
+        el('td', { class: 'hr-ts-name' }, [
+          el('div', { style: 'font-weight:700' }, r.full_name),
+          el('div', { class: 'muted', style: 'font-size:11px' }, r.schedule_name + ' · ' + r.department_name),
+        ]),
+      ].concat(d.days.map((x) => tsCell(r, x)))
+        .concat([
+          el('td', { class: 'hr-ts-sum tnum' }, String(r.days)),
+          el('td', { class: 'hr-ts-sum tnum' }, nH(r.hours)),
+          el('td', { class: 'hr-ts-sum tnum', style: r.overtime > 0 ? 'color:#b25b00;font-weight:700' : '' }, r.overtime ? '+' + nH(r.overtime) : '—'),
+          el('td', { class: 'hr-ts-sum tnum', style: 'font-weight:700' }, money(r.accrued)),
+        ])));
+
+      box.appendChild(el('div', { class: 'hr-ts-wrap' },
+        el('table', { class: 'hr-ts-t' }, [el('thead', {}, head), el('tbody', {}, rows)])));
+      box.appendChild(el('div', { class: 'hr-ts-legend' }, [
+        el('span', {}, '12 — отработано часов'),
+        el('span', {}, 'В — выходной'),
+        el('span', {}, 'О — отпуск'),
+        el('span', {}, 'Б — больничный'),
+        el('span', {}, 'НБ — неявка'),
+        el('span', { class: 'muted' }, 'Отпуск, больничный и неявка часов не дают — эти суммы вносятся отдельными начислениями.'),
+      ]));
     }
+  }
+
+  // Окно отметки одного дня. Часы подставляются по длине смены графика —
+  // в обычный день ничего вписывать не надо, только нажать «Сохранить».
+  function openMarkDialog(r, day, data, reload) {
+    const cur = r.marks[day.d] || null;
+    const date = data.period + '-' + day.d;
+    const hours = finp(cur && cur.mark === 'work' ? cur.hours : r.shift_hours, { type: 'number', min: '0', max: '24', step: '0.5' });
+    const ot = finp(cur && cur.mark === 'work' ? (cur.overtime || '') : '', { type: 'number', min: '0', step: '0.5', placeholder: '0' });
+    const cmt = finp(cur ? cur.comment : '', { placeholder: 'Комментарий (необязательно)' });
+
+    const send = async (body) => {
+      try {
+        const res = await post('/timesheet/mark', Object.assign({ employee_id: r.emp_id, date }, body));
+        closeModal();
+        if (res.accrual_locked) toast('Месяц уже начислен — факт обновлён, начисление не пересчитано', true);
+        await reload();
+      } catch (e) { toast(e.message, true); }
+    };
+
+    const statusBtn = (mark, label) => el('button', {
+      class: 'btn-ghost' + (cur && cur.mark === mark ? ' on' : ''),
+      onclick: () => send({ mark, comment: cmt.value }),
+    }, label);
+
+    const body = el('div', { class: 'hrf' }, [
+      el('div', { class: 'hr-note' }, r.full_name + ' · ' + day.n + ' ' + monthLabel(data.period).toLowerCase()),
+      el('div', { class: 'hr-sub', style: 'margin:4px 0 10px' },
+        'Смена по графику «' + r.schedule_name + '» — ' + r.shift_hours + ' ч. Переработка оплачивается в двойном размере.'),
+      frow('Отработано часов', hours),
+      frow('Переработка, ч', ot),
+      frow('Комментарий', cmt),
+      el('div', { class: 'hr-sub', style: 'margin:10px 0 4px' }, 'Или отметить день без работы:'),
+      el('div', { class: 'hr-ts-marks' }, [
+        statusBtn('off', 'В — выходной'),
+        statusBtn('vacation', 'О — отпуск'),
+        statusBtn('sick', 'Б — больничный'),
+        statusBtn('absent', 'НБ — неявка'),
+      ]),
+    ]);
+    const actions = [el('button', { class: 'btn-ghost', onclick: closeModal }, 'Отмена')];
+    if (cur) actions.push(el('button', { class: 'btn-ghost hrf-warn', onclick: () => send({ mark: null }) }, 'Очистить'));
+    actions.push(el('button', {
+      class: 'btn-primary',
+      onclick: () => send({ mark: 'work', hours: hours.value, overtime_hours: ot.value, comment: cmt.value }),
+    }, 'Сохранить'));
+    modal('Отметка дня', body, actions);
   }
 
   // ================= ЗАРПЛАТА =================
