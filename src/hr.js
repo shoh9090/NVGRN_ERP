@@ -14,6 +14,7 @@ const numOrNull = (v) => (v === '' || v == null ? null : Number(v));
 const SCHEDULES = [
   { code: 'day5', name: '5-дневка' },
   { code: 'day6', name: '6-дневка' },
+  { code: 'day6h12', name: '6/1 по 12 ч' },
   { code: 'shift22', name: 'Смена 2/2' },
 ];
 const SCHEDULE_CODES = SCHEDULES.map((s) => s.code);
@@ -187,8 +188,11 @@ async function addEvent(empId, type, date, opts = {}) {
 const { ACCR_EXTRA, ACCR_ALL, ACCR_FIELDS: ACCR, DED, DED_SUM, PAID } = require('./hr-fields');
 const PAYROLL_NUM = [...ACCR_ALL, ...DED, ...PAID, 'plan_days', 'fact_days', 'plan_hours', 'fact_hours', 'amount_1c'];
 
-// Тип оплаты по графику: смена 2/2 — почасовая (табель); 5/6-дневка — по дням (оклад/план-дни × факт-дни).
-const POCHASOVOY = new Set(['shift22']);
+// Тип оплаты по графику: почасовые считаются от часов и умеют переработку
+// (её оплачиваем в двойном размере), остальные — по дням.
+// «6/1 по 12 ч» — производство: смена длинная, переработки бывают каждую неделю,
+// а по дням переработку учесть нечем.
+const POCHASOVOY = new Set(['shift22', 'day6h12']);
 // Авторасчёт оклада-начисления (accr_fact) ПО ФАКТУ. Нет факта → 0 (не начисляем).
 // Почасовые: оклад/план_часы × (факт_часы + переработка×2).
 // Окладники: дневная ставка × факт-дни = (оклад / план_дни) × факт_дни.
@@ -2158,6 +2162,39 @@ router.post('/api/employees/bulk', J, async (req, res) => {
     const r = await db.pool.query('DELETE FROM hr_employees WHERE id = ANY($1)', [ids]);
     await db.log(req.user.id, 'hr_employees_bulk_delete', String(ids.length));
     return res.json({ ok: true, affected: r.rowCount });
+  }
+  // Групповой перевод: объединить два отдела в один или разом посадить смену на
+  // другой график. Пишем кадровое событие каждому — иначе в истории человека
+  // отдел меняется сам собой, без следа, кто и когда это сделал.
+  if (action === 'transfer') {
+    const toDept = intOrNull(req.body.department_id);
+    const toSched = SCHEDULE_CODES.includes(req.body.schedule) ? req.body.schedule : null;
+    const date = String(req.body.date || '').trim() || new Date().toISOString().slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'Укажите дату перевода' });
+    if (!toDept && !toSched) return res.status(400).json({ error: 'Выберите отдел или график' });
+    const rows = (await db.pool.query(
+      'SELECT id, department_id, schedule_type FROM hr_employees WHERE id = ANY($1)', [ids])).rows;
+    let moved = 0, resched = 0;
+    for (const e of rows) {
+      if (toDept && e.department_id !== toDept) {
+        await db.pool.query('UPDATE hr_employees SET department_id=$1, updated_at=now() WHERE id=$2', [toDept, e.id]);
+        await addEvent(e.id, 'transfer', date, {
+          from_text: await deptName(e.department_id), to_text: await deptName(toDept),
+          comment: 'Групповой перевод', created_by: req.user.id,
+        });
+        moved++;
+      }
+      if (toSched && e.schedule_type !== toSched) {
+        await db.pool.query('UPDATE hr_employees SET schedule_type=$1, updated_at=now() WHERE id=$2', [toSched, e.id]);
+        await addEvent(e.id, 'schedule', date, {
+          from_text: schedLabel(e.schedule_type), to_text: schedLabel(toSched),
+          comment: 'Групповая смена графика', created_by: req.user.id,
+        });
+        resched++;
+      }
+    }
+    await db.log(req.user.id, 'hr_employees_bulk_transfer', `${ids.length}: отдел ${moved}, график ${resched}`);
+    return res.json({ ok: true, affected: rows.length, moved, resched });
   }
   const st = ['active', 'fired', 'archived'].includes(action) ? action : null;
   if (!st) return res.status(400).json({ error: 'Неверное действие' });

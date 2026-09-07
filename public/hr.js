@@ -742,7 +742,36 @@
         } }, 'Уволить');
         modal('Массовое увольнение', body, [el('button', { class: 'btn-ghost', onclick: closeModal }, 'Отмена'), ok]);
       }
+      // Групповой перевод: объединить два отдела в один или посадить смену на
+      // другой график. Каждому пишется кадровое событие — чтобы потом было
+      // видно, кто и когда перевёл.
+      function bulkTransfer() {
+        if (!empSel.size) return;
+        const dept = el('select', { class: 'hrf-inp' },
+          [el('option', { value: '' }, '— не менять —')]
+            .concat((DICTS.departments || []).map((x) => el('option', { value: x.id }, x.name))));
+        const sched = el('select', { class: 'hrf-inp' },
+          [el('option', { value: '' }, '— не менять —')]
+            .concat((DICTS.schedules || []).map((x) => el('option', { value: x.code }, x.name))));
+        const date = finp(new Date().toISOString().slice(0, 10), { type: 'date' });
+        const body = el('div', { class: 'hrf' }, [
+          el('div', { class: 'hr-note' }, 'Перевод ' + empSel.size + ' сотрудн. Отдел и график — одни на всех.'),
+          el('div', { class: 'hr-sub', style: 'margin:4px 0 8px' },
+            'Каждому запишется кадровое событие с этой датой. Кого перевод не касается (уже в этом отделе или на этом графике) — не трогаем.'),
+          frow('Перевести в отдел', dept),
+          frow('Поставить график', sched),
+          frow('Дата перевода *', date),
+        ]);
+        const ok = el('button', { class: 'btn-primary', onclick: async () => {
+          if (!dept.value && !sched.value) return toast('Выберите отдел или график', true);
+          if (!date.value) return toast('Укажите дату перевода', true);
+          closeModal();
+          await doBulk('transfer', null, { department_id: dept.value || null, schedule: sched.value || null, date: date.value });
+        } }, 'Перевести');
+        modal('Групповой перевод', body, [el('button', { class: 'btn-ghost', onclick: closeModal }, 'Отмена'), ok]);
+      }
       bulk.appendChild(bulkN);
+      bulk.appendChild(el('button', { class: 'btn-ghost', onclick: bulkTransfer }, 'Перевести'));
       bulk.appendChild(el('button', { class: 'btn-ghost hrf-warn', onclick: () => doBulk('archived', 'В архив') }, 'В архив'));
       bulk.appendChild(el('button', { class: 'btn-ghost hrf-warn', onclick: bulkFire }, 'Уволить'));
       // Удаление стирает карточку вместе с зарплатной историей — предупреждаем прямо в тексте.
