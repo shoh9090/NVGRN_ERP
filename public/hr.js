@@ -120,7 +120,6 @@
       tab('salary', '💵 Зарплата'),
       tab('massops', '⚡ Массовые операции'),
       tab('payouts', '💳 Выплаты'),
-      tab('settlements', '🧾 Расчёты'),
       tab('events', '🗂 Кадровая история'),
       tab('departments', '🏢 Отделы'),
     ]));
@@ -132,7 +131,8 @@
     if (TAB === 'employees') return renderEmployees();
     if (TAB === 'salary') return renderSalary();
     if (TAB === 'payouts') return renderPayouts();
-    if (TAB === 'settlements') return renderSettlements();
+    // Расчёты переехали на дашборд — старую ссылку не ломаем, отправляем туда.
+    if (TAB === 'settlements') { TAB = 'dashboard'; return render(); }
     if (TAB === 'massops') return renderMassOps();
     if (TAB === 'timesheet') return renderTimesheet();
     if (TAB === 'events') return renderEvents();
@@ -150,11 +150,13 @@
   const MON_RU = ['', 'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
   const dtRu = (s) => { try { return new Date(s).toLocaleDateString('ru-RU'); } catch (e) { return String(s || ''); } };
 
-  async function renderSettlements() {
+  // Живёт на дашборде (embedded = true): вопрос «сколько мы вообще должны»
+  // задают там же, где смотрят ФОТ, а не на отдельной вкладке.
+  async function renderSettlements(embedded) {
     const c = $('#hr-content');
-    c.appendChild(el('div', { class: 'hr-head' }, [
+    c.appendChild(el('div', { class: embedded ? 'hr-sec' : 'hr-head' }, [
       el('div', {}, [el('div', { class: 'hr-h2' }, 'Расчёты с сотрудниками'),
-        el('div', { class: 'hr-sub' }, 'Сколько начислили, сколько выдали и сколько остались должны. Долг на конец года переходит на следующий. Клик по строке — лицевой счёт помесячно.')]),
+        el('div', { class: 'hr-sub' }, 'Накопительно за всё время: сколько начислили, сколько выдали и сколько остались должны. Долг на конец года переходит на следующий. Клик по строке — лицевой счёт помесячно.')]),
     ]));
     const bar = el('div', { class: 'hr-filters', id: 'hr-setl-bar' }); c.appendChild(bar);
     const box = el('div', { id: 'hr-setl-box' }); c.appendChild(box);
@@ -532,6 +534,11 @@
       el('span', { class: 'tnum', style: 'color:#2e7d32;font-weight:700' }, moneyR(x.to_pay)),
       el('span', { class: 'tnum muted' }, moneyR(x.paid)),
     ]))]));
+
+    // Расчёты с сотрудниками — отдельной вкладкой их приходилось искать, хотя
+    // вопрос «сколько мы вообще должны» задают там же, где смотрят ФОТ.
+    // Блок накопительный, поэтому у него свой год и свой «по состоянию на».
+    await renderSettlements(true);
   }
   // ================= ВЫПЛАТЫ =================
   async function renderPayouts() {

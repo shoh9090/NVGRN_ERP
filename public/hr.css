@@ -292,3 +292,9 @@
   margin-right: 6px; vertical-align: -1px; background: var(--forest);
 }
 .hr-fc-lg span:last-child::before { background: var(--lime); }
+
+/* Разделитель разделов внутри одного экрана (Расчёты на дашборде) */
+.hr-sec {
+  margin-top: 26px; padding-top: 18px;
+  border-top: 2px solid var(--line);
+}
