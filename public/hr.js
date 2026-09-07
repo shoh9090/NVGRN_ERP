@@ -461,6 +461,15 @@
     let d; try { d = await api('/dashboard?period=' + dashState.period); } catch (e) { box.innerHTML = ''; box.appendChild(el('div', { class: 'hr-empty' }, 'Ошибка: ' + e.message)); return; }
     box.innerHTML = '';
     const t = d.totals;
+    // Табель забывают заполнить в первую же неделю, а восстанавливать его потом
+    // приходится по памяти. Напоминаем о самом раннем пропущенном дне.
+    if (d.timesheet_gap) {
+      const g = d.timesheet_gap;
+      box.appendChild(el('div', { class: 'hr-ts-sub', style: 'margin-bottom:12px' }, [
+        el('span', {}, 'Табель за ' + g.date_ru + ' заполнен не полностью — без отметки ' + g.missing + ' из ' + g.total + '.'),
+        el('button', { class: 'btn-primary', onclick: () => { tsState.period = g.date.slice(0, 7); TAB = 'timesheet'; render(); } }, 'Открыть табель'),
+      ]));
+    }
     // Понятная формула: Начислено − Удержания − Выплачено (с авансами) = К выплате.
     const uderzh = (Number(t.deducted) || 0) - (Number(t.advances) || 0);   // удержания без авансов
     const vyplacheno = (Number(t.paid) || 0) + (Number(t.advances) || 0);    // выплачено вместе с авансами

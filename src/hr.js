@@ -1107,6 +1107,34 @@ async function timesheetGuard(empId, period, field) {
   return 'Факт за этот месяц ведётся в табеле. Откройте вкладку «Табель» и поправьте отметку нужного дня.';
 }
 
+// Незаполненные дни табеля за последнюю неделю. Без напоминания про табель
+// забудут в первую же неделю, и восстанавливать придётся по памяти.
+// Смотрим только отделы, которые табелем УЖЕ пользуются: остальным он не нужен.
+async function timesheetGap() {
+  try {
+    const depts = (await db.pool.query(
+      `SELECT DISTINCT e.department_id FROM hr_timesheet t
+         JOIN hr_employees e ON e.id = t.employee_id
+        WHERE t.work_date >= (CURRENT_DATE - INTERVAL '45 days') AND e.department_id IS NOT NULL`))
+      .rows.map((r) => r.department_id);
+    if (!depts.length) return null;
+    // Самый ранний день за неделю, где отмечены не все. Сегодняшний не считаем —
+    // смена ещё не закончилась.
+    const r = (await db.pool.query(
+      `SELECT to_char(g.day,'YYYY-MM-DD') AS day, to_char(g.day,'DD.MM') AS day_ru,
+              COUNT(e.id)::int AS total,
+              COUNT(t.id)::int AS marked
+         FROM generate_series(CURRENT_DATE - INTERVAL '7 days', CURRENT_DATE - INTERVAL '1 day', INTERVAL '1 day') g(day)
+         CROSS JOIN hr_employees e
+         LEFT JOIN hr_timesheet t ON t.employee_id = e.id AND t.work_date = g.day
+        WHERE e.status = 'active' AND e.department_id = ANY($1)
+        GROUP BY g.day HAVING COUNT(t.id) < COUNT(e.id)
+        ORDER BY g.day LIMIT 1`, [depts])).rows[0];
+    if (!r) return null;
+    return { date: r.day, date_ru: r.day_ru, missing: r.total - r.marked, total: r.total };
+  } catch (e) { return null; }
+}
+
 // Прогноз зарплаты отдела на конец месяца: то, что уже начислено по отметкам,
 // плюс то, что человек ещё отработает по графику. Переработки не прогнозируем —
 // их никто не планирует, зато отдельно показываем, сколько они уже стоили.
@@ -2061,7 +2089,7 @@ router.get('/api/dashboard', async (req, res) => {
   const overpaid = rows.filter((r) => r.to_pay < -0.5).map((r) => ({ name: r.full_name, dept: r.dept || '—', amount: -r.to_pay })).sort((a, b) => b.amount - a.amount);
   // По сотрудникам — для разреза по клику на плитки дашборда.
   const emps = rows.map((r) => ({ full_name: r.full_name, dept: r.dept || '—', accrued: r.accrued, deducted: r.deducted, paid: r.paid, to_pay: r.to_pay, advances: advOf(r) }));
-  res.json({ period, byDept: deptArr, totals, overpaid, emps });
+  res.json({ period, byDept: deptArr, totals, overpaid, emps, timesheet_gap: await timesheetGap() });
 });
 
 // ---------- Отделы ----------
