@@ -1160,6 +1160,7 @@
 
       const today = d.today.slice(8, 10);
       const isThisMonth = d.today.slice(0, 7) === d.period;
+      if (isThisMonth && !d.locked) box.appendChild(todayPanel(items, d, load));
 
       // Ячейка дня. Клик открывает окно отметки — с часами, переработкой и статусами.
       function tsCell(r, day) {
@@ -1212,6 +1213,51 @@
         el('span', { class: 'muted' }, 'Отпуск, больничный и неявка часов не дают — эти суммы вносятся отдельными начислениями.'),
       ]));
     }
+  }
+
+  // Панель «отметить на сегодня». Главный экран начальника смены: закрыть день
+  // надо за полминуты, а не искать нужную ячейку в сетке из тридцати столбцов.
+  function todayPanel(items, d, reload) {
+    const day = d.today.slice(8, 10);
+    const dayObj = d.days.find((x) => x.d === day) || { d: day, n: Number(day) };
+    const done = items.filter((r) => r.marks[day]);
+    const left = items.filter((r) => !r.marks[day]);
+
+    const pill = (r) => {
+      const m = r.marks[day];
+      const txt = !m ? r.full_name + ' — не отмечен'
+        : r.full_name + ' · ' + (m.mark === 'work'
+          ? (nH(m.hours) + ' ч' + (m.overtime ? ' +' + nH(m.overtime) : ''))
+          : TS_MARK_NAME[m.mark].toLowerCase());
+      const cls = ['hr-td-pill'];
+      if (!m) cls.push('empty');
+      else if (m.mark !== 'work') cls.push('mk-' + m.mark);
+      else if (m.overtime) cls.push('ot');
+      return el('button', { class: cls.join(' '), onclick: () => openMarkDialog(r, dayObj, d, reload) }, txt);
+    };
+
+    const fillBtn = el('button', { class: 'btn-primary', onclick: async () => {
+      if (!left.length) return;
+      if (!confirm('Отметить выход по графику всем неотмеченным (' + left.length + ')? Уже отмеченных не тронем.')) return;
+      fillBtn.disabled = true;
+      try {
+        const r = await post('/timesheet/mark-day', { date: d.today, department: tsState.department });
+        toast('Отмечено: ' + r.marked);
+        await reload();
+      } catch (e) { toast(e.message, true); fillBtn.disabled = false; }
+    } }, 'Отметить выход всем — ' + left.length);
+
+    return el('div', { class: 'hr-today' }, [
+      el('div', { class: 'hr-today-h' }, [
+        el('div', {}, [
+          el('b', {}, 'Отметить смену на сегодня'),
+          el('span', { class: 'muted', style: 'margin-left:8px' },
+            'отмечено ' + done.length + ' из ' + items.length),
+        ]),
+        left.length ? fillBtn : el('span', { class: 'hr-today-ok' }, 'смена закрыта'),
+      ]),
+      el('div', { class: 'hr-today-pills' }, left.concat(done).map(pill)),
+    ]);
   }
 
   // Окно отметки одного дня. Часы подставляются по длине смены графика —

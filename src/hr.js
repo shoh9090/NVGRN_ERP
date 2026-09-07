@@ -1069,6 +1069,43 @@ router.post('/api/timesheet/mark', J, async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
+// Отметить смену одним нажатием: всем, у кого на эту дату отметки ЕЩЁ НЕТ,
+// ставим выход по длине смены их графика. Уже отмеченных не трогаем — иначе
+// повторное нажатие стёрло бы исправления, которые начальник смены внёс руками.
+router.post('/api/timesheet/mark-day', J, async (req, res) => {
+  const b = req.body || {};
+  const date = String(b.date || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'Укажите дату' });
+  const period = date.slice(0, 7);
+  { const _e = await hrLockError(period); if (_e) return res.status(423).json({ error: _e }); }
+  if (date > new Date().toISOString().slice(0, 10)) {
+    return res.status(400).json({ error: 'Нельзя отмечать день, который ещё не наступил' });
+  }
+  try {
+    const emps = deptFilterMem(b.department, (await db.pool.query(
+      `SELECT e.id, e.schedule_type, e.department_id
+         FROM hr_employees e WHERE e.status = 'active' ORDER BY e.full_name`)).rows);
+    if (!emps.length) return res.json({ ok: true, marked: 0 });
+    const taken = new Set((await db.pool.query(
+      'SELECT employee_id FROM hr_timesheet WHERE work_date = $1 AND employee_id = ANY($2)',
+      [date, emps.map((e) => e.id)])).rows.map((r) => r.employee_id));
+    let marked = 0;
+    for (const e of emps) {
+      if (taken.has(e.id)) continue;
+      const sch = SCHEDULES.find((s) => s.code === e.schedule_type);
+      const hours = sch ? sch.shift_hours : 8;
+      await db.pool.query(
+        `INSERT INTO hr_timesheet (employee_id, work_date, mark, hours, created_by)
+         VALUES ($1,$2,'work',$3,$4) ON CONFLICT (employee_id, work_date) DO NOTHING`,
+        [e.id, date, hours, req.user.id]);
+      await recomputeTimesheetFact(e.id, period);
+      marked++;
+    }
+    await db.log(req.user.id, 'hr_timesheet_mark_day', `${date}: ${marked}`);
+    res.json({ ok: true, marked });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 // Нормы месяца: сначала сохранённые (hr_norms), если их нет — то, что фактически стоит
 // в ведомостях этого месяца. Так окно всегда показывает правду по выбранному месяцу.
 router.get('/api/norms', async (req, res) => {

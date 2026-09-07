@@ -238,3 +238,24 @@
 }
 .hr-ts-marks { display: flex; flex-wrap: wrap; gap: 8px; }
 .hr-ts-marks .btn-ghost.on { border-color: var(--lime-d); background: var(--lime-soft); color: var(--forest); }
+
+/* Панель «отметить на сегодня»: главный экран начальника смены */
+.hr-today {
+  background: var(--lime-soft); border: 1px solid var(--lime-d);
+  border-radius: 12px; padding: 12px 14px; margin-bottom: 12px;
+}
+.hr-today-h { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+.hr-today-ok { font-size: 12.5px; color: var(--forest); font-weight: 700; }
+.hr-today-pills { display: flex; flex-wrap: wrap; gap: 7px; }
+.hr-td-pill {
+  border: 1px solid transparent; background: #fff; border-radius: 999px;
+  padding: 6px 13px; font-family: inherit; font-size: 12.5px; font-weight: 600;
+  color: var(--ink); cursor: pointer;
+}
+.hr-td-pill:hover { border-color: var(--forest); }
+.hr-td-pill.empty { background: none; border: 1px dashed var(--ink-faint); color: var(--ink-soft); }
+.hr-td-pill.ot { color: #b25b00; }
+.hr-td-pill.mk-off { color: var(--ink-soft); }
+.hr-td-pill.mk-vacation { color: #0d7d8c; }
+.hr-td-pill.mk-sick { color: #b25b00; }
+.hr-td-pill.mk-absent { color: var(--red); }
