@@ -179,6 +179,15 @@ async function ensureSchema() {
     comment TEXT DEFAULT '',
     PRIMARY KEY (period, department_id)
   )`);
+  // Лимит зарплаты отдела на месяц. Ставят Кадры, начальник производства только
+  // видит: лимит, который можно поднять себе самому, ограничением не является.
+  await q(`CREATE TABLE IF NOT EXISTS hr_department_limits (
+    period TEXT NOT NULL,                          -- YYYY-MM
+    department_id INT REFERENCES hr_departments(id) ON DELETE CASCADE,
+    amount NUMERIC,
+    updated_by INT, updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (period, department_id)
+  )`);
   // Налоги на ФОТ по месяцам (вписываются вручную, платятся позже начисления): ИНПС, НДФЛ, соцналог.
   await q(`CREATE TABLE IF NOT EXISTS hr_fot_taxes (
     period TEXT PRIMARY KEY,
@@ -1001,6 +1010,7 @@ router.get('/api/timesheet', async (req, res) => {
         emp_id: e.id, full_name: e.full_name, department_name: e.department_name || '—',
         schedule_type: e.schedule_type || '', schedule_name: sch ? sch.name : '—',
         hourly: POCHASOVOY.has(e.schedule_type), shift_hours: sch ? sch.shift_hours : 8,
+        base_salary: Number(e.base_salary) || 0,
         plan_days: e.plan_days === null ? null : Number(e.plan_days),
         plan_hours: e.plan_hours === null ? null : Number(e.plan_hours),
         marks: cells, days, hours, overtime: ot,
@@ -1028,6 +1038,7 @@ router.get('/api/timesheet', async (req, res) => {
 
     res.json({
       period, department: dept, days,
+      forecast: dept ? await payrollForecast(period, dept, items) : null,
       today: new Date().toISOString().slice(0, 10),
       items,
       totals: items.reduce((s, x) => ({
@@ -1095,6 +1106,73 @@ async function timesheetGuard(empId, period, field) {
   if (!(await hasTimesheet(empId, period))) return null;
   return 'Факт за этот месяц ведётся в табеле. Откройте вкладку «Табель» и поправьте отметку нужного дня.';
 }
+
+// Прогноз зарплаты отдела на конец месяца: то, что уже начислено по отметкам,
+// плюс то, что человек ещё отработает по графику. Переработки не прогнозируем —
+// их никто не планирует, зато отдельно показываем, сколько они уже стоили.
+async function payrollForecast(period, deptId, items) {
+  const lim = (await db.pool.query(
+    'SELECT amount FROM hr_department_limits WHERE period=$1 AND department_id=$2', [period, deptId])).rows[0];
+  const limit = lim && lim.amount !== null ? Number(lim.amount) : null;
+
+  let accrued = 0, ahead = 0, otPay = 0, marked = 0, planned = 0;
+  for (const r of items) {
+    accrued += r.accrued;
+    const oklad = Number(r.base_salary) || 0;
+    const planD = r.plan_days || 0;
+    const usedDays = Object.keys(r.marks).length;      // любой отмеченный день «занят»
+    const left = Math.max(0, planD - usedDays);
+    marked += usedDays; planned += planD;
+    if (r.hourly) {
+      const rate = r.plan_hours > 0 ? oklad / r.plan_hours : 0;
+      ahead += left * r.shift_hours * rate;
+      otPay += r.overtime * rate * 2;                  // переработка — в двойном размере
+    } else {
+      const rate = planD > 0 ? oklad / planD : 0;
+      ahead += left * rate;
+    }
+  }
+  const forecast = accrued + ahead;
+  return {
+    limit,
+    accrued: Math.round(accrued),
+    ahead: Math.round(ahead),
+    forecast: Math.round(forecast),
+    over: limit === null ? null : Math.round(forecast - limit),
+    over_pct: (limit > 0) ? ((forecast - limit) / limit) * 100 : null,
+    used_pct: (limit > 0) ? (forecast / limit) * 100 : null,
+    accrued_pct: (limit > 0) ? (accrued / limit) * 100 : null,
+    overtime_pay: Math.round(otPay),
+    overtime_hours: items.reduce((s, r) => s + r.overtime, 0),
+    days_marked: marked, days_planned: planned,
+  };
+}
+
+// Лимит ставит администратор: начальник производства его только видит.
+router.post('/api/timesheet/limit', J, async (req, res) => {
+  if (!req.user || !req.user.isAdmin) {
+    return res.status(403).json({ error: 'Менять лимит может только администратор' });
+  }
+  const b = req.body || {};
+  const period = /^\d{4}-\d{2}$/.test(b.period) ? b.period : null;
+  const dept = intOrNull(b.department_id);
+  if (!period || !dept) return res.status(400).json({ error: 'Укажите месяц и отдел' });
+  const amount = numOrNull(b.amount);
+  if (amount !== null && amount < 0) return res.status(400).json({ error: 'Лимит не может быть отрицательным' });
+  try {
+    if (amount === null) {
+      await db.pool.query('DELETE FROM hr_department_limits WHERE period=$1 AND department_id=$2', [period, dept]);
+    } else {
+      await db.pool.query(
+        `INSERT INTO hr_department_limits (period, department_id, amount, updated_by)
+         VALUES ($1,$2,$3,$4)
+         ON CONFLICT (period, department_id) DO UPDATE SET amount=$3, updated_by=$4, updated_at=now()`,
+        [period, dept, amount, req.user.id]);
+    }
+    await db.log(req.user.id, 'hr_dept_limit', `${period} отдел ${dept} = ${amount}`);
+    res.json({ ok: true, amount });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
 
 // Утверждён ли табель отдела за месяц. Пустой ответ — не утверждён.
 async function timesheetSubmit(period, deptId) {

@@ -1158,6 +1158,7 @@
       ]));
       if (d.locked) box.appendChild(el('div', { class: 'hr-note' }, 'Месяц закрыт — правка табеля запрещена.'));
       box.appendChild(submitBar(d, load));
+      if (d.forecast) box.appendChild(forecastPanel(d, load));
 
       const today = d.today.slice(8, 10);
       const isThisMonth = d.today.slice(0, 7) === d.period;
@@ -1214,6 +1215,67 @@
         el('span', { class: 'muted' }, 'Отпуск, больничный и неявка часов не дают — эти суммы вносятся отдельными начислениями.'),
       ]));
     }
+  }
+
+  // Прогноз зарплаты отдела. Начальник производства узнавал сумму постфактум,
+  // когда изменить уже ничего нельзя. Теперь видит её каждый день.
+  function forecastPanel(d, reload) {
+    const f = d.forecast;
+    const over = f.over !== null && f.over > 0;
+    const tiles = el('div', { class: 'hr-kpis hr-kpis-4', style: 'margin-bottom:10px' }, [
+      kpi('Начислено на сегодня', money(f.accrued), 'ink', null,
+        f.days_planned ? ('отмечено ' + f.days_marked + ' дн. из ' + Math.round(f.days_planned)) : ''),
+      kpi('Прогноз на месяц', money(f.forecast), 'green', null, 'факт + план по графику'),
+      kpi('Лимит на месяц', f.limit === null ? 'не задан' : money(f.limit),
+        f.limit === null ? 'muted' : 'ink',
+        isAdmin ? () => openLimit(d, reload) : null, isAdmin ? 'клик — изменить' : 'ставят Кадры'),
+      kpi(over ? 'Сверх лимита' : 'Запас', f.over === null ? '—' : money(Math.abs(f.over)),
+        f.over === null ? 'muted' : (over ? 'red' : 'green'),
+        null, f.over_pct === null ? '' : (Math.abs(Math.round(f.over_pct)) + '% ' + (over ? 'выше' : 'ниже'))),
+    ]);
+    const wrap = el('div', {}, tiles);
+
+    if (f.limit > 0) {
+      const a = Math.max(0, Math.min(100, f.accrued_pct));
+      const b2 = Math.max(0, Math.min(100 - a, (f.used_pct || 0) - a));
+      wrap.appendChild(el('div', { class: 'hr-fc' }, [
+        el('div', { class: 'hr-fc-h' }, [
+          el('span', {}, 'израсходовано лимита'),
+          el('span', { style: over ? 'color:var(--red);font-weight:800' : '' }, Math.round(f.used_pct) + '%'),
+        ]),
+        el('div', { class: 'hr-fc-bar' }, [
+          el('div', { class: 'hr-fc-fact', style: 'width:' + a + '%' }),
+          el('div', { class: 'hr-fc-plan', style: 'width:' + b2 + '%' }),
+        ]),
+        el('div', { class: 'hr-fc-lg' }, [
+          el('span', {}, 'отмечено фактически'),
+          el('span', {}, 'ещё предстоит по графику'),
+        ]),
+      ]));
+    }
+    if (over) {
+      wrap.appendChild(el('div', { class: 'hr-ts-sub', style: 'margin-top:10px' },
+        'Если график не изменить, месяц закроется на ' + money(f.over) + ' выше лимита.'
+        + (f.overtime_pay > 0 ? ' Из них переработки — ' + money(f.overtime_pay) + ' (' + nH(f.overtime_hours) + ' ч).' : '')));
+    }
+    return wrap;
+  }
+
+  function openLimit(d, reload) {
+    const inp = finp(d.forecast.limit === null ? '' : d.forecast.limit, { type: 'number', min: '0', step: '1000' });
+    const body = el('div', { class: 'hrf' }, [
+      el('div', { class: 'hr-note' }, 'Лимит зарплаты отдела за ' + monthLabel(d.period)),
+      el('div', { class: 'hr-sub', style: 'margin:4px 0 8px' },
+        'Пустое поле — лимита нет, прогноз просто считается. Начальник производства лимит видит, но не меняет.'),
+      frow('Лимит, сум', inp),
+    ]);
+    const ok = el('button', { class: 'btn-primary', onclick: async () => {
+      try {
+        await post('/timesheet/limit', { period: d.period, department_id: d.department, amount: inp.value === '' ? null : inp.value });
+        closeModal(); toast('Лимит сохранён'); await reload();
+      } catch (e) { toast(e.message, true); }
+    } }, 'Сохранить');
+    modal('Лимит отдела', body, [el('button', { class: 'btn-ghost', onclick: closeModal }, 'Отмена'), ok]);
   }
 
   // Утверждение табеля. Две подписи: начальник смены отвечает за отметки,
