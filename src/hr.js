@@ -858,6 +858,14 @@ router.get('/api/payroll', async (req, res) => {
      LEFT JOIN hr_payroll pr ON pr.employee_id = e.id AND pr.period = $1
      WHERE ${w.join(' AND ')} ORDER BY e.full_name`, p)).rows.map((r) => { const t = withTotals(r); t.overtime_pay = computePay(r).overtime; return t; });
   let items = rows;
+  // У кого месяц ведётся табелем — факт-дни, факт-часы и переработка приходят
+  // оттуда и руками не правятся. Иначе появились бы две правды.
+  try {
+    const ts = new Set((await db.pool.query(
+      "SELECT DISTINCT employee_id FROM hr_timesheet WHERE to_char(work_date,'YYYY-MM') = $1", [period]))
+      .rows.map((r) => r.employee_id));
+    items.forEach((r) => { r.from_timesheet = ts.has(r.emp_id); });
+  } catch (e) { items.forEach((r) => { r.from_timesheet = false; }); }
   // Выплаты из наличной кассы за период (производно) — добавляем к каждому сотруднику + список нераспознанных.
   let cashUnmatched = [];
   try {
@@ -1069,6 +1077,24 @@ router.post('/api/timesheet/mark', J, async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
+// Поля факта, которые ведёт табель. Пока за месяц есть хоть одна отметка,
+// руками их менять нельзя — иначе ведомость разойдётся с реестром отметок,
+// и нельзя будет сказать, какая цифра правильная.
+const TS_OWNED_FIELDS = new Set(['fact_days', 'fact_hours', 'overtime_hours']);
+async function hasTimesheet(empId, period) {
+  try {
+    const r = await db.pool.query(
+      "SELECT 1 FROM hr_timesheet WHERE employee_id=$1 AND to_char(work_date,'YYYY-MM')=$2 LIMIT 1",
+      [empId, period]);
+    return r.rows.length > 0;
+  } catch (e) { return false; }
+}
+async function timesheetGuard(empId, period, field) {
+  if (!TS_OWNED_FIELDS.has(field)) return null;
+  if (!(await hasTimesheet(empId, period))) return null;
+  return 'Факт за этот месяц ведётся в табеле. Откройте вкладку «Табель» и поправьте отметку нужного дня.';
+}
+
 // Отметить смену одним нажатием: всем, у кого на эту дату отметки ЕЩЁ НЕТ,
 // ставим выход по длине смены их графика. Уже отмеченных не трогаем — иначе
 // повторное нажатие стёрло бы исправления, которые начальник смены внёс руками.
@@ -1263,6 +1289,7 @@ router.post('/api/payroll/cell', J, async (req, res) => {
     if (!empId || !period) return res.status(400).json({ error: 'Нет сотрудника или периода' });
     { const _e = await hrLockError(period); if (_e) return res.status(423).json({ error: _e }); }
     if (!CELL_FIELDS.has(field)) return res.status(400).json({ error: 'Это поле нельзя менять здесь' });
+    { const _e = await timesheetGuard(empId, period, field); if (_e) return res.status(409).json({ error: _e }); }
     const val = numOrNull(b.value);
     await db.pool.query(
       `INSERT INTO hr_payroll (employee_id, period, ${field}, created_by) VALUES ($1,$2,$3,$4)
@@ -1283,7 +1310,12 @@ router.post('/api/payroll', J, async (req, res) => {
   if (!empId || !period) return res.status(400).json({ error: 'Нет сотрудника или периода' });
   { const _e = await hrLockError(period); if (_e) return res.status(423).json({ error: _e }); }
   const status = ['draft', 'accrued', 'approved', 'paid', 'cancelled'].includes(b.status) ? b.status : 'draft';
-  const cols = ['plan_days', 'fact_days', 'plan_hours', 'fact_hours', ...ACCR_ALL, ...DED, ...PAID, 'amount_1c'];
+  // Месяц ведётся табелем — поля факта из формы игнорируем, оставляем как есть.
+  // Молча, а не ошибкой: форма сохраняет карточку целиком, и человек мог править
+  // совсем другое поле.
+  const owned = (await hasTimesheet(empId, period)) ? TS_OWNED_FIELDS : new Set();
+  const cols = ['plan_days', 'fact_days', 'plan_hours', 'fact_hours', ...ACCR_ALL, ...DED, ...PAID, 'amount_1c']
+    .filter((c) => !owned.has(c));
   const vals = cols.map((c) => numOrNull(b[c]));
   const allCols = ['employee_id', 'period', 'status', ...cols, 'pay_date', 'pay_method', 'comment'];
   const allVals = [empId, period, status, ...vals, b.pay_date || null, b.pay_method || null, b.comment || null];
@@ -1367,14 +1399,19 @@ router.post('/api/payroll/fact-from-plan', J, async (req, res) => {
     const locked = new Set((await db.pool.query(
       'SELECT employee_id FROM hr_payroll WHERE period = $1 AND accrued_at IS NOT NULL AND employee_id = ANY($2::int[])',
       [period, ids])).rows.map((r2) => r2.employee_id));
-    const open = ids.filter((id) => !locked.has(id));
-    if (!open.length) return res.json({ ok: true, affected: 0, already: locked.size });
+    // Кого ведёт табель — не трогаем: «факт = план» затёрло бы реальные отметки.
+    const byTs = new Set((await db.pool.query(
+      `SELECT DISTINCT employee_id FROM hr_timesheet
+        WHERE to_char(work_date,'YYYY-MM') = $1 AND employee_id = ANY($2::int[])`, [period, ids]))
+      .rows.map((r2) => r2.employee_id));
+    const open = ids.filter((id) => !locked.has(id) && !byTs.has(id));
+    if (!open.length) return res.json({ ok: true, affected: 0, already: locked.size, by_timesheet: byTs.size });
     const r = await db.pool.query(
       `UPDATE hr_payroll SET fact_days = COALESCE(plan_days, fact_days), fact_hours = COALESCE(plan_hours, fact_hours), updated_at=now()
        WHERE period=$1 AND employee_id = ANY($2::int[]) AND accrued_at IS NULL`, [period, open]);
     for (const empId of open) await recomputeAccrFact(empId, period);   // пересчитать начисление сразу
     await db.log(req.user.id, 'hr_payroll_fact_from_plan', `${period}: ${r.rowCount}, пропущено начисленных ${locked.size}`);
-    res.json({ ok: true, affected: r.rowCount, already: locked.size });
+    res.json({ ok: true, affected: r.rowCount, already: locked.size, by_timesheet: byTs.size });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 

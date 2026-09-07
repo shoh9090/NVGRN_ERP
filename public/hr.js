@@ -1797,7 +1797,17 @@
       const extraCell = (r, title, fields) => el('span', { class: 'tnum hr-extra', title: 'Клик — изменить', onclick: (ev) => { ev.stopPropagation(); openExtra(r, title, fields); } }, money(sumOf(r, fields)));
       // Правка прямо в строке: дни/часы меняются на месте, оклад пересчитывается сам.
       // Дни/часы показываем как есть, с дробной частью (15,5 не округляем). Формат — русский (запятая), чтобы mval корректно читал ввод.
+      // Факт-дни и факт-часы у тех, кого ведёт табель, показываем, но не даём
+      // править: цифра складывается из отметок, и правка здесь развела бы
+      // ведомость с табелем.
+      const TS_FIELDS = ['fact_days', 'fact_hours', 'overtime_hours'];
       const cellNum = (r, field) => {
+        if (r.from_timesheet && TS_FIELDS.includes(field)) {
+          return el('span', {
+            class: 'hr-cell hr-cell-ro', title: 'Считается из табеля. Клик — открыть табель.',
+            onclick: (ev) => { ev.stopPropagation(); tsState.period = salState.period; TAB = 'timesheet'; render(); },
+          }, (r[field] == null || r[field] === '') ? '—' : Number(r[field]).toLocaleString('ru-RU', { maximumFractionDigits: 2 }));
+        }
         const inp = el('input', { class: 'hr-cell', 'data-emp': r.emp_id, 'data-field': field, value: (r[field] == null || r[field] === '') ? '' : Number(r[field]).toLocaleString('ru-RU', { maximumFractionDigits: 2 }), onclick: (ev) => ev.stopPropagation() });
         inp.onchange = async () => {
           salRestore = { emp: r.emp_id, field };   // вернём курсор в эту же ячейку
@@ -1845,6 +1855,18 @@
     };
     const block = (title, fields) => el('div', {}, [el('div', { class: 'hrf-sec' }, title), ...fields.map(([k, label]) => { const i = inp(k); i.addEventListener('input', recompute); return frow(label, i); })]);
     const tab = block('Табель', [['plan_days', 'План дней'], ['fact_days', 'Факт дней'], ['plan_hours', 'План часов'], ['fact_hours', 'Факт часов']]);
+    // Месяц ведётся табелем — поля факта только показываем. Сервер их всё равно
+    // не примет, и молча «сохранившееся» поле вводило бы в заблуждение.
+    if (r.from_timesheet) {
+      ['fact_days', 'fact_hours'].forEach((k) => {
+        if (!F[k]) return;
+        F[k].readOnly = true;
+        F[k].title = 'Считается из табеля';
+        F[k].classList.add('hrf-ro');
+      });
+      tab.appendChild(el('div', { class: 'hr-sub' },
+        'Факт за этот месяц ведётся в табеле — правьте отметку нужного дня на вкладке «Табель».'));
+    }
     // Оклад тянем из карточки сотрудника («Фикса»), а не из поля начисления — меняется у сотрудника.
     const fixa = el('div', { class: 'hr-note', style: 'font-weight:800' }, money(r.base_salary || 0) + ' сум');
     const body = el('div', { class: 'hrf' }, [

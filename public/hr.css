@@ -259,3 +259,12 @@
 .hr-td-pill.mk-vacation { color: #0d7d8c; }
 .hr-td-pill.mk-sick { color: #b25b00; }
 .hr-td-pill.mk-absent { color: var(--red); }
+
+/* Факт из табеля: показываем цифру, но править её здесь нельзя */
+.hr-cell-ro {
+  display: inline-flex; align-items: center; justify-content: center;
+  cursor: pointer; color: var(--ink-soft); font-weight: 700;
+  border-bottom: 1px dotted var(--ink-faint);
+}
+.hr-cell-ro:hover { color: var(--forest); border-bottom-color: var(--lime-d); }
+.hrf-inp.hrf-ro, input.hrf-ro { background: #f4f2ea; color: var(--ink-soft); cursor: not-allowed; }
