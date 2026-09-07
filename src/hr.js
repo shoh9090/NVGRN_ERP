@@ -1053,6 +1053,7 @@ router.post('/api/timesheet/mark', J, async (req, res) => {
   if (date > new Date().toISOString().slice(0, 10)) {
     return res.status(400).json({ error: 'Нельзя отмечать день, который ещё не наступил' });
   }
+  { const _e = await submitGuard(req, empId, period); if (_e) return res.status(409).json({ error: _e }); }
   try {
     if (b.mark === null || b.mark === '') {
       await db.pool.query('DELETE FROM hr_timesheet WHERE employee_id=$1 AND work_date=$2', [empId, date]);
@@ -1094,6 +1095,62 @@ async function timesheetGuard(empId, period, field) {
   if (!(await hasTimesheet(empId, period))) return null;
   return 'Факт за этот месяц ведётся в табеле. Откройте вкладку «Табель» и поправьте отметку нужного дня.';
 }
+
+// Утверждён ли табель отдела за месяц. Пустой ответ — не утверждён.
+async function timesheetSubmit(period, deptId) {
+  if (!deptId) return null;
+  try {
+    return (await db.pool.query(
+      'SELECT * FROM hr_timesheet_submits WHERE period=$1 AND department_id=$2', [period, deptId])).rows[0] || null;
+  } catch (e) { return null; }
+}
+
+// Правка отметки после утверждения запрещена — кроме админа: он снимает
+// утверждение, если начальник смены ошибся, и это видно в журнале.
+async function submitGuard(req, empId, period) {
+  if (req.user && req.user.isAdmin) return null;
+  const e = (await db.pool.query('SELECT department_id FROM hr_employees WHERE id=$1', [empId])).rows[0];
+  if (!e || !e.department_id) return null;
+  const sub = await timesheetSubmit(period, e.department_id);
+  if (!sub) return null;
+  return 'Табель за этот месяц уже утверждён — правки закрыты. Обратитесь к администратору.';
+}
+
+router.post('/api/timesheet/submit', J, async (req, res) => {
+  const b = req.body || {};
+  const period = /^\d{4}-\d{2}$/.test(b.period) ? b.period : null;
+  const dept = intOrNull(b.department_id);
+  if (!period || !dept) return res.status(400).json({ error: 'Укажите месяц и отдел' });
+  { const _e = await hrLockError(period); if (_e) return res.status(423).json({ error: _e }); }
+  try {
+    const cnt = (await db.pool.query(
+      `SELECT COUNT(*)::int AS n FROM hr_timesheet t JOIN hr_employees e ON e.id = t.employee_id
+        WHERE to_char(t.work_date,'YYYY-MM') = $1 AND e.department_id = $2`, [period, dept])).rows[0].n;
+    if (!cnt) return res.status(400).json({ error: 'За этот месяц нет ни одной отметки — утверждать нечего' });
+    await db.pool.query(
+      `INSERT INTO hr_timesheet_submits (period, department_id, submitted_by, submitted_by_name, comment)
+       VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (period, department_id) DO UPDATE
+          SET submitted_at = now(), submitted_by = $3, submitted_by_name = $4, comment = $5`,
+      [period, dept, req.user.id, req.user.name || '', String(b.comment || '').trim().slice(0, 200)]);
+    await db.log(req.user.id, 'hr_timesheet_submit', `${period} отдел ${dept}`);
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Снять утверждение — только админ: иначе смысл подписи теряется.
+router.post('/api/timesheet/unsubmit', J, async (req, res) => {
+  if (!req.user || !req.user.isAdmin) {
+    return res.status(403).json({ error: 'Снять утверждение табеля может только администратор' });
+  }
+  const b = req.body || {};
+  const period = /^\d{4}-\d{2}$/.test(b.period) ? b.period : null;
+  const dept = intOrNull(b.department_id);
+  if (!period || !dept) return res.status(400).json({ error: 'Укажите месяц и отдел' });
+  await db.pool.query('DELETE FROM hr_timesheet_submits WHERE period=$1 AND department_id=$2', [period, dept]);
+  await db.log(req.user.id, 'hr_timesheet_unsubmit', `${period} отдел ${dept}`);
+  res.json({ ok: true });
+});
 
 // Отметить смену одним нажатием: всем, у кого на эту дату отметки ЕЩЁ НЕТ,
 // ставим выход по длине смены их графика. Уже отмеченных не трогаем — иначе
@@ -1351,6 +1408,23 @@ router.post('/api/payroll/accrue', J, async (req, res) => {
     const locked = new Set((await db.pool.query(
       'SELECT employee_id FROM hr_payroll WHERE period = $1 AND accrued_at IS NOT NULL AND employee_id = ANY($2::int[])',
       [period, ids])).rows.map((r) => r.employee_id));
+    // Где месяц ведётся табелем — начисляем только после того, как начальник
+    // смены его утвердил. Две подписи: он отвечает за отметки, вы за деньги.
+    // Отделов без табеля правило не касается — у них всё как раньше.
+    const notSubmitted = (await db.pool.query(
+      `SELECT DISTINCT d.name
+         FROM hr_timesheet t
+         JOIN hr_employees e ON e.id = t.employee_id
+         JOIN hr_departments d ON d.id = e.department_id
+         LEFT JOIN hr_timesheet_submits s ON s.period = $1 AND s.department_id = e.department_id
+        WHERE to_char(t.work_date,'YYYY-MM') = $1 AND e.id = ANY($2::int[]) AND s.period IS NULL`,
+      [period, ids])).rows.map((r) => r.name);
+    if (notSubmitted.length) {
+      return res.status(409).json({
+        error: 'Табель не утверждён: ' + notSubmitted.join(', ')
+          + '. Начальник смены должен утвердить его на вкладке «Табель» — только после этого можно начислять.',
+      });
+    }
     let done = 0, skipped = 0, already = 0;
     for (const empId of ids) {
       if (locked.has(empId)) { already++; continue; }

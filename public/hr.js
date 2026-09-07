@@ -1157,6 +1157,7 @@
         kpi('Начислено на сегодня', money(t.accrued), 'green'),
       ]));
       if (d.locked) box.appendChild(el('div', { class: 'hr-note' }, 'Месяц закрыт — правка табеля запрещена.'));
+      box.appendChild(submitBar(d, load));
 
       const today = d.today.slice(8, 10);
       const isThisMonth = d.today.slice(0, 7) === d.period;
@@ -1213,6 +1214,37 @@
         el('span', { class: 'muted' }, 'Отпуск, больничный и неявка часов не дают — эти суммы вносятся отдельными начислениями.'),
       ]));
     }
+  }
+
+  // Утверждение табеля. Две подписи: начальник смены отвечает за отметки,
+  // Кадры — за деньги. Пока табель не утверждён, начислять зарплату нельзя.
+  function submitBar(d, reload) {
+    if (!d.department) {
+      return el('div', { class: 'hr-sub', style: 'margin-bottom:10px' },
+        'Чтобы утвердить табель, выберите один отдел в фильтре — утверждение идёт по отделам.');
+    }
+    if (d.submitted) {
+      const un = isAdmin ? el('button', { class: 'btn-ghost', onclick: async () => {
+        if (!confirm('Снять утверждение табеля? Начальник смены снова сможет править отметки.')) return;
+        try { await post('/timesheet/unsubmit', { period: d.period, department_id: d.department }); toast('Утверждение снято'); await reload(); }
+        catch (e) { toast(e.message, true); }
+      } }, 'Снять утверждение') : null;
+      return el('div', { class: 'hr-ts-sub done' }, [
+        el('span', {}, '✓ Табель утверждён ' + dtRu(d.submitted.at) + (d.submitted.by ? ' · ' + d.submitted.by : '')
+          + '. Правки закрыты, зарплату можно начислять.'),
+        un,
+      ]);
+    }
+    const btn = el('button', { class: 'btn-primary', onclick: async () => {
+      if (!confirm('Утвердить табель за ' + monthLabel(d.period) + '? После этого править отметки будет нельзя.')) return;
+      btn.disabled = true;
+      try { await post('/timesheet/submit', { period: d.period, department_id: d.department }); toast('Табель утверждён'); await reload(); }
+      catch (e) { toast(e.message, true); btn.disabled = false; }
+    } }, '✓ Утвердить табель');
+    return el('div', { class: 'hr-ts-sub' }, [
+      el('span', {}, 'Табель не утверждён — до утверждения зарплату за этот месяц начислить нельзя.'),
+      btn,
+    ]);
   }
 
   // Панель «отметить на сегодня». Главный экран начальника смены: закрыть день
