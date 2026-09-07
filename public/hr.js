@@ -1171,7 +1171,11 @@
 
       const today = d.today.slice(8, 10);
       const isThisMonth = d.today.slice(0, 7) === d.period;
-      if (isThisMonth && !d.locked) box.appendChild(todayPanel(items, d, load));
+      // Отметка — только при выбранном отделе. Без фильтра в панель попадала вся
+      // компания, и «отметить выход всем» разом перевело бы на табель АУП,
+      // продажи и бухгалтерию — а после первой отметки факт руками уже не
+      // поправить. Табель ведётся по отделам, значит и отмечать надо по отделу.
+      if (isThisMonth && !d.locked && d.department) box.appendChild(todayPanel(items, d, load));
 
       // Ячейка дня. Клик открывает окно отметки — с часами, переработкой и статусами.
       function tsCell(r, day) {
@@ -1291,8 +1295,9 @@
   // Кадры — за деньги. Пока табель не утверждён, начислять зарплату нельзя.
   function submitBar(d, reload) {
     if (!d.department) {
-      return el('div', { class: 'hr-sub', style: 'margin-bottom:10px' },
-        'Чтобы утвердить табель, выберите один отдел в фильтре — утверждение идёт по отделам.');
+      return el('div', { class: 'hr-note', style: 'margin-bottom:12px' },
+        'Выберите отдел в фильтре — табель ведётся по отделам. '
+        + 'Сейчас показаны все сотрудники: отмечать смену и утверждать табель можно только внутри одного отдела.');
     }
     if (d.submitted) {
       const un = isAdmin ? el('button', { class: 'btn-ghost', onclick: async () => {

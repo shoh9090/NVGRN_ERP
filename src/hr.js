@@ -1270,6 +1270,12 @@ router.post('/api/timesheet/mark-day', J, async (req, res) => {
   if (date > new Date().toISOString().slice(0, 10)) {
     return res.status(400).json({ error: 'Нельзя отмечать день, который ещё не наступил' });
   }
+  // Только по одному отделу. Без этого один запрос переводил бы на табель всю
+  // компанию, а после первой отметки факт-дни руками уже не правятся.
+  const one = String(b.department || '').split(',').filter(Boolean);
+  if (one.length !== 1 || !/^\d+$/.test(one[0])) {
+    return res.status(400).json({ error: 'Выберите один отдел — смена отмечается по отделу' });
+  }
   try {
     const emps = deptFilterMem(b.department, (await db.pool.query(
       `SELECT e.id, e.schedule_type, e.department_id
