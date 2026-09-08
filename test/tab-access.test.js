@@ -111,3 +111,36 @@ test('общие для плитки адреса вкладкой не закр
   assert.strictEqual(await at('/api/raw-price/8'), null);
   assert.strictEqual(await at('/api/approval/41'), null);
 });
+
+// Соответствие «адрес → вкладка» для Кадров. Здесь легко отрезать лишнего:
+// один и тот же список ведомости открывают два разных экрана.
+const { hrTabOf } = require('../src/hr');
+const hr = (p) => hrTabOf({ path: p });
+
+test('список ведомости открыт и Зарплате, и Массовым операциям', () => {
+  assert.deepStrictEqual(hr('/api/payroll'), ['salary', 'massops']);
+  assert.strictEqual(tabAllowed(new Set(['massops']), hr('/api/payroll')), true);
+  assert.strictEqual(tabAllowed(new Set(['salary']), hr('/api/payroll')), true);
+  assert.strictEqual(tabAllowed(new Set(['timesheet']), hr('/api/payroll')), false);
+});
+
+test('вкладки Кадров закрываются каждая своим адресом', () => {
+  assert.strictEqual(hr('/api/timesheet'), 'timesheet');
+  assert.strictEqual(hr('/api/timesheet/mark'), 'timesheet');
+  assert.strictEqual(hr('/api/dashboard'), 'dashboard');
+  assert.strictEqual(hr('/api/settlements'), 'dashboard');
+  assert.strictEqual(hr('/api/employees'), 'employees');
+  assert.strictEqual(hr('/api/employees/bulk'), 'employees');
+  assert.strictEqual(hr('/api/payouts'), 'payouts');
+  assert.strictEqual(hr('/api/events'), 'events');
+  assert.strictEqual(hr('/api/department/3/users'), 'departments');
+  assert.strictEqual(hr('/api/mass-op'), 'massops');
+  assert.strictEqual(hr('/api/payroll/cell'), 'salary');
+  assert.strictEqual(hr('/api/norms'), 'salary');
+});
+
+test('общие адреса Кадров вкладкой не закрываются', () => {
+  assert.strictEqual(hr('/'), null);
+  assert.strictEqual(hr('/api/dicts'), null);
+  assert.strictEqual(hr('/api/period-lock'), null);
+});

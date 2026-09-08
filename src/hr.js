@@ -450,10 +450,40 @@ async function seedJune2026(force) {
 
 router.use(async (req, res, next) => { try { await ensureSchema(); } catch (e) { /* не роняем модуль */ } next(); });
 
+// Какая вкладка Кадров стоит за адресом. Нужно, чтобы закрыть данные вкладки
+// на сервере, а не только спрятать кнопку: адрес можно набрать руками.
+// null — запрос общий для всей плитки (справочники, закрытие месяца), такие
+// защищены своими проверками прав и доступом по отделу.
+function hrTabOf(req) {
+  const p = req.path;
+  if (p.startsWith('/api/timesheet')) return 'timesheet';
+  if (p.startsWith('/api/dashboard') || p.startsWith('/api/settlements')
+    || p.startsWith('/api/fot-taxes')) return 'dashboard';
+  if (p.startsWith('/api/employee')) return 'employees';       // и карточка, и список, и выгрузка
+  if (p.startsWith('/api/payouts')) return 'payouts';
+  if (p.startsWith('/api/events')) return 'events';
+  if (p.startsWith('/api/department')) return 'departments';
+  if (p.startsWith('/api/mass-op')) return 'massops';
+  // Список ведомости открывают ДВА экрана — «Зарплата» и «Массовые операции».
+  // Привязать его к одной вкладке нельзя, иначе второй экран перестанет работать.
+  if (p === '/api/payroll') return ['salary', 'massops'];
+  if (p.startsWith('/api/payroll') || p.startsWith('/api/norms')
+    || p.startsWith('/api/fill-norms')) return 'salary';
+  return null;
+}
+router.use(require('./tab-access').requireTab(db.pool, '/hr', hrTabOf));
+
 // ---------- Страница ----------
 router.get('/', async (req, res) => {
   const settings = await db.getSettings();
-  res.render('hr', { settings, user: req.user });
+  // Экран сам не решает, что показывать: список разрешённых вкладок приходит
+  // с сервера — тем же кодом, что закрывает их данные.
+  let allowedTabs = null;
+  try {
+    const a = await require('./tab-access').allowedTabs(db.pool, req.user, '/hr');
+    allowedTabs = a === null ? null : Array.from(a);
+  } catch (e) { allowedTabs = null; }
+  res.render('hr', { settings, user: req.user, allowedTabs });
 });
 
 // ---------- Справочники ----------
@@ -2781,3 +2811,5 @@ router.post('/api/employees/bulk', J, async (req, res) => {
 module.exports = router;
 // Открыто для тестов: это правило решает, чьи зарплаты человек увидит.
 module.exports.scopeDept = scopeDept;
+// Открыто для тестов: это соответствие решает, данные какой вкладки закрывать.
+module.exports.hrTabOf = hrTabOf;

@@ -22,6 +22,9 @@
   <div id="hr-modal-root"></div>
 
   <script>window.HUB_USER = { isAdmin: <%= user.isAdmin ? "true" : "false" %>, name: "<%= user.name %>" };</script>
+  <!-- Разрешённые вкладки: null — все. Экран только не рисует лишнее, данные
+       каждой вкладки закрыты на сервере отдельно. -->
+  <script>window.HUB_TABS = <%- JSON.stringify(typeof allowedTabs === 'undefined' ? null : allowedTabs) %>;</script>
   <script src="/static/bell.js?v=<%= V %>"></script>
   <script src="/static/conn.js?v=<%= V %>"></script>
   <script src="/static/daterange.js?v=<%= V %>"></script>

@@ -37,6 +37,16 @@ const TAB_REGISTRY = {
     { code: 'culinary', name: 'Кулинарка' },
     { code: 'cutveg', name: 'Резаные овощи' },
   ],
+  '/hr': [
+    { code: 'dashboard', name: 'Дашборд' },
+    { code: 'employees', name: 'Сотрудники' },
+    { code: 'timesheet', name: 'Табель' },
+    { code: 'salary', name: 'Зарплата' },
+    { code: 'massops', name: 'Массовые операции' },
+    { code: 'payouts', name: 'Выплаты' },
+    { code: 'events', name: 'Кадровая история' },
+    { code: 'departments', name: 'Отделы' },
+  ],
 };
 
 async function ensureTabSchema(pool) {
@@ -94,7 +104,14 @@ async function allowedTabs(pool, user, tileUrl) {
   return new Set(rows.map((x) => x.code));
 }
 
-const tabAllowed = (allowed, code) => allowed === null || (!!code && allowed.has(code));
+// code — код вкладки или список кодов. Список значит «годится любая из них»:
+// один и тот же запрос бывает нужен двум экранам (список зарплаты открывают и
+// «Зарплата», и «Массовые операции»), и привязать его к одной вкладке нельзя.
+function tabAllowed(allowed, code) {
+  if (allowed === null) return true;
+  const list = Array.isArray(code) ? code : [code];
+  return list.some((c) => !!c && allowed.has(c));
+}
 
 // Middleware: закрывает маршруты плитки по вкладке. tabOf(req) возвращает код
 // вкладки или null, если маршрут общий для всей плитки (тогда пропускаем —
@@ -108,9 +125,10 @@ function requireTab(pool, tileUrl, tabOf) {
       if (!code) return next();
       const allowed = await allowedTabs(pool, req.user, tileUrl);
       if (tabAllowed(allowed, code)) return next();
-      const name = (TAB_REGISTRY[tileUrl] || []).find((t) => t.code === code);
+      const first = Array.isArray(code) ? code[0] : code;
+      const name = (TAB_REGISTRY[tileUrl] || []).find((t) => t.code === first);
       return res.status(403).json({
-        error: 'Нет доступа к вкладке «' + (name ? name.name : code) + '». Обратитесь к администратору.',
+        error: 'Нет доступа к вкладке «' + (name ? name.name : first) + '». Обратитесь к администратору.',
       });
     } catch (e) {
       // Сбой проверки не должен ронять плитку целиком — но и пускать нельзя.

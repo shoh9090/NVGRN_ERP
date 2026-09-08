@@ -95,6 +95,9 @@
   const fsel = (opts, val) => el('select', { class: 'hrf-inp' }, opts.map((o) => el('option', { value: o.v, selected: String(o.v) === String(val) || null }, o.t)));
 
   let DICTS = { departments: [], schedules: [], statuses: [] };
+  // Открываемся на дашборде, а если он закрыт доступом — на первой доступной
+  // вкладке: иначе человек попадал бы на пустой экран с отказом.
+  const HR_TAB_ORDER = ['dashboard', 'employees', 'timesheet', 'salary', 'massops', 'payouts', 'events', 'departments'];
   let TAB = 'dashboard';
   const empFilter = { department: '', schedule: '', status: 'active', q: '' };
   let empSel = new Set();
@@ -110,9 +113,18 @@
   }
   async function reloadDicts() { try { DICTS = await api('/dicts'); (DICTS.schedules || []).forEach((s) => { SCHED_NAME[s.code] = s.name; }); } catch (e) {} }
 
+  // Доступ по вкладкам: сервер прислал список разрешённых (null — все). Экран
+  // просто не рисует лишние кнопки; данные закрыты на сервере отдельно.
+  const TABS_OK = (window.HUB_TABS === null || window.HUB_TABS === undefined)
+    ? null : new Set(window.HUB_TABS);
+  const tabOk = (id) => TABS_OK === null || TABS_OK.has(id);
+  if (!tabOk(TAB)) TAB = HR_TAB_ORDER.find(tabOk) || TAB;
+
   function shell() {
     const main = $('#hr-main'); main.innerHTML = '';
-    const tab = (id, label) => el('button', { class: 'hr-tab' + (TAB === id ? ' on' : ''), onclick: () => { TAB = id; render(); } }, label);
+    const tab = (id, label) => (tabOk(id)
+      ? el('button', { class: 'hr-tab' + (TAB === id ? ' on' : ''), onclick: () => { TAB = id; render(); } }, label)
+      : null);
     main.appendChild(el('div', { class: 'hr-tabs' }, [
       tab('dashboard', '📊 Дашборд'),
       tab('employees', '👥 Сотрудники'),
