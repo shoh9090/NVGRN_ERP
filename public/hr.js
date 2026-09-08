@@ -464,7 +464,21 @@
   async function renderDashboard() {
     const c = $('#hr-content');
     if (!dashState.period) dashState.period = curMonth();
-    c.appendChild(el('div', { class: 'hr-head' }, [el('div', {}, [el('div', { class: 'hr-h2' }, 'Дашборд — ' + monthLabel(dashState.period)), el('div', { class: 'hr-sub' }, 'ФОТ и персонал за месяц.')])]));
+    c.appendChild(el('div', { class: 'hr-head' }, [
+      el('div', {}, [
+        el('div', { class: 'hr-h2' }, 'Дашборд — ' + monthLabel(dashState.period)),
+        el('div', { class: 'hr-sub' }, [
+          'ФОТ и персонал за месяц. Ниже — ',
+          // Расчёты внизу страницы, под отделами: без ссылки их приходится
+          // искать прокруткой, а раньше это была отдельная вкладка.
+          el('a', { href: 'javascript:void(0)', onclick: () => {
+            const t = document.querySelector('#hr-content .hr-sec');
+            if (t) t.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          } }, 'расчёты с сотрудниками'),
+          ' — сколько всего должны, накопительно за всё время.',
+        ]),
+      ]),
+    ]));
     const mInp = HubDateRange.create({
       mode: 'month', period: dashState.period,
       onChange: (v) => { dashState.period = v.period || curMonth(); render(); },
@@ -1174,6 +1188,7 @@
       catch (e) { box.innerHTML = ''; box.appendChild(el('div', { class: 'hr-empty' }, 'Ошибка: ' + e.message)); return; }
       const qq = (tsState.q || '').trim().toLowerCase();
       const items = qq ? d.items.filter((x) => (x.full_name || '').toLowerCase().includes(qq)) : d.items;
+      TS_ITEMS = items;   // для пересчёта итогов сверху при правке ячейки
       box.innerHTML = '';
       if (!items.length) { box.appendChild(el('div', { class: 'hr-empty' }, 'Нет сотрудников по фильтру.')); return; }
 
@@ -1210,10 +1225,15 @@
         if (m && m.mark !== 'work') cls.push('mk-' + m.mark);
         if (m && m.overtime) cls.push('ot');
         if (future) cls.push('future');
+        // Ввод прямо в ячейке, как в Excel: клик — набрал — Enter. Отдельное
+        // окно на каждый день замедляло работу настолько, что табель проще
+        // было не вести.
         return el('td', {
           class: cls.join(' '),
-          title: m ? (TS_MARK_NAME[m.mark] + (m.comment ? ' · ' + m.comment : '')) : (future ? 'День ещё не наступил' : 'Отметить'),
-          onclick: (future || d.locked) ? null : () => openMarkDialog(r, day, d, load),
+          'data-emp': r.emp_id, 'data-day': day.d,
+          title: m ? (TS_MARK_NAME[m.mark] + (m.comment ? ' · ' + m.comment : ''))
+            : (future ? 'День ещё не наступил' : 'Часы, «12+3» с переработкой, или буква: в о б н'),
+          onclick: (future || d.locked) ? null : (e) => editCell(e.currentTarget, r, day, d),
         }, txt);
       }
 
@@ -1386,6 +1406,139 @@
       el('div', { class: 'hr-today-pills' }, left.concat(done).map(pill)),
     ]);
   }
+
+  // ---------------------------------------------------------------------------
+  // Ввод в табеле как в Excel
+  // ---------------------------------------------------------------------------
+  // Что можно набрать в ячейке:
+  //   12      — отработано 12 часов
+  //   12+3    — 12 часов и 3 переработки (оплата переработки двойная)
+  //   в о б н — выходной, отпуск, больничный, неявка
+  //   пусто   — снять отметку
+  // Enter — сохранить и вниз, Tab — вправо, стрелки — туда же, Escape — отмена.
+  const parseCell = (raw, shiftHours) => window.TimesheetInput.parseCell(raw, shiftHours);
+  // Что показать в ячейке после сохранения — тем же правилом, что и при отрисовке.
+  function cellText(mark) {
+    if (!mark) return '';
+    if (mark.mark !== 'work') return TS_LETTER[mark.mark];
+    return nH(mark.hours) + (mark.overtime ? ' +' + nH(mark.overtime) : '');
+  }
+
+  let tsEditing = null;   // чтобы два поля ввода не открылись разом
+  function editCell(td, r, day, d) {
+    if (tsEditing) { tsEditing.blur(); }
+    const cur = r.marks[day.d] || null;
+    const start = !cur ? '' : (cur.mark === 'work'
+      ? (nH(cur.hours) + (cur.overtime ? '+' + nH(cur.overtime) : ''))
+      : TS_LETTER[cur.mark]);
+    const inp = el('input', { class: 'hr-ts-in', value: start });
+    td.textContent = ''; td.appendChild(inp);
+    td.classList.add('editing');
+    tsEditing = inp;
+    inp.focus(); inp.select();
+
+    let done = false;
+    const finish = (save, move) => {
+      if (done) return; done = true;
+      tsEditing = null;
+      td.classList.remove('editing');
+      const raw = inp.value;
+      td.textContent = cellText(cur);          // пока не пришёл ответ — старое значение
+      if (save) apply(raw);
+      if (move) focusNext(move);
+    };
+    const apply = async (raw) => {
+      const parsed = parseCell(raw, r.shift_hours);
+      if (parsed.error) return toast(parsed.error, true);
+      // Ничего не изменилось — не дёргаем сервер.
+      if (cellText(cur) === cellText(parsed.mark ? { mark: parsed.mark, hours: parsed.hours, overtime: parsed.overtime_hours } : null)) return;
+      try {
+        const res = await post('/timesheet/mark', Object.assign(
+          { employee_id: r.emp_id, date: d.period + '-' + day.d }, parsed));
+        // Обновляем на месте: строку и её итоги, без перерисовки всей сетки —
+        // иначе курсор улетал бы из соседней ячейки, которую уже правят.
+        r.marks[day.d] = parsed.mark === null ? undefined
+          : { mark: parsed.mark, hours: parsed.hours, overtime: parsed.overtime_hours, comment: '' };
+        if (parsed.mark === null) delete r.marks[day.d];
+        td.textContent = cellText(r.marks[day.d]);
+        td.className = tsCellClass(r.marks[day.d], day, d);
+        updateRow(r, res.row);
+        if (res.accrual_locked) toast('Месяц уже начислен — факт обновлён, начисление не пересчитано', true);
+      } catch (e) { toast(e.message, true); }
+    };
+    const focusNext = (dir) => {
+      const days = d.days.map((x) => x.d);
+      let empId = r.emp_id, dd = day.d;
+      if (dir === 'right' || dir === 'left') {
+        const i = days.indexOf(day.d) + (dir === 'right' ? 1 : -1);
+        if (i < 0 || i >= days.length) return;
+        dd = days[i];
+      } else {
+        const rows = Array.from(document.querySelectorAll('.hr-ts-t tbody tr'));
+        const cur2 = rows.findIndex((x) => x.querySelector('[data-emp="' + r.emp_id + '"]'));
+        const nx = rows[cur2 + (dir === 'down' ? 1 : -1)];
+        if (!nx) return;
+        const c = nx.querySelector('[data-day="' + day.d + '"]');
+        if (c) c.click();
+        return;
+      }
+      const c = document.querySelector('[data-emp="' + empId + '"][data-day="' + dd + '"]');
+      if (c && !c.classList.contains('future')) c.click();
+    };
+
+    inp.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); finish(true, 'down'); }
+      else if (e.key === 'Tab') { e.preventDefault(); finish(true, e.shiftKey ? 'left' : 'right'); }
+      else if (e.key === 'Escape') { e.preventDefault(); finish(false, null); }
+      else if (e.key === 'ArrowDown') { e.preventDefault(); finish(true, 'down'); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); finish(true, 'up'); }
+    });
+    inp.addEventListener('blur', () => finish(true, null));
+  }
+
+  // Классы ячейки — одним правилом и при отрисовке, и после правки.
+  function tsCellClass(m, day, d) {
+    const today = d.today.slice(8, 10);
+    const isThisMonth = d.today.slice(0, 7) === d.period;
+    const cls = ['hr-ts-c'];
+    if (day.weekend) cls.push('wk');
+    if (isThisMonth && day.d === today) cls.push('now');
+    if (m && m.mark !== 'work') cls.push('mk-' + m.mark);
+    if (m && m.overtime) cls.push('ot');
+    return cls.join(' ');
+  }
+
+  // Итоги строки и плиток сверху — пересчитываем на месте.
+  function updateRow(r, row) {
+    if (!row) return;
+    r.days = row.days; r.hours = row.hours; r.overtime = row.overtime; r.accrued = row.accrued;
+    const td = document.querySelector('[data-emp="' + r.emp_id + '"]');
+    const tr = td && td.closest('tr');
+    if (!tr) return;
+    const sums = tr.querySelectorAll('td.hr-ts-sum');
+    if (sums.length >= 4) {
+      sums[0].textContent = String(row.days);
+      sums[1].textContent = nH(row.hours);
+      sums[2].textContent = row.overtime ? '+' + nH(row.overtime) : '—';
+      sums[2].style.color = row.overtime ? '#b25b00' : '';
+      sums[3].textContent = money(row.accrued);
+    }
+    const box = document.querySelector('#hr-ts-box .hr-kpis');
+    if (box && TS_ITEMS) {
+      const t = TS_ITEMS.reduce((s, x) => ({
+        days: s.days + (x.days || 0), hours: s.hours + (x.hours || 0),
+        overtime: s.overtime + (x.overtime || 0), accrued: s.accrued + (x.accrued || 0),
+      }), { days: 0, hours: 0, overtime: 0, accrued: 0 });
+      const vals = box.querySelectorAll('.hr-kpi-v');
+      if (vals.length >= 4) {
+        vals[0].textContent = String(t.days);
+        vals[1].textContent = nH(t.hours);
+        vals[2].textContent = t.overtime ? '+' + nH(t.overtime) : '0';
+        vals[3].textContent = money(t.accrued);
+      }
+    }
+  }
+  let TS_ITEMS = null;   // строки текущей сетки — для пересчёта итогов сверху
 
   // Окно отметки одного дня. Часы подставляются по длине смены графика —
   // в обычный день ничего вписывать не надо, только нажать «Сохранить».

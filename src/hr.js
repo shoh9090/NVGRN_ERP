@@ -1032,9 +1032,21 @@ async function recomputeTimesheetFact(empId, period) {
   // Уже начисленный месяц не пересчитываем молча — как и «Заполнить нормы».
   const accrued = (await db.pool.query(
     'SELECT accrued_at FROM hr_payroll WHERE employee_id=$1 AND period=$2', [empId, period])).rows[0];
-  if (accrued && accrued.accrued_at) return { recomputed: false };
-  await recomputeAccrFact(empId, period);
-  return { recomputed: true };
+  const recomputed = !(accrued && accrued.accrued_at);
+  if (recomputed) await recomputeAccrFact(empId, period);
+  // Итоги строки отдаём сразу: экран обновляет её на месте, без перезагрузки
+  // всей сетки — иначе при вводе как в Excel курсор улетал бы из ячейки.
+  const fact = (await db.pool.query(
+    'SELECT accr_fact FROM hr_payroll WHERE employee_id=$1 AND period=$2', [empId, period])).rows[0];
+  return {
+    recomputed,
+    row: {
+      days: Number(r.days) || 0,
+      hours: Number(r.hours) || 0,
+      overtime: Number(r.ot) || 0,
+      accrued: Number(fact && fact.accr_fact) || 0,
+    },
+  };
 }
 
 // Сетка табеля за месяц.
@@ -1153,7 +1165,11 @@ router.post('/api/timesheet/mark', J, async (req, res) => {
     }
     const r = await recomputeTimesheetFact(empId, period);
     await db.log(req.user.id, 'hr_timesheet_mark', `${date} emp#${empId} ${b.mark || 'clear'}`);
-    res.json({ ok: true, accrual_locked: !!(r && r.recomputed === false) });
+    res.json({
+      ok: true,
+      accrual_locked: !!(r && r.recomputed === false),
+      row: (r && r.row) || { days: 0, hours: 0, overtime: 0, accrued: 0 },
+    });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
