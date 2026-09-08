@@ -1175,7 +1175,10 @@
     });
     const dSel = deptMulti(tsState, 'department', load);
     const q = el('input', { class: 'hrf-inp hr-filt hr-filt-q', placeholder: 'Поиск по ФИО', value: tsState.q, oninput: (e) => { tsState.q = e.target.value; clearTimeout(window.__hrT); window.__hrT = setTimeout(load, 300); } });
-    c.appendChild(el('div', { class: 'hr-filters' }, [mInp, dSel, q]));
+    // Показатели — мелкой строкой в фильтрах, а не четырьмя плитками во весь
+    // экран: они справочные, а пришли сюда ради сетки.
+    const stats = el('div', { class: 'hr-ts-stats' });
+    c.appendChild(el('div', { class: 'hr-filters' }, [mInp, dSel, q, stats]));
     const box = el('div', { id: 'hr-ts-box' }); c.appendChild(box);
     load();
 
@@ -1192,24 +1195,66 @@
       box.innerHTML = '';
       if (!items.length) { box.appendChild(el('div', { class: 'hr-empty' }, 'Нет сотрудников по фильтру.')); return; }
 
-      const t = d.totals;
-      box.appendChild(el('div', { class: 'hr-kpis hr-kpis-4', style: 'margin-bottom:12px' }, [
-        kpi('Отмечено дней', String(t.days), 'ink'),
-        kpi('Часов', nH(t.hours), 'ink'),
-        kpi('Переработка, ч', t.overtime ? '+' + nH(t.overtime) : '0', t.overtime > 0 ? 'amber' : 'muted'),
-        kpi('Начислено на сегодня', money(t.accrued), 'green'),
-      ]));
-      if (d.locked) box.appendChild(el('div', { class: 'hr-note' }, 'Месяц закрыт — правка табеля запрещена.'));
-      box.appendChild(submitBar(d, load));
-      if (d.forecast) box.appendChild(forecastPanel(d, load));
-
       const today = d.today.slice(8, 10);
       const isThisMonth = d.today.slice(0, 7) === d.period;
-      // Отметка — только при выбранном отделе. Без фильтра в панель попадала вся
+      // Пересчёт показателей после правки ячейки — по строкам, которые на экране.
+      TS_REDRAW_STATS = () => drawStats(TS_ITEMS.reduce((s, x) => ({
+        days: s.days + (x.days || 0), hours: s.hours + (x.hours || 0),
+        overtime: s.overtime + (x.overtime || 0), accrued: s.accrued + (x.accrued || 0),
+      }), { days: 0, hours: 0, overtime: 0, accrued: 0 }), items, today, isThisMonth);
+      drawStats(d.totals, items, today, isThisMonth);
+
+      if (d.locked) box.appendChild(el('div', { class: 'hr-note' }, 'Месяц закрыт — правка табеля запрещена.'));
+
+      // Прогноз смотрят раз в неделю, утверждают раз в месяц — держать их
+      // развёрнутыми каждый день незачем. Свёрнуты, но состояние видно в
+      // заголовке, поэтому «табель не утверждён» не потеряется.
+      const foldables = el('div', { class: 'hr-folds' });
+      if (d.forecast) {
+        const f = d.forecast;
+        const over = f.over !== null && f.over > 0;
+        foldables.appendChild(fold('Прогноз и лимит',
+          f.limit === null ? 'лимит не задан'
+            : (over ? 'сверх лимита ' + money(f.over) : 'в лимит укладываемся'),
+          over, () => forecastPanel(d, load)));
+      }
+      if (d.department) {
+        foldables.appendChild(fold('Утверждение табеля',
+          d.submitted ? ('утверждён ' + dtRu(d.submitted.at)) : 'не утверждён',
+          !d.submitted, () => submitBar(d, load)));
+      }
+      if (foldables.childNodes.length) box.appendChild(foldables);
+      if (!d.department) {
+        box.appendChild(el('div', { class: 'hr-note', style: 'margin-bottom:10px' },
+          'Выберите отдел — табель ведётся по отделам. Сейчас показаны все сотрудники: '
+          + 'отмечать смену всем разом и утверждать табель можно только внутри одного отдела.'));
+      }
+
+      // Отметка — только при выбранном отделе. Без фильтра сюда попадала вся
       // компания, и «отметить выход всем» разом перевело бы на табель АУП,
       // продажи и бухгалтерию — а после первой отметки факт руками уже не
       // поправить. Табель ведётся по отделам, значит и отмечать надо по отделу.
-      if (isThisMonth && !d.locked && d.department) box.appendChild(todayPanel(items, d, load));
+      if (isThisMonth && !d.locked && d.department) box.appendChild(todayBar(items, d, today, load));
+
+      // Показатели строкой в фильтрах: отмечено, часы, переработка, деньги.
+      function drawStats(t, list, dayCode, thisMonth) {
+        stats.innerHTML = '';
+        const marked = thisMonth ? list.filter((r) => r.marks[dayCode]).length : 0;
+        const part = (label, val, cls) => [
+          document.createTextNode(label + ' '),
+          el('b', { class: cls || null }, val),
+        ];
+        const bits = [];
+        if (thisMonth) bits.push(part('сегодня', marked + ' из ' + list.length));
+        bits.push(part('дней', String(t.days)));
+        bits.push(part('часов', nH(t.hours)));
+        if (t.overtime) bits.push(part('переработка', '+' + nH(t.overtime), 'hr-ts-ot'));
+        bits.push(part('начислено', money(t.accrued), 'hr-ts-money'));
+        bits.forEach((b, i) => {
+          if (i) stats.appendChild(el('span', { class: 'hr-ts-sep' }, '·'));
+          b.forEach((n) => stats.appendChild(n));
+        });
+      }
 
       // Ячейка дня. Клик открывает окно отметки — с часами, переработкой и статусами.
       function tsCell(r, day) {
@@ -1234,6 +1279,9 @@
           title: m ? (TS_MARK_NAME[m.mark] + (m.comment ? ' · ' + m.comment : ''))
             : (future ? 'День ещё не наступил' : 'Часы, «12+3» с переработкой, или буква: в о б н'),
           onclick: (future || d.locked) ? null : (e) => editCell(e.currentTarget, r, day, d),
+          // Комментарий к дню нужен редко — прячем его за правый клик, чтобы
+          // не мешать быстрому вводу с клавиатуры.
+          oncontextmenu: (future || d.locked) ? null : (e) => { e.preventDefault(); openMarkDialog(r, day, d, load); },
         }, txt);
       }
 
@@ -1264,6 +1312,8 @@
         el('span', {}, 'О — отпуск'),
         el('span', {}, 'Б — больничный'),
         el('span', {}, 'НБ — неявка'),
+        el('span', { class: 'muted' }, 'Ввод как в Excel: 12 · 12+3 с переработкой · буквы в о б н · Enter — вниз, Tab — вправо.'),
+        el('span', { class: 'muted' }, 'Правый клик по ячейке — комментарий к дню.'),
         el('span', { class: 'muted' }, 'Отпуск, больничный и неявка часов не дают — эти суммы вносятся отдельными начислениями.'),
       ]));
     }
@@ -1333,11 +1383,6 @@
   // Утверждение табеля. Две подписи: начальник смены отвечает за отметки,
   // Кадры — за деньги. Пока табель не утверждён, начислять зарплату нельзя.
   function submitBar(d, reload) {
-    if (!d.department) {
-      return el('div', { class: 'hr-note', style: 'margin-bottom:12px' },
-        'Выберите отдел в фильтре — табель ведётся по отделам. '
-        + 'Сейчас показаны все сотрудники: отмечать смену и утверждать табель можно только внутри одного отдела.');
-    }
     if (d.submitted) {
       const un = isAdmin ? el('button', { class: 'btn-ghost', onclick: async () => {
         if (!confirm('Снять утверждение табеля? Начальник смены снова сможет править отметки.')) return;
@@ -1362,30 +1407,44 @@
     ]);
   }
 
-  // Панель «отметить на сегодня». Главный экран начальника смены: закрыть день
-  // надо за полминуты, а не искать нужную ячейку в сетке из тридцати столбцов.
-  function todayPanel(items, d, reload) {
-    const day = d.today.slice(8, 10);
-    const dayObj = d.days.find((x) => x.d === day) || { d: day, n: Number(day) };
-    const done = items.filter((r) => r.marks[day]);
-    const left = items.filter((r) => !r.marks[day]);
+  // Сворачиваемый раздел: заголовок + состояние одной строкой. Содержимое
+  // строится только при раскрытии — прогноз и утверждение нужны редко.
+  function fold(title, state, warn, build) {
+    const det = el('details', { class: 'hr-fold' + (warn ? ' warn' : '') });
+    det.appendChild(el('summary', {}, [
+      el('b', {}, title),
+      el('span', { class: 'hr-fold-st' }, state),
+    ]));
+    const body = el('div', { class: 'hr-fold-b' });
+    det.appendChild(body);
+    let built = false;
+    det.addEventListener('toggle', () => {
+      if (!det.open || built) return;
+      built = true;
+      body.appendChild(build());
+    });
+    return det;
+  }
 
-    const pill = (r) => {
-      const m = r.marks[day];
-      const txt = !m ? r.full_name + ' — не отмечен'
-        : r.full_name + ' · ' + (m.mark === 'work'
-          ? (nH(m.hours) + ' ч' + (m.overtime ? ' +' + nH(m.overtime) : ''))
-          : TS_MARK_NAME[m.mark].toLowerCase());
-      const cls = ['hr-td-pill'];
-      if (!m) cls.push('empty');
-      else if (m.mark !== 'work') cls.push('mk-' + m.mark);
-      else if (m.overtime) cls.push('ot');
-      return el('button', { class: cls.join(' '), onclick: () => openMarkDialog(r, dayObj, d, reload) }, txt);
-    };
+  // Строка «сегодня»: кто не отмечен и кнопка «все вышли, как обычно».
+  // Раньше здесь был список всех сотрудников таблетками — пока никого не
+  // отметили, это просто перечень отдела на пол-экрана.
+  function todayBar(items, d, day, reload) {
+    const left = items.filter((r) => !r.marks[day]);
+    const dayNum = Number(day);
+    const monthName = monthLabel(d.period).split(' ')[0].toLowerCase();
+
+    let text;
+    if (!left.length) text = 'смена закрыта — отмечены все';
+    else if (left.length === items.length) text = 'не отмечен никто';
+    else {
+      const names = left.slice(0, 3).map((r) => r.full_name.split(' ')[0] + ' ' + (r.full_name.split(' ')[1] || ''));
+      text = 'отмечено ' + (items.length - left.length) + ' из ' + items.length
+        + ', не отмечены: ' + names.join(', ') + (left.length > 3 ? ' и ещё ' + (left.length - 3) : '');
+    }
 
     const fillBtn = el('button', { class: 'btn-primary', onclick: async () => {
-      if (!left.length) return;
-      if (!confirm('Отметить выход по графику всем неотмеченным (' + left.length + ')? Уже отмеченных не тронем.')) return;
+      if (!confirm('Отметить выход по графику всем неотмеченным (' + left.length + ')?\n\nУже отмеченных не тронем.')) return;
       fillBtn.disabled = true;
       try {
         const r = await post('/timesheet/mark-day', { date: d.today, department: tsState.department });
@@ -1394,16 +1453,12 @@
       } catch (e) { toast(e.message, true); fillBtn.disabled = false; }
     } }, 'Отметить выход всем — ' + left.length);
 
-    return el('div', { class: 'hr-today' }, [
-      el('div', { class: 'hr-today-h' }, [
-        el('div', {}, [
-          el('b', {}, 'Отметить смену на сегодня'),
-          el('span', { class: 'muted', style: 'margin-left:8px' },
-            'отмечено ' + done.length + ' из ' + items.length),
-        ]),
-        left.length ? fillBtn : el('span', { class: 'hr-today-ok' }, 'смена закрыта'),
+    return el('div', { class: 'hr-todaybar' + (left.length ? '' : ' done') }, [
+      el('div', {}, [
+        el('b', {}, 'Сегодня ' + dayNum + ' ' + monthName),
+        el('span', { class: 'muted', style: 'margin-left:8px' }, text),
       ]),
-      el('div', { class: 'hr-today-pills' }, left.concat(done).map(pill)),
+      left.length ? fillBtn : null,
     ]);
   }
 
@@ -1523,22 +1578,10 @@
       sums[2].style.color = row.overtime ? '#b25b00' : '';
       sums[3].textContent = money(row.accrued);
     }
-    const box = document.querySelector('#hr-ts-box .hr-kpis');
-    if (box && TS_ITEMS) {
-      const t = TS_ITEMS.reduce((s, x) => ({
-        days: s.days + (x.days || 0), hours: s.hours + (x.hours || 0),
-        overtime: s.overtime + (x.overtime || 0), accrued: s.accrued + (x.accrued || 0),
-      }), { days: 0, hours: 0, overtime: 0, accrued: 0 });
-      const vals = box.querySelectorAll('.hr-kpi-v');
-      if (vals.length >= 4) {
-        vals[0].textContent = String(t.days);
-        vals[1].textContent = nH(t.hours);
-        vals[2].textContent = t.overtime ? '+' + nH(t.overtime) : '0';
-        vals[3].textContent = money(t.accrued);
-      }
-    }
+    if (TS_REDRAW_STATS) TS_REDRAW_STATS();
   }
-  let TS_ITEMS = null;   // строки текущей сетки — для пересчёта итогов сверху
+  let TS_ITEMS = null;         // строки текущей сетки — для пересчёта показателей
+  let TS_REDRAW_STATS = null;  // перерисовка строки показателей после правки ячейки
 
   // Окно отметки одного дня. Часы подставляются по длине смены графика —
   // в обычный день ничего вписывать не надо, только нажать «Сохранить».

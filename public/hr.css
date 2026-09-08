@@ -239,26 +239,6 @@
 .hr-ts-marks { display: flex; flex-wrap: wrap; gap: 8px; }
 .hr-ts-marks .btn-ghost.on { border-color: var(--lime-d); background: var(--lime-soft); color: var(--forest); }
 
-/* Панель «отметить на сегодня»: главный экран начальника смены */
-.hr-today {
-  background: var(--lime-soft); border: 1px solid var(--lime-d);
-  border-radius: 12px; padding: 12px 14px; margin-bottom: 12px;
-}
-.hr-today-h { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
-.hr-today-ok { font-size: 12.5px; color: var(--forest); font-weight: 700; }
-.hr-today-pills { display: flex; flex-wrap: wrap; gap: 7px; }
-.hr-td-pill {
-  border: 1px solid transparent; background: #fff; border-radius: 999px;
-  padding: 6px 13px; font-family: inherit; font-size: 12.5px; font-weight: 600;
-  color: var(--ink); cursor: pointer;
-}
-.hr-td-pill:hover { border-color: var(--forest); }
-.hr-td-pill.empty { background: none; border: 1px dashed var(--ink-faint); color: var(--ink-soft); }
-.hr-td-pill.ot { color: #b25b00; }
-.hr-td-pill.mk-off { color: var(--ink-soft); }
-.hr-td-pill.mk-vacation { color: #0d7d8c; }
-.hr-td-pill.mk-sick { color: #b25b00; }
-.hr-td-pill.mk-absent { color: var(--red); }
 
 /* Факт из табеля: показываем цифру, но править её здесь нельзя */
 .hr-cell-ro {
@@ -312,3 +292,35 @@
   font-family: inherit; font-size: 12.5px; font-weight: 700; text-align: center;
   padding: 7px 2px; color: var(--ink); font-variant-numeric: tabular-nums;
 }
+
+/* Показатели табеля — строкой в фильтрах, а не плитками во весь экран */
+.hr-ts-stats { margin-left: auto; font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+.hr-ts-stats b { color: var(--ink); font-variant-numeric: tabular-nums; }
+.hr-ts-stats b.hr-ts-ot { color: #b25b00; }
+.hr-ts-stats b.hr-ts-money { color: #2e7d32; }
+.hr-ts-sep { margin: 0 7px; color: var(--line); }
+
+/* Прогноз и утверждение — свёрнуты: нужны раз в неделю и раз в месяц */
+.hr-folds { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.hr-fold { border: 1px solid var(--line); border-radius: 10px; background: #fff; flex: 1 1 260px; }
+.hr-fold.warn { border-color: #eddcae; background: var(--amber-soft); }
+.hr-fold > summary {
+  cursor: pointer; list-style: none; padding: 9px 13px; font-size: 12.5px;
+  display: flex; align-items: baseline; gap: 8px;
+}
+.hr-fold > summary::-webkit-details-marker { display: none; }
+.hr-fold > summary::before { content: '▸'; color: var(--ink-faint); }
+.hr-fold[open] > summary::before { content: '▾'; }
+.hr-fold-st { color: var(--muted); }
+.hr-fold.warn .hr-fold-st { color: #8a5a00; font-weight: 700; }
+.hr-fold-b { padding: 0 13px 12px; }
+.hr-fold[open] { flex-basis: 100%; }
+
+/* Строка «сегодня»: кто не отмечен и кнопка «все вышли, как обычно» */
+.hr-todaybar {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  flex-wrap: wrap; margin-bottom: 10px; padding: 9px 13px;
+  border: 1px solid var(--lime-d); border-radius: 10px; background: var(--lime-soft);
+  font-size: 13px;
+}
+.hr-todaybar.done { border-color: var(--line); background: var(--surface-2); }
