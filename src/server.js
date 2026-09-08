@@ -214,6 +214,7 @@ admin.post('/users/:id/roles', async (req, res) => {
 
 // Роли
 admin.get('/roles', async (req, res) => {
+ try {
   const roles = await db.pool.query(
     `SELECT r.*, COALESCE(string_agg(t.title, ', ' ORDER BY t.title), '—') AS tile_names
      FROM roles r
@@ -228,6 +229,9 @@ admin.get('/roles', async (req, res) => {
   // отсутствия: администратор был бы уверен, что доступ закрыт.
   const tileTabs = await db.pool.query('SELECT * FROM tile_tabs ORDER BY tile_url, sort, id').catch(() => ({ rows: [] }));
   const roleTabs = await db.pool.query('SELECT * FROM role_tile_tabs').catch(() => ({ rows: [] }));
+  // Пустой «Internal Server Error» на странице прав — худший вид ошибки:
+  // непонятно ни что сломалось, ни можно ли работать дальше. Ошибку ловим,
+  // пишем в лог и показываем текстом.
   res.render('admin/roles', {
     ...(await adminContext('roles')),
     user: req.user,
@@ -236,7 +240,17 @@ admin.get('/roles', async (req, res) => {
     roleTiles: roleTiles.rows,
     tileTabs: tileTabs.rows,
     roleTabs: roleTabs.rows,
+  }, (err, html) => {
+    if (err) {
+      console.error('[АДМИН] роли, отрисовка:', err.stack || err.message);
+      return res.status(500).send('Не удалось показать страницу «Роли»: ' + err.message);
+    }
+    res.send(html);
   });
+ } catch (e) {
+   console.error('[АДМИН] роли:', e.stack || e.message);
+   res.status(500).send('Не удалось открыть «Роли»: ' + e.message);
+ }
 });
 
 admin.post('/roles', async (req, res) => {
