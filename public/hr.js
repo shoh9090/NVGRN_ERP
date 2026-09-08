@@ -1247,8 +1247,8 @@
         const bits = [];
         if (thisMonth) bits.push(part('сегодня', marked + ' из ' + list.length));
         bits.push(part('дней', String(t.days)));
-        bits.push(part('часов', nH(t.hours)));
-        if (t.overtime) bits.push(part('переработка', '+' + nH(t.overtime), 'hr-ts-ot'));
+        bits.push(part('часов', nH((t.hours || 0) + (t.overtime || 0))));
+        if (t.overtime) bits.push(part('переработка', '+' + nH(t.overtime * 2), 'hr-ts-ot'));
         bits.push(part('начислено', money(t.accrued), 'hr-ts-money'));
         bits.forEach((b, i) => {
           if (i) stats.appendChild(el('span', { class: 'hr-ts-sep' }, '·'));
@@ -1262,7 +1262,7 @@
         const date = d.period + '-' + day.d;
         const future = date > d.today;
         const txt = !m ? '' : m.mark === 'work'
-          ? (nH(m.hours) + (m.overtime ? ' +' + nH(m.overtime) : ''))
+          ? nH((Number(m.hours) || 0) + (Number(m.overtime) || 0))
           : TS_LETTER[m.mark];
         const cls = ['hr-ts-c'];
         if (day.weekend) cls.push('wk');
@@ -1289,7 +1289,10 @@
         .concat(d.days.map((x) => el('th', {
           class: 'hr-ts-d' + (x.weekend ? ' wk' : '') + (isThisMonth && x.d === today ? ' now' : ''),
         }, String(x.n))))
-        .concat(['Дней', 'Часов', 'Перераб.', 'Начислено'].map((x) => el('th', { class: 'hr-ts-sum' }, x))));
+        .concat([['Дней', 'Отмеченных смен'], ['Часов', 'Всего отработано, вместе с переработкой'],
+          ['Перераб. ×2', 'Часы сверх смены в двойном размере — столько их в оплате'],
+          ['Начислено', 'Оплата по факту: часы по норме плюс переработка в двойном размере']]
+          .map((x) => el('th', { class: 'hr-ts-sum', title: x[1] }, x[0]))));
 
       const rows = items.map((r) => el('tr', {}, [
         el('td', { class: 'hr-ts-name' }, [
@@ -1299,8 +1302,8 @@
       ].concat(d.days.map((x) => tsCell(r, x)))
         .concat([
           el('td', { class: 'hr-ts-sum tnum' }, String(r.days)),
-          el('td', { class: 'hr-ts-sum tnum' }, nH(r.hours)),
-          el('td', { class: 'hr-ts-sum tnum', style: r.overtime > 0 ? 'color:#b25b00;font-weight:700' : '' }, r.overtime ? '+' + nH(r.overtime) : '—'),
+          el('td', { class: 'hr-ts-sum tnum' }, nH((r.hours || 0) + (r.overtime || 0))),
+          el('td', { class: 'hr-ts-sum tnum', style: r.overtime > 0 ? 'color:#b25b00;font-weight:700' : '' }, r.overtime ? '+' + nH(r.overtime * 2) : '—'),
           el('td', { class: 'hr-ts-sum tnum', style: 'font-weight:700' }, money(r.accrued)),
         ])));
 
@@ -1312,7 +1315,8 @@
         el('span', {}, 'О — отпуск'),
         el('span', {}, 'Б — больничный'),
         el('span', {}, 'НБ — неявка'),
-        el('span', { class: 'muted' }, 'Ввод как в Excel: часы за день · сверх нормы смены уходит в переработку (10 → 13 = 10 +3) · буквы в о б н · Enter — вниз, Tab — вправо.'),
+        el('span', { class: 'muted' }, 'Ввод как в Excel: пишете часы за день · буквы в о б н · Enter — вниз, Tab — вправо.'),
+        el('span', { class: 'muted' }, 'Часы сверх нормы смены — переработка: при норме 10 из 13 часов три идут в двойном размере, в колонке «Перераб. ×2» это +6.'),
         el('span', { class: 'muted' }, 'Правый клик по ячейке — комментарий к дню.'),
         el('span', { class: 'muted' }, 'Отпуск, больничный и неявка часов не дают — эти суммы вносятся отдельными начислениями.'),
       ]));
@@ -1476,7 +1480,7 @@
   function cellText(mark) {
     if (!mark) return '';
     if (mark.mark !== 'work') return TS_LETTER[mark.mark];
-    return nH(mark.hours) + (mark.overtime ? ' +' + nH(mark.overtime) : '');
+    return nH((Number(mark.hours) || 0) + (Number(mark.overtime) || 0));
   }
 
   let tsEditing = null;   // чтобы два поля ввода не открылись разом
@@ -1484,7 +1488,7 @@
     if (tsEditing) { tsEditing.blur(); }
     const cur = r.marks[day.d] || null;
     const start = !cur ? '' : (cur.mark === 'work'
-      ? (nH(cur.hours) + (cur.overtime ? '+' + nH(cur.overtime) : ''))
+      ? nH((Number(cur.hours) || 0) + (Number(cur.overtime) || 0))
       : TS_LETTER[cur.mark]);
     const inp = el('input', { class: 'hr-ts-in', value: start });
     td.textContent = ''; td.appendChild(inp);
@@ -1573,8 +1577,8 @@
     const sums = tr.querySelectorAll('td.hr-ts-sum');
     if (sums.length >= 4) {
       sums[0].textContent = String(row.days);
-      sums[1].textContent = nH(row.hours);
-      sums[2].textContent = row.overtime ? '+' + nH(row.overtime) : '—';
+      sums[1].textContent = nH((row.hours || 0) + (row.overtime || 0));
+      sums[2].textContent = row.overtime ? '+' + nH(row.overtime * 2) : '—';
       sums[2].style.color = row.overtime ? '#b25b00' : '';
       sums[3].textContent = money(row.accrued);
     }
