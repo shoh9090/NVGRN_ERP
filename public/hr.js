@@ -2110,9 +2110,34 @@
     d = d || {};
     const name = finp(d.name, { placeholder: 'Название отдела' });
     const sort = finp(d.sort_order != null ? d.sort_order : 100, { type: 'number' });
+    // Кто ограничен этим отделом. Начальник смены должен вести табель только
+    // своего производства и не видеть чужие зарплаты и выплаты.
+    const accessBox = el('div', {});
+    let accessUsers = null;
+    if (d.id && isAdmin) {
+      accessBox.appendChild(el('div', { class: 'hrf-sec' }, 'Доступ по отделу'));
+      accessBox.appendChild(el('div', { class: 'hr-sub', style: 'margin-bottom:8px' },
+        'Отмеченные видят в Кадрах ТОЛЬКО этот отдел: его табель, зарплату, выплаты и расчёты. '
+        + 'Никого не отметили — ограничения нет, все видят всё как раньше.'));
+      const list = el('div', { class: 'hr-dept-users' }, 'Загружаю…');
+      accessBox.appendChild(list);
+      api('/department/' + d.id + '/users').then((r) => {
+        accessUsers = r.users;
+        list.innerHTML = '';
+        r.users.forEach((u) => {
+          const cb = el('input', { type: 'checkbox', checked: u.on || null,
+            onchange: (e) => { u.on = e.target.checked; } });
+          list.appendChild(el('label', { class: 'hr-dept-user' }, [
+            cb, el('span', {}, u.name),
+            u.other.length ? el('span', { class: 'muted' }, ' · также: ' + u.other.join(', ')) : null,
+          ]));
+        });
+      }).catch((e) => { list.textContent = 'Не удалось загрузить: ' + e.message; });
+    }
     const body = el('div', { class: 'hrf' }, [frow('Название', name), frow('Порядок', sort),
-      d.id ? el('div', { class: 'hr-sub' }, 'Сотрудников в отделе: ' + (d.emp_count || 0)) : null]);
-    const save = el('button', { class: 'btn-primary', onclick: async () => { try { await post('/department', { id: d.id, name: name.value, sort_order: sort.value }); toast('Сохранено'); closeModal(); await reloadDicts(); render(); } catch (e) { toast(e.message, true); } } }, 'Сохранить');
+      d.id ? el('div', { class: 'hr-sub' }, 'Сотрудников в отделе: ' + (d.emp_count || 0)) : null,
+      accessBox]);
+    const save = el('button', { class: 'btn-primary', onclick: async () => { try { await post('/department', { id: d.id, name: name.value, sort_order: sort.value }); if (accessUsers) await post('/department/' + d.id + '/users', { user_ids: accessUsers.filter((u) => u.on).map((u) => u.id) }); toast('Сохранено'); closeModal(); await reloadDicts(); render(); } catch (e) { toast(e.message, true); } } }, 'Сохранить');
     const acts = [save];
     if (d.id) acts.unshift(el('button', { class: 'btn-ghost hrf-warn', onclick: () => archiveDept(d) }, 'В архив'));
     modal(d.id ? 'Отдел' : 'Новый отдел', body, acts);

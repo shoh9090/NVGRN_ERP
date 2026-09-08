@@ -298,3 +298,9 @@
   margin-top: 26px; padding-top: 18px;
   border-top: 2px solid var(--line);
 }
+
+/* Доступ по отделу: кто видит в Кадрах только этот отдел */
+.hr-dept-users { max-height: 240px; overflow: auto; border: 1px solid var(--line-soft); border-radius: 10px; padding: 6px 8px; }
+.hr-dept-user { display: flex; align-items: center; gap: 8px; padding: 5px 4px; font-size: 13px; cursor: pointer; }
+.hr-dept-user:hover { background: #fbfaf4; border-radius: 6px; }
+.hr-dept-user input { width: 16px; height: 16px; margin: 0; accent-color: var(--lime-d); }

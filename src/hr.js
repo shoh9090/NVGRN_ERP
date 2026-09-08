@@ -179,6 +179,13 @@ async function ensureSchema() {
     comment TEXT DEFAULT '',
     PRIMARY KEY (period, department_id)
   )`);
+  // Привязка пользователя Hub к отделам. Пока строк нет — никто не ограничен,
+  // всё работает как раньше. Появилась строка — человек видит только свои отделы.
+  await q(`CREATE TABLE IF NOT EXISTS hr_user_departments (
+    user_id INT NOT NULL,
+    department_id INT REFERENCES hr_departments(id) ON DELETE CASCADE,
+    PRIMARY KEY (user_id, department_id)
+  )`);
   // Лимит зарплаты отдела на месяц. Ставят Кадры, начальник производства только
   // видит: лимит, который можно поднять себе самому, ограничением не является.
   await q(`CREATE TABLE IF NOT EXISTS hr_department_limits (
@@ -317,6 +324,36 @@ async function periodsOfPayrollIds(ids) {
 
 // Фильтр по отделам: принимает один id, список через запятую («1,5,7») и «__none__» (без отдела).
 // Дописывает условие в WHERE-массив w и параметры в p. Пусто = все отделы.
+// ---------------------------------------------------------------------------
+// Доступ по отделу
+// ---------------------------------------------------------------------------
+// Начальник смены ведёт табель только своего отдела и не должен видеть чужие
+// зарплаты и выплаты. Плитка и вкладка тут не помогают: они про экраны, а надо
+// ограничить СТРОКИ. Поэтому пользователя привязываем к отделам.
+//
+// Пусто — ограничения нет (так работали все до появления привязки).
+// Админ не ограничивается никогда.
+async function hrScope(req) {
+  if (!req || !req.user) return new Set();
+  if (req.user.isAdmin) return null;
+  try {
+    const r = await db.pool.query('SELECT department_id FROM hr_user_departments WHERE user_id = $1', [req.user.id]);
+    if (!r.rows.length) return null;
+    return new Set(r.rows.map((x) => x.department_id));
+  } catch (e) { return null; }
+}
+// Сузить запрошенный фильтр отделов до разрешённых. Возвращает строку для
+// deptFilter/deptFilterMem: человек может фильтровать внутри своих отделов,
+// но не может выйти за них.
+function scopeDept(raw, scope) {
+  if (!scope) return raw;
+  const allowed = [...scope];
+  if (!allowed.length) return '-1';                      // нет отделов — пустой результат
+  const asked = String(raw || '').split(',').map((s) => s.trim()).filter(Boolean)
+    .filter((x) => /^\d+$/.test(x) && scope.has(Number(x)));
+  return (asked.length ? asked : allowed).join(',');
+}
+
 function deptFilter(raw, p, w, col = 'e.department_id') {
   const parts = String(raw || '').split(',').map((s) => s.trim()).filter(Boolean);
   if (!parts.length) return;
@@ -433,7 +470,7 @@ router.get('/api/dicts', async (req, res) => {
 // ---------- Сотрудники ----------
 router.get('/api/employees', async (req, res) => {
   const p = [], w = [];
-  deptFilter(req.query.department, p, w);
+  deptFilter(scopeDept(req.query.department, await hrScope(req)), p, w);
   if (req.query.schedule && SCHEDULE_CODES.includes(req.query.schedule)) { p.push(req.query.schedule); w.push(`e.schedule_type = $${p.length}`); }
   if (req.query.status && STATUSES.includes(req.query.status)) { p.push(req.query.status); w.push(`e.status = $${p.length}`); }
   else if (!req.query.status) w.push(`e.status <> 'archived'`); // по умолчанию скрываем архив
@@ -453,7 +490,7 @@ router.get('/api/employees', async (req, res) => {
 router.get('/api/employees-export.xlsx', async (req, res) => {
   try {
     const p = [], w = [];
-    deptFilter(req.query.department, p, w);
+    deptFilter(scopeDept(req.query.department, await hrScope(req)), p, w);
     if (req.query.schedule && SCHEDULE_CODES.includes(req.query.schedule)) { p.push(req.query.schedule); w.push(`e.schedule_type = $${p.length}`); }
     if (req.query.status && STATUSES.includes(req.query.status)) { p.push(req.query.status); w.push(`e.status = $${p.length}`); }
     else if (!req.query.status) w.push(`e.status <> 'archived'`);
@@ -675,7 +712,7 @@ router.get('/api/events', async (req, res) => {
     const p = [], w = [];
     if (req.query.employee_id) { p.push(parseInt(req.query.employee_id)); w.push(`v.employee_id=$${p.length}`); }
     if (req.query.type && EVENT_TYPES.includes(req.query.type)) { p.push(req.query.type); w.push(`v.event_type=$${p.length}`); }
-    deptFilter(req.query.department, p, w);
+    deptFilter(scopeDept(req.query.department, await hrScope(req)), p, w);
     if (req.query.from) { p.push(req.query.from); w.push(`v.event_date >= $${p.length}`); }
     if (req.query.to) { p.push(req.query.to); w.push(`v.event_date <= $${p.length}`); }
     if (req.query.q) { p.push('%' + String(req.query.q).trim() + '%'); w.push(`e.full_name ILIKE $${p.length}`); }
@@ -857,7 +894,7 @@ async function computeCashSalary(period) {
 router.get('/api/payroll', async (req, res) => {
   const period = /^\d{4}-\d{2}$/.test(req.query.period) ? req.query.period : new Date().toISOString().slice(0, 7);
   const p = [period], w = ["e.status <> 'archived'"];
-  deptFilter(req.query.department, p, w);
+  deptFilter(scopeDept(req.query.department, await hrScope(req)), p, w);
   if (req.query.schedule && SCHEDULE_CODES.includes(req.query.schedule)) { p.push(req.query.schedule); w.push(`e.schedule_type = $${p.length}`); }
   if (req.query.q) { p.push('%' + String(req.query.q).trim() + '%'); w.push(`e.full_name ILIKE $${p.length}`); }
   const rows = (await db.pool.query(
@@ -976,7 +1013,7 @@ router.get('/api/timesheet', async (req, res) => {
     const period = /^\d{4}-\d{2}$/.test(req.query.period) ? req.query.period : new Date().toISOString().slice(0, 7);
     // Фильтр отделов умеет несколько значений и «Без отдела» — фильтруем тем же
     // помощником, что и остальные вкладки, чтобы вести себя одинаково.
-    const emps = deptFilterMem(req.query.department, (await db.pool.query(
+    const emps = deptFilterMem(scopeDept(req.query.department, await hrScope(req)), (await db.pool.query(
       `SELECT e.id, e.full_name, e.schedule_type, e.base_salary, e.department_id, d.name AS department_name,
               pr.plan_days, pr.plan_hours, pr.accr_fact, (pr.accrued_at IS NOT NULL) AS accrued
          FROM hr_employees e
@@ -1064,6 +1101,7 @@ router.post('/api/timesheet/mark', J, async (req, res) => {
   if (date > new Date().toISOString().slice(0, 10)) {
     return res.status(400).json({ error: 'Нельзя отмечать день, который ещё не наступил' });
   }
+  { const _e = await scopeGuardEmp(req, empId); if (_e) return res.status(403).json({ error: _e }); }
   { const _e = await submitGuard(req, empId, period); if (_e) return res.status(409).json({ error: _e }); }
   try {
     if (b.mark === null || b.mark === '') {
@@ -1202,6 +1240,20 @@ router.post('/api/timesheet/limit', J, async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
+// Чужой отдел трогать нельзя — ни отметкой, ни правкой зарплаты.
+async function scopeGuardEmp(req, empId) {
+  const scope = await hrScope(req);
+  if (!scope) return null;
+  const e = (await db.pool.query('SELECT department_id FROM hr_employees WHERE id=$1', [empId])).rows[0];
+  if (e && scope.has(e.department_id)) return null;
+  return 'Этот сотрудник не из вашего отдела.';
+}
+async function scopeGuardDept(req, deptId) {
+  const scope = await hrScope(req);
+  if (!scope) return null;
+  return scope.has(Number(deptId)) ? null : 'Этот отдел вам не доступен.';
+}
+
 // Утверждён ли табель отдела за месяц. Пустой ответ — не утверждён.
 async function timesheetSubmit(period, deptId) {
   if (!deptId) return null;
@@ -1227,6 +1279,7 @@ router.post('/api/timesheet/submit', J, async (req, res) => {
   const period = /^\d{4}-\d{2}$/.test(b.period) ? b.period : null;
   const dept = intOrNull(b.department_id);
   if (!period || !dept) return res.status(400).json({ error: 'Укажите месяц и отдел' });
+  { const _e = await scopeGuardDept(req, dept); if (_e) return res.status(403).json({ error: _e }); }
   { const _e = await hrLockError(period); if (_e) return res.status(423).json({ error: _e }); }
   try {
     const cnt = (await db.pool.query(
@@ -1276,6 +1329,7 @@ router.post('/api/timesheet/mark-day', J, async (req, res) => {
   if (one.length !== 1 || !/^\d+$/.test(one[0])) {
     return res.status(400).json({ error: 'Выберите один отдел — смена отмечается по отделу' });
   }
+  { const _e = await scopeGuardDept(req, one[0]); if (_e) return res.status(403).json({ error: _e }); }
   try {
     const emps = deptFilterMem(b.department, (await db.pool.query(
       `SELECT e.id, e.schedule_type, e.department_id
@@ -1458,6 +1512,7 @@ router.post('/api/payroll/cell', J, async (req, res) => {
     if (!empId || !period) return res.status(400).json({ error: 'Нет сотрудника или периода' });
     { const _e = await hrLockError(period); if (_e) return res.status(423).json({ error: _e }); }
     if (!CELL_FIELDS.has(field)) return res.status(400).json({ error: 'Это поле нельзя менять здесь' });
+    { const _e = await scopeGuardEmp(req, empId); if (_e) return res.status(403).json({ error: _e }); }
     { const _e = await timesheetGuard(empId, period, field); if (_e) return res.status(409).json({ error: _e }); }
     const val = numOrNull(b.value);
     await db.pool.query(
@@ -1800,9 +1855,15 @@ router.get('/api/settlements', async (req, res) => {
       return e;
     };
 
+    // Расчёты — это деньги, поэтому сужаем их до своих отделов ДО подсчёта:
+    // иначе итоги и график остались бы по всей компании.
+    const scope = await hrScope(req);
+    const inScope = (r) => !scope || scope.has(r.department_id);
+
     // 1) Входящий остаток: прогоняем прошлые годы, но в лицевой счёт их не кладём.
     for (const period of before) {
       for (const r of await computePayouts(period)) {
+        if (!inScope(r)) continue;
         if (!(r.accrued > 0.5 || r.deducted > 0.5 || r.paid > 0.5)) continue;
         touch(r).opening += r.net - r.paid;
       }
@@ -1812,6 +1873,7 @@ router.get('/api/settlements', async (req, res) => {
     for (let i = 0; i < yearPeriods.length; i++) {
       const period = yearPeriods[i];
       for (const r of await computePayouts(period)) {
+        if (!inScope(r)) continue;
         const e = touch(r);
         const empty = !(r.accrued > 0.5 || r.deducted > 0.5 || r.paid > 0.5);
         if (empty) continue;
@@ -1882,7 +1944,7 @@ router.get('/api/payouts', async (req, res) => {
     // из вкладки (так август показывал «Выплачено 0» при реально выплаченных 12 млн).
     items = items.filter((x) => (Number(x.paid) || 0) > 0.5
       || (x.status !== 'none' && !(x.emp_status === 'fired' && x.remainder <= 0.5)));
-    items = deptFilterMem(req.query.department, items);
+    items = deptFilterMem(scopeDept(req.query.department, await hrScope(req)), items);
     if (req.query.q) { const q = String(req.query.q).trim().toLowerCase(); items = items.filter((x) => (x.full_name || '').toLowerCase().includes(q)); }
     const summary = items.reduce((s, x) => ({ net: s.net + x.net, paid: s.paid + x.paid, advance: s.advance + (Number(x.advance) || 0), remainder: s.remainder + x.remainder, overdue: s.overdue + (x.status === 'overdue' ? x.remainder : 0) }), { net: 0, paid: 0, advance: 0, remainder: 0, overdue: 0 });
     // Список авансов собираем ДО фильтра по статусу — иначе плитка и её разрез
@@ -1907,7 +1969,7 @@ router.get('/api/payouts-export.xlsx', async (req, res) => {
     // из вкладки (так август показывал «Выплачено 0» при реально выплаченных 12 млн).
     items = items.filter((x) => (Number(x.paid) || 0) > 0.5
       || (x.status !== 'none' && !(x.emp_status === 'fired' && x.remainder <= 0.5)));
-    items = deptFilterMem(req.query.department, items);
+    items = deptFilterMem(scopeDept(req.query.department, await hrScope(req)), items);
     if (req.query.q) { const q = String(req.query.q).trim().toLowerCase(); items = items.filter((x) => (x.full_name || '').toLowerCase().includes(q)); }
     const ST = { pending: 'Ожидает', partial: 'Частично', overdue: 'Просрочено', paid: 'Выплачено' };
     const payDates = (x) => (x.payouts || []).map((p) => p.pay_date).filter(Boolean).join(', ');
@@ -2060,11 +2122,15 @@ router.post('/api/fot-taxes', J, async (req, res) => {
 
 router.get('/api/dashboard', async (req, res) => {
   const period = /^\d{4}-\d{2}$/.test(req.query.period) ? req.query.period : new Date().toISOString().slice(0, 7);
+  // Дашборд показывает деньги — значит и его надо сузить до своих отделов.
+  const scope = await hrScope(req);
+  const p0 = [period], w0 = ["e.status <> 'archived'"];
+  if (scope) deptFilter(scopeDept('', scope), p0, w0);
   const rows = (await db.pool.query(
     `SELECT e.id AS emp_id, e.full_name, d.name AS dept, pr.*
      FROM hr_employees e LEFT JOIN hr_departments d ON d.id = e.department_id
      LEFT JOIN hr_payroll pr ON pr.employee_id = e.id AND pr.period = $1
-     WHERE e.status <> 'archived'`, [period])).rows.map(withTotals);   // как в «Зарплате»: уволенные за месяц тоже в ФОТ
+     WHERE ${w0.join(' AND ')}`, p0)).rows.map(withTotals);   // как в «Зарплате»: уволенные за месяц тоже в ФОТ
   // Выплаты из наличной кассы — тот же учёт, что в «Зарплате», иначе дашборд снова разойдётся (ТЗ п.6).
   try {
     const cs = await computeCashSalary(period);
@@ -2099,6 +2165,47 @@ router.get('/api/dashboard', async (req, res) => {
 });
 
 // ---------- Отделы ----------
+// Кто из пользователей Hub ограничен этим отделом. Пустой список — отдел
+// никого не ограничивает; человек без привязок видит Кадры целиком, как раньше.
+router.get('/api/department/:id(\\d+)/users', async (req, res) => {
+  try {
+    const all = (await db.pool.query(
+      'SELECT id, full_name FROM users WHERE is_active ORDER BY full_name')).rows;
+    const mine = (await db.pool.query(
+      'SELECT user_id FROM hr_user_departments WHERE department_id = $1', [req.params.id]))
+      .rows.map((r) => r.user_id);
+    // Показываем и другие привязки человека: иначе неясно, почему он видит
+    // ещё какой-то отдел помимо этого.
+    const other = (await db.pool.query(
+      `SELECT u.user_id, d.name FROM hr_user_departments u
+         JOIN hr_departments d ON d.id = u.department_id
+        WHERE u.department_id <> $1`, [req.params.id])).rows;
+    const byUser = {};
+    other.forEach((r) => { (byUser[r.user_id] = byUser[r.user_id] || []).push(r.name); });
+    res.json({
+      users: all.map((u) => ({ id: u.id, name: u.full_name, on: mine.includes(u.id), other: byUser[u.id] || [] })),
+    });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+router.post('/api/department/:id(\\d+)/users', J, async (req, res) => {
+  if (!req.user || !req.user.isAdmin) {
+    return res.status(403).json({ error: 'Менять доступ по отделам может только администратор' });
+  }
+  const ids = (Array.isArray((req.body || {}).user_ids) ? req.body.user_ids : [])
+    .map((x) => parseInt(x, 10)).filter(Boolean);
+  try {
+    await db.pool.query('DELETE FROM hr_user_departments WHERE department_id = $1', [req.params.id]);
+    for (const uid of ids) {
+      await db.pool.query(
+        'INSERT INTO hr_user_departments (user_id, department_id) VALUES ($1,$2) ON CONFLICT DO NOTHING',
+        [uid, req.params.id]);
+    }
+    await db.log(req.user.id, 'hr_dept_users', `отдел ${req.params.id}: ${ids.length}`);
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 router.post('/api/department', J, async (req, res) => {
   const b = req.body || {};
   const name = String(b.name || '').trim();
@@ -2672,3 +2779,5 @@ router.post('/api/employees/bulk', J, async (req, res) => {
 });
 
 module.exports = router;
+// Открыто для тестов: это правило решает, чьи зарплаты человек увидит.
+module.exports.scopeDept = scopeDept;
