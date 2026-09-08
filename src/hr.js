@@ -16,7 +16,7 @@ const numOrNull = (v) => (v === '' || v == null ? null : Number(v));
 const SCHEDULES = [
   { code: 'day5', name: '5-дневка', shift_hours: 8 },
   { code: 'day6', name: '6-дневка', shift_hours: 8 },
-  { code: 'day6h12', name: '6/1 по 12 ч', shift_hours: 12 },
+  { code: 'day6h10', name: '6/1 по 10 ч', shift_hours: 10 },
   { code: 'shift22', name: 'Смена 2/2', shift_hours: 12 },
 ];
 const SCHEDULE_CODES = SCHEDULES.map((s) => s.code);
@@ -179,6 +179,14 @@ async function ensureSchema() {
     comment TEXT DEFAULT '',
     PRIMARY KEY (period, department_id)
   )`);
+  // Смена на производстве оказалась 10-часовой, а не 12-часовой. Переносим
+  // уже проставленный график на новый код: людей и нормы не теряем.
+  await q("UPDATE hr_employees SET schedule_type='day6h10' WHERE schedule_type='day6h12'").catch(() => {});
+  await q(`UPDATE hr_norms SET schedule_type='day6h10'
+            WHERE schedule_type='day6h12'
+              AND NOT EXISTS (SELECT 1 FROM hr_norms n2
+                               WHERE n2.period = hr_norms.period AND n2.schedule_type='day6h10')`).catch(() => {});
+
   // Привязка пользователя Hub к отделам. Пока строк нет — никто не ограничен,
   // всё работает как раньше. Появилась строка — человек видит только свои отделы.
   await q(`CREATE TABLE IF NOT EXISTS hr_user_departments (
@@ -238,7 +246,7 @@ const PAYROLL_NUM = [...ACCR_ALL, ...DED, ...PAID, 'plan_days', 'fact_days', 'pl
 // (её оплачиваем в двойном размере), остальные — по дням.
 // «6/1 по 12 ч» — производство: смена длинная, переработки бывают каждую неделю,
 // а по дням переработку учесть нечем.
-const POCHASOVOY = new Set(['shift22', 'day6h12']);
+const POCHASOVOY = new Set(['shift22', 'day6h10']);
 // Авторасчёт оклада-начисления (accr_fact) ПО ФАКТУ. Нет факта → 0 (не начисляем).
 // Почасовые: оклад/план_часы × (факт_часы + переработка×2).
 // Окладники: дневная ставка × факт-дни = (оклад / план_дни) × факт_дни.
