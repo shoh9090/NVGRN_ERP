@@ -214,7 +214,6 @@ admin.post('/users/:id/roles', async (req, res) => {
 
 // Роли
 admin.get('/roles', async (req, res) => {
- try {
   const roles = await db.pool.query(
     `SELECT r.*, COALESCE(string_agg(t.title, ', ' ORDER BY t.title), '—') AS tile_names
      FROM roles r
@@ -224,79 +223,13 @@ admin.get('/roles', async (req, res) => {
   );
   const tiles = await db.pool.query('SELECT * FROM tiles ORDER BY sort_order, id');
   const roleTiles = await db.pool.query('SELECT * FROM role_tiles');
-  // Доступ по вкладкам живёт на отдельной странице (/admin/tabs). Здесь его
-  // быть не должно: выдача прав — операция, которую нельзя блокировать сбоем
-  // в соседней функции.
-  // Пустой «Internal Server Error» на странице прав — худший вид ошибки:
-  // непонятно ни что сломалось, ни можно ли работать дальше. Ошибку ловим,
-  // пишем в лог и показываем текстом.
   res.render('admin/roles', {
     ...(await adminContext('roles')),
     user: req.user,
     roles: roles.rows,
     tiles: tiles.rows,
     roleTiles: roleTiles.rows,
-  }, (err, html) => {
-    if (err) {
-      console.error('[АДМИН] роли, отрисовка:', err.stack || err.message);
-      return res.status(500).send('Не удалось показать страницу «Роли»: ' + err.message);
-    }
-    res.send(html);
   });
- } catch (e) {
-   console.error('[АДМИН] роли:', e.stack || e.message);
-   res.status(500).send('Не удалось открыть «Роли»: ' + e.message);
- }
-});
-
-// Доступ по вкладкам — отдельной страницей. Раньше он жил внутри «Ролей», и
-// сбой в нём закрывал выдачу прав целиком: страница отвечала пустой ошибкой,
-// а поменять кому-то доступ было негде.
-admin.get('/tabs', async (req, res) => {
-  try {
-    const roles = (await db.pool.query('SELECT * FROM roles ORDER BY id')).rows;
-    const roleTiles = (await db.pool.query('SELECT * FROM role_tiles')).rows;
-    const roleTabs = (await db.pool.query('SELECT * FROM role_tile_tabs')
-      .catch(() => ({ rows: [] }))).rows;
-    // Вкладки показываем только у плиток, где их проверка реально встроена.
-    const tabs = (await db.pool.query(
-      `SELECT tt.id, tt.tile_url, tt.code, tt.name, t.id AS tile_id, t.title AS tile_title
-         FROM tile_tabs tt JOIN tiles t ON t.url = tt.tile_url
-        ORDER BY t.sort_order, t.id, tt.sort, tt.id`).catch(() => ({ rows: [] }))).rows;
-    const groups = [];
-    tabs.forEach((x) => {
-      let g = groups.find((y) => y.tile_id === x.tile_id);
-      if (!g) { g = { tile_id: x.tile_id, tile_title: x.tile_title, tabs: [] }; groups.push(g); }
-      g.tabs.push({ id: x.id, name: x.name });
-    });
-    res.render('admin/tabs', {
-      ...(await adminContext('tabs')),
-      user: req.user, roles, roleTiles, roleTabs, groups,
-    }, (err, html) => {
-      if (err) {
-        console.error('[АДМИН] вкладки, отрисовка:', err.stack || err.message);
-        return res.status(500).send('Не удалось показать страницу «Вкладки»: ' + err.message);
-      }
-      res.send(html);
-    });
-  } catch (e) {
-    console.error('[АДМИН] вкладки:', e.stack || e.message);
-    res.status(500).send('Не удалось открыть «Вкладки»: ' + e.message);
-  }
-});
-
-admin.post('/tabs/:id', async (req, res) => {
-  try {
-    let tabIds = req.body.tab_ids || [];
-    if (!Array.isArray(tabIds)) tabIds = [tabIds];
-    await db.pool.query('DELETE FROM role_tile_tabs WHERE role_id = $1', [req.params.id]);
-    for (const tabId of tabIds) {
-      await db.pool.query('INSERT INTO role_tile_tabs (role_id, tab_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
-        [req.params.id, tabId]);
-    }
-    await db.log(req.user.id, 'set_role_tabs', `${req.params.id}: ${tabIds.length}`);
-  } catch (e) { console.error('[АДМИН] сохранение вкладок:', e.message); }
-  res.redirect('/admin/tabs');
 });
 
 admin.post('/roles', async (req, res) => {

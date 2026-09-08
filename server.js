@@ -355,6 +355,56 @@ admin.get('/roles', async (req, res) => {
   });
 });
 
+// Доступ по вкладкам — отдельной страницей, а не внутри «Ролей»: выдачу прав
+// нельзя блокировать сбоем в соседней функции.
+admin.get('/tabs', async (req, res) => {
+  try {
+    const roles = (await db.pool.query('SELECT * FROM roles ORDER BY id')).rows;
+    const roleTiles = (await db.pool.query('SELECT * FROM role_tiles')).rows;
+    const roleTabs = (await db.pool.query('SELECT * FROM role_tile_tabs')
+      .catch(() => ({ rows: [] }))).rows;
+    // Вкладки показываем только у плиток, где их проверка реально встроена:
+    // галочка, которая ничего не закрывает, хуже её отсутствия.
+    const tabs = (await db.pool.query(
+      `SELECT tt.id, tt.tile_url, tt.code, tt.name, t.id AS tile_id, t.title AS tile_title
+         FROM tile_tabs tt JOIN tiles t ON t.url = tt.tile_url
+        ORDER BY t.sort_order, t.id, tt.sort, tt.id`).catch(() => ({ rows: [] }))).rows;
+    const groups = [];
+    tabs.forEach((x) => {
+      let g = groups.find((y) => y.tile_id === x.tile_id);
+      if (!g) { g = { tile_id: x.tile_id, tile_title: x.tile_title, tabs: [] }; groups.push(g); }
+      g.tabs.push({ id: x.id, name: x.name });
+    });
+    res.render('admin/tabs', {
+      ...(await adminContext('tabs')),
+      user: req.user, roles, roleTiles, roleTabs, groups,
+    }, (err, html) => {
+      if (err) {
+        console.error('[АДМИН] вкладки, отрисовка:', err.stack || err.message);
+        return res.status(500).send('Не удалось показать страницу «Вкладки»: ' + err.message);
+      }
+      res.send(html);
+    });
+  } catch (e) {
+    console.error('[АДМИН] вкладки:', e.stack || e.message);
+    res.status(500).send('Не удалось открыть «Вкладки»: ' + e.message);
+  }
+});
+
+admin.post('/tabs/:id', async (req, res) => {
+  try {
+    let tabIds = req.body.tab_ids || [];
+    if (!Array.isArray(tabIds)) tabIds = [tabIds];
+    await db.pool.query('DELETE FROM role_tile_tabs WHERE role_id = $1', [req.params.id]);
+    for (const tabId of tabIds) {
+      await db.pool.query('INSERT INTO role_tile_tabs (role_id, tab_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+        [req.params.id, tabId]);
+    }
+    await db.log(req.user.id, 'set_role_tabs', `${req.params.id}: ${tabIds.length}`);
+  } catch (e) { console.error('[АДМИН] сохранение вкладок:', e.message); }
+  res.redirect('/admin/tabs');
+});
+
 admin.post('/roles', async (req, res) => {
   const { name } = req.body;
   if (name && name.trim()) {
