@@ -23,9 +23,26 @@ async function ensureWasteItem(rawId, userId) {
   return ins.rows[0].id;
 }
 
+// Какая вкладка Склада стоит за адресом — чтобы закрывать её данные на сервере.
+// null — общее для всей плитки (справочник причин, доступное сырьё).
+function stockTabOf(req) {
+  const p = req.path;
+  if (p.startsWith('/api/receipt')) return 'receiving';
+  if (p.startsWith('/api/issue')) return 'issue';
+  if (p.startsWith('/api/inventory')) return 'inventory';
+  if (p.startsWith('/api/day-summary') || p.startsWith('/api/calendar')) return 'summary';
+  return null;
+}
+router.use(require('./tab-access').requireTab(db.pool, '/stock', stockTabOf));
+
 router.get('/', async (req, res) => {
   const settings = await db.getSettings();
-  res.render('stock', { settings, user: req.user });
+  let allowedTabs = null;
+  try {
+    const a = await require('./tab-access').allowedTabs(db.pool, req.user, '/stock');
+    allowedTabs = a === null ? null : Array.from(a);
+  } catch (e) { allowedTabs = null; }
+  res.render('stock', { settings, user: req.user, allowedTabs });
 });
 
 // ===== Вкладка 1: ПРИЁМКА СЕГОДНЯ =====

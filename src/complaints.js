@@ -66,9 +66,26 @@ const STATUS = {
 };
 
 // ----- Страница -----
+// Какая вкладка Претензий стоит за адресом. Справочник — отдельная вкладка,
+// её данные нужны и списку, поэтому /api/dicts остаётся общим.
+function complaintsTabOf(req) {
+  const p = req.path;
+  if (p.startsWith('/api/stats')) return 'dash';
+  if (p.startsWith('/api/list') || p.startsWith('/api/one') || p.startsWith('/api/export')
+    || p.startsWith('/api/import')) return 'list';
+  if (p === '/api/dict' || p.startsWith('/api/dict/')) return 'settings';
+  return null;
+}
+router.use(require('./tab-access').requireTab(db.pool, '/complaints', complaintsTabOf));
+
 router.get('/', async (req, res) => {
   const settings = await db.getSettings();
-  res.render('complaints', { settings, user: req.user });
+  let allowedTabs = null;
+  try {
+    const a = await require('./tab-access').allowedTabs(db.pool, req.user, '/complaints');
+    allowedTabs = a === null ? null : Array.from(a);
+  } catch (e) { allowedTabs = null; }
+  res.render('complaints', { settings, user: req.user, allowedTabs });
 });
 
 // ----- Справочник для выпадашек/фильтров -----

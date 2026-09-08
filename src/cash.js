@@ -448,10 +448,36 @@ router.use(async (req, res, next) => {
   catch (e) { next(e); }
 });
 
+// Какая вкладка Кассы стоит за адресом — чтобы закрывать её данные на сервере,
+// а не только прятать кнопку. null — запрос общий для всей плитки (справочники,
+// курсы, закрытие периода): такие защищены своими проверками прав.
+function cashTabOf(req) {
+  const p = req.path;
+  if (p.startsWith('/api/cashbox')) return 'cashbox';
+  if (p.startsWith('/api/obligations') || p.startsWith('/api/reimbursements')) return 'obligations';
+  if (p.startsWith('/api/pnl')) return 'pnl';
+  if (p.startsWith('/api/wallet')) return 'wallets';
+  if (p.startsWith('/api/report') || p.startsWith('/api/summary')) return 'cashflow';
+  // Журнал транзакций: его же открывают импорт выписки, разбор и сверка.
+  if (p.startsWith('/api/transactions') || p.startsWith('/api/tx')
+    || p.startsWith('/api/import') || p.startsWith('/api/triage')
+    || p.startsWith('/api/pending') || p.startsWith('/api/reconcile')) return 'tx';
+  if (p.startsWith('/api/category') || p.startsWith('/api/group')
+    || p.startsWith('/api/counterpart') || p.startsWith('/api/contract')
+    || p.startsWith('/api/clients') || p.startsWith('/api/sync-clients')) return 'dicts';
+  return null;
+}
+router.use(require('./tab-access').requireTab(db.pool, '/cash', cashTabOf));
+
 // ---------- Страница ----------
 router.get('/', async (req, res) => {
   const settings = await db.getSettings();
-  res.render('cash', { settings, user: req.user });
+  let allowedTabs = null;
+  try {
+    const a = await require('./tab-access').allowedTabs(db.pool, req.user, '/cash');
+    allowedTabs = a === null ? null : Array.from(a);
+  } catch (e) { allowedTabs = null; }
+  res.render('cash', { settings, user: req.user, allowedTabs });
 });
 
 // ---------- Справочники (для SPA) ----------

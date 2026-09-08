@@ -15,10 +15,32 @@ router.use(async (req, res, next) => {
   next();
 });
 
+// Какая вкладка Закупа стоит за адресом — чтобы закрывать её данные на сервере,
+// а не только прятать кнопку. null — общее для всей плитки (справочники,
+// фильтры, курс): такие защищены своими проверками прав.
+function purchaseTabOf(req) {
+  const p = req.path;
+  if (p.startsWith('/api/orders')) return 'orders';
+  if (p.startsWith('/api/suppliers') || p.startsWith('/api/supply-advance')) return 'suppliers';
+  // Взаиморасчёты и оплаты — один экран: платежи вносят прямо в нём.
+  if (p.startsWith('/api/settlements') || p.startsWith('/api/payments')
+    || p.startsWith('/api/bank-unmatched')) return 'settlements';
+  if (p.startsWith('/api/act')) return 'act';
+  if (p.startsWith('/api/price')) return 'prices';
+  if (p.startsWith('/api/spec')) return 'specs';
+  return null;
+}
+router.use(require('./tab-access').requireTab(db.pool, '/purchase', purchaseTabOf));
+
 // ---------- Страница ----------
 router.get('/', async (req, res) => {
   const settings = await db.getSettings();
-  res.render('purchase', { settings, user: req.user });
+  let allowedTabs = null;
+  try {
+    const a = await require('./tab-access').allowedTabs(db.pool, req.user, '/purchase');
+    allowedTabs = a === null ? null : Array.from(a);
+  } catch (e) { allowedTabs = null; }
+  res.render('purchase', { settings, user: req.user, allowedTabs });
 });
 
 // ---------- Поставщики (с балансами) ----------

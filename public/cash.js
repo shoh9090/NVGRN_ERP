@@ -151,7 +151,16 @@
 
   const FLOW_LABEL = { operating: 'операционный', investing: 'инвестиции', financing: 'финансы' };
   let DICTS = null;
+  // Доступ по вкладкам: сервер прислал список разрешённых (null — все). Экран
+  // не рисует лишние кнопки; данные каждой вкладки закрыты на сервере отдельно.
+  const TABS_OK = (window.HUB_TABS === null || window.HUB_TABS === undefined)
+    ? null : new Set(window.HUB_TABS);
+  const tabOk = (id) => TABS_OK === null || TABS_OK.has(id);
+  const CASH_TAB_ORDER = ['wallets', 'cashbox', 'tx', 'cashflow', 'pnl', 'obligations', 'dicts'];
   let TAB = 'wallets';
+  // Кошельки закрыты доступом — открываемся на первой доступной вкладке,
+  // а не на пустом экране с отказом.
+  if (!tabOk(TAB)) TAB = CASH_TAB_ORDER.find(tabOk) || TAB;
   let SUB = 'categories';
   let cpView = 'main';
   let cpFilterCat = '';
@@ -161,7 +170,9 @@
 
   function shell() {
     const main = $('#cash-main'); main.innerHTML = '';
-    const tab = (id, label) => el('button', { class: 'cash-tab' + (TAB === id ? ' on' : ''), onclick: () => { TAB = id; render(); } }, label);
+    const tab = (id, label) => (tabOk(id)
+      ? el('button', { class: 'cash-tab' + (TAB === id ? ' on' : ''), onclick: () => { TAB = id; render(); } }, label)
+      : null);
     main.appendChild(el('div', { class: 'cash-tabs' }, [
       tab('cashbox', '🪙 Наличная касса'),
       tab('tx', '💸 Транзакции'),

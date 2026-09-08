@@ -144,3 +144,18 @@ test('общие адреса Кадров вкладкой не закрыва�
   assert.strictEqual(hr('/api/dicts'), null);
   assert.strictEqual(hr('/api/period-lock'), null);
 });
+
+// Плитки, где вкладки заведены и проверяются. Список держим в тесте, чтобы
+// новая плитка не появилась в настройках раньше, чем её проверка на сервере.
+const { TAB_REGISTRY } = require('../src/tab-access');
+
+test('вкладки заведены у всех плиток с вкладками', () => {
+  const expected = ['/calculation', '/cash', '/purchase', '/stock', '/complaints', '/hr'];
+  assert.deepStrictEqual(Object.keys(TAB_REGISTRY).sort(), expected.sort());
+  Object.entries(TAB_REGISTRY).forEach(([url, tabs]) => {
+    assert.ok(tabs.length >= 2, url + ': вкладок должно быть хотя бы две');
+    const codes = tabs.map((t) => t.code);
+    assert.strictEqual(new Set(codes).size, codes.length, url + ': коды вкладок повторяются');
+    tabs.forEach((t) => assert.ok(t.name && t.code, url + ': у вкладки нет кода или названия'));
+  });
+});

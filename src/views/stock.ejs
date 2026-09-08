@@ -17,11 +17,16 @@
 <body class="admin-body pur-body">
   <%- include('partials/topbar', { title: '📦 Склад сырья' }) %>
 
+  <%
+    // Доступ по вкладкам: null — все. Решает сервер, шаблон только не рисует лишнее.
+    var okTabs = (typeof allowedTabs === 'undefined' || allowedTabs === null) ? null : allowedTabs;
+    var tabOk = function (c) { return okTabs === null || okTabs.indexOf(c) >= 0; };
+  %>
   <nav class="pur-tabs">
-    <a href="#receiving" data-tab="receiving" class="pur-tab">📥 Приёмка сегодня</a>
-    <a href="#issue" data-tab="issue" class="pur-tab">📤 Остатки и передача</a>
-    <a href="#inventory" data-tab="inventory" class="pur-tab">📋 Резюме / Остатки</a>
-    <a href="#summary" data-tab="summary" class="pur-tab">📊 Итоги дня</a>
+<% if (tabOk('receiving')) { %>    <a href="#receiving" data-tab="receiving" class="pur-tab">📥 Приёмка сегодня</a><% } %>
+<% if (tabOk('issue')) { %>    <a href="#issue" data-tab="issue" class="pur-tab">📤 Остатки и передача</a><% } %>
+<% if (tabOk('inventory')) { %>    <a href="#inventory" data-tab="inventory" class="pur-tab">📋 Резюме / Остатки</a><% } %>
+<% if (tabOk('summary')) { %>    <a href="#summary" data-tab="summary" class="pur-tab">📊 Итоги дня</a><% } %>
   </nav>
 
   <main class="pur-main" id="stk-main"></main>

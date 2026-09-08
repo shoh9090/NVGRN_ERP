@@ -93,8 +93,17 @@
   function shell() {
     const main = $('#cmp-main'); main.innerHTML = '';
     const tab = (id, label) => el('button', { class: 'cmp-tab' + (TAB === id ? ' on' : ''), onclick: () => { TAB = id; render(); } }, label);
-    const tabs = [tab('dash', '📊 Дашборд'), tab('list', '📋 Список')];
-    if (canManage) tabs.push(tab('settings', '⚙️ Справочник'));
+    // Доступ по вкладкам: сервер прислал разрешённые (null — все). Экран не
+    // рисует лишние кнопки; данные каждой вкладки закрыты на сервере отдельно.
+    const okSet = (window.HUB_TABS === null || window.HUB_TABS === undefined)
+      ? null : new Set(window.HUB_TABS);
+    const tabOk = (c) => okSet === null || okSet.has(c);
+    const tabs = [
+      tabOk('dash') ? tab('dash', '📊 Дашборд') : null,
+      tabOk('list') ? tab('list', '📋 Список') : null,
+    ].filter(Boolean);
+    if (canManage && tabOk('settings')) tabs.push(tab('settings', '⚙️ Справочник'));
+    if (!tabOk(TAB)) { const first = ['dash', 'list', 'settings'].find(tabOk); if (first) TAB = first; }
     main.appendChild(el('div', { class: 'cmp-tabs' }, tabs));
     main.appendChild(el('div', { id: 'cmp-content' }));
   }
