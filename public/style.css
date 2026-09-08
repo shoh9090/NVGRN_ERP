@@ -289,3 +289,6 @@ details>summary{cursor:pointer;color:var(--forest-2);font-size:13px;font-weight:
   .topbar-back{font-size:0;padding-left:10px;padding-right:10px}
   .topbar-back::after{content:'←';font-size:15px}
 }
+/* Доступ по вкладкам — отдельная страница админки */
+.tabs-box-static{margin:0 0 14px;padding:0 0 0 14px;border-left:2px solid var(--lime-d)}
+.tabs-title{font-size:13px;font-weight:700;margin-bottom:6px}

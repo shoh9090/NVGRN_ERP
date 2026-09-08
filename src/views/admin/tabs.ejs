@@ -1,0 +1,46 @@
+<%- include('_header') %>
+
+<h2>Доступ по вкладкам</h2>
+<p class="muted">
+  Плитка открывает целый раздел, а здесь можно оставить роли только нужные вкладки внутри него.
+  Не отмечено ни одной вкладки — доступны все, как было раньше. Отметили хотя бы одну — видны только отмеченные.
+</p>
+
+<% if (!groups.length) { %>
+  <section class="card">
+    <p class="muted">Пока ни одна плитка не заведена для доступа по вкладкам. Вкладки появляются здесь только после того, как их проверка встроена на сервере — галочка, которая ничего не закрывает, хуже её отсутствия.</p>
+  </section>
+<% } else { %>
+  <% roles.forEach(function(r) { %>
+    <section class="card">
+      <h3><%= r.name %><% if (r.is_admin) { %> <span class="badge">админ — видит всё</span><% } %></h3>
+      <% if (r.is_admin) { %>
+        <p class="muted">Администратор видит все вкладки всегда — ограничить его нельзя.</p>
+      <% } else { %>
+        <form method="POST" action="/admin/tabs/<%= r.id %>">
+          <% groups.forEach(function(g) { %>
+            <% var hasTile = roleTiles.some(function(x){ return x.role_id === r.id && x.tile_id === g.tile_id; }); %>
+            <div class="tabs-box-static">
+              <div class="tabs-title">
+                <%= g.tile_title %>
+                <% if (!hasTile) { %><span class="muted"> — плитка роли не выдана, вкладки не действуют</span><% } %>
+              </div>
+              <div class="tabs-grid">
+                <% g.tabs.forEach(function(tab) { %>
+                  <% var on = roleTabs.some(function(y){ return y.role_id === r.id && y.tab_id === tab.id; }); %>
+                  <label class="check">
+                    <input type="checkbox" name="tab_ids" value="<%= tab.id %>" <%= on ? 'checked' : '' %>>
+                    <%= tab.name %>
+                  </label>
+                <% }) %>
+              </div>
+            </div>
+          <% }) %>
+          <button type="submit">Сохранить вкладки</button>
+        </form>
+      <% } %>
+    </section>
+  <% }) %>
+<% } %>
+
+<%- include('_footer') %>
