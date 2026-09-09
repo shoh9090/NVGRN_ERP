@@ -1288,12 +1288,17 @@
             el('td', {}, payIcon(p.payment_type)),
             el('td', { class: 'muted' }, (p.comment || '') + (p.currency === 'USD' && Number(p.fx_amount) > 0 ? ' · $' + fmtMoney(p.fx_amount) + ' @ ' + fmtMoney(p.fx_rate) : '')),
             el('td', { class: 'tnum', style: 'text-align:right;font-weight:700;color:#3f6a16' }, fmtMoney(p.amount)),
-            // Удалить можно только ручную оплату (не из выписки) — админ или роль «Правка заявок».
+            // Удалить можно только ручную оплату: из выписки правится в Кассе.
+            // Прав отдельных не спрашиваем — кто вносит оплаты, тот и исправляет
+            // свои ошибки. В подтверждении называем поставщика: соседнюю строку
+            // удалить слишком легко, а это деньги.
             el('td', { style: 'text-align:right;width:1%' },
-              (!p.from_statement && (HUB_USER.isAdmin || HUB_USER.buyerEdit))
+              !p.from_statement
                 ? el('a', { href: 'javascript:void(0)', title: 'Удалить оплату', style: 'color:#c0392b;font-weight:700;text-decoration:none', onclick: async (e) => {
                     e.preventDefault();
-                    if (!confirm('Удалить оплату ' + fmtMoney(p.amount) + ' сум (' + p.payment_type + ') от ' + dt(p.paid_at) + '?')) return;
+                    if (!confirm('Удалить оплату ' + fmtMoney(p.amount) + ' сум (' + p.payment_type + ') от ' + dt(p.paid_at)
+                      + '\n\nПоставщик: ' + (s.name || '—') + (p.comment ? '\nКомментарий: ' + p.comment : '')
+                      + '\n\nВзаиморасчёты пересчитаются сразу.')) return;
                     try { await api('/payments/' + p.id + '/delete', { method: 'POST' }); m.close(); openStatement(id); } catch (err) { alert(err.message); }
                   } }, '✕')
                 : ''),

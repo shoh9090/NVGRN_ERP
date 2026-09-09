@@ -469,10 +469,26 @@ router.post('/api/payments', express.json(), async (req, res) => {
 
 // Удаление ручной оплаты (ошибочная/лишняя строка — напр. наличка, которой не было).
 // Оплаты из выписки (id вида wire-…) сюда не попадают — они считаются из Кассы и правятся в Кассе.
+// Удалять оплату может тот же, кто её вносит: закупщик заносит оплаты сам и сам
+// же ошибается, а исправить не мог — вносить было можно без всяких прав, а
+// удалять только админу. Одна операция не должна жить по двум правилам.
+// Оплаты из банковской выписки сюда не попадают: у них id вида «wire-123»,
+// маршрут их просто не ловит — правятся они в Кассе.
 router.post('/api/payments/:id(\\d+)/delete', express.json(), async (req, res) => {
-  if (!canEditOrders(req)) return res.status(403).json({ error: 'Удаление оплат — только для админа или роли «Правка заявок».' });
   try {
-    const r = await db.pool.query('DELETE FROM supplier_payments WHERE id=$1 RETURNING supplier_id, amount, payment_type', [parseInt(req.params.id, 10)]);
+    const id = parseInt(req.params.id, 10);
+    // Всё, что было до старта взаиморасчётов, зашито в стартовый долг. Удаление
+    // такой оплаты тихо разъедет расчёты с поставщиком, и причину не найдёшь.
+    const cur = (await db.pool.query(
+      "SELECT to_char(paid_at,'DD.MM.YYYY') AS d FROM supplier_payments WHERE id=$1 AND paid_at < $2",
+      [id, pfin.SETTLE_START])).rows[0];
+    if (cur) {
+      return res.status(409).json({
+        error: 'Оплата от ' + cur.d + ' — раньше начала взаиморасчётов. Такие суммы уже вошли в стартовый долг, '
+          + 'удалять их нельзя: расчёты с поставщиком разъедутся. Обратитесь к администратору.',
+      });
+    }
+    const r = await db.pool.query('DELETE FROM supplier_payments WHERE id=$1 RETURNING supplier_id, amount, payment_type', [id]);
     if (!r.rows.length) return res.status(404).json({ error: 'Оплата не найдена' });
     await db.log(req.user.id, 'purchase_payment_delete', `id=${req.params.id} supplier=${r.rows[0].supplier_id} sum=${r.rows[0].amount} (${r.rows[0].payment_type})`);
     res.json({ ok: true });
