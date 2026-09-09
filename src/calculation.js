@@ -1759,6 +1759,9 @@ const xlsxSend = (res, wb, filename) => {
 };
 const rnd = (v) => (v === null || v === undefined || Number.isNaN(Number(v)) ? '' : Math.round(Number(v)));
 const pct = (v) => (v === null || v === undefined || Number.isNaN(Number(v)) ? '' : Math.round(Number(v) * 10) / 10);
+// Граммы округлять до целого нельзя: в рецептурах бывает 12,5 г, и в выгрузке
+// это должно остаться 12,5, иначе файл разойдётся с экраном.
+const gramm = (v) => (v === null || v === undefined || Number.isNaN(Number(v)) ? '' : Math.round(Number(v) * 100) / 100);
 const dateRu = (v) => { try { return v ? new Date(v).toLocaleDateString('ru-RU') : ''; } catch (e) { return ''; } };
 
 // Данные листа: текущий расчёт или последний утверждённый снимок.
@@ -1837,7 +1840,7 @@ router.get('/api/sheet/:sheet/export.xlsx', async (req, res) => {
     const aoa = [
       ['Лист', SHEETS[sheet], ...P.map((p) => p.name || '')],
       ['Штрихкод', '', ...P.map((p) => p.barcode || '')],
-      line('Граммаж', 'гр', (p) => rnd(p.net_weight_g)),
+      line('Граммаж', 'гр', (p) => gramm(p.net_weight_g)),
       line('Рецептура', '', (p) => p.recipe_name || ''),
       line('Наименование сырья', '', (p) => (p.recipe_id ? 'по рецептуре' : (p.raw_material_name || ''))),
       line('Стоимость зелени', 'сум/кг', (p) => rnd(p.recipe_id ? p.recipe_price_per_kg : p.raw_price_per_kg)),

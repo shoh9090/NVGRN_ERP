@@ -24,6 +24,15 @@
   const money = (v, dec = 2) => (v === null || v === undefined || Number.isNaN(Number(v)))
     ? '' : Number(v).toLocaleString('ru-RU', { minimumFractionDigits: dec, maximumFractionDigits: dec });
   const money0 = (v) => (v === null || v === undefined ? '' : Math.round(Number(v)).toLocaleString('ru-RU'));
+  // Граммы: показываем столько знаков после запятой, сколько вписали (до двух).
+  // Округление до целого врало: вписали 12,5 — на экране стояло 13, хотя
+  // считалось по 12,5. Целое так и остаётся целым, без «12,00».
+  const numAuto = (v, max = 2) => {
+    if (v === null || v === undefined || v === '' || Number.isNaN(Number(v))) return '';
+    const n = Math.round(Number(v) * Math.pow(10, max)) / Math.pow(10, max);
+    const dec = Math.min(max, (String(n).split('.')[1] || '').length);
+    return n.toLocaleString('ru-RU', { minimumFractionDigits: dec, maximumFractionDigits: dec });
+  };
 
   const api = async (path, opts) => {
     const r = await fetch('/calculation/api' + path, opts);
@@ -127,14 +136,18 @@
   // ---------------------------------------------------------------------------
   // Ячейка с суммой: правится на месте, сохраняется при уходе из поля
   // ---------------------------------------------------------------------------
+  // Как показать значение в ячейке: 'auto' — граммы (дробная часть как вписали),
+  // 0 — целые суммы, иначе две цифры после запятой.
+  const fmtCell = (v, opts) => (opts.dec === 'auto' ? numAuto(v) : (opts.dec === 0 ? money0(v) : money(v)));
+
   function cell(value, onSave, opts = {}) {
     if (!canEdit() || !onSave) {
-      return el('div', { class: 'calc-cell calc-ro' + (opts.cls ? ' ' + opts.cls : '') },
-        opts.dec === 0 ? money0(value) : money(value));
+      return el('div', { class: 'calc-cell calc-ro' + (opts.cls ? ' ' + opts.cls : '') }, fmtCell(value, opts));
     }
     const inp = el('input', {
-      type: 'text', inputmode: 'numeric', class: 'calc-cell' + (opts.cls ? ' ' + opts.cls : ''),
-      value: opts.dec === 0 ? money0(value) : money(value),
+      type: 'text', inputmode: opts.dec === 'auto' ? 'decimal' : 'numeric',
+      class: 'calc-cell' + (opts.cls ? ' ' + opts.cls : ''),
+      value: fmtCell(value, opts),
       placeholder: opts.placeholder || '',
     });
     const clean = () => {
@@ -149,7 +162,7 @@
     inp.addEventListener('blur', async () => {
       const v = clean();
       const was = value === null || value === undefined ? null : Number(value);
-      inp.value = v === null ? '' : (opts.dec === 0 ? money0(v) : money(v));
+      inp.value = v === null ? '' : fmtCell(v, opts);
       if (v === was) return;
       try { await onSave(v); await load(); } catch (e) { toast(e.message, true); }
     });
@@ -941,7 +954,7 @@
       });
       return el('div', { class: 'calc-rcp-line' }, [
         canEdit() ? sel : el('div', { class: 'calc-tpl-nm' }, line.raw_material_name || '—'),
-        cell(line.qty_g, (v) => post('/recipes/line/' + line.id, { qty_g: v }), { dec: 0, placeholder: 'гр' }),
+        cell(line.qty_g, (v) => post('/recipes/line/' + line.id, { qty_g: v }), { dec: 'auto', placeholder: 'гр' }),
         el('div', { class: 'calc-tpl-cost calc-dim' }, line.pct === null ? '—' : money(line.pct, 0) + '%'),
         el('div', { class: 'calc-tpl-cost' + (line.price_stale ? ' calc-price-stale' : '') }, line.price_per_kg === null
           ? el('span', { class: 'calc-warn-mini' }, 'нет цены')
@@ -1010,7 +1023,7 @@
         catch (e) { toast(e.message, true); }
       } }, '+ сырьё') : null,
       el('div', { class: 'calc-tpl-total' }, [
-        el('span', {}, 'Зелень на упаковку · ' + money(r.total_g, 0) + ' гр'),
+        el('span', {}, 'Зелень на упаковку · ' + numAuto(r.total_g) + ' гр'),
         el('b', {}, money(r.total)),
       ]),
       r.missing_prices
@@ -1022,7 +1035,7 @@
   function confirmRemoveRecipe(r) {
     const body = el('div', {}, [
       el('div', { class: 'calc-modal-facts' }, r.items.length
-        ? (money(r.total_g, 0) + ' гр · компонентов: ' + r.items.length + ' · ' + money(r.total) + ' сум')
+        ? (numAuto(r.total_g) + ' гр · компонентов: ' + r.items.length + ' · ' + money(r.total) + ' сум')
         : 'состав пустой'),
       el('p', { class: 'calc-modal-note' },
         'Рецептура уходит в архив. Если она стоит у какого-то товара, система не даст её убрать — сначала смените рецептуру там.'),
@@ -1130,7 +1143,7 @@
   const num = (v, dec) => (v === null || v === undefined ? '?' : money(v, dec === undefined ? 2 : dec));
   const CELL_HINTS = {
     'зелень в упаковке': (x) => (x.net_weight_g && x.raw_price_per_kg
-      ? num(x.net_weight_g, 0) + ' г ÷ 1000 × ' + num(x.raw_price_per_kg, 0) + ' = ' + num(x.calc.components.raw)
+      ? numAuto(x.net_weight_g) + ' г ÷ 1000 × ' + num(x.raw_price_per_kg, 0) + ' = ' + num(x.calc.components.raw)
       : 'Укажите граммаж и стоимость зелени'),
     'Стоимость зелени': (x) => (x.raw_price_source === 'purchase'
       ? 'Последняя принятая цена в Закупе' + (x.raw_price_at ? ' от ' + x.raw_price_at : '')
@@ -1320,10 +1333,10 @@
 
     // --- Строки идут ровно в том же порядке, что на листе «0000_розница» ---
     rows.push(skuRow('Граммаж', 'гр', (x) => el('div', {}, [
-      cell(x.net_weight_g, (v) => save(x.id, { net_weight_g: v }), { dec: 0, placeholder: 'гр' }),
+      cell(x.net_weight_g, (v) => save(x.id, { net_weight_g: v }), { dec: 'auto', placeholder: 'гр' }),
       // Сверка с рецептурой: расхождение почти всегда означает опечатку в граммах.
       (x.recipe_id && x.net_weight_g && x.recipe_total_g && Math.abs(x.recipe_total_g - x.net_weight_g) > 1)
-        ? el('div', { class: 'calc-warn-mini' }, 'рецептура даёт ' + money(x.recipe_total_g, 0) + ' гр')
+        ? el('div', { class: 'calc-warn-mini' }, 'рецептура даёт ' + numAuto(x.recipe_total_g) + ' гр')
         : null,
     ]), null, allRowBtn('net_weight_g', 'Граммаж всем товарам листа', () => numCtl('гр'), readNum)));
 
@@ -1352,7 +1365,7 @@
       if (x.recipe_id) {
         return el('div', {}, [
           el('div', {}, x.recipe_name || 'рецептура'),
-          el('div', { class: 'calc-src-mini' }, 'микс' + (x.recipe_total_g ? ' · ' + money(x.recipe_total_g, 0) + ' гр' : '')),
+          el('div', { class: 'calc-src-mini' }, 'микс' + (x.recipe_total_g ? ' · ' + numAuto(x.recipe_total_g) + ' гр' : '')),
         ]);
       }
       if (!canEdit()) return el('span', {}, x.raw_material_name || '—');
@@ -1381,7 +1394,7 @@
         return el('div', {}, [
           el('div', {}, money0(x.recipe_price_per_kg)),
           el('div', { class: 'calc-src-mini' },
-            'по рецептуре · ' + money0(x.calc.components.raw) + ' за ' + money(x.recipe_total_g, 0) + ' гр'),
+            'по рецептуре · ' + money0(x.calc.components.raw) + ' за ' + numAuto(x.recipe_total_g) + ' гр'),
         ]);
       }
       if (x.raw_price_source === 'purchase') {
@@ -1777,7 +1790,7 @@
     }
     const sel = el('select', { class: 'calc-modal-inp' },
       [el('option', { value: '' }, '— выберите рецептуру —')]
-        .concat(list.map((r) => el('option', { value: String(r.id) }, r.name + ' · ' + money(r.total_g, 0) + ' гр'))));
+        .concat(list.map((r) => el('option', { value: String(r.id) }, r.name + ' · ' + numAuto(r.total_g) + ' гр'))));
     const body = el('div', {}, [
       el('div', { class: 'calc-modal-facts' }, x.name),
       el('p', { class: 'calc-modal-note' },
@@ -1799,7 +1812,7 @@
   // теряем: по названию легко перепутать соседние столбцы, по цифрам — нет.
   function confirmRemoveProduct(x, d) {
     const facts = [];
-    if (x.net_weight_g) facts.push('граммаж ' + money0(x.net_weight_g) + ' гр');
+    if (x.net_weight_g) facts.push('граммаж ' + numAuto(x.net_weight_g) + ' гр');
     if (x.raw_material_name) facts.push('сырьё «' + x.raw_material_name + '»');
     if (x.pack_template_name) facts.push('упаковка «' + x.pack_template_name + '»');
     if (x.price) facts.push('прайс 1 — ' + money0(x.price));
