@@ -1769,7 +1769,11 @@ router.post('/api/salary/cash-hide', J, async (req, res) => {
 // Авансы тоже здесь: их выдают сразу многим и обычно одинаковой суммой,
 // а до этого приходилось открывать карточку каждого сотрудника.
 const MASS_FIELDS = new Set(['accr_bonus', 'accr_premium', 'accr_gsm', 'accr_company_debt', 'accr_other', ...ACCR_EXTRA,
-  'ded_fine', 'ded_hold', 'ded_advance_cash', 'ded_advance_card']);
+  'ded_fine', 'ded_hold', 'ded_advance_cash', 'ded_advance_card',
+  // Выплата на карту — чтобы можно было массово поправить или обнулить месяц,
+  // если ведомость разнесли не туда. Наличные сюда не кладём: они приходят
+  // из Кассы производно, и ручная цифра поверх них разошлась бы с кассой.
+  'paid_card']);
 router.post('/api/mass-op', J, async (req, res) => {
   const period = /^\d{4}-\d{2}$/.test(req.body.period) ? req.body.period : null;
   const field = req.body.field;
@@ -2458,7 +2462,17 @@ router.post('/api/cards/statement-import', upload.single('file'), async (req, re
       finally { client.release(); }
       await db.log(req.user.id, 'hr_card_statement', `${period} ${mode}: ${matched.length} на ${Math.round(total)}`);
     }
-    res.json({ ok: true, dry, mode, period, matched, unmatched, total, count: list.length });
+    // Что уже стоит за выбранным месяцем. Импорт ПЕРЕЗАПИСЫВАЕТ суммы, поэтому
+    // промах месяцем не добавляет лишнего, а затирает — и это надо видеть ДО
+    // применения, а не после.
+    const had = (await db.pool.query(
+      `SELECT COUNT(*)::int AS people, COALESCE(SUM(${field}), 0) AS sum
+         FROM hr_payroll WHERE period = $1 AND COALESCE(${field}, 0) <> 0`, [period])).rows[0];
+
+    res.json({
+      ok: true, dry, mode, period, matched, unmatched, total, count: list.length,
+      existing: { people: Number(had.people) || 0, sum: Number(had.sum) || 0 },
+    });
   } catch (e) { res.status(400).json({ error: 'Не удалось прочитать файл: ' + e.message }); }
 });
 

@@ -946,8 +946,14 @@
 
   // Импорт банковской ведомости по карте (ASIA ALLIANCE и т.п.): суммы садятся в «Выплачено/Аванс на карту».
   // Сопоставление по номеру карты — сначала загрузи номера карт сотрудников (кнопка «Карты (Excel)»).
-  function openCardStatementImport(period) {
+  // Импорт ведомости по картам. Месяц — ОТДЕЛЬНОЕ поле, а не то, что стоит в
+  // фильтре экрана: раньше он подставлялся молча, и августовская ведомость
+  // тихо садилась в сентябрь, затирая тамошние суммы.
+  function openCardStatementImport(defPeriod) {
     let mode = 'payout';
+    let period = defPeriod;
+    const monthInp = el('input', { type: 'month', class: 'hrf-inp', value: defPeriod,
+      onchange: (e) => { period = e.target.value || defPeriod; result.innerHTML = ''; } });
     const file = el('input', { type: 'file', accept: '.xls,.xlsx', class: 'hrf-inp' });
     const radio = (val, label) => { const r = el('input', { type: 'radio', name: 'cardmode', value: val }); if (val === mode) r.checked = true; r.onchange = () => { mode = val; }; return el('label', { style: 'display:inline-flex;gap:6px;align-items:center;margin-right:16px;cursor:pointer' }, [r, label]); };
     const result = el('div', {});
@@ -965,24 +971,42 @@
         el('tbody', {}, arr.map((x) => el('tr', { class: cls || '' }, [el('td', {}, (x.name || x.fio || '') + ' · ' + x.card), el('td', { class: 'tnum', style: 'text-align:right;font-weight:700' }, money(x.amount))]))),
       ]));
       result.appendChild(el('div', { class: 'hr-note', style: 'margin-top:8px' }, 'Найдено строк: ' + d.count + ' · совпало по карте: ' + d.matched.length + (d.unmatched.length ? ' · не найдено: ' + d.unmatched.length : '') + ' · сумма: ' + money(d.total)));
+      // Импорт перезаписывает суммы за месяц. Если там уже что-то есть —
+      // говорим об этом до нажатия «Применить», а не после.
+      if (d.existing && d.existing.people) {
+        result.appendChild(el('div', { class: 'hr-ts-sub', style: 'margin-top:8px' },
+          '⚠ За ' + monthLabel(d.period) + ' уже разнесено: ' + money(d.existing.sum)
+          + ' по ' + d.existing.people + ' сотрудн. Эти суммы будут перезаписаны. Тот ли это месяц?'));
+      }
       if (d.matched.length) result.appendChild(el('details', { open: true }, [el('summary', {}, 'Сядет в «' + (mode === 'advance' ? 'Аванс' : 'Выплачено') + ' на карту» (' + d.matched.length + ')'), rows(d.matched)]));
       if (d.unmatched.length) result.appendChild(el('details', {}, [el('summary', {}, '⚠ Не нашли по номеру карты (' + d.unmatched.length + ') — проставь им карту в «Карты (Excel)»'), rows(d.unmatched, 'imp-err')]));
     };
     const preview = el('button', { class: 'btn-ghost', onclick: async () => { try { const d = await send(true); if (d) showPreview(d); } catch (e) { toast(e.message, true); } } }, 'Проверить');
     const apply = el('button', { class: 'btn-primary', onclick: async () => {
+      // Месяц называем словами и переспрашиваем: ошибка тут не добавляет
+      // лишнего, а затирает суммы чужого месяца.
+      const chk = await send(true).catch((e) => { toast(e.message, true); return null; });
+      if (!chk) return;
+      const was = (chk.existing && chk.existing.people)
+        ? '\n\nЗа этот месяц уже разнесено ' + money(chk.existing.sum) + ' по ' + chk.existing.people
+          + ' сотрудн. — эти суммы будут перезаписаны.' : '';
+      if (!confirm('Разнести ' + money(chk.total) + ' как «'
+        + (mode === 'advance' ? 'Аванс на карту' : 'Выплату на карту') + '»\nза ' + monthLabel(period).toUpperCase()
+        + '?\n\nСовпало по карте: ' + chk.matched.length + ' сотрудн.' + was)) return;
       apply.disabled = true; apply.textContent = 'Загружаю…';
-      try { const d = await send(false); if (d) { toast('Разнесено на карту: ' + d.matched.length + ' на ' + money(d.total)); closeModal(); renderSalary(); } }
+      try { const d = await send(false); if (d) { toast('Разнесено на карту за ' + monthLabel(d.period) + ': ' + d.matched.length + ' на ' + money(d.total)); closeModal(); renderSalary(); } }
       catch (e) { toast(e.message, true); }
       apply.disabled = false; apply.textContent = 'Применить';
     } }, 'Применить');
     const body = el('div', { class: 'hrf' }, [
-      el('div', { class: 'hr-sub' }, 'Загрузка банковской ведомости по карте за ' + monthLabel(period) + '. Сопоставляем по номеру карты (у сотрудников должны быть проставлены карты). Перезаписывает сумму за месяц.'),
+      el('div', { class: 'hr-sub' }, 'Сопоставляем по номеру карты (у сотрудников должны быть проставлены карты). Суммы за выбранный месяц перезаписываются.'),
+      frow('За какой месяц', monthInp),
       el('div', {}, [radio('payout', 'Выплата на карту'), radio('advance', 'Аванс на карту')]),
       frow('Файл', file),
       el('div', { style: 'margin-top:4px' }, preview),
       result,
     ]);
-    modal('🏦 Импорт ведомости на карту — ' + monthLabel(period), body, [apply]);
+    modal('🏦 Импорт ведомости на карту', body, [apply]);
   }
 
   // Загрузка табеля из Excel за период (табель начальника производства).
@@ -1642,7 +1666,8 @@
   // Операции для вкладки «Массовые операции» (поле payroll → подпись).
   const MASS_OPS = [['accr_bonus', 'Бонусы KPI'], ['accr_premium', 'Премия'], ['accr_gsm', 'ГСМ / компенсации'], ['accr_sick', 'Больничные'], ['accr_vacation', 'Отпускные'], ['accr_mataid', 'Матпомощь'], ['accr_comp_vac', 'Компенсация за неисп. отпуск'], ['accr_company_debt', 'Долг компании'], ['accr_other', 'Другое начисление'],
     ['ded_fine', 'Штрафы'], ['ded_hold', 'Удержания'],
-    ['ded_advance_cash', 'Аванс наличными'], ['ded_advance_card', 'Аванс на карту']];
+    ['ded_advance_cash', 'Аванс наличными'], ['ded_advance_card', 'Аванс на карту'],
+    ['paid_card', 'Выплата на карту']];
   const DED_FIELDS = [['ded_fine', 'Штраф за опоздание'], ['ded_advance_card', 'Аванс на карту'], ['ded_advance_cash', 'Аванс наличными'], ['ded_hold', 'Удержание'], ['accr_company_debt', 'Долг компании'], ['ded_emp_debt', 'Долг сотрудника'], ['ded_other', 'Другое удержание']];
   const PAID_FIELDS = [['paid_cash', 'Выплачено наличными'], ['paid_card', 'Выплачено на карту']];
   const salState = { period: '', department: '', schedule: '', status: '', q: '' };
@@ -2270,11 +2295,12 @@
       // Удержания и авансы «начислить» нельзя — они уменьшают выплату, поэтому
       // подписи у них свои.
       const isDed = field.indexOf('ded_') === 0;
-      const actWord = isDed ? 'Внести' : 'Начислить';
+      const isPaid = field.indexOf('paid_') === 0;
+      const actWord = isPaid ? 'Проставить' : (isDed ? 'Внести' : 'Начислить');
       const fillBtn = el('button', { class: 'btn-ghost', onclick: () => { if (fillAll.value === '') return; rowsModel.forEach((m) => { if (m.amountInp) m.amountInp.value = fillAll.value; }); toast('Проставлено всем — не забудьте «' + actWord + '»'); } }, 'Заполнить всем');
       const applyBtn = el('button', { class: 'btn-primary', onclick: apply }, '⚡ ' + actWord);
       box.appendChild(el('div', { class: 'hr-filters', style: 'justify-content:flex-end' }, [el('span', { class: 'hr-flab' }, 'Сумма всем:'), fillAll, fillBtn, applyBtn]));
-      const head = el('div', { class: 'hr-row head hr-mass' }, ['#', 'ФИО', 'Отдел', 'Оклад', 'Текущее «' + opLabel + '»', isDed ? 'Сумма' : 'Сумма к начислению'].map((h) => el('span', {}, h)));
+      const head = el('div', { class: 'hr-row head hr-mass' }, ['#', 'ФИО', 'Отдел', 'Оклад', 'Текущее «' + opLabel + '»', (isDed || isPaid) ? 'Сумма' : 'Сумма к начислению'].map((h) => el('span', {}, h)));
       box.appendChild(el('div', { class: 'hr-list' }, [head, ...d.items.map((r, i) => {
         const m = rowsModel[i];
         const inpAmt = el('input', { class: 'hrf-inp hr-mass-inp', type: 'number', step: '1', placeholder: '0' });
