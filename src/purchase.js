@@ -23,14 +23,27 @@ function purchaseTabOf(req) {
   if (p.startsWith('/api/orders')) return 'orders';
   if (p.startsWith('/api/suppliers') || p.startsWith('/api/supply-advance')) return 'suppliers';
   // Взаиморасчёты и оплаты — один экран: платежи вносят прямо в нём.
-  if (p.startsWith('/api/settlements') || p.startsWith('/api/payments')
-    || p.startsWith('/api/bank-unmatched')) return 'settlements';
+  if (p.startsWith('/api/settlements') || p.startsWith('/api/payments')) return 'settlements';
   if (p.startsWith('/api/act')) return 'act';
   if (p.startsWith('/api/price')) return 'prices';
   if (p.startsWith('/api/spec')) return 'specs';
   return null;
 }
 router.use(require('./tab-access').requireTab(db.pool, '/purchase', purchaseTabOf));
+
+// Разовый перенос перечислений из выписки в реестр оплат. Делаем при первом
+// заходе в Закуп, а не при старте приложения: таблицы Кассы создаются своим
+// модулем, и на старте их может ещё не быть. Внутри двойная защита от повтора,
+// поэтому лишний раз ничего не создастся.
+let wireTransferChecked = false;
+router.use(async (req, res, next) => {
+  if (!wireTransferChecked) {
+    wireTransferChecked = true;
+    try { await pfin.transferWirePayments(); }
+    catch (e) { console.error('[ЗАКУП] перенос перечислений:', e.message); wireTransferChecked = false; }
+  }
+  next();
+});
 
 // ---------- Страница ----------
 router.get('/', async (req, res) => {
@@ -145,52 +158,8 @@ router.post('/api/suppliers/:id(\\d+)/bank-keys/:kid(\\d+)/delete', async (req, 
   res.json({ ok: true });
 });
 
-// Список банковских расходов, которые не привязались ни к одному поставщику.
-router.get('/api/bank-unmatched', async (req, res) => {
-  try {
-    const { unmatched } = await pfin.bankOutPayments();
-    const q = String(req.query.q || '').trim().toLowerCase();
-    let items = unmatched.filter((x) => SUPPLIER_CATS.includes(x.cat_code));
-    if (q) items = items.filter((x) => (x.purpose + ' ' + x.payer_name + ' ' + x.payer_inn).toLowerCase().includes(q));
-    items.sort((a, b) => String(b.paid_at).localeCompare(String(a.paid_at)));
-    const total = items.reduce((s, x) => s + x.amount, 0);
-    res.json({ items: items.slice(0, 300), count: items.length, total });
-  } catch (e) { res.status(400).json({ error: e.message }); }
-});
-
-// Привязать конкретную оплату к поставщику. remember: inn | name | tx (что запомнить на будущее).
-router.post('/api/bank-unmatched/bind', express.json(), async (req, res) => {
-  const txId = parseInt(req.body.tx_id, 10);
-  const supId = parseInt(req.body.supplier_id, 10);
-  if (!txId || !supId) return res.status(400).json({ error: 'Укажите оплату и поставщика' });
-  const t = (await db.pool.query('SELECT payer_inn, payer_name FROM cash_transactions WHERE id=$1', [txId])).rows[0];
-  if (!t) return res.status(404).json({ error: 'Оплата не найдена' });
-  const inn = String(t.payer_inn || '').trim(), nm = String(t.payer_name || '').trim();
-  let type = req.body.remember, value = '';
-  if (type === 'inn' && inn) value = inn;
-  else if (type === 'name' && nm) value = nm;
-  else { type = 'tx'; value = String(txId); }   // ключа нет — привязываем только эту оплату
-  try {
-    const ex = (await db.pool.query(
-      'SELECT id, supplier_id FROM supplier_bank_keys WHERE key_type=$1 AND lower(btrim(key_value))=lower(btrim($2)) LIMIT 1',
-      [type, value])).rows[0];
-    if (ex && ex.supplier_id !== supId) {
-      // Привязку одной оплаты (tx) переносим на нового поставщика — это исправление ошибки.
-      // Реквизит (ИНН/имя) переносить молча нельзя: он утянет за собой все прошлые оплаты.
-      if (type === 'tx') await db.pool.query('UPDATE supplier_bank_keys SET supplier_id=$1 WHERE id=$2', [supId, ex.id]);
-      else {
-        const own = await db.pool.query('SELECT name FROM ref_counterparties WHERE id=$1', [ex.supplier_id]);
-        return res.status(409).json({ error: `Реквизит «${value}» уже привязан к поставщику «${own.rows[0] ? own.rows[0].name : '—'}». Уберите его там или привяжите только эту оплату.` });
-      }
-    } else if (!ex) {
-      await db.pool.query(
-        'INSERT INTO supplier_bank_keys (supplier_id, key_type, key_value, comment, created_by) VALUES ($1,$2,$3,$4,$5)',
-        [supId, type, value, 'Привязано из «неразобранных»', req.user.id]);
-    }
-    await db.log(req.user.id, 'bank_unmatched_bind', `tx=${txId} sup=${supId} ${type}=${value}`);
-    res.json({ ok: true, remembered: type });
-  } catch (e) { res.status(400).json({ error: e.message }); }
-});
+// Маршруты «неразобранных оплат» удалены: перечисления больше не подтягиваются
+// из выписки, привязывать банковские платежи к поставщикам не нужно.
 
 // Удаление поставщика (чистка ошибочно созданных карточек, напр. из неудачного импорта).
 // Разрешаем только если у поставщика НЕТ заявок и НЕТ оплат — иначе можно потерять историю.
@@ -271,7 +240,7 @@ router.get('/api/suppliers/:id(\\d+)/statement', async (req, res) => {
   );
   if (!sup.rows.length) return res.status(404).json({ error: 'Поставщик не найден' });
   const ordersRaw = await db.pool.query(
-    `SELECT po.id, po.number, po.status, po.received_at, po.payment_type, po.pay_condition, po.defer_days,
+    `SELECT po.id, po.supplier_id, po.number, po.status, po.received_at, po.payment_type, po.pay_condition, po.defer_days,
             po.delivery_date, po.comment,
             SUM(COALESCE(i.fact_qty, 0) * i.price) AS total,
             COALESCE((SELECT SUM(amount) FROM supplier_payments sp WHERE sp.order_id = po.id), 0) AS paid
@@ -282,7 +251,9 @@ router.get('/api/suppliers/:id(\\d+)/statement', async (req, res) => {
      GROUP BY po.id ORDER BY po.received_at DESC`,
     [req.params.id]
   );
-  const orders = { rows: ordersRaw.rows.map(enrichOrderFinance) };
+  // Нераспределённые оплаты (авторазнос и аванс) разносим по заявкам расчётом:
+  // сама оплата хранится одним фактом и в акте видна одной строкой.
+  const orders = { rows: (await pfin.withAllocatedPaid(ordersRaw.rows)).map(enrichOrderFinance) };
   const items = await db.pool.query(
     `SELECT i.order_id, i.item_kind, i.item_id, COALESCE(i.fact_qty, 0) AS qty, i.price AS price,
             COALESCE(rm.name, pk.name) AS item_name, COALESCE(rm.code, pk.code) AS item_code,
@@ -301,25 +272,22 @@ router.get('/api/suppliers/:id(\\d+)/statement', async (req, res) => {
      WHERE supplier_id = $1 AND paid_at >= '${pfin.SETTLE_START}' ORDER BY paid_at DESC, id DESC`,
     [req.params.id]
   );
-  // Перечисления из банковской выписки (Касса) по ИНН — read-only строки «из выписки» (Часть 2).
-  const sid = parseInt(req.params.id, 10);
-  const wire = (await pfin.wireSupplierPayments()).filter((w) => w.supplier_id === sid)
-    .map((w) => ({ id: 'wire-' + w.id, amount: w.amount, payment_type: 'перечисление', paid_at: w.paid_at, comment: (w.purpose || 'Перечисление') + ' · из выписки', from_statement: true }));
-  const allPayments = payments.rows.concat(wire).sort((a, b) => String(b.paid_at).localeCompare(String(a.paid_at)));
-  res.json({ supplier: sup.rows[0], orders: orders.rows, items: items.rows, payments: allPayments });
+  // Строк «из выписки» больше нет: перечисления ведёт закупщик сам, наравне
+  // с наличными, и все оплаты лежат в одном реестре.
+  res.json({ supplier: sup.rows[0], orders: orders.rows, items: items.rows, payments: payments.rows });
 });
 
 // Открытые (принятые, с остатком) заявки поставщика — для оплаты по заявке и FIFO.
 // Порядок: сначала с самым ранним сроком оплаты (просроченные естественно первыми).
 async function supplierOpenOrders(supplierId) {
   const r = await db.pool.query(
-    `SELECT po.id, po.number, po.status, po.pay_condition, po.defer_days, po.delivery_date, po.received_at,
+    `SELECT po.id, po.supplier_id, po.number, po.status, po.pay_condition, po.defer_days, po.delivery_date, po.received_at,
             COALESCE(SUM(COALESCE(i.fact_qty, 0) * i.price), 0) AS total,
             COALESCE((SELECT SUM(amount) FROM supplier_payments sp WHERE sp.order_id = po.id), 0) AS paid
      FROM purchase_orders po LEFT JOIN purchase_order_items i ON i.order_id = po.id
      WHERE po.supplier_id = $1 AND po.status = 'received'
      GROUP BY po.id`, [supplierId]);
-  return r.rows.map(enrichOrderFinance).filter((o) => o.remainder > 0.01)
+  return (await pfin.withAllocatedPaid(r.rows)).map(enrichOrderFinance).filter((o) => o.remainder > 0.01)
     .sort((a, b) => String(a.due_date || '9999').localeCompare(String(b.due_date || '9999')) || a.id - b.id);
 }
 
@@ -361,17 +329,18 @@ router.get('/api/act', async (req, res) => {
          FROM purchase_orders po JOIN purchase_order_items i ON i.order_id=po.id
         WHERE po.supplier_id=$1 AND po.status='received'${dc}
         GROUP BY po.id ORDER BY d`, po)).rows;
-    // Оплаты: ручные (наличные) + перечисления из выписки (по ИНН).
+    // Оплаты: только реестр Закупа. Перечисления из выписки больше не
+    // подмешиваются — их ведёт закупщик сам, как и наличные.
     const pp = [sid]; let pc = '';
     if (from) { pp.push(from); pc += ` AND paid_at >= $${pp.length}`; }
     if (to) { pp.push(to); pc += ` AND paid_at <= $${pp.length}`; }
     const manual = (await db.pool.query(
-      `SELECT to_char(paid_at,'YYYY-MM-DD') AS d, amount, comment FROM supplier_payments WHERE supplier_id=$1${pc} ORDER BY paid_at`, pp)).rows;
-    const wire = (await pfin.wireSupplierPayments()).filter((w) => w.supplier_id === sid && (!from || w.paid_at >= from) && (!to || w.paid_at <= to));
+      `SELECT to_char(paid_at,'YYYY-MM-DD') AS d, amount, comment, payment_type FROM supplier_payments WHERE supplier_id=$1${pc} ORDER BY paid_at`, pp)).rows;
     const rows = [];
     orders.forEach((o) => rows.push({ date: o.d, doc: 'Поставка' + (o.number ? ' · ' + o.number : ''), delivery: Number(o.val) || 0, payment: 0 }));
-    manual.forEach((x) => rows.push({ date: x.d, doc: 'Оплата' + (x.comment ? ' · ' + x.comment : ''), delivery: 0, payment: Number(x.amount) || 0 }));
-    wire.forEach((x) => rows.push({ date: x.paid_at, doc: 'Оплата (перечисление)' + (x.purpose ? ' · ' + x.purpose : ''), delivery: 0, payment: Number(x.amount) || 0 }));
+    manual.forEach((x) => rows.push({ date: x.d,
+      doc: 'Оплата (' + (x.payment_type || 'наличка') + ')' + (x.comment ? ' · ' + x.comment : ''),
+      delivery: 0, payment: Number(x.amount) || 0 }));
     rows.sort((a, b2) => String(a.date).localeCompare(String(b2.date)));
     res.json({ supplier: sup, from, to, opening, delivered, paid, closing, rows, today: new Date().toISOString().slice(0, 10) });
   } catch (e) { res.status(400).json({ error: e.message }); }
@@ -450,14 +419,11 @@ router.post('/api/payments', express.json(), async (req, res) => {
       if (!ok.rows.length) return res.status(400).json({ error: 'Заявка не найдена или ещё не принята' });
       await insertPay(amount, orderId); mode = 'order';
     } else if (req.body.distribute === 'fifo') {
-      const open = await supplierOpenOrders(supplierId);
-      let rest = amount;
-      for (const o of open) {
-        if (rest <= 0.01) break;
-        const pay = Math.min(rest, o.remainder);
-        await insertPay(pay, o.id); rest -= pay;
-      }
-      if (rest > 0.01) await insertPay(rest, null); // нераспределённый остаток — аванс
+      // Одна оплата — ОДНА запись. Раньше авторазнос дробил её по заявкам, и в
+      // акте сверки платёж на 10 млн превращался в три-четыре строки — сверить
+      // его с платёжкой было невозможно. Теперь разнесение по заявкам считается
+      // на лету (withAllocatedPaid), а реестр хранит факт как он есть.
+      await insertPay(amount, null);
       mode = 'fifo';
     } else {
       await insertPay(amount, null); // аванс поставщику
@@ -1135,7 +1101,7 @@ router.get('/api/orders', async (req, res) => {
   }
 
   const r = await db.pool.query(
-    `SELECT po.id, po.number, po.status, po.payment_type, po.pay_condition, po.defer_days,
+    `SELECT po.id, po.supplier_id, po.number, po.status, po.payment_type, po.pay_condition, po.defer_days,
             po.delivery_date, po.delivery_window, po.created_at, po.received_at, po.comment,
             po.cancelled_at, po.cancelled_by, po.cancel_reason,
             c.name AS supplier_name, pc.name AS parent_category_name, pc.color AS parent_category_color,
@@ -1173,7 +1139,7 @@ router.get('/api/orders', async (req, res) => {
   for (const x of cnt) { counts[x.status] = x.n; counts.all += x.n; }
 
   res.json({
-    items: r.rows.map(enrichOrderFinance),
+    items: (await pfin.withAllocatedPaid(r.rows)).map(enrichOrderFinance),
     totals: { orders: Number(tot.orders) || 0, total: Number(tot.total) || 0 },
     counts,
     truncated: r.rows.length >= 300,

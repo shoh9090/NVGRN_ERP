@@ -92,6 +92,107 @@ async function wireSupplierPayments() {
   return out;
 }
 
+// Разовый перенос: перечисления, которые раньше подтягивались из банковской
+// выписки, становятся обычными оплатами Закупа.
+//
+// Зачем. По решению Арианны (11.09.2026) оплаты поставщикам ведёт закупщик
+// целиком сам — и наличные, и перечисления. Автоподтягивание из Кассы убрано:
+// оно зависело от того, загружена ли выписка и привязан ли контрагент, и часть
+// платежей до Закупа не доходила. Но если просто выключить, долг поставщикам
+// подскочит на сумму всех перечислений — они нигде не хранились, считались
+// на лету. Поэтому переносим их один раз в реестр.
+//
+// Переносим именно то, что УЧИТЫВАЛОСЬ (результат wireSupplierPayments), а не
+// все банковские расходы: платежи, уже внесённые вручную, дедуп раньше
+// отбрасывал, и перенос их задвоил бы.
+//
+// Идемпотентность двойная: флаг в настройках и уникальный bank_tx_id.
+const WIRE_TRANSFER_FLAG = 'purchase_wire_payments_transferred_at';
+
+async function transferWirePayments() {
+  const settings = await db.getSettings();
+  if (settings[WIRE_TRANSFER_FLAG]) return { skipped: true };
+  const wires = await wireSupplierPayments();
+  let moved = 0, sum = 0;
+  for (const w of wires) {
+    const r = await db.pool.query(
+      `INSERT INTO supplier_payments
+         (supplier_id, order_id, amount, payment_type, paid_at, comment, bank_tx_id)
+       VALUES ($1, NULL, $2, 'перечисление', $3::date, $4, $5)
+       ON CONFLICT (bank_tx_id) WHERE bank_tx_id IS NOT NULL DO NOTHING`,
+      [w.supplier_id, w.amount, w.paid_at,
+        ('Перенесено из выписки' + (w.purpose ? ' · ' + String(w.purpose).slice(0, 200) : '')), w.id]);
+    if (r.rowCount) { moved++; sum += w.amount; }
+  }
+  await db.setSetting(WIRE_TRANSFER_FLAG, new Date().toISOString());
+  console.log(`[ЗАКУП] Перенос перечислений из выписки: ${moved} оплат на ${Math.round(sum)}`);
+  return { moved, sum };
+}
+
+// Разнесение оплат по заявкам — РАСЧЁТ, а не запись.
+//
+// Раньше авторазнос (FIFO) дробил одну оплату на несколько записей — по одной
+// на каждую заявку. В акте сверки одна оплата 10 млн превращалась в три-четыре
+// строки, и сверить её с платёжкой было невозможно.
+//
+// Теперь оплата хранится ОДНИМ фактом: сумма, дата, тип. А деньги без
+// указанной заявки (авторазнос и аванс) ложатся на принятые заявки поставщика
+// по порядку уже при расчёте. Это тот же инвариант, что у склада и кассы:
+// реестр хранит движение, разбивка — производная.
+//
+// Считаем по ВСЕМ принятым заявкам поставщика, а не по показанной выборке:
+// иначе в отфильтрованном списке разнесение вышло бы другим.
+async function allocateUnassigned(supplierIds) {
+  const extra = new Map();                       // order_id → сколько лёгло сверх своих оплат
+  const ids = [...new Set((supplierIds || []).filter(Boolean))];
+  if (!ids.length) return extra;
+
+  const pool = (await db.pool.query(
+    `SELECT supplier_id, COALESCE(SUM(amount), 0) AS amt
+       FROM supplier_payments
+      WHERE order_id IS NULL AND supplier_id = ANY($1::int[]) AND paid_at >= '${SETTLE_START}'
+      GROUP BY supplier_id`, [ids])).rows;
+  const free = new Map(pool.map((r) => [r.supplier_id, Number(r.amt) || 0]));
+  if (![...free.values()].some((v) => v > 0.01)) return extra;
+
+  // Порядок тот же, что у оплаты по FIFO: сначала самые ранние приёмки.
+  const orders = (await db.pool.query(
+    `SELECT po.id, po.supplier_id,
+            COALESCE(SUM(COALESCE(i.fact_qty, 0) * i.price), 0) AS total,
+            COALESCE((SELECT SUM(amount) FROM supplier_payments sp WHERE sp.order_id = po.id), 0) AS own
+       FROM purchase_orders po
+       LEFT JOIN purchase_order_items i ON i.order_id = po.id
+      WHERE po.status = 'received' AND po.supplier_id = ANY($1::int[])
+        AND COALESCE(po.received_at::date, po.delivery_date) >= '${SETTLE_START}'
+      GROUP BY po.id
+      ORDER BY COALESCE(po.received_at::date, po.delivery_date), po.id`, [ids])).rows;
+
+  for (const o of orders) {
+    let rest = free.get(o.supplier_id) || 0;
+    if (rest <= 0.01) continue;
+    const need = (Number(o.total) || 0) - (Number(o.own) || 0);
+    if (need <= 0.01) continue;
+    const put = Math.min(rest, need);
+    extra.set(o.id, put);
+    free.set(o.supplier_id, rest - put);
+  }
+  return extra;
+}
+
+// Добавить к строкам заявок разнесённую часть нераспределённых оплат.
+// rows — строки с id, supplier_id и уже посчитанным paid (своими оплатами).
+async function withAllocatedPaid(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) return list;
+  const extra = await allocateUnassigned(list.map((r) => r.supplier_id));
+  if (!extra.size) return list;
+  list.forEach((r) => {
+    const add = extra.get(r.id);
+    if (add) r.paid = (Number(r.paid) || 0) + add;
+  });
+  return list;
+}
+
 // Расчёт срока и статуса оплаты по заявке (ТЗ Закупа разд. 7-8). Долг возникает по факту приёмки.
 function enrichOrderFinance(o) {
   const received = o.status === 'received';
@@ -170,18 +271,11 @@ async function supplierBalances(opts = {}) {
 
   const from = opts.from || null, to = opts.to || null;
 
-  // Часть 2: перечисления из выписки (Касса) по ИНН добавляем в «оплачено» (дедуп внутри хелпера).
-  const wire = await wireSupplierPayments();
-  const wAll = {}, wBefore = {}, wPeriod = {};
-  for (const t of wire) {
-    wAll[t.supplier_id] = (wAll[t.supplier_id] || 0) + t.amount;
-    if (from && t.paid_at < from) wBefore[t.supplier_id] = (wBefore[t.supplier_id] || 0) + t.amount;
-    if ((!from || t.paid_at >= from) && (!to || t.paid_at <= to)) wPeriod[t.supplier_id] = (wPeriod[t.supplier_id] || 0) + t.amount;
-  }
-  for (const s of rows) {
-    const w = wAll[s.id] || 0;
-    s.paid += w; s.balance -= w;
-  }
+  // Перечисления из выписки здесь БОЛЬШЕ НЕ УЧИТЫВАЮТСЯ: оплаты поставщикам
+  // ведёт закупщик сам — и наличные, и перечисления (решение от 11.09.2026).
+  // Автоподтягивание зависело от того, загружена ли выписка и привязан ли
+  // контрагент, и часть платежей до Закупа не доходила. Те, что подтягивались
+  // раньше, перенесены в реестр разово (transferWirePayments).
 
   // Период (SD-стиль): баланс на начало / оборот / баланс на конец.
   if (from || to) {
@@ -205,9 +299,9 @@ async function supplierBalances(opts = {}) {
     for (const s of rows) {
       const db4 = Number(dm[s.id]?.before_v) || 0, dp = Number(dm[s.id]?.period_v) || 0;
       const pb = Number(pm[s.id]?.before_v) || 0, pp = Number(pm[s.id]?.period_v) || 0;
-      s.balance_start = s.opening_balance + db4 - pb - (wBefore[s.id] || 0);
+      s.balance_start = s.opening_balance + db4 - pb;
       s.delivered_period = dp;
-      s.paid_period = pp + (wPeriod[s.id] || 0);
+      s.paid_period = pp;
       s.balance_end = s.balance_start + dp - s.paid_period;
     }
   }
@@ -240,7 +334,8 @@ async function openSupplierObligations() {
      LEFT JOIN purchase_order_items i ON i.order_id = po.id
      WHERE po.status = 'received' AND COALESCE(po.received_at::date, po.delivery_date) >= '${SETTLE_START}'
      GROUP BY po.id, c.name`);
-  return r.rows.map(enrichOrderFinance).filter((o) => o.remainder > 0.01);
+  // Нераспределённые оплаты (авторазнос и аванс) разносим по заявкам расчётом.
+  return (await withAllocatedPaid(r.rows)).map(enrichOrderFinance).filter((o) => o.remainder > 0.01);
 }
 
 // Взаиморасчёты «под ключ» (общее для Закупа и зеркала в Кассе): баланс+период+просрочка+фильтр статуса.
@@ -280,4 +375,4 @@ async function supplyAdvance() {
   return { issued, spent, balance: issued - spent, issued_usd, spent_usd };
 }
 
-module.exports = { SETTLE_START, enrichOrderFinance, supplierBalances, openSupplierObligations, supplierDueAgg, settlements, supplyAdvance, wireSupplierPayments, bankOutPayments };
+module.exports = { SETTLE_START, enrichOrderFinance, supplierBalances, openSupplierObligations, supplierDueAgg, settlements, supplyAdvance, wireSupplierPayments, bankOutPayments, transferWirePayments, withAllocatedPaid };
