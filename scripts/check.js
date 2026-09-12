@@ -114,6 +114,13 @@ for (const f of files) {
     const js = path.join(ROOT, 'public', name);
     return fs.existsSync(js) && fs.readFileSync(js, 'utf8').includes('HubDateRange');
   });
+  const usesChips = scripts.some((name) => {
+    const js = path.join(ROOT, 'public', name);
+    return name !== 'chips.js' && fs.existsSync(js) && fs.readFileSync(js, 'utf8').includes('HubChips.create');
+  });
+  if (usesChips && !view.includes('chips.js')) {
+    errors.push(p3 + ': экран использует таблетки HubChips, но не подключает /static/chips.js — экран упадёт при открытии.');
+  }
   if (usesDr && !view.includes('daterange.js')) {
     errors.push(p3 + ': экран использует HubDateRange, но не подключает /static/daterange.js — фильтр периода не появится.');
   }

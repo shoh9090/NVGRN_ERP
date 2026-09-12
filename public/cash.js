@@ -2182,22 +2182,29 @@
   async function oblSuppliers(box) {
     box.innerHTML = '';
     box.appendChild(el('div', { class: 'cash-note-info', style: 'margin-bottom:10px' }, 'Данные синхронизируются из «Закуп → Взаиморасчёты», только для просмотра.'));
-    const catSel = el('select', { class: 'obl-f', title: 'Категория', onchange: (e) => { oblSup.cat = e.target.value; drawSup(); } });
-    const stSel = el('select', { class: 'obl-f', title: 'Статус', onchange: (e) => { oblSup.status = e.target.value; drawSup(); } },
-      [['', 'Все статусы'], ['debt', 'С долгом'], ['overdue', 'Просроченные'], ['advance', 'Авансы']].map(([v, t]) => el('option', { value: v, selected: oblSup.status === v || null }, t)));
-    const qIn = el('input', { class: 'obl-f', style: 'min-width:150px', placeholder: 'Поиск…', value: oblSup.q, oninput: (e) => { oblSup.q = e.target.value; drawSup(); } });
+    const catSel = el('select', { title: 'Категория', onchange: (e) => { oblSup.cat = e.target.value; drawSup(); } });
+    // Статус — таблетками со счётчиками (см. chips.js), как в Закуп → Взаиморасчёты.
+    const stChips = HubChips.create({
+      items: [
+        { key: '', label: 'Все' },
+        { key: 'debt', label: 'С долгом' },
+        { key: 'overdue', label: 'Просрочено' },
+        { key: 'advance', label: 'Авансы' },
+      ],
+      value: oblSup.status,
+      onChange: (key) => { oblSup.status = key; drawSup(); },
+    });
+    const qIn = el('input', { style: 'min-width:200px', placeholder: 'Поиск поставщика…', value: oblSup.q, oninput: (e) => { oblSup.q = e.target.value; drawSup(); } });
     const oblPeriod = HubDateRange.create({
       mode: 'range', from: oblSup.from, to: oblSup.to,
       onChange: (v) => { oblSup.from = v.from; oblSup.to = v.to; loadSup(); },
     });
-    const pill = (icon, ctrl) => el('span', { class: 'obl-pill' }, [el('span', { class: 'obl-ic' }, icon), ctrl]);
-    box.appendChild(el('div', { class: 'obl-filt' }, [
-      // Период — общим компонентом Hub (см. daterange.js), первым в строке.
-      oblPeriod,
-      pill('🔎', qIn), pill('🏷', catSel), pill('⚑', stSel),
-      (oblSup.from || oblSup.to || oblSup.cat || oblSup.status || oblSup.q)
-        ? el('button', { class: 'obl-reset', title: 'Сбросить фильтры', onclick: () => { oblSup.q = ''; oblSup.cat = ''; oblSup.status = ''; oblSup.from = ''; oblSup.to = ''; oblSuppliers(box); } }, '✕ сброс') : null,
+    // Одна строка, как в Закупе: период первым, дальше срезы и поиск.
+    box.appendChild(el('div', { class: 'hub-bar' }, [
+      oblPeriod, catSel, qIn,
+      el('button', { onclick: () => { oblSup.q = ''; oblSup.cat = ''; oblSup.status = ''; oblSup.from = ''; oblSup.to = ''; oblSuppliers(box); } }, 'Сбросить'),
     ]));
+    box.appendChild(stChips);
     const tableBox = el('div', { id: 'obl-sup-table' }); box.appendChild(tableBox);
     async function loadSup() {
       tableBox.innerHTML = '<div class="cash-loading">Загрузка…</div>';
@@ -2214,10 +2221,18 @@
     function drawSup() {
       let items = (OBL_SUP && OBL_SUP.items) || [];
       if (oblSup.cat) items = items.filter((s) => s.parent_category_name === oblSup.cat);
+      if (oblSup.q) { const qq = oblSup.q.toLowerCase(); items = items.filter((s) => (s.name || '').toLowerCase().includes(qq)); }
+      // Счётчики — по категории и поиску, но до статуса: иначе в выбранном
+      // срезе соседние цифры обнулятся.
+      stChips.setCounts({
+        '': items.length,
+        debt: items.filter((s) => s.balance > 0.01).length,
+        overdue: items.filter((s) => (s.overdue || 0) > 0.01).length,
+        advance: items.filter((s) => s.balance < -0.01).length,
+      });
       if (oblSup.status === 'debt') items = items.filter((s) => s.balance > 0.01);
       else if (oblSup.status === 'overdue') items = items.filter((s) => (s.overdue || 0) > 0.01);
       else if (oblSup.status === 'advance') items = items.filter((s) => s.balance < -0.01);
-      if (oblSup.q) { const qq = oblSup.q.toLowerCase(); items = items.filter((s) => (s.name || '').toLowerCase().includes(qq)); }
       const period = !!(OBL_SUP && OBL_SUP.period);
       const cols = oblSupCols(period);
       tableBox.innerHTML = '';
