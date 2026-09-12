@@ -681,7 +681,6 @@
     main.appendChild(el('div', { class: 'pur-toolbar' }, [
       el('h2', {}, 'Поставщики'),
       el('div', { class: 'pur-toolbar-right' }, [
-        el('input', { id: 'sup-q', placeholder: 'Поиск...', oninput: debounce(loadSuppliers, 300) }),
         el('button', { onclick: () => $('#sup-import-file').click(), title: 'Файл со списком поставщиков или вкладкой TOTAL' }, '📥 Импорт Excel'),
         (() => { const f = el('input', { id: 'sup-import-file', type: 'file', accept: '.xlsx,.xls,.csv', style: 'display:none', onchange: (e) => { if (e.target.files[0]) importSuppliers(e.target.files[0]); e.target.value = ''; } }); return f; })(),
         ...((typeof HUB_USER !== 'undefined' && HUB_USER.isAdmin) ? [
@@ -692,10 +691,15 @@
       ]),
     ]));
     const pcSel = el('select', { id: 'sup-pc', onchange: loadSuppliers }, [
-      el('option', { value: '' }, 'Все родительские категории'),
+      el('option', { value: '' }, 'Все родит. категории'),
       ...FOPTS.parents.map((p) => el('option', { value: p.id }, p.name)),
     ]);
-    main.appendChild(el('div', { class: 'pur-filters' }, [el('label', {}, ['Родительская категория', pcSel])]));
+    // Фильтры одной строкой, как в Заявках: поиск раньше жил в шапке раздела
+    // среди кнопок импорта, а категория — отдельной строкой с подписью.
+    main.appendChild(el('div', { class: 'pur-bar' }, [
+      pcSel,
+      el('input', { id: 'sup-q', class: 'pur-bar-q', placeholder: 'Поиск: название, ИНН, что поставляет…', oninput: debounce(loadSuppliers, 300) }),
+    ]));
     main.appendChild(el('div', { id: 'sup-list', class: 'pur-content' }));
     await loadSuppliers();
   }
@@ -1794,7 +1798,7 @@
 
   // ================= АКТ СВЕРКИ =================
   const ORG = 'Novagreen Foods';
-  const actState = { supplier: '', from: '', to: '' };
+  const actState = { supplier: '', pc: '', from: '', to: '' };
   let lastActData = null;
   const escHtml = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const ruD = (s) => (s ? String(s).slice(0, 10).split('-').reverse().join('.') : '');
@@ -1839,7 +1843,29 @@
     const now = new Date();
     if (!actState.from) actState.from = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-01';
     if (!actState.to) actState.to = now.toISOString().slice(0, 10);
-    const supSel = el('select', { onchange: (e) => { actState.supplier = e.target.value; loadAct(); } }, suppliers.map((s) => el('option', { value: s.id, selected: String(s.id) === actState.supplier || null }, s.name)));
+    await ensureOpts();
+    // Сначала родительская категория, она сужает список поставщиков — как в
+    // Ценах. Акт всегда по одному поставщику, поэтому при смене категории
+    // берём первого из неё, если прежний туда не входит.
+    const pcSel = el('select', {
+      onchange: (e) => {
+        actState.pc = e.target.value;
+        const list = actSuppliers();
+        if (!list.some((x) => String(x.id) === actState.supplier)) actState.supplier = list.length ? String(list[0].id) : '';
+        fillActSuppliers();
+        if (actState.supplier) loadAct(); else $('#act-body').innerHTML = '';
+      },
+    }, [
+      el('option', { value: '' }, 'Все родит. категории'),
+      ...FOPTS.parents.map((x) => el('option', { value: x.id, selected: String(x.id) === actState.pc || null }, x.name)),
+    ]);
+    const actSuppliers = () => (actState.pc ? suppliers.filter((x) => String(x.parent_category_id) === actState.pc) : suppliers);
+    const supSel = el('select', { onchange: (e) => { actState.supplier = e.target.value; loadAct(); } });
+    function fillActSuppliers() {
+      supSel.innerHTML = '';
+      actSuppliers().forEach((x) => supSel.appendChild(el('option', { value: x.id, selected: String(x.id) === actState.supplier || null }, x.name)));
+    }
+    fillActSuppliers();
     const period = HubDateRange.create({
       mode: 'range', from: actState.from, to: actState.to,
       onChange: (v) => { actState.from = v.from; actState.to = v.to; loadAct(); },
@@ -1848,10 +1874,8 @@
       el('h2', {}, 'Акт сверки'),
       el('div', { class: 'pur-toolbar-right' }, [el('button', { class: 'btn-primary', onclick: printAct }, '🖨 Печать')]),
     ]));
-    main.appendChild(el('div', { class: 'pur-filters' }, [
-      el('label', {}, ['Поставщик', supSel]),
-      el('div', { class: 'pur-fld' }, [el('span', {}, 'Период'), period]),
-    ]));
+    // Одна строка, как в Заявках: период первым.
+    main.appendChild(el('div', { class: 'pur-bar' }, [period, pcSel, supSel]));
     main.appendChild(el('div', { id: 'act-body', class: 'pur-content', style: 'margin-top:10px' }));
     if (actState.supplier) loadAct();
   }
