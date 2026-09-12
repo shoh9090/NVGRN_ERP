@@ -205,12 +205,8 @@ input.calc-cell:focus, input.calc-name:focus {
   padding: 9px 13px; margin-bottom: 10px;
   background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
 }
-.calc-appr-modes { display: flex; gap: 3px; background: var(--surface-2); border-radius: 9px; padding: 3px; }
-.calc-appr-mode {
-  border: none; background: none; padding: 6px 13px; border-radius: 7px;
-  font-family: inherit; font-size: 12.5px; font-weight: 700; color: var(--ink-soft); cursor: pointer;
-}
-.calc-appr-mode.on { background: var(--forest); color: #fff; }
+/* .calc-appr-modes / .calc-appr-mode — общий сегментный переключатель Hub,
+   описан в tabs.css (.hub-seg). */
 .calc-appr-info { flex: 1; min-width: 160px; font-size: 12px; color: var(--ink-soft); }
 .calc-appr-btns { display: flex; gap: 7px; }
 .calc-appr-warn {

@@ -2112,8 +2112,9 @@
     box.innerHTML = '';
     box.appendChild(el('div', { style: 'display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px' }, [
       el('div', { class: 'cash-h2', style: 'font-size:17px' }, 'Платёжный календарь'),
-      el('div', { class: 'cash-subtabs', style: 'margin:0' }, [[7, '7 дней'], [30, '30 дней'], [90, '90 дней'], [365, 'год']].map(([d, l]) =>
-        el('button', { class: 'cash-subtab' + (oblCalDays === d ? ' on' : ''), onclick: () => { oblCalDays = d; oblCalendar(box); } }, l))),
+      // Горизонт платёжного календаря — переключатель вида, а не раздел.
+      el('div', { class: 'hub-seg' }, [[7, '7 дней'], [30, '30 дней'], [90, '90 дней'], [365, 'год']].map(([d, l]) =>
+        el('button', { class: 'hub-seg-it' + (oblCalDays === d ? ' on' : ''), onclick: () => { oblCalDays = d; oblCalendar(box); } }, l))),
     ]));
     let d; try { d = await api('/obligations/calendar?days=' + oblCalDays); } catch (e) { box.appendChild(el('div', { class: 'cash-empty' }, 'Ошибка: ' + e.message)); return; }
     const items = d.items || [];
@@ -3492,8 +3493,10 @@
       el('div', {}, [el('div', { class: 'cash-h2' }, 'Контрагенты'), el('div', { class: 'cash-sub' }, 'Поставщики берутся из Закупа, прочие (банки/налоги) — здесь. Ключ автоклассификации — ИНН. ' + syncInfo)]),
       el('div', { class: 'cash-tx-btns' }, headBtns),
     ]));
-    const chip = (id, label) => el('button', { class: 'cash-subtab' + (cpView === id ? ' on' : ''), onclick: () => { cpView = id; renderDicts(); } }, label);
-    box.appendChild(el('div', { class: 'cash-subtabs' }, [chip('main', 'Поставщики и прочие'), chip('clients', 'Покупатели (клиенты из SD)')]));
+    // Третий уровень (Справочники → Контрагенты → кто именно) — сегментным
+    // переключателем, чтобы не сливался со вкладками второго уровня над ним.
+    const chip = (id, label) => el('button', { class: 'hub-seg-it' + (cpView === id ? ' on' : ''), onclick: () => { cpView = id; renderDicts(); } }, label);
+    box.appendChild(el('div', { class: 'hub-seg', style: 'margin-bottom:12px' }, [chip('main', 'Поставщики и прочие'), chip('clients', 'Покупатели (клиенты из SD)')]));
     if (cpView === 'clients') { renderClients(box); return; }
 
     // Фильтр по статье ДДС + поиск по названию/ИНН.

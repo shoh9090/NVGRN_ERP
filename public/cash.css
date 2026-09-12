@@ -78,9 +78,6 @@
 .obl-filt { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
 .cash-ct { grid-template-columns: 1.4fr 1.4fr 1.2fr 0.9fr; }
 
-.cash-subtabs { display: flex; gap: 6px; margin-bottom: 14px; flex-wrap: wrap; }
-.cash-subtab { border: 1px solid var(--line); background: #fff; border-radius: 999px; padding: 6px 14px; font-size: 13px; font-weight: 600; color: var(--muted); cursor: pointer; }
-.cash-subtab.on { background: var(--forest); color: #fff; border-color: var(--forest); }
 
 .cash-soon { padding: 40px; text-align: center; color: var(--muted); font-size: 14px; }
 
