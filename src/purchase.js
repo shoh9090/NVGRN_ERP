@@ -528,7 +528,7 @@ router.get('/api/materials', async (req, res) => {
 // Справочные списки для фильтров вкладки «Цены»
 router.get('/api/filter-options', async (req, res) => {
   const sup = await db.pool.query(
-    "SELECT id, name FROM ref_counterparties WHERE role_supplier = TRUE AND status = 'active' ORDER BY name"
+    "SELECT id, name, parent_category_id FROM ref_counterparties WHERE role_supplier = TRUE AND status = 'active' ORDER BY name"
   );
   const cat = await db.pool.query(
     "SELECT id, name FROM ref_categories WHERE kind = 'категория' AND (sd_sd_id IS NULL OR sd_sd_id = '') ORDER BY name"
@@ -865,18 +865,36 @@ router.post('/api/spec', express.json({ limit: '1mb' }), async (req, res) => {
 // ---------- Динамика цен ----------
 // Последние цены: наименование, ед.изм, цена за ед-цу, дата последнего обновления цены,
 // + статистика за последние 12 месяцев для вердикта («лучшая цена за год» / «самая высокая»).
+// Фильтр цен по поставщику и его родительской категории. Возвращает условие
+// на po.supplier_id — ставится в выборку принятых заявок. Если выбран и
+// поставщик, и родительская категория, работают оба (поставщик сужает).
+function priceSupplierWhere(req, params) {
+  const w = [];
+  const sup = parseInt(req.query.supplier_id);
+  if (sup) { params.push(sup); w.push(`po.supplier_id = $${params.length}`); }
+  const pc = parseInt(req.query.parent_category_id);
+  if (pc) {
+    params.push(pc);
+    w.push(`po.supplier_id IN (SELECT id FROM ref_counterparties WHERE parent_category_id = $${params.length})`);
+  }
+  return w;
+}
+
 router.get('/api/last-prices', async (req, res) => {
   const q = (req.query.q || '').trim();
   const params = [];
+  const supW = priceSupplierWhere(req, params);
   let qSQL = '';
   if (q) { params.push('%' + q + '%'); qSQL = ` AND (m.name ILIKE $${params.length} OR m.code ILIKE $${params.length})`; }
+  let catSQL = '';
+  if (req.query.category_id) { params.push(parseInt(req.query.category_id)); catSQL = ` AND m.category_id = $${params.length}`; }
   const r = await db.pool.query(
     `WITH hist AS (
        SELECT i.item_kind, i.item_id, COALESCE(i.fact_price, i.price) AS price,
               COALESCE(po.received_at::date, po.delivery_date) AS d
        FROM purchase_order_items i
        JOIN purchase_orders po ON po.id = i.order_id AND po.status = 'received'
-       WHERE COALESCE(i.fact_price, i.price) > 0
+       WHERE COALESCE(i.fact_price, i.price) > 0${supW.map((x) => ' AND ' + x).join('')}
      ),
      yr AS (  -- статистика за последние 12 месяцев
        SELECT item_kind, item_id, MIN(price) AS y_min, MAX(price) AS y_max,
@@ -889,10 +907,10 @@ router.get('/api/last-prices', async (req, res) => {
        FROM hist ORDER BY item_kind, item_id, d DESC
      ),
      mats AS (
-       SELECT 'raw' AS kind, rm.id, rm.code, rm.name, COALESCE(u.short_name,'кг') AS unit
+       SELECT 'raw' AS kind, rm.id, rm.code, rm.name, COALESCE(u.short_name,'кг') AS unit, rm.category_id
        FROM ref_raw_materials rm LEFT JOIN ref_units u ON u.id = rm.unit_id WHERE rm.status='active'
        UNION ALL
-       SELECT 'packaging', pk.id, pk.code, pk.name, COALESCE(u.short_name,'шт')
+       SELECT 'packaging', pk.id, pk.code, pk.name, COALESCE(u.short_name,'шт'), pk.category_id
        FROM ref_packaging pk LEFT JOIN ref_units u ON u.id = pk.unit_id WHERE pk.status='active'
      )
      SELECT m.kind, m.id, m.code, m.name, m.unit,
@@ -901,7 +919,7 @@ router.get('/api/last-prices', async (req, res) => {
      FROM mats m
      JOIN last l ON l.item_kind = m.kind AND l.item_id = m.id
      LEFT JOIN yr y ON y.item_kind = m.kind AND y.item_id = m.id
-     WHERE TRUE${qSQL}
+     WHERE TRUE${qSQL}${catSQL}
      ORDER BY m.name`, params);
   // Вердикт по последней цене относительно года.
   const items = r.rows.map((x) => {
@@ -928,7 +946,7 @@ router.get('/api/price-list', async (req, res) => {
   const params = [];
   // фильтры истории цен: поставщик, категория, период
   const histWhere = ["COALESCE(i.fact_price, i.price) > 0"];
-  if (req.query.supplier_id) { params.push(parseInt(req.query.supplier_id)); histWhere.push(`po.supplier_id = $${params.length}`); }
+  histWhere.push(...priceSupplierWhere(req, params));
   if (req.query.from) { params.push(req.query.from); histWhere.push(`po.received_at >= $${params.length}::date`); }
   if (req.query.to) { params.push(req.query.to); histWhere.push(`po.received_at < ($${params.length}::date + INTERVAL '1 day')`); }
   let catSQL = '';
@@ -1015,12 +1033,17 @@ router.get('/api/price-matrix', async (req, res) => {
   const whereSQL = where.length ? 'WHERE ' + where.join(' AND ') : '';
 
   // все точки (архив + приёмки) по дате
+  // Архив импорта не знает поставщика, поэтому при выборе поставщика или
+  // родительской категории в матрицу идут только живые приёмки.
+  const ptParams = [];
+  const supW = priceSupplierWhere(req, ptParams);
   const pts = await db.pool.query(
-    `SELECT item_kind, item_id, price_date::text AS d, price FROM price_history_import
+    `${supW.length ? '' : `SELECT item_kind, item_id, price_date::text AS d, price FROM price_history_import
      UNION ALL
-     SELECT i.item_kind, i.item_id, po.received_at::date::text AS d, COALESCE(i.fact_price, i.price) AS price
+     `}SELECT i.item_kind, i.item_id, po.received_at::date::text AS d, COALESCE(i.fact_price, i.price) AS price
      FROM purchase_order_items i JOIN purchase_orders po ON po.id = i.order_id AND po.status = 'received'
-     WHERE COALESCE(i.fact_price, i.price) > 0`
+     WHERE COALESCE(i.fact_price, i.price) > 0${supW.map((x) => ' AND ' + x).join('')}`,
+    ptParams
   );
   const mats = await db.pool.query(
     `SELECT m.kind, m.id, m.code, m.name, m.characteristics FROM (
@@ -1417,3 +1440,4 @@ router.delete('/api/orders/:id(\\d+)', async (req, res) => {
 });
 
 module.exports = router;
+module.exports.priceSupplierWhere = priceSupplierWhere; // для тестов

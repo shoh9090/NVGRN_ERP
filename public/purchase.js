@@ -1335,35 +1335,51 @@
           : null,
       ]),
     ]));
-    const supSel = el('select', { id: 'pr-supplier', onchange: reloadPrices }, [
-      el('option', { value: '' }, 'Все поставщики'),
-      ...opts.suppliers.map((s) => el('option', { value: s.id }, s.name)),
+    // Сначала родительская категория (Свежая зелень, Упаковка, Бахчевые),
+    // потом поставщик — список поставщиков сужается под выбранную категорию,
+    // чтобы не листать всех подряд.
+    const pcSel = el('select', {
+      onchange: (e) => {
+        priceFilter.pc = e.target.value;
+        // Выбранный поставщик из другой категории больше не подходит.
+        const sup = opts.suppliers.find((x) => String(x.id) === priceFilter.supplier);
+        if (priceFilter.pc && sup && String(sup.parent_category_id) !== priceFilter.pc) priceFilter.supplier = '';
+        fillSuppliers();
+        reloadPrices();
+      },
+    }, [
+      el('option', { value: '' }, 'Все родит. категории'),
+      ...opts.parents.map((x) => el('option', { value: x.id, selected: String(x.id) === priceFilter.pc || null }, x.name)),
     ]);
-    const catSel = el('select', { id: 'pr-category', onchange: reloadPrices }, [
-      el('option', { value: '' }, 'Все категории'),
-      ...opts.categories.map((c) => el('option', { value: c.id }, (c.branch === 'Упаковка' ? '📦 ' : '🌿 ') + c.name)),
+    const supSel = el('select', { onchange: (e) => { priceFilter.supplier = e.target.value; reloadPrices(); } });
+    function fillSuppliers() {
+      const list = priceFilter.pc
+        ? opts.suppliers.filter((x) => String(x.parent_category_id) === priceFilter.pc)
+        : opts.suppliers;
+      supSel.innerHTML = '';
+      supSel.appendChild(el('option', { value: '' }, priceFilter.pc ? 'Все поставщики категории' : 'Все поставщики'));
+      list.forEach((x) => supSel.appendChild(el('option', { value: x.id, selected: String(x.id) === priceFilter.supplier || null }, x.name)));
+    }
+    fillSuppliers();
+    const catSel = el('select', { onchange: (e) => { priceFilter.category = e.target.value; reloadPrices(); } }, [
+      el('option', { value: '' }, 'Все категории товара'),
+      ...opts.categories.map((c) => el('option', { value: c.id, selected: String(c.id) === priceFilter.category || null }, (c.branch === 'Упаковка' ? '📦 ' : '🌿 ') + c.name)),
     ]);
-    // Скрытые поля: запрос цен читает их по id, а видимый выбор периода —
-    // общий компонент Hub.
-    const fromIn = el('input', { id: 'pr-from', type: 'hidden' });
-    const toIn = el('input', { id: 'pr-to', type: 'hidden' });
+    // Период — общим компонентом Hub. По умолчанию «за всё время»: динамику
+    // цен смотрят на длинном отрезке. (Раньше кнопка писала «этот месяц»,
+    // а таблица при этом была за всё время.)
     const period = HubDateRange.create({
-      mode: 'range', from: monthStartStr(), to: todayStr(),
-      onChange: (v) => { fromIn.value = v.from; toIn.value = v.to; reloadPrices(); },
+      mode: 'range', from: priceFilter.from, to: priceFilter.to,
+      onChange: (v) => { priceFilter.from = v.from; priceFilter.to = v.to; reloadPrices(); },
     });
     const resetBtn = el('button', {
       onclick: () => {
-        supSel.value = ''; catSel.value = ''; $('#pr-q').value = '';
-        fromIn.value = ''; toIn.value = ''; reloadPrices();
+        Object.assign(priceFilter, { pc: '', supplier: '', category: '', from: '', to: '' });
+        $('#pr-q').value = '';
+        viewPrices();
       },
     }, 'Сбросить');
-    main.appendChild(el('div', { class: 'pur-filters' }, [
-      el('label', {}, ['Поставщик', supSel]),
-      el('label', {}, ['Категория', catSel]),
-      el('div', { class: 'pur-fld' }, [el('span', {}, 'Период'), period]),
-      fromIn, toIn,
-      resetBtn,
-    ]));
+    main.appendChild(el('div', { class: 'pur-bar' }, [period, pcSel, supSel, catSel, resetBtn]));
     main.appendChild(el('div', { id: 'pr-list', class: 'pur-content' }));
     await reloadPrices();
   }
@@ -1376,9 +1392,27 @@
     return el('span', { class: 'muted' }, '＝');
   }
 
-  let priceMode = 'summary'; // summary | matrix
+  let priceMode = 'summary'; // summary | matrix | last
+  // Фильтры вкладки «Цены». Живут вне отрисовки, чтобы пережить смену вида
+  // (Сводка / Последние цены / Матрица) и возврат на вкладку.
+  const priceFilter = { pc: '', supplier: '', category: '', from: '', to: '' };
+  // Одни и те же фильтры для всех трёх видов. Период к «Последним ценам»
+  // не применяем: последняя цена — она последняя, отрезок её не меняет.
+  function priceParams(withPeriod) {
+    const p = new URLSearchParams();
+    const q = $('#pr-q') ? $('#pr-q').value.trim() : '';
+    if (q) p.set('q', q);
+    if (priceFilter.pc) p.set('parent_category_id', priceFilter.pc);
+    if (priceFilter.supplier) p.set('supplier_id', priceFilter.supplier);
+    if (priceFilter.category) p.set('category_id', priceFilter.category);
+    if (withPeriod && priceFilter.from) p.set('from', priceFilter.from);
+    if (withPeriod && priceFilter.to) p.set('to', priceFilter.to);
+    return p.toString() ? '?' + p.toString() : '';
+  }
   function togglePriceMode() {
-    priceMode = priceMode === 'summary' ? 'matrix' : 'summary';
+    // Из «Последних цен» кнопка «Матрица цен» должна вести в матрицу, а не
+    // в сводку: раньше переключатель знал только два вида из трёх.
+    priceMode = priceMode === 'matrix' ? 'summary' : 'matrix';
     const btn = $('#pr-mode-btn');
     if (btn) btn.textContent = priceMode === 'summary' ? '📊 Матрица цен' : '📋 Сводка';
     reloadPrices();
@@ -1402,9 +1436,7 @@
 
   // «Последние цены» — актуальный прайс: последняя цена по каждому товару + дата обновления.
   async function loadLastPrices() {
-    const p = new URLSearchParams();
-    if ($('#pr-q') && $('#pr-q').value.trim()) p.set('q', $('#pr-q').value.trim());
-    const data = await api('/last-prices' + (p.toString() ? '?' + p.toString() : ''));
+    const data = await api('/last-prices' + priceParams(false));
     const box = $('#pr-list');
     box.innerHTML = '';
     if (!data.items.length) {
@@ -1430,10 +1462,7 @@
   }
 
   async function loadPriceMatrix() {
-    const p = new URLSearchParams();
-    if ($('#pr-q') && $('#pr-q').value.trim()) p.set('q', $('#pr-q').value.trim());
-    if ($('#pr-category') && $('#pr-category').value) p.set('category_id', $('#pr-category').value);
-    const data = await api('/price-matrix' + (p.toString() ? '?' + p.toString() : ''));
+    const data = await api('/price-matrix' + priceParams(false));
     const box = $('#pr-list');
     box.innerHTML = '';
     if (!data.items.length) {
@@ -1468,14 +1497,7 @@
   }
 
   async function loadPriceList() {
-    const p = new URLSearchParams();
-    const q = $('#pr-q') ? $('#pr-q').value.trim() : '';
-    if (q) p.set('q', q);
-    if ($('#pr-supplier') && $('#pr-supplier').value) p.set('supplier_id', $('#pr-supplier').value);
-    if ($('#pr-category') && $('#pr-category').value) p.set('category_id', $('#pr-category').value);
-    if ($('#pr-from') && $('#pr-from').value) p.set('from', $('#pr-from').value);
-    if ($('#pr-to') && $('#pr-to').value) p.set('to', $('#pr-to').value);
-    const data = await api('/price-list' + (p.toString() ? '?' + p.toString() : ''));
+    const data = await api('/price-list' + priceParams(true));
     const box = $('#pr-list');
     box.innerHTML = '';
     if (!data.items.length) {
