@@ -2301,7 +2301,7 @@
     const dSel = deptMulti(massState, 'department', load);
     const q = el('input', { class: 'hrf-inp hr-filt hr-filt-q', placeholder: 'Поиск по ФИО', value: massState.q, oninput: (e) => { massState.q = e.target.value; clearTimeout(window.__hrM); window.__hrM = setTimeout(load, 300); } });
     // Сначала фильтры (период первым), потом что делаем с отобранными.
-    c.appendChild(el('div', { class: 'hr-filters' }, [mInp, dSel, q, el('span', { class: 'hr-flab' }, 'Операция:'), opSel, modeSel]));
+    c.appendChild(el('div', { class: 'hr-filters' }, [mInp, dSel, q, el('span', { class: 'hub-bar-lab' }, 'Операция:'), opSel, modeSel]));
     const box = el('div', { id: 'hr-mass-box' }); c.appendChild(box);
     load();
 

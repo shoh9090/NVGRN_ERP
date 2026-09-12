@@ -52,6 +52,21 @@
   min-width: 140px;
 }
 
+/* Галочка в строке фильтров («Только доступные», «Только с остатком»).
+   Общий стиль подписей форм — мелкий и заглавными, он для подписи над полем;
+   рядом с галочкой в строке он читается как крик. */
+.hub-bar > label, .pur-bar > label, .hr-filters > label,
+.cash-filters > label, .cmp-filters > label, .obl-filt > label {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 13px; font-weight: 700; letter-spacing: 0; text-transform: none;
+  color: var(--ink-soft); white-space: nowrap; cursor: pointer;
+}
+
+/* Подпись внутри строки — только для параметра, который не фильтр, а
+   действие («Куда передать», «Операция»): у такого списка нет пункта «Все»,
+   и без подписи непонятно, что он значит. Фильтрам подписи не нужны. */
+.hub-bar-lab { font-size: 13px; font-weight: 700; color: var(--ink-soft); white-space: nowrap; }
+
 /* Итог периода прижимается вправо — он относится ко всей строке, а не
    к соседнему полю. */
 .hub-bar-total { margin-left: auto; white-space: nowrap; padding: 0 4px; font-size: 13.5px; }

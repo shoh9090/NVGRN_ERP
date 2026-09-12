@@ -448,13 +448,13 @@
       ]);
     }
 
-    main.appendChild(el('div', { class: 'pur-filters' }, [
-      el('label', {}, ['Куда передать', zoneSel]),
-      el('label', {}, ['Родит. категория', pcSel]),
-      el('label', {}, ['Категория', catSel]),
+    // Одна строка, как в Закупе: сначала что отбираем, потом куда передаём.
+    search.classList.add('pur-bar-q');
+    main.appendChild(el('div', { class: 'pur-bar' }, [
+      pcSel, catSel, search,
       el('label', { class: 'stk-check' }, [availChk, ' Только доступные']),
-      el('label', { style: 'flex:1' }, ['Поиск', search]),
-      el('span', { id: 'iss-count', class: 'muted', style: 'align-self:center;font-size:13px' }, ''),
+      el('span', { class: 'hub-bar-lab' }, 'Куда передать:'), zoneSel,
+      el('span', { id: 'iss-count', class: 'muted', style: 'font-size:13px;margin-left:auto' }, ''),
     ]));
     main.appendChild(wrap);
     renderRows();
@@ -661,13 +661,12 @@
 
     const posChk = el('input', { type: 'checkbox' }); posChk.checked = invPositive;
     posChk.onchange = () => { invPositive = posChk.checked; render(); };
-    main.appendChild(el('div', { class: 'pur-filters' }, [
-      el('label', {}, ['Родит. категория', pcSel]),
-      el('label', {}, ['Категория сырья', catSel]),
-      el('label', {}, ['Наличие', stockSel]),
+    // Одна строка, как в Закупе.
+    main.appendChild(el('div', { class: 'pur-bar' }, [
+      pcSel, catSel, stockSel,
+      el('input', { id: 'inv-q', class: 'pur-bar-q', placeholder: '🔍 артикул, наименование...', oninput: () => render() }),
       el('label', { class: 'stk-check' }, [posChk, ' Только с остатком']),
-      el('label', { style: 'flex:1' }, ['Поиск', el('input', { id: 'inv-q', placeholder: '🔍 артикул, наименование...', oninput: () => render() })]),
-      el('div', { style: 'align-self:flex-end;padding-bottom:2px' }, [stkColsWrap]),
+      el('div', { style: 'margin-left:auto' }, [stkColsWrap]),
     ]));
 
     // Панель быстрого пересчёта: вкл/выкл режим, комментарий, «Провести».

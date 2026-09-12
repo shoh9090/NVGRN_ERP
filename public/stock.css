@@ -1,5 +1,5 @@
 /* stock.css — склад сырья (поверх purchase.css) */
-.stk-check{display:flex;align-items:center;gap:6px;font-size:13px;font-weight:700;color:var(--ink-soft);cursor:pointer;align-self:flex-end;padding-bottom:8px}
+.stk-check{display:flex;align-items:center;gap:6px;font-size:13px;font-weight:700;color:var(--ink-soft);cursor:pointer;white-space:nowrap}
 .stk-check input{width:16px;height:16px;accent-color:var(--lime-d);cursor:pointer}
 
 /* настройка столбцов (⚙) в остатках */
