@@ -510,9 +510,12 @@ router.get('/api/employees', async (req, res) => {
   const p = [], w = [];
   deptFilter(scopeDept(req.query.department, await hrScope(req)), p, w);
   if (req.query.schedule && SCHEDULE_CODES.includes(req.query.schedule)) { p.push(req.query.schedule); w.push(`e.schedule_type = $${p.length}`); }
+  if (req.query.q) { p.push('%' + String(req.query.q).trim() + '%'); w.push(`(e.full_name ILIKE $${p.length} OR e.position ILIKE $${p.length} OR e.phone ILIKE $${p.length})`); }
+  // Условие по статусу — последним: до него считаем количества для таблеток
+  // (по тем же отделам и поиску), иначе в выбранном срезе соседние цифры обнулятся.
+  const pNoStatus = p.slice(), wNoStatus = w.slice();
   if (req.query.status && STATUSES.includes(req.query.status)) { p.push(req.query.status); w.push(`e.status = $${p.length}`); }
   else if (!req.query.status) w.push(`e.status <> 'archived'`); // по умолчанию скрываем архив
-  if (req.query.q) { p.push('%' + String(req.query.q).trim() + '%'); w.push(`(e.full_name ILIKE $${p.length} OR e.position ILIKE $${p.length} OR e.phone ILIKE $${p.length})`); }
   const where = w.length ? 'WHERE ' + w.join(' AND ') : '';
   const rows = (await db.pool.query(
     `SELECT e.*, d.name AS department_name
@@ -520,7 +523,12 @@ router.get('/api/employees', async (req, res) => {
      ${where} ORDER BY e.full_name LIMIT 2000`, p)).rows;
   // ФОТ-заготовка: сумма окладов активных (по выборке).
   const fot = rows.filter((r) => r.status === 'active').reduce((s, r) => s + (Number(r.base_salary) || 0), 0);
-  res.json({ items: rows, fot });
+  const cnt = (await db.pool.query(
+    `SELECT e.status, count(*)::int AS n FROM hr_employees e
+     ${wNoStatus.length ? 'WHERE ' + wNoStatus.join(' AND ') : ''} GROUP BY e.status`, pNoStatus)).rows;
+  const counts = { '': 0 };
+  for (const x of cnt) { counts[x.status] = x.n; if (x.status !== 'archived') counts[''] += x.n; }
+  res.json({ items: rows, fot, counts });
 });
 
 // Выгрузка справочника сотрудников в Excel — ровно то, что видно на вкладке
@@ -984,9 +992,18 @@ router.get('/api/payroll', async (req, res) => {
   //   topay   — мы ещё должны сотруднику (в т.ч. выплачено частично);
   //   paid    — начислено и закрыто полностью.
   const st = req.query.status;
+  const acc = (r) => Number(r.accrued) || 0;
+  const rest = (r) => Number(r.to_pay) || 0;
+  // Сколько людей в каждом состоянии — для таблеток над таблицей. Считаем до
+  // фильтра статуса, иначе в выбранном срезе соседние цифры обнулятся.
+  const counts = {
+    '': items.length,
+    accrued: items.filter((r) => acc(r) > 0).length,
+    none: items.filter((r) => acc(r) <= 0).length,
+    topay: items.filter((r) => rest(r) > 0.5).length,
+    paid: items.filter((r) => acc(r) > 0 && rest(r) <= 0.5).length,
+  };
   if (st) {
-    const acc = (r) => Number(r.accrued) || 0;
-    const rest = (r) => Number(r.to_pay) || 0;
     if (st === 'accrued') items = items.filter((r) => acc(r) > 0);
     else if (st === 'none') items = items.filter((r) => acc(r) <= 0);
     else if (st === 'topay') items = items.filter((r) => rest(r) > 0.5);
@@ -999,7 +1016,7 @@ router.get('/api/payroll', async (req, res) => {
     amount_1c: sum('amount_1c'), count: items.length,
     cash_advance: sum('cash_advance'), cash_paid: sum('cash_paid'),
   };
-  res.json({ period, items, summary, cash_unmatched: cashUnmatched });
+  res.json({ period, items, summary, counts, cash_unmatched: cashUnmatched });
 });
 
 // ===========================================================================
@@ -2010,12 +2027,15 @@ router.get('/api/payouts', async (req, res) => {
     const advances = items.filter((x) => (Number(x.advance) || 0) > 0.5)
       .map((x) => ({ full_name: x.full_name, department_name: x.department_name, advance: Number(x.advance) }))
       .sort((a, b) => b.advance - a.advance);
+    // Количества по статусам — для таблеток; до фильтра статуса.
+    const counts = { '': items.length };
+    for (const x of items) counts[x.status] = (counts[x.status] || 0) + 1;
     if (req.query.status) items = items.filter((x) => x.status === req.query.status);
     // Наличные выплаты из Кассы, которые не удалось привязать к сотруднику по ФИО —
     // показываем во вкладке «Выплаты» (это про выдачу денег, а не про расчёт).
     let cashUnmatched = [];
     try { cashUnmatched = (await computeCashSalary(period)).unmatched; } catch (e) { /* не критично */ }
-    res.json({ period, due: payoutDue(period), items, summary, advances, count: items.length, cash_unmatched: cashUnmatched });
+    res.json({ period, due: payoutDue(period), items, summary, advances, counts, count: items.length, cash_unmatched: cashUnmatched });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 // Выгрузка «К выплате» в Excel (те же фильтры, что в списке; уволенных без остатка и «нет начисления» не берём).
