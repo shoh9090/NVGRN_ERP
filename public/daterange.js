@@ -46,7 +46,11 @@
   // Подпись на кнопке. Целый месяц пишем словом — так короче и понятнее,
   // чем «1 авг — 31 авг».
   function labelRange(from, to) {
-    if (!from || !to) return 'Выберите период';
+    // Пустой период — это не «ещё не выбрали», а «без ограничения по дате»:
+    // сервер в этом случае отдаёт всё. Так и подписываем.
+    if (!from && !to) return 'За всё время';
+    if (!to) { const a = new Date(from); return 'с ' + a.getDate() + ' ' + MONTHS[a.getMonth()] + ' ' + a.getFullYear(); }
+    if (!from) { const b = new Date(to); return 'по ' + b.getDate() + ' ' + MONTHS[b.getMonth()] + ' ' + b.getFullYear(); }
     const a = new Date(from), b = new Date(to);
     const whole = a.getDate() === 1 && iso(b) === iso(monthEnd(a))
       && a.getMonth() === b.getMonth() && a.getFullYear() === b.getFullYear();
@@ -74,6 +78,7 @@
       ['Этот месяц', () => [iso(monthStart(t)), iso(t)]],
       ['Прошлый месяц', () => [iso(prev), iso(monthEnd(prev))]],
       ['Этот год', () => [iso(new Date(t.getFullYear(), 0, 1)), iso(t)]],
+      ['За всё время', () => ['', '']],
     ];
   }
   function monthPresets() {
@@ -97,7 +102,10 @@
     const mode = o.mode === 'month' ? 'month' : 'range';
     const state = mode === 'month'
       ? { period: o.period || iso(monthStart(today())).slice(0, 7) }
-      : { from: o.from || iso(monthStart(today())), to: o.to || iso(today()) };
+      // Берём ровно то, что передал экран. Раньше пустые даты молча
+      // превращались в «этот месяц» только в подписи — а данные экран грузил
+      // за всё время, и кнопка врала.
+      : { from: o.from || '', to: o.to || '' };
 
     const btn = el('button', { class: 'hub-dr-btn', type: 'button' }, [
       el('span', { class: 'hub-dr-ico' }, '📅'),
@@ -150,10 +158,11 @@
           el('button', {
             class: 'hub-dr-ok', type: 'button',
             onclick: () => {
-              let a = f.value || state.from, b = t2.value || state.to;
+              let a = f.value, b = t2.value;
+              if (!a && !b) { closePanel(); return; }
               // Перепутанные местами даты молча меняем — это опечатка,
               // а не повод показать пустой отчёт.
-              if (a > b) { const tmp = a; a = b; b = tmp; }
+              if (a && b && a > b) { const tmp = a; a = b; b = tmp; }
               state.from = a; state.to = b; apply();
             },
           }, 'ОК'),
@@ -175,7 +184,7 @@
 
     btn.setPeriod = (v) => {
       if (mode === 'month') state.period = v.period || state.period;
-      else { state.from = v.from || state.from; state.to = v.to || state.to; }
+      else { state.from = v.from || ''; state.to = v.to || ''; }
       relabel();
     };
     return btn;
