@@ -160,6 +160,20 @@ for (const f of files) {
   }
 }
 
+// (з) Строка фильтров — одна линия без подписей сверху (.pur-bar / .hub-bar).
+// Старый класс .pur-filters рисовал подписи над каждым полем, и экраны
+// выглядели по-разному: Заявки в одну строку, Взаиморасчёты — в две.
+// Для полей формы (в окне) есть .form-row.
+for (const f of files) {
+  const p6 = rel(f).split(path.sep).join('/');
+  if (!/^public\/[^/]+\.js$/.test(p6)) continue;
+  const src = stripComments(fs.readFileSync(f, 'utf8'));
+  if (/class: *'pur-filters'/.test(src)) {
+    errors.push(p6 + ': строка фильтров в старом виде (.pur-filters, подписи над полями). '
+      + 'Во всём Hub фильтры — одной строкой: .pur-bar или .hub-bar; для полей формы — .form-row.');
+  }
+}
+
 // ---- Итог ----
 console.log(`Проверено: ${jsCount} JS-файлов, ${ejsCount} EJS-шаблонов.`);
 if (errors.length) {

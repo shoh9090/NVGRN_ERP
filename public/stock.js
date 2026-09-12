@@ -276,7 +276,8 @@
 
     const body = el('div', {}, [
       el('p', { class: 'muted', style: 'font-size:15px' }, 'Поставщик: ' + d.order.supplier_name + ' · заявка ' + d.order.number + (d.order.delivery_window ? ' · окно ' + d.order.delivery_window : '')),
-      el('div', { class: 'pur-filters' }, [
+      // Это поля формы приёмки, а не фильтры — подписи над полями здесь по делу.
+      el('div', { class: 'form-row', style: 'align-items:flex-end;margin-bottom:10px' }, [
         el('label', {}, ['🌡 Температура сырья', tempIn]),
         el('label', { style: 'flex:1' }, ['Причина расхождения', reasonSel]),
       ]),
