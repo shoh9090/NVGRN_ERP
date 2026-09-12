@@ -1021,6 +1021,7 @@
 
   // Период по умолчанию — с начала месяца по сегодня (движение за текущий месяц).
   const setState = { q: '', pc: '', status: '', from: monthStartStr(), to: todayStr() };
+  let SET_CHIPS = null; // таблетки статуса — чтобы проставлять счётчики после загрузки
   let setHidden = []; try { setHidden = JSON.parse(localStorage.getItem('pur_set_cols') || '[]'); } catch (e) { setHidden = []; }
 
   function settlementCols(period) {
@@ -1058,21 +1059,33 @@
     ]));
     await ensureOpts();
     const pcSel = el('select', { onchange: (e) => { setState.pc = e.target.value; loadSettlements(); } }, [
-      el('option', { value: '' }, 'Все категории'), ...FOPTS.parents.map((p) => el('option', { value: p.id, selected: setState.pc === String(p.id) || null }, p.name)),
+      el('option', { value: '' }, 'Все родит. категории'), ...FOPTS.parents.map((p) => el('option', { value: p.id, selected: setState.pc === String(p.id) || null }, p.name)),
     ]);
-    const stSel = el('select', { onchange: (e) => { setState.status = e.target.value; loadSettlements(); } },
-      [['', 'Все'], ['debt', 'Только с долгом'], ['overdue', 'Только просроченные'], ['advance', 'Только авансы']].map(([v, t]) => el('option', { value: v, selected: setState.status === v || null }, t)));
-    const qIn = el('input', { placeholder: 'Поиск поставщика…', value: setState.q, oninput: debounce((e) => { setState.q = e.target.value; loadSettlements(); }, 300) });
-    main.appendChild(el('div', { class: 'pur-filters' }, [
-      el('label', {}, ['Категория', pcSel]),
-      el('label', {}, ['Статус', stSel]),
-      // Период — общим компонентом Hub, как в Заявках, Кассе и Претензиях.
-      el('div', { class: 'pur-fld' }, [el('span', {}, 'Период'), HubDateRange.create({
+    const qIn = el('input', { class: 'pur-bar-q', placeholder: 'Поиск поставщика…', value: setState.q, oninput: debounce((e) => { setState.q = e.target.value; loadSettlements(); }, 300) });
+    const reset = el('button', {
+      onclick: () => { Object.assign(setState, { q: '', pc: '', status: '', from: monthStartStr(), to: todayStr() }); viewSettlements(); },
+    }, 'Сбросить');
+    // Фильтры одной строкой, как в Заявках; период первым.
+    main.appendChild(el('div', { class: 'pur-bar' }, [
+      HubDateRange.create({
         mode: 'range', from: setState.from, to: setState.to,
         onChange: (v) => { setState.from = v.from; setState.to = v.to; loadSettlements(); },
-      })]),
-      el('label', { style: 'flex:1 1 180px' }, ['Поиск', qIn]),
+      }),
+      pcSel, qIn, reset,
     ]));
+    // Срез по состоянию расчётов — таблетками со счётчиками (см. chips.js):
+    // сразу видно, у скольких поставщиков долг и у скольких просрочка.
+    SET_CHIPS = HubChips.create({
+      items: [
+        { key: '', label: 'Все' },
+        { key: 'debt', label: 'С долгом' },
+        { key: 'overdue', label: 'Просрочено' },
+        { key: 'advance', label: 'Авансы' },
+      ],
+      value: setState.status,
+      onChange: (key) => { setState.status = key; loadSettlements(); },
+    });
+    main.appendChild(SET_CHIPS);
     main.appendChild(el('div', { id: 'set-list', class: 'pur-content', style: 'overflow-x:auto' }));
     await loadSettlements();
   }
@@ -1085,6 +1098,7 @@
     const p = new URLSearchParams();
     for (const [k, v] of [['q', setState.q], ['parent_category_id', setState.pc], ['status', setState.status], ['from', setState.from], ['to', setState.to]]) if (v) p.set(k, v);
     const data = await api('/settlements' + (p.toString() ? '?' + p.toString() : ''));
+    if (SET_CHIPS && data.counts) SET_CHIPS.setCounts(data.counts);
     const items = data.items || [];
     const cols = settlementCols(data.period).filter((c) => c.lock || !setHidden.includes(c.id));
     const box = $('#set-list'); box.innerHTML = '';

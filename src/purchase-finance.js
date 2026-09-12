@@ -349,10 +349,18 @@ async function settlements(opts = {}) {
     const overdueRaw = due[s.id] ? due[s.id].overdue : 0;
     return { ...s, overdue: Math.max(0, Math.min(overdueRaw, s.balance)), nearest_due: due[s.id] ? due[s.id].nearest_due : null };
   });
+  // Сколько поставщиков в каждом срезе — для таблеток над списком. Считаем
+  // до фильтра статуса, иначе в выбранном срезе соседние цифры обнулятся.
+  const counts = {
+    '': items.length,
+    debt: items.filter((s) => s.balance > 0.01).length,
+    overdue: items.filter((s) => s.overdue > 0.01).length,
+    advance: items.filter((s) => s.balance < -0.01).length,
+  };
   if (opts.status === 'debt') items = items.filter((s) => s.balance > 0.01);
   else if (opts.status === 'overdue') items = items.filter((s) => s.overdue > 0.01);
   else if (opts.status === 'advance') items = items.filter((s) => s.balance < -0.01);
-  return { items, period: !!(opts.from || opts.to), from: opts.from || null, to: opts.to || null };
+  return { items, counts, period: !!(opts.from || opts.to), from: opts.from || null, to: opts.to || null };
 }
 
 // Подотчёт снабженца: наличные, выданные ему под отчёт из Наличной кассы (расход с галочкой
