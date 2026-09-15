@@ -1,4 +1,11 @@
 <%- include('_header') %>
+<style>
+  /* Поле телефона в строке таблицы: форма растягивала его по остатку узкой
+     колонки, и номер не помещался. Даём полю ширину под номер целиком. */
+  .tg-phone-form { flex-wrap: nowrap; align-items: center; }
+  .tg-phone-form input { width: 190px; min-width: 190px; flex: none; }
+  .tg-phone-form button { flex: none; }
+</style>
 
 <h2>Пользователи</h2>
 
@@ -74,8 +81,8 @@
             <details>
               <summary><%= u.tg_phone ? ((u.tg_phone.length === 9 ? '+998' : '+') + u.tg_phone) : '—' %><% if (u.tg_phone) { %>
                 <% if (u.tg_chat_id) { %><span title="Сотрудник открыл бота и поделился номером — бот может ему писать" style="color:#2e7d32;font-weight:700"> · в боте ✓</span><% } else { %><span title="Бот не может написать первым: сотруднику нужно открыть бота и нажать «Поделиться номером»" style="color:#b25b00;font-weight:700"> · ждём в боте</span><% } %><% } %></summary>
-              <form method="POST" action="/admin/users/<%= u.id %>/phone" class="inline-form">
-                <input name="tg_phone" type="tel" value="<%= u.tg_phone || '' %>" placeholder="+998 90 123 45 67">
+              <form method="POST" action="/admin/users/<%= u.id %>/phone" class="inline-form tg-phone-form">
+                <input name="tg_phone" type="tel" value="<%= u.tg_phone ? ((u.tg_phone.length === 9 ? '+998' : '+') + u.tg_phone) : '' %>" placeholder="+998 90 123 45 67" autocomplete="off">
                 <button type="submit">Сохранить</button>
               </form>
             </details>
