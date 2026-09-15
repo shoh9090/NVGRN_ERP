@@ -6,6 +6,11 @@
 let bot = null;
 let db = null;
 let H = {}; // helpers из index.js: getLang, pointsOfUser, phone9OfUser, getOrders14, mainMenu, notifyClientAgent
+// Руководители звеньев (роль ERP звена, см. link-owners.js): получают претензию лично.
+const linkOwnersMod = require("./link-owners");
+let LO = null;
+// Руководитель звена пишет причину: ждём текст (chatId -> { id, name }).
+const ownerNote = new Map();
 
 // Состояние мастера по chatId. Живёт в памяти — как draftCache у заказов.
 const sessions = new Map();
@@ -22,6 +27,7 @@ function init(helpers) {
   H = helpers;
   bot = helpers.bot;
   db = helpers.db;
+  LO = linkOwnersMod({ db, bot });
 }
 
 // ---------- Тексты (RU/UZ) ----------
@@ -308,6 +314,10 @@ async function finalize(chatId, s, lang) {
     const note = `📩 Новая претензия №${id}\nКлиент: {name}\nТовар: ${s.product.name}\nТип: ${s.type.label}`
       + (s.client_comment ? `\nКомментарий: ${s.client_comment}` : "");
     H.notifyAgentReact(s.point.sd_id, note, id).catch((e) => console.warn("[ПРЕТЕНЗИЯ notify]", e.message));
+    // И лично руководителям звена: простая — для сведения, критичная — на решение.
+    getResolutions()
+      .then((resolutions) => LO.sendCard(id, { critical: CRITICAL_TYPES.has(s.type.code), resolutions }))
+      .catch((e) => console.warn("[ПРЕТЕНЗИЯ звено]", e.message));
   } catch (e) {
     console.error("[ПРЕТЕНЗИЯ save]", e.message);
     sessions.delete(chatId);
@@ -347,11 +357,63 @@ async function agentResolve(q, id, code, lang) {
   if (CRITICAL_TYPES.has(c.complaint_type)) {
     const point = c.point_name || c.firm_name || "";
     await H.notifyManagers(`🚨 Критическая претензия №${id}\nТочка: ${point}\nАгент принял в работу, предложил решение: ${resLabel}.\nНужен ваш разбор и закрытие в Hub.`);
+    LO.tell(id, `ℹ️ Претензия №${id}: агент принял в работу и предлагает — ${resLabel}. Решение за вами (кнопки под карточкой).`).catch(() => {});
     await bot.editMessageText(t(lang, "res_escalated", id), { chat_id: chatId, message_id: q.message.message_id }).catch(() => bot.sendMessage(chatId, t(lang, "res_escalated", id)));
   } else {
     await db.query("UPDATE tgbot.complaints SET status='resolved', resolved_at=now(), resolved_by=$1, updated_at=now() WHERE id=$2", ["Агент (бот)", id]);
+    LO.tell(id, `✅ Претензия №${id}: агент закрыл сам — ${resLabel}.`).catch(() => {});
     await bot.editMessageText(t(lang, "res_closed", id), { chat_id: chatId, message_id: q.message.message_id }).catch(() => bot.sendMessage(chatId, t(lang, "res_closed", id)));
   }
+  return true;
+}
+
+// ---------- Руководитель звена ----------
+// Кнопку может нажать только руководитель звена этой претензии (или админ бота):
+// карточку могли переслать, а решение по претензии — это деньги и отношения с клиентом.
+async function ownerOrAdmin(id, fromId) {
+  const o = await LO.ownerByChat(id, fromId);
+  if (o) return o;
+  if (process.env.ADMIN_TG_ID && String(fromId) === String(process.env.ADMIN_TG_ID)) return { full_name: "Администратор" };
+  return null;
+}
+
+// Решение по критичной претензии. Кто нажал первым — тот и решил: остальным
+// руководителям звена приходит «уже решил такой-то», агенту — что делать.
+async function ownerResolve(q, id, code) {
+  const chatId = q.message.chat.id;
+  const who = await ownerOrAdmin(id, q.from.id);
+  if (!who) { await bot.answerCallbackQuery(q.id, { text: "Это решение принимает руководитель звена.", show_alert: true }); return true; }
+  const resLabel = ((await getResolutions()).find((r) => r.code === code) || {}).label_ru || code;
+  const upd = await db.query(
+    `UPDATE tgbot.complaints SET resolution=$1, status='resolved', resolved_at=now(), resolved_by=$2, updated_at=now()
+      WHERE id=$3 AND status <> 'resolved' RETURNING sd_id`, [code, who.full_name, id]);
+  if (!upd.rowCount) {
+    const c = (await db.query("SELECT resolved_by FROM tgbot.complaints WHERE id=$1", [id])).rows[0];
+    await bot.answerCallbackQuery(q.id, { text: c ? `Уже закрыта${c.resolved_by ? ": " + c.resolved_by : ""}.` : "Претензия не найдена.", show_alert: true });
+    await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: q.message.message_id }).catch(() => {});
+    return true;
+  }
+  await bot.answerCallbackQuery(q.id, { text: "Решение записано" });
+  // Кнопки убираем, «Написать причину» оставляем — причину часто узнают позже.
+  await bot.editMessageReplyMarkup({ inline_keyboard: [[{ text: "✍️ Написать причину", callback_data: `cmpl:onote:${id}` }]] },
+    { chat_id: chatId, message_id: q.message.message_id }).catch(() => {});
+  await bot.sendMessage(chatId, `✅ Претензия №${id}: ваше решение — ${resLabel}. Записано в ERP, агенту передано.`);
+  LO.tell(id, `✅ По претензии №${id} решение принял ${who.full_name}: ${resLabel}.`, q.from.id).catch(() => {});
+  const sdId = upd.rows[0].sd_id;
+  if (sdId) {
+    H.notifyClientAgent(sdId, `✅ Претензия №${id} ({name}): ${who.full_name} принял решение — ${resLabel}. Свяжитесь с клиентом.`, "cmpres:" + id)
+      .catch((e) => console.warn("[ПРЕТЕНЗИЯ решение→агент]", e.message));
+  }
+  return true;
+}
+
+async function ownerAskNote(q, id) {
+  const chatId = q.message.chat.id;
+  const who = await ownerOrAdmin(id, q.from.id);
+  if (!who) { await bot.answerCallbackQuery(q.id, { text: "Причину пишет руководитель звена.", show_alert: true }); return true; }
+  ownerNote.set(chatId, { id, name: who.full_name });
+  await bot.answerCallbackQuery(q.id);
+  await bot.sendMessage(chatId, `Напишите одним сообщением, в чём причина по претензии №${id} и что сделали. Текст ляжет в карточку претензии в ERP.`);
   return true;
 }
 
@@ -370,6 +432,19 @@ async function onMessage(msg) {
   const chatId = msg.chat.id;
   const txt = (msg.text || "").trim();
   const lang = await H.getLang(chatId);
+
+  // Причина от руководителя звена — дописываем к внутренней заметке с именем и датой.
+  if (ownerNote.has(chatId) && txt && !txt.startsWith("/")) {
+    const { id, name } = ownerNote.get(chatId); ownerNote.delete(chatId);
+    const stamp = new Date().toLocaleDateString("ru-RU", { timeZone: "Asia/Tashkent" });
+    try {
+      await db.query(
+        `UPDATE tgbot.complaints SET internal_note = concat_ws(E'\n', NULLIF(internal_note, ''), $1), updated_at=now() WHERE id=$2`,
+        [`${name} (${stamp}): ${txt.slice(0, 1000)}`, id]);
+      await bot.sendMessage(chatId, `Записал в претензию №${id}.`);
+    } catch (e) { console.warn("[ПРЕТЕНЗИЯ причина]", e.message); await bot.sendMessage(chatId, "Не удалось записать, попробуйте ещё раз."); }
+    return true;
+  }
 
   // Комментарий агента к претензии (агентский поток, вне клиентского мастера).
   if (agentComment.has(chatId) && txt && !txt.startsWith("/")) {
@@ -433,6 +508,9 @@ async function onCallback(q) {
     if (step === "react") return agentReact(q, arg, lang);
     if (step === "ares")  return agentResolve(q, arg, parts[3], lang);
     if (step === "acmt")  return agentAskComment(q, arg, lang);
+    // Руководитель звена — тоже вне клиентской сессии.
+    if (step === "ores")  return ownerResolve(q, arg, parts[3]);
+    if (step === "onote") return ownerAskNote(q, arg);
     if (!s) { await bot.answerCallbackQuery(q.id, { text: t(lang, "expired") }); return true; }
 
     if (step === "pt") { await bot.answerCallbackQuery(q.id); s.point = s.points[Number(arg)]; if (!s.point) { sessions.delete(chatId); return true; } await askOrder(chatId, s, lang); return true; }
