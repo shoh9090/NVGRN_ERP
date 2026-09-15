@@ -18,16 +18,21 @@ router.use(async (req, res, next) => {
 // Фильтр по агенту (ТЗ: список агентов берём из SalesDoctor, а не из текста)
 // ---------------------------------------------------------------------------
 // В претензиях есть agent_sd_id (подача из бота) и текстовый agent_name
-// (старый импорт истории). В SD один и тот же человек записан полным именем
-// («Lobar Mahmudova»), а в импорте встречается коротко («Lobar»). Поэтому:
+// (старый импорт истории). В SD имя записано «Фамилия Имя» («Mahmudova Lobar»),
+// а в импорте встречается и «Lobar Mahmudova», и просто «Lobar». Поэтому:
 //   • новые записи сопоставляем строго по agent_sd_id;
-//   • старые (без sd_id) — по имени: точное совпадение или короткое имя как
-//     начало полного, чтобы «Lobar» и «Lobar Mahmudova» не были разными людьми.
+//   • старые (без sd_id) — по имени, независимо от порядка слов: точное
+//     совпадение, те же два слова в обратном порядке, или одно слово — первое
+//     либо последнее в полном имени.
+// Раньше правило знало только «Имя Фамилия» и короткое имя в начале полного —
+// из-за этого почти половина истории падала в «Прочие (нет в SalesDoctor)».
 // Значение фильтра — sd_agent_id, либо служебные __none__ / __other__.
 const AGENT_NAME_MATCH = (alias) => `(
   lower(trim(${alias}.agent_name)) = lower(trim(a.sd_agent_name))
+  OR lower(trim(${alias}.agent_name)) = lower(split_part(trim(a.sd_agent_name), ' ', 2) || ' ' || split_part(trim(a.sd_agent_name), ' ', 1))
   OR (length(trim(${alias}.agent_name)) >= 3
-      AND lower(trim(a.sd_agent_name)) LIKE lower(trim(${alias}.agent_name)) || ' %')
+      AND (lower(trim(a.sd_agent_name)) LIKE lower(trim(${alias}.agent_name)) || ' %'
+           OR lower(trim(a.sd_agent_name)) LIKE '% ' || lower(trim(${alias}.agent_name))))
 )`;
 
 // Возвращает SQL-условие и параметры. startIndex — номер следующего свободного $N.
@@ -211,8 +216,12 @@ router.get('/api/list', async (req, res) => {
   }
 
   const full = build(true);
+  // Агент из бота записан именем из Telegram («yangiboyeva _sh»), а фильтр
+  // показывает имя из SalesDoctor. В строке показываем то же, что в фильтре.
   const rows = (await db.pool.query(
-    `SELECT c.id, c.created_at, c.ship_date, c.point_name, c.firm_name, c.agent_name,
+    `SELECT c.id, c.created_at, c.ship_date, c.point_name, c.firm_name,
+            COALESCE((SELECT a.sd_agent_name FROM tgbot.crm_agents a WHERE a.sd_agent_id = c.agent_sd_id LIMIT 1),
+                     c.agent_name) AS agent_name,
             c.product_name, c.product_category, c.complaint_type, c.link_code,
             c.severity, c.resolution, c.status, c.source,
             (SELECT count(*) FROM tgbot.complaint_files f WHERE f.complaint_id = c.id)::int AS media_count
