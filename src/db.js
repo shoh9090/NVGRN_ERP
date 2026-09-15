@@ -575,6 +575,9 @@ async function seed() {
   // Телефон сотрудника в Telegram: по нему бот узнаёт пользователя ERP и его
   // роли (кому слать претензии по звену). Храним только цифры.
   await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS tg_phone TEXT").catch(() => {});
+  // Чат сотрудника с ботом. Пишет бот, когда человек поделился номером,
+  // совпавшим с tg_phone: без этого бот не может написать первым.
+  await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS tg_chat_id BIGINT").catch(() => {});
   {
     const fin = await pool.query("SELECT id FROM roles WHERE is_finance = TRUE LIMIT 1");
     let finId = fin.rows[0] && fin.rows[0].id;

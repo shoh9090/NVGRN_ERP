@@ -24,6 +24,10 @@
   Роль <strong>«Администратор» = полный доступ</strong>: все плитки и все действия, как у владельца.
   Отметьте её у пользователя — и он увидит систему так же, как вы.
 </p>
+<p class="muted" style="margin:0 0 14px">
+  <strong>Телефон (Telegram)</strong> нужен тем, кому бот пишет лично (например, руководителям звеньев по претензиям).
+  После того как номер указан, сотрудник открывает бота и нажимает «Поделиться номером» — рядом с телефоном появится «в боте ✓».
+</p>
 
 <section class="card">
   <h3>Добавить пользователя</h3>
@@ -68,7 +72,8 @@
           </td>
           <td>
             <details>
-              <summary><%= u.tg_phone ? ((u.tg_phone.length === 9 ? '+998' : '+') + u.tg_phone) : '—' %></summary>
+              <summary><%= u.tg_phone ? ((u.tg_phone.length === 9 ? '+998' : '+') + u.tg_phone) : '—' %><% if (u.tg_phone) { %>
+                <% if (u.tg_chat_id) { %><span title="Сотрудник открыл бота и поделился номером — бот может ему писать" style="color:#2e7d32;font-weight:700"> · в боте ✓</span><% } else { %><span title="Бот не может написать первым: сотруднику нужно открыть бота и нажать «Поделиться номером»" style="color:#b25b00;font-weight:700"> · ждём в боте</span><% } %><% } %></summary>
               <form method="POST" action="/admin/users/<%= u.id %>/phone" class="inline-form">
                 <input name="tg_phone" type="tel" value="<%= u.tg_phone || '' %>" placeholder="+998 90 123 45 67">
                 <button type="submit">Сохранить</button>
