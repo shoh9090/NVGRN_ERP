@@ -6,6 +6,8 @@ const TelegramBot = require("node-telegram-bot-api");
 const db = require("./db");
 const sd = require("./salesdoctor");
 const complaints = require("./complaints"); // мастер претензий (Этап 3)
+const hubStaffMod = require("./hub-staff"); // сотрудники из ERP, узнаём по телефону
+const hubStaff = hubStaffMod(db);
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const ADMIN_TG_ID = process.env.ADMIN_TG_ID;
@@ -1261,10 +1263,23 @@ async function main() {
         await db.query("INSERT INTO notification_log (kind, dedup_key, target_chat_id, target_role) VALUES ('confirm',$1,$2,$3) ON CONFLICT (dedup_key) DO NOTHING", [`confirm:${stf.id}`, chatId, stf.role]).catch(() => {});
         return;
       }
-      // 2) Клиент?
+      // 2) Сотрудник из ERP: номер указан в карточке пользователя Hub
+      //    (Админ-панель → Пользователи). Доступ выдал админ — заявка не нужна.
+      //    Запоминаем чат: теперь бот может писать ему первым (претензии по звену).
+      const hu = await hubStaff.byPhone9(phone9);
+      if (hu) {
+        await hubStaff.rememberChat(hu.id, chatId);
+        await db.logEvent("hub_user_auth", chatId, { user_id: hu.id });
+        bot.sendMessage(chatId,
+          `Здравствуйте, ${hu.full_name}! Вы подключены как сотрудник Novagreen${hu.roles ? " (" + hu.roles + ")" : ""}.` + "\n"
+          + "Сюда будут приходить претензии клиентов по вашей зоне.",
+          { reply_markup: { remove_keyboard: true } });
+        return;
+      }
+      // 3) Клиент?
       const res = await onboard(chatId, msg.from, phone9, c.phone_number, lang);
       if (res.linked) { bot.sendMessage(chatId, res.text, mainMenu(lang)); return; }
-      // 3) Неизвестный номер — доступ ЗАКРЫТ. Никаких самозаявок: чужой не должен попадать
+      // 4) Неизвестный номер — доступ ЗАКРЫТ. Никаких самозаявок: чужой не должен попадать
       //    в очередь на подтверждение и тем более видеть клиентскую базу. Сотрудников заводит
       //    администратор вручную (Hub → «Телеграм-сотрудники»), там же он назначает роль и агента.
       await db.logEvent("access_denied", chatId, { phone: phone9 });
@@ -1475,6 +1490,11 @@ async function main() {
     const lang = await getLang(chatId);
     // Не сотрудник и не привязанный клиент/сеть — доступа к меню и данным нет.
     if (!(await isClientUser(msg.from.id))) {
+      // Сотрудник из ERP: меню клиента ему не нужно, а «поделитесь номером»
+      // в ответ на каждое сообщение сбивало бы с толку. Проверяем только здесь,
+      // чтобы не добавлять запрос к базе на каждое сообщение клиента.
+      const hu = await hubStaff.byChat(msg.from.id);
+      if (hu) return bot.sendMessage(chatId, "Я пришлю сюда претензии клиентов по вашей зоне. Отвечать на них — кнопками под сообщением.");
       return bot.sendMessage(chatId, lang === "uz"
         ? "Botdan foydalanish uchun pastdagi tugma bilan raqamingizni yuboring. Raqamingiz Novagreen bazasida bo‘lmasa — agentingizga murojaat qiling."
         : "Чтобы пользоваться ботом, поделитесь номером телефона кнопкой ниже. Если вашего номера нет в базе Novagreen — обратитесь к вашему агенту.", askContact(lang));
