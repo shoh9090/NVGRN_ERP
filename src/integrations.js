@@ -598,7 +598,15 @@ async function syncCrmExpeditors() {
       [e.SD_id, e.code_1C || null, e.name || e.SD_id, norm(e.tel), e.active === 'Y']);
     n++;
   }
-  return n;
+  // Пустой ответ — это сбой SD, а не «всех водителей уволили»: иначе сверка
+  // ниже отключила бы всем доступ к боту.
+  if (!n) throw new Error('SalesDoctor не вернул ни одного водителя — сверку пропускаю, чтобы никого не отключить по ошибке.');
+  const seen = exps.filter((e) => e.SD_id);
+  // Кого SD больше не отдаёт (удалили) — тоже неактивен.
+  await db.pool.query('UPDATE tgbot.crm_expeditors SET is_active = false WHERE NOT (sd_id = ANY($1))', [seen.map((e) => e.SD_id)]);
+  // Сотрудники бота с ролью «экспедитор» — по списку SD (см. driver-sync.js).
+  return require('./driver-sync').applyDriverStaff(db.pool,
+    seen.map((e) => ({ sd_id: e.SD_id, name: e.name || e.SD_id, phone9: norm(e.tel), active: e.active === 'Y' })));
 }
 
 // Карта «торговая точка → контрагент (юрлицо, ИНН)» из getContragent (двухуровневая модель SD).

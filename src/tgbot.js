@@ -214,7 +214,7 @@ router.post('/staff/load-agents', async (req, res) => {
   catch (e) { res.redirect('/tgbot?staff=1&err=' + encodeURIComponent(e.message)); }
 });
 router.post('/staff/load-expeditors', async (req, res) => {
-  try { const n = await integrations.syncCrmExpeditors(); res.redirect('/tgbot?staff=1&msg=' + encodeURIComponent('Загружено экспедиторов из CRM: ' + n)); }
+  try { const r = await integrations.syncCrmExpeditors(); res.redirect('/tgbot?staff=1&msg=' + encodeURIComponent(require('./driver-sync').describe(r))); }
   catch (e) { res.redirect('/tgbot?staff=1&err=' + encodeURIComponent(e.message)); }
 });
 router.post('/staff/sync-clients', async (req, res) => {
@@ -577,5 +577,25 @@ router.post('/import/commit', async (req, res) => {
     await render(res, req, settings, { error: 'Не удалось сохранить: ' + e.message, openImport: true });
   }
 });
+
+// Водители из SalesDoctor — сверка раз в час, чтобы уволенный в SD водитель
+// терял доступ к боту без ручной работы, а новый — получал его сам.
+// Первый запуск через несколько минут после старта: SD медленный, и старт
+// приложения не должен его ждать. Таймеры не держат процесс (unref) — тесты
+// и остановка сервера не зависают. Ошибки только в журнал: SD мог быть
+// недоступен или не настроен, в следующий час попробуем снова.
+const DRIVER_SYNC_MS = 60 * 60 * 1000;
+async function driverSyncTick() {
+  try {
+    const cfg = await integrations.getSdConfig();
+    if (!cfg.url || !cfg.login || !cfg.password) return;
+    await ensureTables();
+    const r = await integrations.syncCrmExpeditors();
+    if (r && (r.created || r.enabled || r.disabled)) console.log('[ВОДИТЕЛИ]', require('./driver-sync').describe(r));
+  } catch (e) { console.warn('[ВОДИТЕЛИ]', e.message); }
+}
+if (process.env.NODE_ENV !== 'test') {
+  setTimeout(() => { driverSyncTick(); setInterval(driverSyncTick, DRIVER_SYNC_MS).unref(); }, 5 * 60 * 1000).unref();
+}
 
 module.exports = router;

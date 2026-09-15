@@ -393,7 +393,7 @@
                   <% } %>
                 </form>
               </td>
-              <td><span class="tgm-chip <%= on?'on':'' %>"><span class="d"></span><%= on?'подтверждён':'ожидает' %></span></td>
+              <td><span class="tgm-chip <%= on?'on':'' %>" title="<%= s.comment || '' %>"><span class="d"></span><%= on ? 'подтверждён' : (s.status==='disabled' ? 'отключён' : (s.status==='rejected' ? 'отклонён' : 'ожидает')) %></span><% if (on && !s.telegram_user_id) { %><div style="font-size:11px;color:#8a958f;margin-top:3px">ещё не открыл бота</div><% } %></td>
               <td style="text-align:right">
                 <form method="POST" action="/tgbot/staff/delete" onsubmit="return confirm('Удалить сотрудника из списка?')">
                   <input type="hidden" name="id" value="<%= s.id %>">
