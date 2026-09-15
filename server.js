@@ -771,6 +771,10 @@ app.use('/', requireAuth, notificationsRouter);
 const healthRouter = require('./src/health');
 app.use('/', requireAuth, healthRouter);
 
+// Журнал изменений ERP (только админ): коммиты из GitHub + отметки выкладок.
+const changelogRouter = require('./src/changelog');
+app.use('/', requireAuth, changelogRouter);
+
 const dict = express.Router();
 dict.use(requireDictAccess);
 

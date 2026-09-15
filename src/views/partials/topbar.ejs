@@ -23,6 +23,8 @@
   </div>
   <div class="topbar-right">
     <div id="conn-root" class="conn-root"></div>
+    <%# Журнал изменений ERP — только админу: что поменялось, когда и кто. %>
+    <% if (user.isAdmin) { %><div id="chg-root" class="chg-root"></div><script src="/static/changes.js?v=<%= V %>" defer></script><% } %>
     <% if (typeof bell === 'undefined' || bell) { %><div id="bell-root" class="bell-root"></div><% } %>
     <% if (isHome && user.isAdmin) { %><a class="btn-ghost" href="/admin/users">Админ-панель</a><% } %>
     <details class="user-menu">
