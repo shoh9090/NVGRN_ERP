@@ -64,6 +64,9 @@ async function ensureComplaintSchema(pool) {
 
   // Назначение продукта (для чего клиент использует продукт) — код из справочника kind='usage'.
   await pool.query(`ALTER TABLE tgbot.complaints ADD COLUMN IF NOT EXISTS product_usage TEXT`);
+  // Для звеньев (kind='link'): роль ERP, чей руководитель отвечает за звено.
+  // Сид справочника эту колонку не трогает — выбор админа переживает рестарт.
+  await pool.query(`ALTER TABLE tgbot.complaint_dicts ADD COLUMN IF NOT EXISTS owner_role_id INT`);
   // Финальный вид продукта в блюде — код из справочника kind='dish_form'.
   await pool.query(`ALTER TABLE tgbot.complaints ADD COLUMN IF NOT EXISTS dish_form TEXT`);
 

@@ -586,10 +586,56 @@
       el('p', { class: 'cmp-hint' }, 'Меняйте названия, порядок и доступность пунктов. Бот подхватит изменения за пару минут. Технический код пункта не показываем — он сохраняется, история не ломается.'),
     ]));
     const act = (arr) => (arr || []).filter((x) => x.active);
+    c.appendChild(await linkOwnersSection());
     c.appendChild(settingsSection('Типы жалоб', 'type', act(byKind.type), links, 'У каждого типа есть «звено» — на чью зону указывает косяк.'));
     c.appendChild(settingsSection('Степень проблемы', 'severity', act(byKind.severity), null));
     c.appendChild(settingsSection('Назначение продукта', 'usage', act(byKind.usage), null, 'Для чего используется продукт. Заполните под себя — список пока пустой.'));
     c.appendChild(settingsSection('Финальный вид в блюде', 'dish_form', act(byKind.dish_form), null, 'Каким был продукт в блюде: цельный лист, нарезка, пюре…'));
+  }
+
+  // Кто отвечает за звено. По выбранной роли бот находит руководителя и пишет
+  // ему лично: критичные претензии — на решение, простые — для сведения.
+  // Рядом показываем, кому из этой роли бот реально сможет написать: без
+  // телефона в карточке пользователя ERP человеку не придёт ничего.
+  async function linkOwnersSection() {
+    let d;
+    try { d = await api('/link-owners'); } catch (e) { return el('div', { class: 'cmp-empty' }, 'Не удалось загрузить: ' + e.message); }
+    const list = el('div', { class: 'cmp-set-list' });
+    const note = (roleId) => {
+      const r = d.roles.find((x) => x.id === roleId);
+      if (!r) return el('span', { class: 'cmp-hint', style: 'margin:0' }, 'Никто не назначен — бот никому не напишет.');
+      if (!r.with_phone) {
+        return el('span', { class: 'cmp-hint', style: 'margin:0;color:var(--red)' },
+          r.people ? 'У людей этой роли не указан телефон в Telegram — бот не сможет написать. Укажите его в Админ-панели → Пользователи.'
+            : 'В этой роли пока никого нет.');
+      }
+      return el('span', { class: 'cmp-hint', style: 'margin:0;color:var(--forest)' }, 'Получат: ' + r.names);
+    };
+    d.links.forEach((l) => {
+      const noteBox = el('div', {}, [note(l.owner_role_id)]);
+      const sel = el('select', {
+        class: 'cmp-edit',
+        onchange: async (e) => {
+          const roleId = e.target.value ? Number(e.target.value) : null;
+          try {
+            await api('/link-owner', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: l.code, role_id: roleId }) });
+            noteBox.innerHTML = ''; noteBox.appendChild(note(roleId));
+            toast('Сохранено');
+          } catch (err) { toast(err.message, true); }
+        },
+      }, [
+        el('option', { value: '' }, '— не назначено —'),
+        ...d.roles.map((r) => el('option', { value: r.id, selected: r.id === l.owner_role_id || null }, r.name)),
+      ]);
+      list.appendChild(el('div', { class: 'cmp-set-row', style: 'display:grid;grid-template-columns:minmax(160px,220px) minmax(200px,260px) 1fr;gap:10px;align-items:center' }, [
+        el('b', {}, l.label_ru), sel, noteBox,
+      ]));
+    });
+    return el('div', { class: 'cmp-panel cmp-set-panel' }, [
+      el('h3', {}, 'Кто отвечает за звено'),
+      el('p', { class: 'cmp-hint' }, 'Руководитель звена получает претензию лично в боте: критичную — чтобы принять решение, простую — для сведения (её решает агент). Роль и телефон сотрудника задаются в Админ-панели → Пользователи.'),
+      list,
+    ]);
   }
 
   function settingsSection(title, kind, items, links, hint) {

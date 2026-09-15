@@ -132,6 +132,39 @@ router.get('/api/dicts/all', async (req, res) => {
   res.json({ items: r.rows });
 });
 
+// Кто отвечает за звено: роль ERP для каждого звена + сколько людей этой роли
+// указали телефон в Telegram (без телефона бот не сможет им написать).
+router.get('/api/link-owners', async (req, res) => {
+  const links = (await db.pool.query(
+    `SELECT code, label_ru, owner_role_id FROM tgbot.complaint_dicts
+      WHERE kind = 'link' AND active ORDER BY sort_order, id`)).rows;
+  const roles = (await db.pool.query(
+    `SELECT r.id, r.name,
+            count(u.id) FILTER (WHERE u.is_active)::int AS people,
+            count(u.id) FILTER (WHERE u.is_active AND COALESCE(u.tg_phone, '') <> '')::int AS with_phone,
+            COALESCE(string_agg(u.full_name, ', ' ORDER BY u.full_name)
+                     FILTER (WHERE u.is_active AND COALESCE(u.tg_phone, '') <> ''), '') AS names
+       FROM roles r
+       LEFT JOIN user_roles ur ON ur.role_id = r.id
+       LEFT JOIN users u ON u.id = ur.user_id
+      GROUP BY r.id, r.name ORDER BY r.name`)).rows;
+  res.json({ links, roles });
+});
+
+router.post('/api/link-owner', requireManager, express.json(), async (req, res) => {
+  const code = String(req.body.code || '');
+  const roleId = req.body.role_id ? parseInt(req.body.role_id, 10) : null;
+  if (roleId) {
+    const ok = (await db.pool.query('SELECT 1 FROM roles WHERE id = $1', [roleId])).rowCount;
+    if (!ok) return res.status(400).json({ error: 'Такой роли нет' });
+  }
+  const r = await db.pool.query(
+    "UPDATE tgbot.complaint_dicts SET owner_role_id = $1 WHERE kind = 'link' AND code = $2", [roleId, code]);
+  if (!r.rowCount) return res.status(404).json({ error: 'Звено не найдено' });
+  await db.log(req.user.id, 'complaint_link_owner', `${code}: ${roleId || '—'}`);
+  res.json({ ok: true });
+});
+
 // Добавить пункт. Код генерируем сами (стабильный, человеку не показываем).
 router.post('/api/dict', requireManager, express.json(), async (req, res) => {
   const { kind, label_ru, link_code, sort_order } = req.body || {};
