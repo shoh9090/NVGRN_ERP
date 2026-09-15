@@ -572,6 +572,9 @@ async function seed() {
   // Роль администратора
   // Роль «Финансы/Бухгалтерия»: ведёт Кассу и Обязательства (без полного админа).
   await pool.query("ALTER TABLE roles ADD COLUMN IF NOT EXISTS is_finance BOOLEAN DEFAULT FALSE").catch(() => {});
+  // Телефон сотрудника в Telegram: по нему бот узнаёт пользователя ERP и его
+  // роли (кому слать претензии по звену). Храним только цифры.
+  await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS tg_phone TEXT").catch(() => {});
   {
     const fin = await pool.query("SELECT id FROM roles WHERE is_finance = TRUE LIMIT 1");
     let finId = fin.rows[0] && fin.rows[0].id;

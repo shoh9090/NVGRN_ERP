@@ -239,6 +239,17 @@ admin.get('/users', async (req, res) => {
   res.render('admin/users', { ...(await adminContext('users')), user: req.user, users: users.rows, roles: roles.rows, msg: req.query.msg || '' });
 });
 
+// Телефон для Telegram: только цифры; сравнение с ботом — по последним 9.
+// Пусто — законно (не всем сотрудникам нужен бот).
+const tgPhoneDigits = (v) => String(v || '').replace(/\D/g, '');
+async function tgPhoneTaken(digits, exceptUserId) {
+  if (!digits) return null;
+  const r = await db.pool.query(
+    `SELECT full_name FROM users WHERE tg_phone IS NOT NULL AND tg_phone <> ''
+       AND right(tg_phone, 9) = right($1, 9) AND id <> $2 LIMIT 1`, [digits, exceptUserId || 0]);
+  return r.rows[0] ? r.rows[0].full_name : null;
+}
+
 admin.post('/users', async (req, res) => {
   const { login, full_name, password } = req.body;
   let roleIds = req.body.role_ids || [];
@@ -246,9 +257,13 @@ admin.post('/users', async (req, res) => {
   if (!login || !full_name || !password) return res.redirect('/admin/users');
   const hash = await bcrypt.hash(password, 10);
   try {
+    // Один номер — один человек, иначе бот не поймёт, кто ему пишет.
+    const phone = tgPhoneDigits(req.body.tg_phone);
+    if (phone && phone.length < 9) return res.redirect('/admin/users?msg=phone_bad');
+    if (phone && await tgPhoneTaken(phone, 0)) return res.redirect('/admin/users?msg=phone_taken');
     const ins = await db.pool.query(
-      'INSERT INTO users (login, full_name, password_hash) VALUES ($1, $2, $3) RETURNING id',
-      [login.trim(), full_name.trim(), hash]
+      'INSERT INTO users (login, full_name, password_hash, tg_phone) VALUES ($1, $2, $3, $4) RETURNING id',
+      [login.trim(), full_name.trim(), hash, phone || null]
     );
     for (const rid of roleIds) {
       await db.pool.query('INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [ins.rows[0].id, rid]);
@@ -286,6 +301,17 @@ admin.post('/users/:id/delete', async (req, res) => {
   await db.pool.query('DELETE FROM users WHERE id = $1', [targetId]);
   await db.log(req.user.id, 'delete_user', `${targetId} (${info.login})`);
   res.redirect('/admin/users?msg=user_deleted');
+});
+
+admin.post('/users/:id/phone', async (req, res) => {
+  const targetId = parseInt(req.params.id, 10);
+  const phone = tgPhoneDigits(req.body.tg_phone);
+  if (phone && phone.length < 9) return res.redirect('/admin/users?msg=phone_bad');
+  const taken = await tgPhoneTaken(phone, targetId);
+  if (taken) return res.redirect('/admin/users?msg=phone_taken');
+  await db.pool.query('UPDATE users SET tg_phone = $1 WHERE id = $2', [phone || null, targetId]);
+  await db.log(req.user.id, 'user_tg_phone', `${targetId}: ${phone || '—'}`);
+  res.redirect('/admin/users?msg=phone_saved');
 });
 
 admin.post('/users/:id/password', async (req, res) => {
