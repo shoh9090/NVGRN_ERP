@@ -564,6 +564,31 @@ async function main() {
     { command: "start", description: "Старт / язык" },
   ]).catch(() => {});
 
+  // Сотрудникам из ERP (производство, закуп…) — своё меню внизу чата: общее
+  // меню бота клиентское («Оформить заказ»), им оно ни к чему и сбивает с толку.
+  // Telegram хранит такое меню за чатом; ставим один раз за жизнь процесса.
+  const HUB_HELP = "Сюда приходят претензии клиентов по вашей зоне. Отвечать на них — кнопками под сообщением.";
+  const hubMenuDone = new Set();
+  function applyHubMenu(chatId) {
+    const key = String(chatId);
+    if (hubMenuDone.has(key)) return;
+    hubMenuDone.add(key);
+    bot.setMyCommands([{ command: "menu", description: "Что приходит в этот чат" }], { scope: { type: "chat", chat_id: chatId } })
+      .catch((e) => { hubMenuDone.delete(key); console.warn("[МЕНЮ сотрудника]", e.message); });
+  }
+  // Сотрудник ERP нажал клиентскую команду (меню у него могло остаться старым):
+  // объясняем, что сюда приходит, вместо «номер не привязан к точке».
+  // Telegram-сотрудников и клиентов не трогаем — у них свои меню.
+  async function hubHelpIfStaff(msg) {
+    const hu = await hubStaff.byChat(msg.from.id);
+    if (!hu) return false;
+    if (await getStaff(msg.from.id)) return false;
+    if (await isClientUser(msg.from.id)) return false;
+    applyHubMenu(msg.chat.id);
+    await bot.sendMessage(msg.chat.id, HUB_HELP, { reply_markup: { remove_keyboard: true } });
+    return true;
+  }
+
   // Мастер претензий: отдаём ему нужные помощники бота (логику заказов он не трогает).
   complaints.init({ bot, db, getLang, pointsOfUser, phone9OfUser, pointsOfAgent, getOrders14, mainMenu, notifyClientAgent, notifyAgentReact, notifyManagers });
 
@@ -1240,12 +1265,13 @@ async function main() {
   bot.onText(/\/menu/, async (msg) => {
     const stf = await getStaff(msg.from.id);
     if (stf) { bot.sendMessage(msg.chat.id, `Меню (${roleTitle(stf.role)}):`, staffMenu(stf.role)); return; }
+    if (await hubHelpIfStaff(msg)) return;
     const lang = await getLang(msg.chat.id);
     if (!(await isClientUser(msg.from.id))) { bot.sendMessage(msg.chat.id, lang === "uz" ? "Botdan foydalanish uchun raqamingizni yuboring yoki agentingizga murojaat qiling." : "Чтобы пользоваться ботом, поделитесь номером или обратитесь к вашему агенту.", askContact(lang)); return; }
     bot.sendMessage(msg.chat.id, lang === "uz" ? "Menyu:" : "Меню:", mainMenu(lang));
   });
-  bot.onText(/\/zakaz|\/order|\/заказ/i, async (msg) => doZakaz(msg.chat.id, msg.from.id, await getLang(msg.chat.id)));
-  bot.onText(/\/myorder|\/status|\/мойзаказ/i, async (msg) => doMyOrder(msg.chat.id, msg.from.id, await getLang(msg.chat.id)));
+  bot.onText(/\/zakaz|\/order|\/заказ/i, async (msg) => { if (await hubHelpIfStaff(msg)) return; doZakaz(msg.chat.id, msg.from.id, await getLang(msg.chat.id)); });
+  bot.onText(/\/myorder|\/status|\/мойзаказ/i, async (msg) => { if (await hubHelpIfStaff(msg)) return; doMyOrder(msg.chat.id, msg.from.id, await getLang(msg.chat.id)); });
 
   bot.on("contact", async (msg) => {
     const chatId = msg.chat.id; const lang = await getLang(chatId); const c = msg.contact;
@@ -1270,6 +1296,7 @@ async function main() {
       if (hu) {
         await hubStaff.rememberChat(hu.id, chatId);
         await db.logEvent("hub_user_auth", chatId, { user_id: hu.id });
+        applyHubMenu(chatId);
         bot.sendMessage(chatId,
           `Здравствуйте, ${hu.full_name}! Вы подключены как сотрудник Novagreen${hu.roles ? " (" + hu.roles + ")" : ""}.` + "\n"
           + "Сюда будут приходить претензии клиентов по вашей зоне.",
@@ -1494,7 +1521,7 @@ async function main() {
       // в ответ на каждое сообщение сбивало бы с толку. Проверяем только здесь,
       // чтобы не добавлять запрос к базе на каждое сообщение клиента.
       const hu = await hubStaff.byChat(msg.from.id);
-      if (hu) return bot.sendMessage(chatId, "Я пришлю сюда претензии клиентов по вашей зоне. Отвечать на них — кнопками под сообщением.");
+      if (hu) { applyHubMenu(chatId); return bot.sendMessage(chatId, HUB_HELP, { reply_markup: { remove_keyboard: true } }); }
       return bot.sendMessage(chatId, lang === "uz"
         ? "Botdan foydalanish uchun pastdagi tugma bilan raqamingizni yuboring. Raqamingiz Novagreen bazasida bo‘lmasa — agentingizga murojaat qiling."
         : "Чтобы пользоваться ботом, поделитесь номером телефона кнопкой ниже. Если вашего номера нет в базе Novagreen — обратитесь к вашему агенту.", askContact(lang));
