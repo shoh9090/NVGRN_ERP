@@ -18,30 +18,7 @@
 </head>
 <body class="launcher-body" <% if (settings.bg_file_id) { %>style="background-image: linear-gradient(rgba(10,20,12,0.<%= settings.bg_dim || '45' %>), rgba(10,20,12,0.<%= settings.bg_dim || '45' %>)), url('/file/<%= settings.bg_file_id %>');"<% } %>>
 
-  <header class="topbar">
-    <div class="topbar-left">
-      <% if (settings.logo_file_id) { %>
-        <img class="topbar-logo" src="/file/<%= settings.logo_file_id %>" alt="">
-      <% } %>
-      <span class="company"><%= settings.company_name %></span>
-    </div>
-    <div class="topbar-right">
-      <div id="conn-root" class="conn-root"></div>
-      <% if (user.isAdmin) { %><a class="btn-ghost" href="/admin/users">Админ-панель</a><% } %>
-      <details class="user-menu">
-        <summary><%= user.name %></summary>
-        <div class="user-menu-body">
-          <form method="POST" action="/me/password" class="inline-form">
-            <input name="password" type="password" placeholder="Новый пароль (мин. 6)" minlength="6" required>
-            <button type="submit">Сменить пароль</button>
-          </form>
-          <form method="POST" action="/logout">
-            <button type="submit" class="btn-danger-link">Выйти</button>
-          </form>
-        </div>
-      </details>
-    </div>
-  </header>
+  <%- include('partials/topbar', { title: settings.company_name, home: true }) %>
 
   <main class="launcher">
     <h2 class="greeting">Здравствуйте, <%= user.name %>!</h2>
@@ -65,6 +42,8 @@
       </div>
     <% }) %>
   </main>
+  <script>window.HUB_USER = { isAdmin: <%= user.isAdmin ? "true" : "false" %>, name: "<%= user.name %>" };</script>
+  <script src="/static/bell.js?v=<%= V %>"></script>
   <script src="/static/conn.js?v=<%= V %>"></script>
 </body>
 </html>

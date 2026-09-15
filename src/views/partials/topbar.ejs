@@ -1,18 +1,21 @@
 <%#
-  topbar.ejs — единая шапка Hub. Раньше каждая плитка собирала её заново:
-  где-то была кнопка «На главную», где-то нет; где-то логотип, где-то только
-  название; в Справочниках имя пользователя было белым по белому — остаток от
-  тёмной шапки. За образец взят Закуп.
+  topbar.ejs — единая шапка Hub: главная, все плитки и админ-панель.
+  Раньше каждая страница собирала её заново: где-то была кнопка «На главную»,
+  где-то нет; на главной имя открывало меню (сменить пароль, выйти), а в
+  плитках было просто текстом — выйти из плитки было нельзя; в админке имя
+  было серым, без индикаторов связей. За образец взят Закуп.
 
   Параметры (все необязательные, кроме title):
     title    — иконка и название плитки, например '🛒 Закуп'
+    home     — главная Hub: без кнопки возврата, у админа — «Админ-панель»
     backHref — куда ведёт кнопка слева (по умолчанию '/')
     backText — подпись кнопки (по умолчанию 'На главную')
     bell     — показывать колокольчик (по умолчанию да)
 %>
+<% const isHome = typeof home !== 'undefined' && home; %>
 <header class="topbar admin-topbar">
   <div class="topbar-left">
-    <a class="btn-ghost topbar-back" href="<%= typeof backHref !== 'undefined' ? backHref : '/' %>">← <%= typeof backText !== 'undefined' ? backText : 'На главную' %></a>
+    <% if (!isHome) { %><a class="btn-ghost topbar-back" href="<%= typeof backHref !== 'undefined' ? backHref : '/' %>">← <%= typeof backText !== 'undefined' ? backText : 'На главную' %></a><% } %>
     <a class="topbar-brand" href="/" title="На главную Hub">
       <% if (settings && settings.logo_file_id) { %><img class="topbar-logo" src="/file/<%= settings.logo_file_id %>" alt=""><% } %>
       <span class="company"><%= title %></span>
@@ -21,6 +24,18 @@
   <div class="topbar-right">
     <div id="conn-root" class="conn-root"></div>
     <% if (typeof bell === 'undefined' || bell) { %><div id="bell-root" class="bell-root"></div><% } %>
-    <span class="topbar-user"><%= user.name %></span>
+    <% if (isHome && user.isAdmin) { %><a class="btn-ghost" href="/admin/users">Админ-панель</a><% } %>
+    <details class="user-menu">
+      <summary><%= user.name %></summary>
+      <div class="user-menu-body">
+        <form method="POST" action="/me/password" class="inline-form">
+          <input name="password" type="password" placeholder="Новый пароль (мин. 6)" minlength="6" required>
+          <button type="submit">Сменить пароль</button>
+        </form>
+        <form method="POST" action="/logout">
+          <button type="submit" class="btn-danger-link">Выйти</button>
+        </form>
+      </div>
+    </details>
   </div>
 </header>

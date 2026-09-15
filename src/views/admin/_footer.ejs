@@ -1,3 +1,7 @@
   </main>
+  <%# Индикаторы связей и колокольчик в общей шапке — нужны и здесь. %>
+  <script>window.HUB_USER = { isAdmin: true, name: "<%= user.name %>" };</script>
+  <script src="/static/bell.js?v=<%= V %>"></script>
+  <script src="/static/conn.js?v=<%= V %>"></script>
 </body>
 </html>

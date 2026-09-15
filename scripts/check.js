@@ -129,15 +129,15 @@ for (const f of files) {
 // (е) Шапку плитки собирает только общий блок partials/topbar.ejs.
 // Раньше каждая страница писала свою: где-то была кнопка «На главную», где-то
 // нет, где-то логотип, а в Справочниках имя пользователя было белым по белому.
-// Лаунчер (главная) — законное исключение: там нет кнопки возврата, зато есть
-// меню пользователя.
+// Главная и админ-панель — тоже через него (параметр home у главной).
+// Исключение одно — страница входа: там пользователя ещё нет.
 for (const f of files) {
   const p4 = rel(f).split(path.sep).join('/');
-  if (!/^src\/views\/[^/]+\.ejs$/.test(p4)) continue;
-  if (/\/(launcher|login)\.ejs$/.test(p4)) continue;
+  if (!/^src\/views\/(admin\/)?[^/]+\.ejs$/.test(p4)) continue;
+  if (/\/login\.ejs$/.test(p4)) continue;
   const view = fs.readFileSync(f, 'utf8');
   if (!/<header[^>]*class="[^"]*topbar/.test(view)) continue;
-  if (!view.includes("include('partials/topbar'")) {
+  if (!/include\('(\.\.\/)?partials\/topbar'/.test(view)) {
     errors.push(p4 + ': своя шапка вместо общей. Во всём Hub шапка одна — '
       + "<%- include('partials/topbar', { title: '… Название' }) %> (см. src/views/partials/topbar.ejs).");
   }

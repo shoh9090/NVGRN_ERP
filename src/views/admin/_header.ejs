@@ -4,19 +4,12 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Админ-панель — <%= settings.company_name %></title>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v=<%= V %>">
+  <link rel="stylesheet" href="/static/conn.css?v=<%= V %>">
   <style>:root { --brand: <%= settings.brand_color || '#2E7D32' %>; }</style>
 </head>
 <body class="admin-body">
-  <header class="topbar admin-topbar">
-    <div class="topbar-left">
-      <a class="btn-ghost" href="/">← На главную</a>
-      <span class="company">Админ-панель</span>
-    </div>
-    <div class="topbar-right">
-      <span class="muted"><%= user.name %></span>
-    </div>
-  </header>
+  <%- include('../partials/topbar', { title: '⚙️ Админ-панель' }) %>
   <nav class="admin-nav">
     <a href="/admin/users" class="<%= section === 'users' ? 'active' : '' %>">Пользователи</a>
     <a href="/admin/roles" class="<%= section === 'roles' ? 'active' : '' %>">Роли</a>
