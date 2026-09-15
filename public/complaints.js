@@ -417,8 +417,20 @@
         onChange: (v) => { listState.from = v.from; listState.to = v.to; loadList(); },
       }),
       netSel, ptSel, agSel,
-      sel('link', DICTS.link, 'Все звенья'),
-      sel('type', DICTS.type, 'Все типы'),
+      // Звено и тип связаны: у каждого типа своё звено. Выбрали «Производство» —
+      // в списке типов остаются только производственные, иначе можно выбрать
+      // «живность» + «производство» и получить пустую таблицу без объяснений.
+      el('select', {
+        class: 'cmp-f',
+        onchange: (e) => {
+          listState.link = e.target.value;
+          const t = (DICTS.type || []).find((x) => x.code === listState.type);
+          if (listState.link && t && t.link_code !== listState.link) listState.type = '';
+          loadList();
+        },
+      }, opt(DICTS.link, listState.link, 'Все звенья')),
+      sel('type', listState.link ? (DICTS.type || []).filter((x) => x.link_code === listState.link) : DICTS.type,
+        listState.link ? 'Все типы звена' : 'Все типы'),
       sel('severity', DICTS.severity, 'Любая степень'),
       el('input', { type: 'search', class: 'cmp-f cmp-search', placeholder: 'Поиск: продукт, точка, агент…', value: listState.q,
         oninput: (e) => { listState.q = e.target.value; clearTimeout(window.__cmpT); window.__cmpT = setTimeout(loadList, 350); } }),
