@@ -9,6 +9,7 @@ const complaints = require("./complaints"); // мастер претензий (
 const hubStaffMod = require("./hub-staff"); // сотрудники из ERP, узнаём по телефону
 const hubStaff = hubStaffMod(db);
 const logisticsDigest = require("./logistics-digest"); // сводка по доставке руководителю логистики
+const adminMenu = require("./admin-menu"); // у админа кнопки всех ролей — для проверки
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const ADMIN_TG_ID = process.env.ADMIN_TG_ID;
@@ -234,7 +235,7 @@ const STAFF_MENU = {
   logistics: [["🚚 Доставки сегодня"], ["📊 По экспедиторам"], ["📋 Итог дня"], ["⚙️ Напоминания"]],
   expeditor: [["🚚 Мои доставки"]],
   marketing: [["📊 Маркетинг"]],
-  admin: [["🔄 Синхронизация"], ["👤 Telegram-сотрудники"], ["⚠️ Ошибки"], ["📦 Очередь заказов"], ["⚙️ Настройки"]],
+  admin: adminMenu.ADMIN_MENU,
 };
 const staffMenu = (role) => ({ reply_markup: { keyboard: STAFF_MENU[role] || [], resize_keyboard: true } });
 const ROLE_TITLES = { admin: "админ", head_of_sales: "руководитель продаж", logistics: "логистика", expeditor: "экспедитор (водитель)", marketing: "маркетинг", agent: "торговый агент" };
@@ -986,6 +987,16 @@ async function main() {
     } catch (e) { bot.sendMessage(chatId, "Ошибка: " + e.message); }
   }
 
+  // Админ смотрит «как агент/водитель»: кого выбрал (chatId -> { agent, expeditor }).
+  const adminAs = new Map();
+  async function askAdminPick(chatId, kind, button) {
+    const people = kind === "agent"
+      ? (await db.query("SELECT sd_agent_id AS id, sd_agent_name AS name FROM crm_agents WHERE is_active ORDER BY sd_agent_name")).rows
+      : (await db.query("SELECT sd_id AS id, name FROM crm_expeditors WHERE is_active ORDER BY name")).rows;
+    if (!people.length) return bot.sendMessage(chatId, kind === "agent" ? "Список агентов пуст — загрузите агентов в Hub." : "Список водителей пуст — загрузите экспедиторов в Hub.");
+    return bot.sendMessage(chatId, kind === "agent" ? "За какого агента смотреть?" : "За какого водителя смотреть?",
+      { reply_markup: adminMenu.pickerKeyboard(kind, people, button) });
+  }
   async function handleStaffText(chatId, tgId, stf, txt) {
     const soon = () => bot.sendMessage(chatId, "🔜 Скоро — в следующем обновлении.");
     if (txt === "🚫 Не заказали") {
@@ -1017,6 +1028,19 @@ async function main() {
       return soon();
     }
     if (stf.role === "admin") {
+      if (txt === adminMenu.SWITCH) {
+        adminAs.delete(chatId);
+        return bot.sendMessage(chatId, "Хорошо. При следующем нажатии кнопки агента или водителя спрошу, за кого смотреть.");
+      }
+      const as = adminMenu.ROUTE[txt];
+      if (as === "head_of_sales" || as === "logistics") return handleStaffText(chatId, tgId, { ...stf, role: as }, txt);
+      if (as === "agent" || as === "expeditor") {
+        const sel = (adminAs.get(chatId) || {})[as];
+        if (!sel) return askAdminPick(chatId, as, txt);
+        await bot.sendMessage(chatId, `👁 Смотрю как ${as === "agent" ? "агент" : "водитель"}: ${sel.name}`);
+        return handleStaffText(chatId, tgId,
+          { ...stf, role: as, crm_agent_id: as === "agent" ? sel.id : null, expeditor_sd_id: as === "expeditor" ? sel.id : null }, txt);
+      }
       if (txt === "👤 Telegram-сотрудники") return bot.sendMessage(chatId, "Управление сотрудниками: Hub → плитка «Телеграм-бот: ассистент продаж» → «Telegram-сотрудники».");
       if (txt === "🔄 Синхронизация") { bot.sendMessage(chatId, "Запускаю синхронизацию…"); const n = await syncClientsBot(); return bot.sendMessage(chatId, `Готово. Клиентов обновлено: ${n}.`); }
       return soon();
@@ -1387,6 +1411,18 @@ async function main() {
     const key = q.from.id + "|" + val;
     try {
       if (await complaints.onCallback(q)) return; // колбэки мастера претензий (cmpl:*)
+      const pick = adminMenu.parsePick(q.data);
+      if (pick) {
+        const me = await getStaff(q.from.id);
+        if (!me || me.role !== "admin") { await bot.answerCallbackQuery(q.id, { text: "Только для админа.", show_alert: true }); return; }
+        const row = pick.kind === "agent"
+          ? (await db.query("SELECT sd_agent_name AS name FROM crm_agents WHERE sd_agent_id=$1", [pick.id])).rows[0]
+          : (await db.query("SELECT name FROM crm_expeditors WHERE sd_id=$1", [pick.id])).rows[0];
+        adminAs.set(chatId, { ...(adminAs.get(chatId) || {}), [pick.kind]: { id: pick.id, name: (row && row.name) || pick.id } });
+        await bot.answerCallbackQuery(q.id);
+        await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: q.message.message_id }).catch(() => {});
+        return handleStaffText(chatId, q.from.id, me, pick.button);
+      }
       if (act === "lang") { await setLang(chatId, val === "uz" ? "uz" : "ru"); await bot.answerCallbackQuery(q.id); const lang = await getLang(chatId); await bot.sendMessage(chatId, t(lang, "hello"), askContact(lang)); return; }
       const lang = await getLang(chatId);
       if (act === "noop") { await bot.answerCallbackQuery(q.id); return; }
