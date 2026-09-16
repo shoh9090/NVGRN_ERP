@@ -340,6 +340,20 @@ admin.post('/users/:id/phone', async (req, res) => {
   res.redirect('/admin/users?msg=phone_saved');
 });
 
+// Предпросмотр переноса Telegram-сотрудников бота в пользователи ERP (шаг 3 плана
+// docs/plan-single-user-list.md). Только показывает — ничего не записывает.
+admin.get('/users/migration', async (req, res) => {
+  await require('./src/staff-link').linkStaffChats(db.pool).catch(() => {});
+  const staff = (await db.pool.query('SELECT * FROM tgbot.telegram_staff ORDER BY id').catch(() => ({ rows: [] }))).rows;
+  const users = (await db.pool.query('SELECT id, full_name, tg_phone, web_access, bot_role, is_active FROM users')).rows;
+  const names = { agents: {}, drivers: {} };
+  (await db.pool.query('SELECT sd_agent_id, sd_agent_name FROM tgbot.crm_agents').catch(() => ({ rows: [] }))).rows.forEach((a) => { names.agents[a.sd_agent_id] = a.sd_agent_name; });
+  (await db.pool.query('SELECT sd_id, name FROM tgbot.crm_expeditors').catch(() => ({ rows: [] }))).rows.forEach((d) => { names.drivers[d.sd_id] = d.name; });
+  const plan = require('./src/user-migration').planMigration(staff, users, names);
+  const labels = Object.fromEntries(BOT_ROLES.map((r) => [r.code, r.label]));
+  res.render('admin/user-migration', { ...(await adminContext('users')), user: req.user, plan, roleLabel: (c) => labels[c] || c || '—' });
+});
+
 // Доступ в веб, роль в боте и привязка к SalesDoctor — одной формой.
 admin.post('/users/:id/bot', async (req, res) => {
   const targetId = parseInt(req.params.id, 10);
