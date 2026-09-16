@@ -353,7 +353,6 @@
           <button type="button" class="tgm-tab on" data-f="all">Все</button>
           <button type="button" class="tgm-tab" data-f="agent">Агенты</button>
           <button type="button" class="tgm-tab" data-f="expeditor">Экспедиторы</button>
-          <button type="button" class="tgm-tab" data-f="other">Прочие (РОП/логистика/др.)</button>
         </div>
         <table>
           <thead><tr><th>Телефон</th><th>Имя в Telegram</th><th>Агент в CRM (имя/код) и роль</th><th>Статус</th><th></th></tr></thead>
@@ -374,11 +373,8 @@
                   <input type="hidden" name="id" value="<%= s.id %>">
                   <select name="role" onchange="this.form.submit()" title="Роль">
                     <option value="agent" <%= s.role==='agent'?'selected':'' %>>Агент</option>
-                    <option value="head_of_sales" <%= s.role==='head_of_sales'?'selected':'' %>>Руководитель продаж</option>
-                    <option value="logistics" <%= s.role==='logistics'?'selected':'' %>>Логистика</option>
                     <option value="expeditor" <%= s.role==='expeditor'?'selected':'' %>>Экспедитор</option>
-                    <option value="marketing" <%= s.role==='marketing'?'selected':'' %>>Маркетинг</option>
-                    <option value="admin" <%= s.role==='admin'?'selected':'' %>>Админ</option>
+                    <% if (s.role && s.role!=='agent' && s.role!=='expeditor') { %><option value="<%= s.role %>" selected>Руководитель — перенесите в Админ-панель → Пользователи</option><% } %>
                   </select>
                   <% if (!s.role || s.role==='agent') { %>
                     <select name="crm_agent_id" onchange="this.form.submit()" title="Агент CRM">
@@ -421,10 +417,6 @@
           <div class="tgm-note" style="margin:4px 0 8px">Выберите роль. Для агента/водителя выберите его из списка (у водителя ФИО и телефон подставятся из SD). Для РОПа/логистики/маркетинга/админа — впишите ФИО и телефон.</div>
           <form method="POST" action="/tgbot/staff/add-manual" class="tgm-rowform" id="addStaffForm">
             <select name="role" id="addRole" onchange="addStaffToggle()">
-              <option value="head_of_sales">Руководитель продаж</option>
-              <option value="logistics">Логистика</option>
-              <option value="marketing">Маркетинг</option>
-              <option value="admin">Админ</option>
               <option value="agent">Агент</option>
               <option value="expeditor">Экспедитор (водитель)</option>
             </select>

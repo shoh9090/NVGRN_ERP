@@ -23,14 +23,6 @@
   <p style="color:#2e7d32;font-weight:700">Сохранено.</p>
 <% } else if (msg === 'need_password') { %>
   <p class="error">Укажите имя, логин и пароль — они нужны каждому пользователю.</p>
-<% } else if (msg === 'need_agent') { %>
-  <p class="error">Для роли «Агент» выберите агента из SalesDoctor.</p>
-<% } else if (msg === 'need_driver') { %>
-  <p class="error">Для роли «Водитель» выберите водителя из SalesDoctor.</p>
-<% } else if (msg === 'self_web') { %>
-  <p class="error">Нельзя закрыть веб-доступ самому себе.</p>
-<% } else if (msg === 'admin_web') { %>
-  <p class="error">У администратора должен быть доступ в веб-версию. Сначала снимите с него роль «Администратор».</p>
 <% } else if (msg === 'phone_saved') { %>
   <p style="color:#2e7d32;font-weight:700">Телефон сохранён.</p>
 <% } else if (msg === 'phone_taken') { %>
@@ -48,15 +40,12 @@
   После того как номер указан, сотрудник открывает бота и нажимает «Поделиться номером» — рядом с телефоном появится «в боте ✓».
 </p>
 
-<p style="margin:0 0 14px"><a class="btn-ghost" href="/admin/users/migration" title="Что будет при переносе сотрудников бота в пользователи ERP. Ничего не записывает.">Предпросмотр переноса сотрудников бота →</a></p>
-
 <section class="card">
   <h3>Добавить пользователя</h3>
   <form method="POST" action="/admin/users" class="form-row">
     <input name="full_name" placeholder="Имя и фамилия" required>
     <input name="login" placeholder="Логин" required>
     <input name="password" type="text" placeholder="Пароль (мин. 6)" minlength="6" required>
-    <label class="check" title="Агентам и водителям веб-версия не нужна — они работают в Telegram-боте"><input type="checkbox" name="web_access" checked> Доступ в веб</label>
     <input name="tg_phone" type="tel" placeholder="Телефон в Telegram (необязательно)" title="По этому номеру бот узнает сотрудника и будет присылать ему претензии по его зоне">
     <fieldset class="checks">
       <legend>Роли:</legend>
@@ -71,7 +60,7 @@
 <section class="card">
   <table>
     <thead>
-      <tr><th>Имя</th><th>Логин</th><th>Роли</th><th title="По этому номеру бот узнаёт сотрудника">Телефон (Telegram)</th><th title="Доступ в веб-версию и роль в Telegram-боте">Веб и бот</th><th>Статус</th><th>Действия</th></tr>
+      <tr><th>Имя</th><th>Логин</th><th>Роли</th><th title="По этому номеру бот узнаёт сотрудника">Телефон (Telegram)</th><th title="Для руководителей: какие сводки бот присылает по телефону из карточки">Роль в боте</th><th>Статус</th><th>Действия</th></tr>
     </thead>
     <tbody>
       <% users.forEach(function(u) { %>
@@ -104,25 +93,11 @@
           </td>
           <td>
             <% var br = (BOT_ROLES || []).find(function(r){ return r.code && r.code === u.bot_role; }); %>
-            <details>
-              <summary><%= u.web_access === false ? '🚫 без веба' : 'веб ✓' %> · <%= br ? br.label : 'бот —' %></summary>
-              <form method="POST" action="/admin/users/<%= u.id %>/bot" class="form-col" style="gap:6px;min-width:240px;margin-top:6px">
-                <label class="check"><input type="checkbox" name="web_access" <%= u.web_access === false ? '' : 'checked' %>> Доступ в веб-версию</label>
-                <select name="bot_role">
-                  <% (BOT_ROLES || []).forEach(function(r){ %><option value="<%= r.code %>" <%= (u.bot_role || '') === r.code ? 'selected' : '' %>><%= r.label %></option><% }) %>
-                </select>
-                <select name="sd_agent_id" title="Только для роли «Агент»">
-                  <option value="">агент в SalesDoctor —</option>
-                  <% (sdAgents || []).forEach(function(a){ %><option value="<%= a.id %>" <%= u.sd_agent_id === a.id ? 'selected' : '' %>><%= a.name %></option><% }) %>
-                </select>
-                <select name="sd_expeditor_id" title="Только для роли «Водитель»">
-                  <option value="">водитель в SalesDoctor —</option>
-                  <% (sdDrivers || []).forEach(function(d){ %><option value="<%= d.id %>" <%= u.sd_expeditor_id === d.id ? 'selected' : '' %>><%= d.name %></option><% }) %>
-                </select>
-                <button type="submit">Сохранить</button>
-                <span class="muted" style="font-size:11.5px">Пока роль в боте действует через плитку бота; после переноса (план) — отсюда.</span>
-              </form>
-            </details>
+            <form method="POST" action="/admin/users/<%= u.id %>/bot" class="inline-form">
+              <select name="bot_role" onchange="this.form.submit()" title="Руководителю бот присылает сводки его роли. Агенты и водители — в плитке бота.">
+                <% (BOT_ROLES || []).forEach(function(r){ %><option value="<%= r.code %>" <%= (u.bot_role || '') === r.code ? 'selected' : '' %>><%= r.label %></option><% }) %>
+              </select>
+            </form>
           </td>
           <td><%= u.is_active ? 'Активен' : 'Отключён' %></td>
           <td class="actions">
