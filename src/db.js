@@ -578,6 +578,13 @@ async function seed() {
   // Чат сотрудника с ботом. Пишет бот, когда человек поделился номером,
   // совпавшим с tg_phone: без этого бот не может написать первым.
   await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS tg_chat_id BIGINT").catch(() => {});
+  // Один список людей (docs/plan-single-user-list.md): доступ в веб и роль в боте —
+  // независимо у каждого. Агентам и водителям веб не нужен.
+  await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS web_access BOOLEAN NOT NULL DEFAULT TRUE").catch(() => {});
+  await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS bot_role TEXT").catch(() => {});
+  await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS sd_agent_id TEXT").catch(() => {});
+  await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS sd_expeditor_id TEXT").catch(() => {});
+  await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS source TEXT").catch(() => {});
   {
     const fin = await pool.query("SELECT id FROM roles WHERE is_finance = TRUE LIMIT 1");
     let finId = fin.rows[0] && fin.rows[0].id;

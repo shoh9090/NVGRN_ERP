@@ -44,11 +44,16 @@ function signToken(user) {
   );
 }
 
+const webAccess = require('./src/web-access');
+webAccess.init(db.pool);
+
 async function loadUser(req, res, next) {
   const token = req.cookies.hub_token;
   if (token) {
     try {
       req.user = jwt.verify(token, JWT_SECRET);
+      // Отключённый или без веб-доступа — старая сессия больше не пускает (см. src/web-access.js).
+      if (!webAccess.sessionAllowed(req.user)) { req.user = undefined; res.clearCookie('hub_token'); }
     } catch (e) {
       res.clearCookie('hub_token');
     }
@@ -86,6 +91,8 @@ app.post('/login', async (req, res) => {
   if (!ok) {
     return res.render('login', { settings, error: 'Неверный логин или пароль' });
   }
+  const denied = webAccess.loginVerdict(user);
+  if (denied) return res.render('login', { settings, error: denied });
   const rolesQ = await db.pool.query(
     `SELECT r.id, r.name, r.is_admin, r.is_finance FROM roles r
      JOIN user_roles ur ON ur.role_id = r.id WHERE ur.user_id = $1`,
@@ -279,6 +286,7 @@ admin.post('/users', async (req, res) => {
 
 admin.post('/users/:id/toggle', async (req, res) => {
   await db.pool.query('UPDATE users SET is_active = NOT is_active WHERE id = $1', [req.params.id]);
+  await webAccess.refresh();
   await db.log(req.user.id, 'toggle_user', req.params.id);
   res.redirect('/admin/users');
 });

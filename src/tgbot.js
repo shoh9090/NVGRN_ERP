@@ -106,6 +106,8 @@ async function ensureTables() {
   )`);
   await db.pool.query(`CREATE INDEX IF NOT EXISTS idx_exp_phone ON tgbot.crm_expeditors(phone_normalized)`);
   await db.pool.query(`ALTER TABLE tgbot.telegram_staff ADD COLUMN IF NOT EXISTS expeditor_sd_id TEXT`); // привязка водителя к экспедитору SD
+  // Ссылка на пользователя ERP — один список людей (docs/plan-single-user-list.md).
+  await db.pool.query(`ALTER TABLE tgbot.telegram_staff ADD COLUMN IF NOT EXISTS hub_user_id INT`);
   await db.pool.query(`ALTER TABLE tgbot.point_contacts ADD COLUMN IF NOT EXISTS active TEXT`);
   await db.pool.query(`ALTER TABLE tgbot.point_contacts ADD COLUMN IF NOT EXISTS last_order_date DATE`);
   await db.pool.query(`CREATE TABLE IF NOT EXISTS tgbot.salesdoctor_sync_log (
