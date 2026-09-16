@@ -245,7 +245,10 @@ admin.get('/users', async (req, res) => {
      GROUP BY u.id ORDER BY u.id`
   );
   const roles = await db.pool.query('SELECT * FROM roles ORDER BY id');
-  res.render('admin/users', { ...(await adminContext('users')), user: req.user, users: users.rows, roles: roles.rows, msg: req.query.msg || '' });
+  // Списки из SalesDoctor для привязки агента и водителя (заполняются кнопками загрузки в плитке бота).
+  const sdAgents = (await db.pool.query("SELECT sd_agent_id AS id, sd_agent_name AS name FROM tgbot.crm_agents WHERE is_active ORDER BY sd_agent_name").catch(() => ({ rows: [] }))).rows;
+  const sdDrivers = (await db.pool.query("SELECT sd_id AS id, name FROM tgbot.crm_expeditors WHERE is_active ORDER BY name").catch(() => ({ rows: [] }))).rows;
+  res.render('admin/users', { ...(await adminContext('users')), user: req.user, users: users.rows, roles: roles.rows, sdAgents, sdDrivers, BOT_ROLES, msg: req.query.msg || '' });
 });
 
 // Телефон для Telegram: только цифры; сравнение с ботом — по последним 9.
@@ -259,20 +262,33 @@ async function tgPhoneTaken(digits, exceptUserId) {
   return r.rows[0] ? r.rows[0].full_name : null;
 }
 
+// Роли в боте — фиксированный список: за каждой стоит своя логика бота.
+const BOT_ROLES = [
+  { code: '', label: '— нет —' },
+  { code: 'agent', label: 'Агент' },
+  { code: 'expeditor', label: 'Водитель (экспедитор)' },
+  { code: 'head_of_sales', label: 'Руководитель продаж' },
+  { code: 'logistics', label: 'Логистика' },
+  { code: 'marketing', label: 'Маркетинг' },
+  { code: 'admin', label: 'Админ' },
+];
+
 admin.post('/users', async (req, res) => {
   const { login, full_name, password } = req.body;
   let roleIds = req.body.role_ids || [];
   if (!Array.isArray(roleIds)) roleIds = [roleIds];
-  if (!login || !full_name || !password) return res.redirect('/admin/users');
-  const hash = await bcrypt.hash(password, 10);
+  // Без доступа в веб пароль не нужен: ставим случайный, войти им всё равно нельзя.
+  const webAccessOn = req.body.web_access === 'on';
+  if (!login || !full_name || (webAccessOn && !password)) return res.redirect('/admin/users?msg=need_password');
+  const hash = await bcrypt.hash(webAccessOn ? password : require('crypto').randomBytes(24).toString('hex'), 10);
   try {
     // Один номер — один человек, иначе бот не поймёт, кто ему пишет.
     const phone = tgPhoneDigits(req.body.tg_phone);
     if (phone && phone.length < 9) return res.redirect('/admin/users?msg=phone_bad');
     if (phone && await tgPhoneTaken(phone, 0)) return res.redirect('/admin/users?msg=phone_taken');
     const ins = await db.pool.query(
-      'INSERT INTO users (login, full_name, password_hash, tg_phone) VALUES ($1, $2, $3, $4) RETURNING id',
-      [login.trim(), full_name.trim(), hash, phone || null]
+      'INSERT INTO users (login, full_name, password_hash, tg_phone, web_access, source) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
+      [login.trim(), full_name.trim(), hash, phone || null, webAccessOn, 'manual']
     );
     for (const rid of roleIds) {
       await db.pool.query('INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [ins.rows[0].id, rid]);
@@ -322,6 +338,30 @@ admin.post('/users/:id/phone', async (req, res) => {
   await db.pool.query('UPDATE users SET tg_phone = $1 WHERE id = $2', [phone || null, targetId]);
   await db.log(req.user.id, 'user_tg_phone', `${targetId}: ${phone || '—'}`);
   res.redirect('/admin/users?msg=phone_saved');
+});
+
+// Доступ в веб, роль в боте и привязка к SalesDoctor — одной формой.
+admin.post('/users/:id/bot', async (req, res) => {
+  const targetId = parseInt(req.params.id, 10);
+  const web = req.body.web_access === 'on';
+  const role = BOT_ROLES.some((r) => r.code && r.code === req.body.bot_role) ? req.body.bot_role : null;
+  const agentId = role === 'agent' ? (String(req.body.sd_agent_id || '').trim() || null) : null;
+  const driverId = role === 'expeditor' ? (String(req.body.sd_expeditor_id || '').trim() || null) : null;
+  if (role === 'agent' && !agentId) return res.redirect('/admin/users?msg=need_agent');
+  if (role === 'expeditor' && !driverId) return res.redirect('/admin/users?msg=need_driver');
+  if (!web) {
+    // Не закрываем веб самому себе и последнему администратору — иначе в ERP никто не войдёт.
+    if (targetId === req.user.id) return res.redirect('/admin/users?msg=self_web');
+    const isAdmin = (await db.pool.query(
+      'SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = $1 AND r.is_admin = TRUE LIMIT 1', [targetId])).rows.length > 0;
+    if (isAdmin) return res.redirect('/admin/users?msg=admin_web');
+  }
+  await db.pool.query(
+    'UPDATE users SET web_access = $1, bot_role = $2, sd_agent_id = $3, sd_expeditor_id = $4 WHERE id = $5',
+    [web, role, agentId, driverId, targetId]);
+  await db.log(req.user.id, 'user_bot_access', `${targetId}: веб=${web} бот=${role || '—'}`);
+  await webAccess.refresh();
+  res.redirect('/admin/users?msg=bot_saved');
 });
 
 admin.post('/users/:id/password', async (req, res) => {
