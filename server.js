@@ -226,6 +226,8 @@ async function adminContext(section) {
 
 // Пользователи
 admin.get('/users', async (req, res) => {
+  // Кто подключён к боту как Telegram-сотрудник — отмечаем «в боте» и здесь (см. staff-link.js).
+  await require('./src/staff-link').linkStaffChats(db.pool).catch(() => {});
   const users = await db.pool.query(
     `SELECT u.*, COALESCE(string_agg(r.name, ', ' ORDER BY r.name), '—') AS role_names,
             COALESCE(array_agg(r.id) FILTER (WHERE r.id IS NOT NULL), '{}') AS role_ids,

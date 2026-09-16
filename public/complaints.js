@@ -609,7 +609,11 @@
           r.people ? 'У людей этой роли не указан телефон в Telegram — бот не сможет написать. Укажите его в Админ-панели → Пользователи.'
             : 'В этой роли пока никого нет.');
       }
-      return el('span', { class: 'cmp-hint', style: 'margin:0;color:var(--forest)' }, 'Получат: ' + r.names);
+      // Бот пишет только тем, кто открыл его и поделился номером; остальным — «ждём в боте».
+      return el('span', { class: 'cmp-hint', style: 'margin:0' }, [
+        r.names ? el('span', { style: 'color:var(--forest)' }, 'Получат: ' + r.names) : el('span', { style: 'color:var(--red)' }, 'Никто из роли ещё не подключился к боту.'),
+        r.waiting ? el('span', { style: 'color:#b25b00' }, (r.names ? ' · ' : ' ') + 'Ждём в боте: ' + r.waiting) : null,
+      ]);
     };
     d.links.forEach((l) => {
       const noteBox = el('div', {}, [note(l.owner_role_id)]);

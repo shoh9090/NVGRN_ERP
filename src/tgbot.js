@@ -590,6 +590,7 @@ async function driverSyncTick() {
     const cfg = await integrations.getSdConfig();
     if (!cfg.url || !cfg.login || !cfg.password) return;
     await ensureTables();
+    await require('./staff-link').linkStaffChats(db.pool).catch(() => {});
     const r = await integrations.syncCrmExpeditors();
     if (r && (r.created || r.enabled || r.disabled)) console.log('[ВОДИТЕЛИ]', require('./driver-sync').describe(r));
   } catch (e) { console.warn('[ВОДИТЕЛИ]', e.message); }

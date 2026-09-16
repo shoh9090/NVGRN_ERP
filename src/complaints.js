@@ -135,6 +135,7 @@ router.get('/api/dicts/all', async (req, res) => {
 // Кто отвечает за звено: роль ERP для каждого звена + сколько людей этой роли
 // указали телефон в Telegram (без телефона бот не сможет им написать).
 router.get('/api/link-owners', async (req, res) => {
+  await require('./staff-link').linkStaffChats(db.pool).catch(() => {});
   const links = (await db.pool.query(
     `SELECT code, label_ru, owner_role_id FROM tgbot.complaint_dicts
       WHERE kind = 'link' AND active ORDER BY sort_order, id`)).rows;
@@ -143,7 +144,9 @@ router.get('/api/link-owners', async (req, res) => {
             count(u.id) FILTER (WHERE u.is_active)::int AS people,
             count(u.id) FILTER (WHERE u.is_active AND COALESCE(u.tg_phone, '') <> '')::int AS with_phone,
             COALESCE(string_agg(u.full_name, ', ' ORDER BY u.full_name)
-                     FILTER (WHERE u.is_active AND COALESCE(u.tg_phone, '') <> ''), '') AS names
+                     FILTER (WHERE u.is_active AND COALESCE(u.tg_phone, '') <> '' AND u.tg_chat_id IS NOT NULL), '') AS names,
+            COALESCE(string_agg(u.full_name, ', ' ORDER BY u.full_name)
+                     FILTER (WHERE u.is_active AND COALESCE(u.tg_phone, '') <> '' AND u.tg_chat_id IS NULL), '') AS waiting
        FROM roles r
        LEFT JOIN user_roles ur ON ur.role_id = r.id
        LEFT JOIN users u ON u.id = ur.user_id
