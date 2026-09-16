@@ -180,7 +180,13 @@ async function isClientUser(tgId) {
 async function getStaff(tgId) {
   const r = await db.query("SELECT role, crm_agent_id, expeditor_sd_id, status FROM telegram_staff WHERE telegram_user_id=$1", [tgId]);
   const s = r.rows[0];
-  return (s && s.status === "confirmed" && s.role) ? s : null;
+  if (s && s.status === "confirmed" && s.role) return s;
+  // Руководитель из ERP: «Роль в боте» в карточке пользователя + подключённый телефон.
+  const hu = await hubStaff.byChat(tgId);
+  if (hu && hubStaffMod.MANAGER_ROLES.has(hu.bot_role)) {
+    return { role: hu.bot_role, crm_agent_id: null, expeditor_sd_id: null, status: "confirmed", hub_user_id: hu.id };
+  }
+  return null;
 }
 async function staffByPhone9(p9) {
   if (!p9) return null;
@@ -714,8 +720,11 @@ async function main() {
     return logisticsDigest.buildLogisticsDigest({ day, orders, nameOf, reminded, connected, morning });
   }
   async function sendLogisticsDigest(day, morning) {
-    const heads = (await db.query(
-      "SELECT telegram_chat_id FROM telegram_staff WHERE role='logistics' AND status='confirmed' AND telegram_chat_id IS NOT NULL")).rows;
+    const chats = new Set((await db.query(
+      "SELECT telegram_chat_id FROM telegram_staff WHERE role='logistics' AND status='confirmed' AND telegram_chat_id IS NOT NULL")).rows
+      .map((h) => String(h.telegram_chat_id)));
+    (await hubStaff.chatsByRole("logistics")).forEach((c) => chats.add(String(c)));   // логисты из ERP
+    const heads = [...chats].map((c) => ({ telegram_chat_id: c }));
     if (!heads.length) return 0;
     const text = await logisticsDigestText(day, morning);
     if (!text) return 0;
@@ -1093,6 +1102,7 @@ async function main() {
     if (!chatId) {
       const h = (await db.query("SELECT telegram_chat_id FROM telegram_staff WHERE role='head_of_sales' AND status='confirmed' AND telegram_chat_id IS NOT NULL ORDER BY id DESC LIMIT 1")).rows[0];
       if (h) { chatId = h.telegram_chat_id; role = "head_of_sales"; }
+      else { const hc = (await hubStaff.chatsByRole("head_of_sales"))[0]; if (hc) { chatId = hc; role = "head_of_sales"; } }   // РОП из ERP
     }
     if (!chatId && ADMIN_TG_ID) { chatId = ADMIN_TG_ID; role = "admin"; }
     return { chatId, role };
@@ -1132,6 +1142,7 @@ async function main() {
     const seen = new Set();
     try {
       const rops = (await db.query("SELECT telegram_chat_id FROM telegram_staff WHERE role='head_of_sales' AND status='confirmed' AND telegram_chat_id IS NOT NULL")).rows;
+      (await hubStaff.chatsByRole("head_of_sales")).forEach((c) => rops.push({ telegram_chat_id: c }));   // РОП из ERP
       for (const r of rops) { const c = r.telegram_chat_id; if (c && !seen.has(String(c))) { seen.add(String(c)); bot.sendMessage(c, text).catch(() => {}); } }
     } catch (e) { console.warn("[ЭСКАЛАЦИЯ]", e.message); }
     if (ADMIN_TG_ID && !seen.has(String(ADMIN_TG_ID))) bot.sendMessage(ADMIN_TG_ID, text).catch(() => {});
@@ -1145,6 +1156,10 @@ async function main() {
         `SELECT DISTINCT s.telegram_chat_id FROM telegram_staff s
          JOIN notif_subs ns ON ns.role = s.role
          WHERE ns.kind=$1 AND s.status='confirmed' AND s.telegram_chat_id IS NOT NULL`, [kind])).rows;
+      // Руководители из ERP с подписанной ролью.
+      for (const sr of (await db.query("SELECT role FROM notif_subs WHERE kind=$1", [kind])).rows) {
+        (await hubStaff.chatsByRole(sr.role)).forEach((c) => rows.push({ telegram_chat_id: c }));
+      }
       for (const r of rows) { const c = r.telegram_chat_id; if (c && !seen.has(String(c))) { seen.add(String(c)); bot.sendMessage(c, text).catch(() => {}); } }
       const admOn = (await db.query("SELECT 1 FROM notif_subs WHERE kind=$1 AND role='admin'", [kind])).rows.length;
       if (admOn && ADMIN_TG_ID && !seen.has(String(ADMIN_TG_ID))) bot.sendMessage(ADMIN_TG_ID, text).catch(() => {});
@@ -1378,6 +1393,11 @@ async function main() {
       if (hu) {
         await hubStaff.rememberChat(hu.id, chatId);
         await db.logEvent("hub_user_auth", chatId, { user_id: hu.id });
+        // Руководитель с «Ролью в боте» — сразу меню его роли.
+        if (hubStaffMod.MANAGER_ROLES.has(hu.bot_role)) {
+          bot.sendMessage(chatId, `Здравствуйте, ${hu.full_name}! Вы подключены как ${roleTitle(hu.bot_role)}.`, staffMenu(hu.bot_role));
+          return;
+        }
         applyHubMenu(chatId);
         bot.sendMessage(chatId,
           `Здравствуйте, ${hu.full_name}! Вы подключены как сотрудник Novagreen${hu.roles ? " (" + hu.roles + ")" : ""}.` + "\n"

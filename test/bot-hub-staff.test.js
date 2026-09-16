@@ -49,3 +49,21 @@ test('запоминает чат в карточке пользователя',
   assert.match(db.calls[0].sql, /UPDATE public\.users SET tg_chat_id = \$1 WHERE id = \$2/);
   assert.deepEqual(db.calls[0].params, [555, 7]);
 });
+
+test('руководители из ERP по «Роли в боте»: только активные, подключённые, с телефоном', async () => {
+  const db = fakeDb([{ chat_id: 111 }, { chat_id: 222 }]);
+  const chats = await hubStaff(db).chatsByRole('logistics');
+  assert.deepEqual(chats, [111, 222]);
+  assert.match(db.calls[0].sql, /u\.bot_role = \$1/);
+  assert.match(db.calls[0].sql, /u\.is_active/);
+  assert.match(db.calls[0].sql, /tg_chat_id IS NOT NULL/);
+  assert.deepEqual(db.calls[0].params, ['logistics']);
+  assert.deepEqual(await hubStaff(fakeDb([], true)).chatsByRole('logistics'), []);   // сбой базы — никому, но не падаем
+});
+
+test('роли руководителей в ERP — без агента и водителя (они только в плитке бота)', () => {
+  const { MANAGER_ROLES } = hubStaff;
+  for (const r of ['head_of_sales', 'logistics', 'marketing', 'admin']) assert.ok(MANAGER_ROLES.has(r), r);
+  assert.ok(!MANAGER_ROLES.has('agent'));
+  assert.ok(!MANAGER_ROLES.has('expeditor'));
+});
