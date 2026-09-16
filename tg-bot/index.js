@@ -8,6 +8,7 @@ const sd = require("./salesdoctor");
 const complaints = require("./complaints"); // мастер претензий (Этап 3)
 const hubStaffMod = require("./hub-staff"); // сотрудники из ERP, узнаём по телефону
 const hubStaff = hubStaffMod(db);
+const logisticsDigest = require("./logistics-digest"); // сводка по доставке руководителю логистики
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const ADMIN_TG_ID = process.env.ADMIN_TG_ID;
@@ -230,7 +231,7 @@ async function syncExpeditorsBot() {
 const STAFF_MENU = {
   agent: [["👥 Мои клиенты"], ["🚫 Не заказали"], ["📩 Претензия за клиента"], ["📊 Моя сводка"], ["➕ Доп. заказы"], ["📉 Сигналы"]],
   head_of_sales: [["📊 Сводка отдела"], ["👥 По агентам"], ["🚫 Не заказали"], ["➕ Доп. заказы"], ["📉 Сигналы"], ["⚠️ Ошибки", "🔄 Синхронизация"]],
-  logistics: [["🚚 Доставки сегодня"], ["📊 По экспедиторам"], ["⚙️ Напоминания"]],
+  logistics: [["🚚 Доставки сегодня"], ["📊 По экспедиторам"], ["📋 Итог дня"], ["⚙️ Напоминания"]],
   expeditor: [["🚚 Мои доставки"]],
   marketing: [["📊 Маркетинг"]],
   admin: [["🔄 Синхронизация"], ["👤 Telegram-сотрудники"], ["⚠️ Ошибки"], ["📦 Очередь заказов"], ["⚙️ Настройки"]],
@@ -694,6 +695,57 @@ async function main() {
   }
   setInterval(deliveryReminderTick, 60000);
 
+  // ===== Сводка по доставке руководителю логистики — см. logistics-digest.js =====
+  // Вечером (через 30 минут после последнего напоминания водителям) и утром в
+  // 08:00 — итог вчерашнего дня. Получатели — сотрудники бота с ролью «Логистика».
+  async function logisticsDigestText(day, morning) {
+    _cache.delete("orders14");
+    const orders = await getOrders14();
+    const nameOf = {};
+    (await db.query("SELECT sd_id, name FROM crm_expeditors")).rows.forEach((e) => { nameOf[e.sd_id] = e.name; });
+    // Кому в этот день ушло напоминание (ключ записи: deliv:<водитель>:<день>:<время>).
+    const reminded = new Set((await db.query(
+      "SELECT DISTINCT split_part(dedup_key, ':', 2) AS ex FROM notification_log WHERE kind='delivery_remind' AND dedup_key LIKE $1",
+      [`deliv:%:${day}:%`])).rows.map((r) => r.ex));
+    const connected = new Set((await db.query(
+      "SELECT DISTINCT expeditor_sd_id AS ex FROM telegram_staff WHERE role='expeditor' AND status='confirmed' AND telegram_chat_id IS NOT NULL AND expeditor_sd_id IS NOT NULL"
+    )).rows.map((r) => r.ex));
+    return logisticsDigest.buildLogisticsDigest({ day, orders, nameOf, reminded, connected, morning });
+  }
+  async function sendLogisticsDigest(day, morning) {
+    const heads = (await db.query(
+      "SELECT telegram_chat_id FROM telegram_staff WHERE role='logistics' AND status='confirmed' AND telegram_chat_id IS NOT NULL")).rows;
+    if (!heads.length) return 0;
+    const text = await logisticsDigestText(day, morning);
+    if (!text) return 0;
+    let sent = 0;
+    for (const h of heads) {
+      const key = `logdig:${morning ? "am" : "pm"}:${day}:${h.telegram_chat_id}`;
+      const seen = await db.query("SELECT 1 FROM notification_log WHERE dedup_key=$1", [key]);
+      if (seen.rows.length) continue;
+      await bot.sendMessage(h.telegram_chat_id, text.slice(0, 3900)).catch(() => {});
+      await db.query("INSERT INTO notification_log (kind, dedup_key, target_chat_id, target_role) VALUES ('logistics_digest',$1,$2,'logistics') ON CONFLICT (dedup_key) DO NOTHING",
+        [key, h.telegram_chat_id]).catch(() => {});
+      sent++;
+    }
+    return sent;
+  }
+  async function logisticsDigestTick() {
+    try {
+      await reloadCfg();
+      const hhmm = tzNow().toISOString().slice(11, 16);
+      if (hhmm === logisticsDigest.eveningTime(botCfg.deliveryRemindTimes)) {
+        const n = await sendLogisticsDigest(tzToday(), false);
+        if (n) console.log(`[ЛОГИСТИКА] Вечерняя сводка: ${n}`);
+      } else if (hhmm === "08:00") {
+        const yesterday = new Date(Date.now() + TZ_OFFSET_MS - 86400000).toISOString().slice(0, 10);
+        const n = await sendLogisticsDigest(yesterday, true);
+        if (n) console.log(`[ЛОГИСТИКА] Утренняя сводка: ${n}`);
+      }
+    } catch (e) { console.error("[ЛОГИСТИКА]", e.message); }
+  }
+  setInterval(logisticsDigestTick, 60000);
+
   // ===== Сводка упущенных продаж РОПу и админу (ежедневно/еженедельно) =====
   let lastLostDay = "";
   async function sendLostSummary(days) {
@@ -983,6 +1035,12 @@ async function main() {
         await reloadCfg();
         const st = botCfg.deliveryRemindEnabled ? "включены" : "выключены";
         return bot.sendMessage(chatId, `⏰ Напоминания водителям: ${st}\nВремя: ${(botCfg.deliveryRemindTimes || []).join(", ") || "—"}\n\nИзменить время/вкл-выкл — в Hub → плитка «Телеграм-бот: ассистент продаж» → ⚙️ Настройки → блок «Напоминания водителям о доставке».`);
+      }
+      // Та же сводка, что приходит вечером, — по нажатию, на текущий момент.
+      if (txt === "📋 Итог дня") {
+        bot.sendChatAction(chatId, "typing");
+        const text = await logisticsDigestText(tzToday(), false);
+        return bot.sendMessage(chatId, text ? text.slice(0, 3900) : "Сегодня заказов на доставку нет и ничего не висит «Отгружен».");
       }
       if (txt === "🚚 Доставки сегодня" || txt === "📊 По экспедиторам") {
         bot.sendChatAction(chatId, "typing"); _cache.delete("orders14");
