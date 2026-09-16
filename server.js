@@ -277,10 +277,11 @@ admin.post('/users', async (req, res) => {
   const { login, full_name, password } = req.body;
   let roleIds = req.body.role_ids || [];
   if (!Array.isArray(roleIds)) roleIds = [roleIds];
-  // Без доступа в веб пароль не нужен: ставим случайный, войти им всё равно нельзя.
+  // Логин и пароль нужны всегда, даже без доступа в веб (решение Шоха): доступ
+  // включат позже — и человек сразу войдёт своим паролем.
   const webAccessOn = req.body.web_access === 'on';
-  if (!login || !full_name || (webAccessOn && !password)) return res.redirect('/admin/users?msg=need_password');
-  const hash = await bcrypt.hash(webAccessOn ? password : require('crypto').randomBytes(24).toString('hex'), 10);
+  if (!login || !full_name || !password) return res.redirect('/admin/users?msg=need_password');
+  const hash = await bcrypt.hash(password, 10);
   try {
     // Один номер — один человек, иначе бот не поймёт, кто ему пишет.
     const phone = tgPhoneDigits(req.body.tg_phone);

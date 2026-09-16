@@ -22,7 +22,7 @@
 <% } else if (msg === 'bot_saved') { %>
   <p style="color:#2e7d32;font-weight:700">Сохранено.</p>
 <% } else if (msg === 'need_password') { %>
-  <p class="error">Для доступа в веб-версию нужен пароль. Если сотруднику нужен только бот — снимите галочку «Доступ в веб».</p>
+  <p class="error">Укажите имя, логин и пароль — они нужны каждому пользователю.</p>
 <% } else if (msg === 'need_agent') { %>
   <p class="error">Для роли «Агент» выберите агента из SalesDoctor.</p>
 <% } else if (msg === 'need_driver') { %>
@@ -55,7 +55,7 @@
   <form method="POST" action="/admin/users" class="form-row">
     <input name="full_name" placeholder="Имя и фамилия" required>
     <input name="login" placeholder="Логин" required>
-    <input name="password" type="text" placeholder="Пароль (мин. 6; не нужен, если только бот)" minlength="6">
+    <input name="password" type="text" placeholder="Пароль (мин. 6)" minlength="6" required>
     <label class="check" title="Агентам и водителям веб-версия не нужна — они работают в Telegram-боте"><input type="checkbox" name="web_access" checked> Доступ в веб</label>
     <input name="tg_phone" type="tel" placeholder="Телефон в Telegram (необязательно)" title="По этому номеру бот узнает сотрудника и будет присылать ему претензии по его зоне">
     <fieldset class="checks">
