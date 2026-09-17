@@ -40,15 +40,15 @@
   // Состояние → как показать. Держим текст здесь, а не на сервере: сервер
   // отдаёт факты, а формулировки — дело интерфейса.
   const SD = {
-    ok:      { dot: 'ok',   short: 'CRM',  title: 'SalesDoctor отвечает' },
-    fail:    { dot: 'bad',  short: 'CRM',  title: 'SalesDoctor не отвечает' },
-    unknown: { dot: 'idle', short: 'CRM',  title: 'Связь с SalesDoctor ещё не проверялась' },
+    ok:      { dot: 'c-ok',   short: 'CRM',  title: 'SalesDoctor отвечает' },
+    fail:    { dot: 'c-bad',  short: 'CRM',  title: 'SalesDoctor не отвечает' },
+    unknown: { dot: 'c-idle', short: 'CRM',  title: 'Связь с SalesDoctor ещё не проверялась' },
   };
   const BOT = {
-    ok:      { dot: 'ok',   short: 'Бот', title: 'Бот работает' },
-    quiet:   { dot: 'warn', short: 'Бот', title: 'Бот молчит' },
-    stale:   { dot: 'bad',  short: 'Бот', title: 'От бота давно нет событий' },
-    unknown: { dot: 'idle', short: 'Бот', title: 'Нет данных о боте' },
+    ok:      { dot: 'c-ok',   short: 'Бот', title: 'Бот работает' },
+    quiet:   { dot: 'c-warn', short: 'Бот', title: 'Бот молчит' },
+    stale:   { dot: 'c-bad',  short: 'Бот', title: 'От бота давно нет событий' },
+    unknown: { dot: 'c-idle', short: 'Бот', title: 'Нет данных о боте' },
   };
 
   const sdBtn = el('button', { class: 'conn-pill', type: 'button' });

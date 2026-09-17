@@ -29,15 +29,19 @@
 }
 .conn-pill:hover { background: var(--lime-soft); border-color: var(--lime); color: var(--ink); }
 
+/* Классы состояния — со своей приставкой (c-ok, c-warn…): короткие «warn»/«ok»
+   встречаются в стилях плиток (в плитке бота .warn — жёлтая плашка с отступами)
+   и раздували точку в прямоугольник. Размеры фиксируем жёстко по той же причине. */
 .conn-dot {
   width: 8px; height: 8px; border-radius: 50%;
+  padding: 0; margin: 0; border: 0;
   background: var(--ink-faint);
   flex: none;
 }
-.conn-dot.ok    { background: #57c04a; box-shadow: 0 0 0 3px rgba(87, 192, 74, .22); }
-.conn-dot.warn  { background: #e2a52b; box-shadow: 0 0 0 3px rgba(226, 165, 43, .22); }
-.conn-dot.bad   { background: #e2603f; box-shadow: 0 0 0 3px rgba(226, 96, 63, .22); }
-.conn-dot.idle  { background: #9aa39c; }
+.conn-dot.c-ok    { background: #57c04a; box-shadow: 0 0 0 3px rgba(87, 192, 74, .22); }
+.conn-dot.c-warn  { background: #e2a52b; box-shadow: 0 0 0 3px rgba(226, 165, 43, .22); }
+.conn-dot.c-bad   { background: #e2603f; box-shadow: 0 0 0 3px rgba(226, 96, 63, .22); }
+.conn-dot.c-idle  { background: #9aa39c; }
 
 /* Панель с подробностями. Раскрывается по нажатию — в шапке место дорогое,
    а подробности нужны редко. */
