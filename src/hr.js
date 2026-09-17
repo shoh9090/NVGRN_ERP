@@ -474,6 +474,9 @@ function hrTabOf(req) {
     || p.startsWith('/api/fot-taxes')) return 'dashboard';
   if (p.startsWith('/api/employee')) return 'employees';       // и карточка, и список, и выгрузка
   if (p.startsWith('/api/payouts')) return 'payouts';
+  // Номера карт и банковские ведомости — денежные данные: только тем, кому открыты
+  // Зарплата или Выплаты (аудит A03: раньше адрес не был привязан ни к одной вкладке).
+  if (p.startsWith('/api/cards')) return ['salary', 'payouts'];
   if (p.startsWith('/api/events')) return 'events';
   if (p.startsWith('/api/department')) return 'departments';
   if (p.startsWith('/api/mass-op')) return 'massops';
@@ -554,7 +557,7 @@ const COMPANY_WRITES = [
 ];
 // Чтение сужают фильтры по отделу (scopeDept). Отдельно закрываем то, что
 // фильтром не сужается: считается сразу по всей компании.
-const COMPANY_READS = /^\/api\/(cards\/paysheet\.xlsx|employees\/restore-preview)$/;
+const COMPANY_READS = /^\/api\/(cards\/paysheet\.xlsx|cards\/template\.xlsx|employees\/restore-preview)$/;   // шаблон карт — номера карт всей компании
 const SCOPE_DENIED = 'Эта операция затрагивает всю компанию — она доступна только кадрам.';
 const SCOPE_UNKNOWN = 'Эта операция не размечена по отделам — обратитесь к администратору.';
 

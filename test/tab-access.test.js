@@ -137,6 +137,9 @@ test('вкладки Кадров закрываются каждая своим
   assert.strictEqual(hr('/api/mass-op'), 'massops');
   assert.strictEqual(hr('/api/payroll/cell'), 'salary');
   assert.strictEqual(hr('/api/norms'), 'salary');
+  // Номера карт и ведомость по картам — только денежным вкладкам.
+  assert.deepStrictEqual(hr('/api/cards/paysheet.xlsx'), ['salary', 'payouts']);
+  assert.strictEqual(tabAllowed(new Set(['timesheet']), hr('/api/cards/template.xlsx')), false);
 });
 
 test('общие адреса Кадров вкладкой не закрываются', () => {
