@@ -38,7 +38,7 @@ app.use('/static', express.static(path.join(__dirname, 'public'), { maxAge: '7d'
 
 function signToken(user) {
   return jwt.sign(
-    { id: user.id, login: user.login, name: user.full_name, isAdmin: user.is_admin, isFinance: user.is_finance || false, roles: user.roles },
+    { id: user.id, login: user.login, name: user.full_name, isAdmin: user.is_admin, isFinance: user.is_finance || false, roles: user.roles, pv: user.pv },
     JWT_SECRET,
     { expiresIn: '12h' }
   );
@@ -51,9 +51,10 @@ async function loadUser(req, res, next) {
   const token = req.cookies.hub_token;
   if (token) {
     try {
-      req.user = jwt.verify(token, JWT_SECRET);
-      // Отключённый или без веб-доступа — старая сессия больше не пускает (см. src/web-access.js).
-      if (!webAccess.sessionAllowed(req.user)) { req.user = undefined; res.clearCookie('hub_token'); }
+      // Права берём актуальные, а не записанные в cookie при входе: удалённый, отключённый,
+      // сменивший пароль или лишённый роли теряет доступ сразу (см. src/web-access.js).
+      req.user = webAccess.liveUser(jwt.verify(token, JWT_SECRET)) || undefined;
+      if (!req.user) res.clearCookie('hub_token');
     } catch (e) {
       res.clearCookie('hub_token');
     }
@@ -106,6 +107,7 @@ app.post('/login', async (req, res) => {
     is_admin: roles.some((x) => x.is_admin),
     is_finance: roles.some((x) => x.is_finance),
     roles: roles.map((x) => x.name),
+    pv: webAccess.passwordVersion(user.password_hash),
   });
   // secure: req.secure — на https (Railway) кука только по https; на локальном http вход не ломается.
   res.cookie('hub_token', token, { httpOnly: true, sameSite: 'lax', secure: req.secure, maxAge: 12 * 3600 * 1000 });
@@ -208,6 +210,11 @@ app.post('/me/password', requireAuth, async (req, res) => {
   if (!password || password.length < 6) return res.redirect('/?msg=short');
   const hash = await bcrypt.hash(password, 10);
   await db.pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [hash, req.user.id]);
+  await webAccess.refresh();
+  // Старые сессии (на других устройствах) закрываются, а текущую переоформляем с новым паролем.
+  res.cookie('hub_token', signToken({ id: req.user.id, login: req.user.login, full_name: req.user.name,
+    is_admin: req.user.isAdmin, is_finance: req.user.isFinance, roles: req.user.roles, pv: webAccess.passwordVersion(hash) }),
+  { httpOnly: true, sameSite: 'lax', secure: req.secure, maxAge: 12 * 3600 * 1000 });
   await db.log(req.user.id, 'change_own_password');
   res.redirect('/');
 });
@@ -320,6 +327,7 @@ admin.post('/users/:id/delete', async (req, res) => {
   const info = (await db.pool.query('SELECT login FROM users WHERE id = $1', [targetId])).rows[0];
   if (!info) return res.redirect('/admin/users');
   await db.pool.query('DELETE FROM users WHERE id = $1', [targetId]);
+  await webAccess.refresh();
   await db.log(req.user.id, 'delete_user', `${targetId} (${info.login})`);
   res.redirect('/admin/users?msg=user_deleted');
 });
@@ -340,6 +348,7 @@ admin.post('/users/:id/password', async (req, res) => {
   if (password && password.length >= 6) {
     const hash = await bcrypt.hash(password, 10);
     await db.pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [hash, req.params.id]);
+    await webAccess.refresh();
     await db.log(req.user.id, 'reset_password', req.params.id);
   }
   res.redirect('/admin/users');
@@ -378,6 +387,7 @@ admin.post('/users/:id/roles', async (req, res) => {
     await client.query('COMMIT');
   } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
   finally { client.release(); }
+  await webAccess.refresh();
   await db.log(req.user.id, 'set_user_roles', `user=${targetId} roles=[${roleIds.join(',')}]${willBeAdmin ? ' (АДМИН-ДОСТУП)' : ''}`);
   res.redirect('/admin/users?msg=roles_saved');
 });
@@ -480,6 +490,7 @@ admin.post('/roles/:id/finance', async (req, res) => {
   const r = await db.pool.query('SELECT is_admin FROM roles WHERE id = $1', [req.params.id]);
   if (!r.rows.length || r.rows[0].is_admin) return res.redirect('/admin/roles'); // админ-роль не трогаем
   await db.pool.query('UPDATE roles SET is_finance = $1 WHERE id = $2', [on, req.params.id]);
+  await webAccess.refresh();
   await db.log(req.user.id, 'set_role_finance', `${req.params.id} = ${on}`);
   res.redirect('/admin/roles');
 });
@@ -499,6 +510,7 @@ admin.post('/roles/:id/delete', async (req, res) => {
   const r = await db.pool.query('SELECT is_admin FROM roles WHERE id = $1', [req.params.id]);
   if (r.rows.length && !r.rows[0].is_admin) {
     await db.pool.query('DELETE FROM roles WHERE id = $1', [req.params.id]);
+    await webAccess.refresh();
     await db.log(req.user.id, 'delete_role', req.params.id);
   }
   res.redirect('/admin/roles');
