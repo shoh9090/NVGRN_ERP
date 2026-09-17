@@ -45,23 +45,61 @@ function ownerKeyboard(id, critical, resolutions) {
   return { inline_keyboard: rows };
 }
 
+// Рабочие часы между двумя моментами: считаем только 9:00–20:00 по Ташкенту
+// (UTC+5, то есть 4:00–15:00 UTC). Претензия, поданная в 19:50, к 9:10 утра
+// «ждёт» 20 минут, а не 13 часов — ночью никого не дёргаем и утром не
+// эскалируем сразу через голову.
+const WORK_FROM_UTC = 4, WORK_TO_UTC = 15;
+function workHours(fromMs, toMs) {
+  if (!(toMs > fromMs)) return 0;
+  const DAY = 86400000;
+  let total = 0;
+  for (let d = Math.floor(fromMs / DAY) * DAY; d < toMs; d += DAY) {
+    const a = Math.max(fromMs, d + WORK_FROM_UTC * 3600000);
+    const b = Math.min(toMs, d + WORK_TO_UTC * 3600000);
+    if (b > a) total += b - a;
+  }
+  return total / 3600000;
+}
+
+// Сроки реакции в рабочих часах. Шох: «хочу, чтобы люди реагировали оперативнее».
+//   агент не нажал «Принял в работу»: 30 мин — повтор агенту, 2 ч — ещё раз и РОПу;
+//   критичная без решения руководителя звена: 1 ч — повтор, 3 ч — ещё раз и РОПу/Шоху;
+//   простая без причины от руководителя звена: 3 ч — повтор, рабочий день — ещё раз.
+const REMIND = {
+  agent: [{ h: 2, stage: 'ag2', escalate: true }, { h: 0.5, stage: 'ag30', escalate: false }],
+  crit: [{ h: 3, stage: 'crit3', escalate: true }, { h: 1, stage: 'crit1', escalate: false }],
+  simple: [{ h: 11, stage: 'simpleday', escalate: false }, { h: 3, stage: 'simple3', escalate: false }],
+};
+const pick = (steps, hours) => steps.find((x) => hours >= x.h);
+
 // Кому и какое напоминание пора слать. Чистая функция — проверяется тестом.
-//   критичная без решения: 4 ч — повтор руководителю звена, 24 ч — ещё раз и РОПу/Шоху;
-//   простая без причины: 24 ч — руководителю звена «напишите причину».
+// Из каждой цепочки — только самая поздняя наступившая ступень.
 function dueReminders(rows, nowMs, criticalTypes) {
   const out = [];
   for (const c of rows) {
-    const hours = (nowMs - new Date(c.created_at).getTime()) / 3600000;
+    const hours = workHours(new Date(c.created_at).getTime(), nowMs);
+    if (c.status === 'new') {
+      const st = pick(REMIND.agent, hours);
+      if (st) out.push({ id: c.id, who: 'agent', stage: st.stage, escalate: st.escalate, hours });
+    }
     if (criticalTypes.has(c.complaint_type)) {
       if (c.status === 'resolved') continue;
-      if (hours >= 24) out.push({ id: c.id, stage: 'crit24', critical: true, escalate: true, hours });
-      else if (hours >= 4) out.push({ id: c.id, stage: 'crit4', critical: true, escalate: false, hours });
+      const st = pick(REMIND.crit, hours);
+      if (st) out.push({ id: c.id, who: 'owner', stage: st.stage, critical: true, escalate: st.escalate, hours });
     } else {
       if (String(c.internal_note || '').trim()) continue;
-      if (hours >= 24) out.push({ id: c.id, stage: 'simple24', critical: false, escalate: false, hours });
+      const st = pick(REMIND.simple, hours);
+      if (st) out.push({ id: c.id, who: 'owner', stage: st.stage, critical: false, escalate: false, hours });
     }
   }
   return out;
+}
+
+// «17.09 в 18:40» по Ташкенту — когда подана претензия (для текста напоминания).
+function sinceText(createdAt) {
+  const t = new Date(new Date(createdAt).getTime() + 5 * 3600000).toISOString();
+  return `${t.slice(8, 10)}.${t.slice(5, 7)} в ${t.slice(11, 16)}`;
 }
 
 module.exports = function linkOwners({ db, bot }) {
@@ -90,7 +128,7 @@ module.exports = function linkOwners({ db, bot }) {
 
   async function loadCard(complaintId) {
     const c = (await db.query(
-      `SELECT c.id, c.sd_id, c.point_name, c.firm_name, c.product_name, c.ship_date, c.client_comment,
+      `SELECT c.id, c.sd_id, c.created_at, c.point_name, c.firm_name, c.product_name, c.ship_date, c.client_comment,
               c.complaint_type, c.link_code, c.agent_name, c.agent_sd_id,
               (SELECT label_ru FROM tgbot.complaint_dicts WHERE kind = 'type' AND code = c.complaint_type LIMIT 1) AS type_label,
               (SELECT label_ru FROM tgbot.complaint_dicts WHERE kind = 'link' AND code = c.link_code LIMIT 1) AS link_label
@@ -121,22 +159,22 @@ module.exports = function linkOwners({ db, bot }) {
   }
 
   // Карточка новой претензии всем руководителям звена. Возвращает, скольким ушла.
-  // remindHours — это напоминание: сверху строка «нет ответа N ч», медиа не шлём повторно.
-  async function sendCard(complaintId, { critical, resolutions, remindHours }) {
+  // remind — это напоминание: сверху строка «подана тогда-то, ответа нет», медиа не шлём повторно.
+  async function sendCard(complaintId, { critical, resolutions, remind }) {
     const owners = await ownersOf(complaintId);
     if (!owners.length) return 0;
     const card = await loadCard(complaintId);
     if (!card) return 0;
     let text = formatCard(card.c, critical);
-    if (remindHours) {
-      text = `⏰ Напоминание: по претензии №${complaintId} нет ${critical ? 'решения' : 'причины'} уже ${Math.floor(remindHours)} ч.\n\n` + text;
+    if (remind) {
+      text = `⏰ Напоминание: претензия №${complaintId} подана ${sinceText(card.c.created_at)}, ${critical ? 'решения' : 'причины'} от вас пока нет.\n\n` + text;
       if (!critical) text += '\n\nНапишите, в чём причина и что сделали, — кнопкой ниже.';
     }
     const kb = ownerKeyboard(complaintId, critical, resolutions);
     let sent = 0;
     for (const o of owners) {
       // Медиа не должно мешать главному: не ушло фото — текст с кнопками всё равно отправляем.
-      if (!remindHours) { try { await sendMedia(o.chat_id, card.files); } catch (e) { console.warn('[ЗВЕНО медиа]', e.message); } }
+      if (!remind) { try { await sendMedia(o.chat_id, card.files); } catch (e) { console.warn('[ЗВЕНО медиа]', e.message); } }
       try { await bot.sendMessage(o.chat_id, text, { reply_markup: kb }); sent++; } catch (e) { console.warn('[ЗВЕНО карточка]', e.message); }
     }
     return sent;
@@ -158,3 +196,5 @@ module.exports = function linkOwners({ db, bot }) {
 module.exports.formatCard = formatCard;
 module.exports.ownerKeyboard = ownerKeyboard;
 module.exports.dueReminders = dueReminders;
+module.exports.workHours = workHours;
+module.exports.sinceText = sinceText;

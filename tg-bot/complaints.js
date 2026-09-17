@@ -432,23 +432,38 @@ async function reminderTick() {
   const hour = Number(new Date(Date.now() + 5 * 3600000).toISOString().slice(11, 13)); // Ташкент
   if (hour < 9 || hour >= 20) return 0;
   const rows = (await db.query(
-    `SELECT id, created_at, complaint_type, status, internal_note FROM tgbot.complaints
+    `SELECT id, sd_id, created_at, complaint_type, status, internal_note, point_name, product_name FROM tgbot.complaints
       WHERE source IN ('client_bot', 'agent') AND link_code IS NOT NULL
-        AND created_at > now() - interval '7 days'`)).rows;
+        AND created_at > now() - interval '3 days'`)).rows;   // старую историю не будим пачкой
+  const byId = new Map(rows.map((r) => [r.id, r]));
   const due = linkOwnersMod.dueReminders(rows, Date.now(), CRITICAL_TYPES);
   let sent = 0;
   for (const d of due) {
     const key = `cmprem:${d.id}:${d.stage}`;
     if ((await db.query("SELECT 1 FROM notification_log WHERE dedup_key=$1", [key])).rows.length) continue;
-    await LO.sendCard(d.id, { critical: d.critical, resolutions: await getResolutions(), remindHours: d.hours });
-    if (d.escalate) {
-      await H.notifyManagers(`⏰ Критичная претензия №${d.id}: руководитель звена не принял решение больше суток. Нужен ваш разбор.`)
-        .catch((e) => console.warn("[ПРЕТЕНЗИЯ эскалация]", e.message));
-    }
+    // Сначала отмечаем, потом шлём: сбой отправки не должен превращаться в повтор каждые 5 минут.
     await db.query("INSERT INTO notification_log (kind, dedup_key) VALUES ('complaint_remind', $1) ON CONFLICT (dedup_key) DO NOTHING", [key]);
+    const c = byId.get(d.id);
+    const since = linkOwnersMod.sinceText(c.created_at);
+    const point = c.point_name || c.sd_id;
+    if (d.who === "agent") {
+      const note = `⏰ Напоминание: претензия №${d.id} подана ${since}, вы ещё не приняли её в работу.\nКлиент: {name}`
+        + (c.product_name ? `\nТовар: ${c.product_name}` : "");
+      await H.notifyAgentReact(c.sd_id, note, d.id).catch((e) => console.warn("[ПРЕТЕНЗИЯ напом. агенту]", e.message));
+      if (d.escalate) {
+        await H.notifyManagers(`⏰ Претензия №${d.id} (${point}) подана ${since} — агент до сих пор не принял её в работу. Проверьте, пожалуйста.`)
+          .catch((e) => console.warn("[ПРЕТЕНЗИЯ эскалация]", e.message));
+      }
+    } else {
+      await LO.sendCard(d.id, { critical: d.critical, resolutions: await getResolutions(), remind: true });
+      if (d.escalate) {
+        await H.notifyManagers(`⏰ Критичная претензия №${d.id} (${point}) подана ${since} — руководитель звена до сих пор не принял решение. Нужен ваш разбор.`)
+          .catch((e) => console.warn("[ПРЕТЕНЗИЯ эскалация]", e.message));
+      }
+    }
     sent++;
   }
-  if (sent) console.log(`[ПРЕТЕНЗИИ] Напоминаний руководителям звеньев: ${sent}`);
+  if (sent) console.log(`[ПРЕТЕНЗИИ] Напоминаний: ${sent}`);
   return sent;
 }
 
