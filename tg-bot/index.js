@@ -1387,7 +1387,11 @@ async function main() {
 
   bot.on("contact", async (msg) => {
     const chatId = msg.chat.id; const lang = await getLang(chatId); const c = msg.contact;
-    if (c.user_id && msg.from && c.user_id !== msg.from.id) { bot.sendMessage(chatId, t(lang, "share_own"), askContact(lang)); return; }
+    // Номер принимаем только свой: кнопка «Поделиться номером» всегда передаёт user_id
+    // отправителя. Контакт без user_id (набранный вручную или из записной книжки) номер
+    // не подтверждает — иначе любой мог бы войти под номером сотрудника. Только личный чат.
+    if (msg.chat.type !== "private") return;
+    if (!msg.from || !c.user_id || c.user_id !== msg.from.id) { bot.sendMessage(chatId, t(lang, "share_own"), askContact(lang)); return; }
     const phone9 = normPhone(c.phone_number);
     if (!phone9) { bot.sendMessage(chatId, t(lang, "bad_phone"), askContact(lang)); return; }
     try {
