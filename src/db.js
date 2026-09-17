@@ -585,6 +585,15 @@ async function seed() {
   await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS sd_agent_id TEXT").catch(() => {});
   await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS sd_expeditor_id TEXT").catch(() => {});
   await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS source TEXT").catch(() => {});
+  // Роль в боте — свойство роли ERP («РОП» → руководитель продаж в боте), а не
+  // отдельное поле у каждого человека. Ставим очевидные соответствия по названию,
+  // только если админ ещё ничего не выбрал.
+  await pool.query("ALTER TABLE roles ADD COLUMN IF NOT EXISTS bot_role TEXT").catch(() => {});
+  await pool.query(`UPDATE roles SET bot_role = CASE
+      WHEN lower(name) IN ('роп', 'руководитель продаж') THEN 'head_of_sales'
+      WHEN lower(name) LIKE 'логист%' THEN 'logistics'
+      WHEN lower(name) LIKE 'маркет%' THEN 'marketing' END
+    WHERE bot_role IS NULL AND (lower(name) IN ('роп', 'руководитель продаж') OR lower(name) LIKE 'логист%' OR lower(name) LIKE 'маркет%')`).catch(() => {});
   {
     const fin = await pool.query("SELECT id FROM roles WHERE is_finance = TRUE LIMIT 1");
     let finId = fin.rows[0] && fin.rows[0].id;

@@ -60,7 +60,7 @@
 <section class="card">
   <table>
     <thead>
-      <tr><th>Имя</th><th>Логин</th><th>Роли</th><th title="По этому номеру бот узнаёт сотрудника">Телефон (Telegram)</th><th title="Для руководителей: какие сводки бот присылает по телефону из карточки">Роль в боте</th><th>Статус</th><th>Действия</th></tr>
+      <tr><th>Имя</th><th>Логин</th><th>Роли</th><th title="По этому номеру бот узнаёт сотрудника">Телефон (Telegram)</th><th>Статус</th><th>Действия</th></tr>
     </thead>
     <tbody>
       <% users.forEach(function(u) { %>
@@ -90,14 +90,6 @@
                 <button type="submit">Сохранить</button>
               </form>
             </details>
-          </td>
-          <td>
-            <% var br = (BOT_ROLES || []).find(function(r){ return r.code && r.code === u.bot_role; }); %>
-            <form method="POST" action="/admin/users/<%= u.id %>/bot" class="inline-form">
-              <select name="bot_role" onchange="this.form.submit()" title="Руководителю бот присылает сводки его роли. Агенты и водители — в плитке бота.">
-                <% (BOT_ROLES || []).forEach(function(r){ %><option value="<%= r.code %>" <%= (u.bot_role || '') === r.code ? 'selected' : '' %>><%= r.label %></option><% }) %>
-              </select>
-            </form>
           </td>
           <td><%= u.is_active ? 'Активен' : 'Отключён' %></td>
           <td class="actions">

@@ -14,6 +14,12 @@
 <% roles.forEach(function(r) { %>
   <section class="card">
     <h3><%= r.name %> <% if (r.is_admin) { %><span class="badge">админ — видит всё</span><% } %><% if (r.is_finance) { %> <span class="badge" style="background:#e8f5e9;color:#2e7d32">финансы — ведёт Кассу/Обязательства</span><% } %></h3>
+    <form method="POST" action="/admin/roles/<%= r.id %>/bot" class="inline-form" style="margin-bottom:8px;align-items:center">
+      <span style="font-size:13px;font-weight:700">Роль в Telegram-боте:</span>
+      <select name="bot_role" onchange="this.form.submit()" title="У всех с этой ролью и телефоном в карточке бот покажет меню этой роли и будет слать её сводки. Агенты и водители — в плитке бота.">
+        <% (BOT_ROLES || []).forEach(function(b){ %><option value="<%= b.code %>" <%= (r.bot_role || '') === b.code ? 'selected' : '' %>><%= b.label %></option><% }) %>
+      </select>
+    </form>
     <% if (!r.is_admin) { %>
       <form method="POST" action="/admin/roles/<%= r.id %>/finance" style="margin-bottom:8px">
         <label class="check"><input type="checkbox" name="is_finance" onchange="this.form.submit()" <%= r.is_finance ? 'checked' : '' %>> Роль «Финансы/Бухгалтерия» — может вести Кассу и Обязательства (вносить, править, проводить оплаты) без полного админа</label>

@@ -245,7 +245,7 @@ admin.get('/users', async (req, res) => {
      GROUP BY u.id ORDER BY u.id`
   );
   const roles = await db.pool.query('SELECT * FROM roles ORDER BY id');
-  res.render('admin/users', { ...(await adminContext('users')), user: req.user, users: users.rows, roles: roles.rows, BOT_ROLES, msg: req.query.msg || '' });
+  res.render('admin/users', { ...(await adminContext('users')), user: req.user, users: users.rows, roles: roles.rows, msg: req.query.msg || '' });
 });
 
 // Телефон для Telegram: только цифры; сравнение с ботом — по последним 9.
@@ -335,16 +335,6 @@ admin.post('/users/:id/phone', async (req, res) => {
   res.redirect('/admin/users?msg=phone_saved');
 });
 
-// Роль в боте для руководителя (РОП, логистика, маркетинг, админ). По ней и
-// телефону бот узнаёт человека и шлёт ему сводки своей роли.
-admin.post('/users/:id/bot', async (req, res) => {
-  const targetId = parseInt(req.params.id, 10);
-  const role = BOT_ROLES.some((r) => r.code && r.code === req.body.bot_role) ? req.body.bot_role : null;
-  await db.pool.query('UPDATE users SET bot_role = $1, sd_agent_id = NULL, sd_expeditor_id = NULL WHERE id = $2', [role, targetId]);
-  await db.log(req.user.id, 'user_bot_role', `${targetId}: ${role || '—'}`);
-  res.redirect('/admin/users?msg=bot_saved');
-});
-
 admin.post('/users/:id/password', async (req, res) => {
   const { password } = req.body;
   if (password && password.length >= 6) {
@@ -403,7 +393,7 @@ admin.get('/roles', async (req, res) => {
   );
   const tiles = await db.pool.query('SELECT * FROM tiles ORDER BY sort_order, id');
   const roleTiles = await db.pool.query('SELECT * FROM role_tiles');
-  res.render('admin/roles', {
+  res.render('admin/roles', { BOT_ROLES,
     ...(await adminContext('roles')),
     user: req.user,
     roles: roles.rows,
@@ -476,6 +466,15 @@ admin.post('/roles', async (req, res) => {
 });
 
 // Переключение флага «Финансы/Бухгалтерия» у роли.
+// Роль в боте для роли ERP: у всех, у кого есть эта роль и подключён телефон,
+// бот показывает меню этой роли и шлёт её рассылки.
+admin.post('/roles/:id/bot', async (req, res) => {
+  const role = BOT_ROLES.some((r) => r.code && r.code === req.body.bot_role) ? req.body.bot_role : null;
+  await db.pool.query('UPDATE roles SET bot_role = $1 WHERE id = $2', [role, req.params.id]);
+  await db.log(req.user.id, 'set_role_bot', `${req.params.id} = ${role || '—'}`);
+  res.redirect('/admin/roles');
+});
+
 admin.post('/roles/:id/finance', async (req, res) => {
   const on = !!req.body.is_finance;
   const r = await db.pool.query('SELECT is_admin FROM roles WHERE id = $1', [req.params.id]);
