@@ -641,6 +641,8 @@ admin.post('/integrations/sd/test', async (req, res) => {
 
 // Обслуживание: полная очистка справочников (для повторной загрузки данных)
 admin.post('/maintenance/wipe-dictionaries', async (req, res) => {
+  const blocked = require('./src/wipe-guard').wipeBlocked();
+  if (blocked) return res.redirect('/admin/integrations?t=error&msg=' + encodeURIComponent(blocked));
   if ((req.body.confirm || '').trim().toUpperCase() !== 'ОЧИСТИТЬ') {
     return res.redirect('/admin/integrations?t=error&msg=' + encodeURIComponent('Очистка не выполнена: введите слово ОЧИСТИТЬ для подтверждения'));
   }

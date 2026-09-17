@@ -285,6 +285,7 @@ router.post('/api/receipt/:id(\\d+)/cancel', async (req, res) => {
 // ===== Зачистка склада для тестов (только админ) =====
 router.post('/api/wipe', express.json(), async (req, res) => {
   if (!req.user.isAdmin) return res.status(403).json({ error: 'Только администратор' });
+  { const _wb = require('./wipe-guard').wipeBlocked(); if (_wb) return res.status(423).json({ error: _wb }); }
   if ((req.body.confirm || '').trim().toUpperCase() !== 'ОЧИСТИТЬ') {
     return res.status(400).json({ error: 'Введите слово ОЧИСТИТЬ для подтверждения' });
   }
@@ -426,6 +427,7 @@ router.get('/api/issue/:id(\\d+)', async (req, res) => {
 // Массовая очистка всех передач (только админ, для тестов)
 router.post('/api/issues/wipe', async (req, res) => {
   if (!req.user.isAdmin) return res.status(403).json({ error: 'Доступно только администратору' });
+  { const _wb = require('./wipe-guard').wipeBlocked(); if (_wb) return res.status(423).json({ error: _wb }); }
   await db.pool.query("DELETE FROM stock_movements WHERE ref_type='production_issue'");
   await db.pool.query('DELETE FROM production_issues');
   await db.log(req.user.id, 'stock_issues_wipe', 'удалены все передачи');

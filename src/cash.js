@@ -2311,6 +2311,7 @@ router.post('/api/import-batches/:id(\\d+)/delete', async (req, res) => {
 // Очистка транзакций (админ). Справочники/контрагенты/статьи НЕ трогаем.
 router.post('/api/transactions/wipe', J, async (req, res) => {
   if (!req.user || !req.user.isAdmin) return res.status(403).json({ error: 'Только администратор' });
+  { const _wb = require('./wipe-guard').wipeBlocked(); if (_wb) return res.status(423).json({ error: _wb }); }
   try {
     // Пока есть закрытый период — полная очистка запрещена (она уничтожила бы закрытые месяцы).
     const lock = await lockedUntil();
