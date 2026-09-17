@@ -521,3 +521,16 @@ select.cb-cell { cursor: pointer; }
 .cash-ratio-note { font-size: 11px; color: var(--ink-faint); line-height: 1.4; margin-top: 3px; }
 .cash-obar-pct { font-size: 11px; color: var(--ink-faint); font-weight: 600; }
 .cash-pnl-unit-btns { display: flex; gap: 6px; flex-wrap: wrap; }
+
+/* Предупреждения P&L: ссылка «куда идти исправлять» и раскрывающийся список позиций. */
+.cash-warn-row { margin-bottom: 6px; }
+.cash-warn-row:last-child { margin-bottom: 0; }
+.cash-warn-link {
+  background: none; border: 0; padding: 0; font: inherit; font-weight: 700;
+  color: var(--forest); text-decoration: underline; cursor: pointer;
+}
+.cash-warn-link:hover { color: var(--ink); }
+.cash-warn-list {
+  margin: 6px 0 4px 18px; max-height: 240px; overflow: auto;
+  font-size: 13px; line-height: 1.5;
+}

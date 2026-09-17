@@ -7,6 +7,10 @@ const assert = require('node:assert');
 const db = require('../src/db');
 const { buildPnl } = require('../src/cash-pnl');
 
+// Предупреждение — либо строка, либо объект с текстом, ссылкой «куда идти» и списком
+// позиций. Для проверок склеиваем всё в одну строку.
+const wtext = (w) => (typeof w === 'string' ? w : [w.text, ...(w.items || [])].join(' '));
+
 // Поддельный пул: отвечает на запросы P&L заранее подготовленными строками.
 function makePool(opts) {
   const o = opts || {};
@@ -93,8 +97,8 @@ test('позиция без цены прихода не занижает себ
   assert.strictEqual(r.cogs.fact.total, 30000000);
   assert.strictEqual(r.cogs.fact.no_price.length, 1);
   assert.strictEqual(r.cogs.fact.no_price[0].name, 'шпинат');
-  assert.ok(r.warnings.some((w) => w.includes('Нет цены прихода') && w.includes('шпинат')),
-    'предупреждение должно называть позицию по имени: ' + r.warnings.join(' | '));
+  assert.ok(r.warnings.some((w) => wtext(w).includes('Нет цены прихода') && wtext(w).includes('шпинат')),
+    'предупреждение должно называть позицию по имени: ' + r.warnings.map(wtext).join(' | '));
 });
 
 test('нет ни списаний, ни отгрузок — прибыль не считается, а не показывается нулём', async () => {
@@ -105,7 +109,7 @@ test('нет ни списаний, ни отгрузок — прибыль н�
   assert.strictEqual(r.gross_profit, null);
   assert.strictEqual(r.operating_profit, null);
   assert.strictEqual(r.gross_margin_pct, null);
-  assert.ok(r.warnings.some((w) => w.includes('посчитать не из чего')));
+  assert.ok(r.warnings.some((w) => wtext(w).includes('посчитать не из чего')));
 });
 
 test('склад не вёлся — прибыль считается по плану, и это видно', async () => {
@@ -121,7 +125,7 @@ test('склад не вёлся — прибыль считается по пл
   assert.strictEqual(r.cogs_source, 'plan');
   assert.strictEqual(r.cogs.plan.total, 4000000);
   assert.strictEqual(r.gross_profit, 100000000 - 4000000);
-  assert.ok(r.warnings.some((w) => w.includes('по плану')));
+  assert.ok(r.warnings.some((w) => wtext(w).includes('по плану')));
 });
 
 test('неразнесённые операции попадают в предупреждения', async () => {
@@ -132,7 +136,7 @@ test('неразнесённые операции попадают в преду
   });
   const r = await buildPnl(pool, '2026-08');
   assert.strictEqual(r.excluded.unclassified.cnt, 3);
-  assert.ok(r.warnings.some((w) => w.includes('без статьи')));
+  assert.ok(r.warnings.some((w) => wtext(w).includes('без статьи')));
 });
 
 test('плановая себестоимость не считается без количества отгрузок', async () => {
@@ -140,7 +144,7 @@ test('плановая себестоимость не считается без
   const r = await buildPnl(pool, '2026-08');
   assert.strictEqual(r.cogs.plan.total, null);
   assert.strictEqual(r.cogs.diff, null);
-  assert.ok(r.warnings.some((w) => w.includes('отгрузок')));
+  assert.ok(r.warnings.some((w) => wtext(w).includes('отгрузок')));
 });
 
 test('миксы по рецептуре не выпадают из плановой себестоимости', async () => {
@@ -365,8 +369,8 @@ test('реализация не подтянута — считаем по де�
   assert.strictEqual(r.revenue.source, 'cash');
   assert.strictEqual(r.revenue.total, 1200000000);
   assert.strictEqual(r.revenue.receivable, null);
-  assert.ok(r.warnings.some((w) => w.includes('ПОСТУПЛЕНИЮ ДЕНЕГ') && w.includes('мнимый убыток')),
-    'должно быть предупреждение о мнимом убытке: ' + r.warnings.join(' | '));
+  assert.ok(r.warnings.some((w) => wtext(w).includes('ПОСТУПЛЕНИЮ ДЕНЕГ') && w.includes('мнимый убыток')),
+    'должно быть предупреждение о мнимом убытке: ' + r.warnings.map(wtext).join(' | '));
 });
 
 test('SD загружен, продаж за месяц ноль — выручка ноль, оплата старых долгов её не подменяет', async () => {
@@ -383,7 +387,7 @@ test('SD загружен, продаж за месяц ноль — выруч�
   assert.strictEqual(r.revenue.total, 0);
   assert.strictEqual(r.revenue.cash_in, 1000000);        // деньги видны справочно
   assert.strictEqual(r.revenue.receivable, -1000000);    // клиенты погасили долг
-  assert.ok(!r.warnings.some((w) => w.includes('ПОСТУПЛЕНИЮ ДЕНЕГ')));
+  assert.ok(!r.warnings.some((w) => wtext(w).includes('ПОСТУПЛЕНИЮ ДЕНЕГ')));
 });
 
 test('цена сырья — средняя за этот месяц; сентябрьская закупка не меняет август', async () => {
@@ -448,7 +452,7 @@ test('товар продан, но его нет в Калькуляции — 
   assert.strictEqual(r.cogs.plan.total, 40000);
   assert.strictEqual(r.cogs.plan.unmatched_units, 10);
   assert.deepStrictEqual(r.cogs.plan.unmatched.map((x) => x.name), ['Новый салат']);
-  assert.ok(r.warnings.some((w) => w.includes('Новый салат')), r.warnings.join(' | '));
+  assert.ok(r.warnings.some((w) => wtext(w).includes('Новый салат')), r.warnings.map(wtext).join(' | '));
 });
 
 test('разбивки по товарам нет — считаем средней пачкой, но честно говорим об этом', async () => {
@@ -463,7 +467,7 @@ test('разбивки по товарам нет — считаем средн�
   const r = await buildPnl(pool, '2026-08');
   assert.strictEqual(r.cogs.plan.method, 'average');
   assert.strictEqual(r.cogs.plan.total, 600000);
-  assert.ok(r.warnings.some((w) => w.includes('средней пачкой')));
+  assert.ok(r.warnings.some((w) => wtext(w).includes('средней пачкой')));
 });
 
 test('снимок закрытого месяца сохраняется и читается', async () => {

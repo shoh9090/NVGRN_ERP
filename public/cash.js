@@ -168,6 +168,27 @@
   let cpFilterSrc = '';
   const triageState = { from: '', to: '', wallet: '' };
 
+  // Одно предупреждение P&L: текст, ссылка «куда идти» и полный список позиций.
+  function pnlWarnRow(w) {
+    if (typeof w === 'string') return el('div', {}, '⚠️ ' + w);
+    const row = el('div', { class: 'cash-warn-row' }, ['⚠️ ' + w.text + ' ']);
+    if (w.href) row.appendChild(el('a', { href: w.href, class: 'cash-warn-link' }, (w.label || 'Открыть') + ' →'));
+    else if (w.go) row.appendChild(el('button', { class: 'cash-warn-link', onclick: () => { TAB = w.go; render(); } }, (w.label || 'Перейти') + ' →'));
+    const items = w.items || [];
+    if (items.length) {
+      const list = el('div', { class: 'cash-warn-list', style: 'display:none' },
+        items.map((x) => el('div', {}, '• ' + x)));
+      const more = el('button', { class: 'cash-warn-link', onclick: () => {
+        const open = list.style.display === 'none';
+        list.style.display = open ? 'block' : 'none';
+        more.textContent = open ? 'свернуть список' : `показать все (${items.length})`;
+      } }, `показать все (${items.length})`);
+      row.appendChild(el('span', {}, [' · ', more]));
+      row.appendChild(list);
+    }
+    return row;
+  }
+
   function shell() {
     const main = $('#cash-main'); main.innerHTML = '';
     const tab = (id, label) => (tabOk(id)
@@ -896,10 +917,11 @@
           + ' и больше не меняются от новых закупок и правок Калькуляции. Чтобы пересчитать, откройте месяц.')));
     }
 
-    // Что в отчёте неполно — говорим сразу, на обеих вкладках.
+    // Что в отчёте неполно — говорим сразу, на обеих вкладках. И сразу же куда
+    // идти исправлять: ссылка на плитку или переход внутри Кассы, а список
+    // позиций раскрывается целиком — переписывать названия руками не нужно.
     if (d.warnings && d.warnings.length) {
-      box.appendChild(el('div', { class: 'cash-pnl-warn' },
-        d.warnings.map((w) => el('div', {}, '⚠️ ' + w))));
+      box.appendChild(el('div', { class: 'cash-pnl-warn' }, d.warnings.map(pnlWarnRow)));
     }
 
     if (PNL_VIEW === 'dash') pnlDashboard(box, d);

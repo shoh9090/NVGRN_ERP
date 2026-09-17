@@ -521,6 +521,9 @@ async function buildPnl(pool, period) {
   const operating = gross === null ? null : gross - cash.opex.total;
 
   // Честные предупреждения: пусть человек видит, чему верить нельзя.
+  // Каждое — не только «что не так», но и куда идти исправлять: ссылка на нужную
+  // плитку (href) или переход на вкладку внутри Кассы (go), плюс полный список
+  // позиций (items), чтобы не выписывать их из текста руками.
   const warnings = [];
   if (!fact.has_data) {
     warnings.push(cogsSource === 'plan'
@@ -529,18 +532,26 @@ async function buildPnl(pool, period) {
   }
   if (fact.no_price.length) {
     // Называем позиции поимённо: «не оценено 1» непонятно, что делать.
-    warnings.push('Нет цены прихода: ' + fact.no_price.map((x) => x.name).join(', ')
-      + '. В себестоимость эти позиции не вошли — проведите приёмку с ценой в Закупе.');
+    warnings.push({
+      text: `Нет цены прихода у ${fact.no_price.length} позиц. В себестоимость они не вошли — проведите приёмку с ценой в Закупе.`,
+      href: '/purchase', label: 'Открыть Закуп',
+      items: fact.no_price.map((x) => x.name),
+    });
   }
   if (cash.unclassified.cnt) {
-    warnings.push('Операций без статьи: ' + cash.unclassified.cnt
-      + '. Пока они не разнесены, отчёт неполный.');
+    warnings.push({
+      text: 'Операций без статьи: ' + cash.unclassified.cnt + '. Пока они не разнесены, отчёт неполный.',
+      go: 'triage', label: 'Разнести операции',
+    });
   }
   if (!units) warnings.push('Количество отгрузок за месяц не подтянуто — плановая себестоимость не посчитана.');
   if (plan.unmatched_units > 0) {
-    warnings.push(`В Калькуляции не найдено ${plan.unmatched.length} товаров из продаж (${Math.round(plan.unmatched_units)} шт): `
-      + plan.unmatched.slice(0, 5).map((x) => x.name).join(', ')
-      + '. В плановую себестоимость они не вошли — впишите им код товара SalesDoctor в Калькуляции.');
+    warnings.push({
+      text: `В Калькуляции не найдено ${plan.unmatched.length} товаров из продаж (${Math.round(plan.unmatched_units)} шт). `
+        + 'В плановую себестоимость они не вошли — впишите им код товара SalesDoctor в Калькуляции.',
+      href: '/calculation', label: 'Открыть Калькуляцию',
+      items: plan.unmatched.map((x) => `${x.name} — ${Math.round(x.units)} шт (код SD: ${x.sd_id})`),
+    });
   }
   if (plan.method === 'average' && plan.total !== null) {
     warnings.push('Плановая себестоимость посчитана «средней пачкой» по всем товарам Калькуляции: разбивка продаж по товарам за этот месяц не сохранена. '
