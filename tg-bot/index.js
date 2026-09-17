@@ -168,6 +168,15 @@ async function phone9OfUser(tgId) { const r = await db.query("SELECT phone9 FROM
 async function pointsByPhone9(p9) { if (!p9) return []; const r = await db.query(`SELECT sd_id, point_name, firm_name FROM point_contacts WHERE ${PH9("zavsklad_phone")}=$1`, [p9]); return r.rows; }
 async function chainsByPhone9(p9) { if (!p9) return []; const r = await db.query(`SELECT inn, firm_name FROM chain_managers WHERE ${PH9("manager_phone")}=$1`, [p9]); return r.rows; }
 async function pointsOfUser(tgId) { return pointsByPhone9(await phone9OfUser(tgId)); }
+// Кнопки, которые работают с заказом конкретной точки (номер точки — второе поле callback).
+const ORDER_ACTS = new Set(["no", "rep", "new", "dop", "repl", "cmt", "inc", "dec", "add", "cat", "padd", "back", "done", "ord"]);
+// Может ли человек сейчас работать с заказом точки: точка привязана к его номеру.
+// Админ бота — может (тестирует). Проверка каждый раз по базе, без кэша.
+async function canUsePoint(tgId, sdId) {
+  if (!sdId) return false;
+  if (isAdmin(tgId)) return true;
+  return (await pointsOfUser(tgId)).some((p) => String(p.sd_id) === String(sdId));
+}
 // Авторизован ли пользователь как клиент: его номер привязан к точке ИЛИ к сети (менеджер).
 async function isClientUser(tgId) {
   const p9 = await phone9OfUser(tgId);
@@ -257,6 +266,7 @@ const STR = {
   no_match: { ru: "Ваш номер не найден в списке. Обратитесь к вашему агенту Novagreen, затем /start.", uz: "Raqamingiz ro‘yxatda yo‘q. Novagreen agentingizga murojaat qiling, so‘ng /start." },
   welcome: { ru: (n) => `Спасибо, что подключились к нашему чат-боту, «${n}». Рады, что вы с нами!`, uz: (n) => `Chat-botimizga ulanganingiz uchun rahmat, «${n}». Siz bilan ekanimizdan xursandmiz!` },
   not_linked: { ru: "Вы ещё не подключены. Отправьте /start.", uz: "Siz ulanmagansiz. /start yuboring." },
+  point_revoked: { ru: "Эта точка больше не привязана к вашему номеру. Если это ошибка — напишите своему агенту.", uz: "Bu nuqta endi raqamingizga biriktirilmagan. Xato bo‘lsa — agentingizga yozing." },
   no_history: { ru: (p) => `По точке «${p}» нет истории — соберите заказ вручную: «🆕 Новый заказ».`, uz: (p) => `«${p}» bo‘yicha tarix yo‘q. Qo‘lda yig‘ing: «🆕 Yangi buyurtma».` },
   all_oos: { ru: (l) => `Сегодня ваших обычных позиций нет в наличии: ${l}.\nМожно собрать вручную:`, uz: (l) => `Bugun odatdagi mahsulotlar yo‘q: ${l}.\nQo‘lda yig‘ish mumkin:` },
   draft_title: { ru: (p) => `Заказ на завтра для «${p}». Обычно вы заказываете:`, uz: (p) => `«${p}» uchun ertangi buyurtma. Odatda:` },
@@ -1466,6 +1476,14 @@ async function main() {
       }
       if (act === "lang") { await setLang(chatId, val === "uz" ? "uz" : "ru"); await bot.answerCallbackQuery(q.id); const lang = await getLang(chatId); await bot.sendMessage(chatId, t(lang, "hello"), askContact(lang)); return; }
       const lang = await getLang(chatId);
+      // Кнопки заказа несут номер точки. Сообщение с ними живёт в Telegram вечно, поэтому
+      // перед каждым нажатием проверяем, что точка всё ещё за этим человеком: отвязали номер
+      // от точки — старые кнопки больше не читают её заказы и не создают новые (аудит A13).
+      if (ORDER_ACTS.has(act) && !(await canUsePoint(q.from.id, val))) {
+        await bot.answerCallbackQuery(q.id, { text: t(lang, "point_revoked"), show_alert: true });
+        await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: q.message.message_id }).catch(() => {});
+        return;
+      }
       if (act === "noop") { await bot.answerCallbackQuery(q.id); return; }
       if (act === "no") {
         await bot.answerCallbackQuery(q.id);
