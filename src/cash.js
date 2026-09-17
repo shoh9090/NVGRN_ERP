@@ -6,7 +6,7 @@ const multer = require('multer');
 const XLSX = require('xlsx');
 const db = require('./db');
 const integrations = require('./integrations');
-const { buildPnl, buildTrend, UNITS_KEY, SALES_KEY, SKU_KEY } = require('./cash-pnl');
+const { buildPnl, buildTrend, UNITS_KEY, SALES_KEY, SKU_KEY, SNAP_KEY, saveSnapshot, loadSnapshot } = require('./cash-pnl');
 const pfin = require('./purchase-finance'); // общий расчёт долга поставщикам (read-only в «Обязательствах»)
 
 const router = express.Router();
@@ -1516,6 +1516,10 @@ router.get('/api/pnl', async (req, res) => {
   const period = /^\d{4}-\d{2}$/.test(req.query.period || '')
     ? req.query.period : new Date().toISOString().slice(0, 7);
   try {
+    // Закрытый месяц показываем из снимка, сделанного при закрытии: его цифры
+    // больше не меняются от новых закупок и правок Калькуляции.
+    const snap = await loadSnapshot(db.pool, period);
+    if (snap && await isLocked(period + '-01')) return res.json(snap);
     res.json(await buildPnl(db.pool, period));
   } catch (e) {
     console.error('[КАССА] P&L:', e.message);
@@ -2246,6 +2250,8 @@ router.post('/api/period-lock', J, async (req, res) => {
   if (b.clear) {
     await db.pool.query("DELETE FROM settings WHERE key = 'cash_locked_until'");
     clearLockCache();
+    // Месяцы снова открыты — снимки больше не действуют, отчёт считается заново.
+    await db.pool.query("DELETE FROM settings WHERE key LIKE 'pnl_snapshot_%'");
     await db.log(req.user.id, 'cash_period_unlock', 'замок снят полностью');
     return res.json({ ok: true, locked_until: null });
   }
@@ -2257,8 +2263,12 @@ router.post('/api/period-lock', J, async (req, res) => {
     `INSERT INTO settings (key, value) VALUES ('cash_locked_until', $1)
      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`, [last]);
   clearLockCache();
+  // Снимок P&L за закрываемый месяц: дальше отчёт за него не пересчитывается.
+  let snapNote = null;
+  try { await saveSnapshot(db.pool, period); }
+  catch (e) { snapNote = 'Месяц закрыт, но снимок отчёта P&L сделать не удалось: ' + e.message; console.warn('[КАССА снимок P&L]', e.message); }
   await db.log(req.user.id, 'cash_period_lock', `закрыто по ${last}`);
-  res.json({ ok: true, locked_until: last });
+  res.json({ ok: true, locked_until: last, snapNote });
 });
 
 // Прошлые загрузки (партии импорта) — чтобы можно было откатить конкретную выгрузку,

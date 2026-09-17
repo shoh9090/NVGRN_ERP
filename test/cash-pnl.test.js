@@ -465,3 +465,31 @@ test('разбивки по товарам нет — считаем средн�
   assert.strictEqual(r.cogs.plan.total, 600000);
   assert.ok(r.warnings.some((w) => w.includes('средней пачкой')));
 });
+
+test('снимок закрытого месяца сохраняется и читается', async () => {
+  const { saveSnapshot, loadSnapshot, SNAP_KEY } = require('../src/cash-pnl');
+  const store = new Map();
+  const base = makePool({
+    cash: [{ code: '200', name: 'Выручка', group_name: 'Доходы и поступления', flow_type: 'operating', inc: 5000000, exp: 0, cnt: 3 }],
+    used: [{ item_kind: 'raw', item_id: 1, qty: 10 }],
+    prices: [{ m: '2026-08', item_kind: 'raw', item_id: 1, avg_price: 12000 }],
+  });
+  const pool = {
+    query: async (sql, params) => {
+      const q = String(sql).replace(/\s+/g, ' ');
+      if (/INSERT INTO settings/.test(q)) { store.set(params[0], params[1]); return { rows: [] }; }
+      if (/SELECT value FROM settings WHERE key = \$1/.test(q)) {
+        return { rows: store.has(params[0]) ? [{ value: store.get(params[0]) }] : [] };
+      }
+      return base.query(sql, params);
+    },
+  };
+  const snap = await saveSnapshot(pool, '2026-08');
+  assert.ok(snap.snapshot_at, 'у снимка есть отметка времени');
+  assert.strictEqual(snap.cogs.fact.total, 120000);
+  assert.ok(store.has(SNAP_KEY('2026-08')));
+
+  const back = await loadSnapshot(pool, '2026-08');
+  assert.strictEqual(back.cogs.fact.total, 120000);
+  assert.strictEqual(await loadSnapshot(pool, '2026-07'), null);
+});

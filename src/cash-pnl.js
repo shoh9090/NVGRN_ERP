@@ -29,6 +29,11 @@ const SALES_KEY = (period) => 'pnl_sales_' + period;
 // Продажи по товарам SalesDoctor за месяц: [[sd_id, штук, название], …].
 // Нужны, чтобы план считался по ассортименту, а не по «средней пачке».
 const SKU_KEY = (period) => 'pnl_sku_' + period;
+// Снимок отчёта за закрытый месяц. Пока месяц открыт, отчёт считается заново из
+// движений; при закрытии месяца в Кассе цифры сохраняются и дальше показываются
+// как есть — закрытый месяц не должен меняться от новых закупок и правок
+// Калькуляции (аудит A12). Открыли месяц заново — снимок снимается.
+const SNAP_KEY = (period) => 'pnl_snapshot_' + period;
 // Реализация за месяц загружена из SD: в настройке есть число (в том числе 0 или минус).
 const salesLoaded = (v) => v != null && String(v).trim() !== '' && isFinite(Number(v));
 
@@ -603,6 +608,26 @@ async function buildPnl(pool, period) {
 }
 
 
+// Сохранить снимок отчёта за месяц (вызывается при закрытии месяца в Кассе).
+async function saveSnapshot(pool, period) {
+  const report = await buildPnl(pool, period);
+  const snap = { ...report, snapshot_at: new Date().toISOString().slice(0, 16).replace('T', ' ') };
+  await pool.query(
+    `INSERT INTO settings (key, value) VALUES ($1, $2)
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`, [SNAP_KEY(period), JSON.stringify(snap)]);
+  return snap;
+}
+
+// Снимок закрытого месяца, если он есть. Возвращает объект отчёта или null.
+async function loadSnapshot(pool, period) {
+  try {
+    const r = await pool.query('SELECT value FROM settings WHERE key = $1', [SNAP_KEY(period)]);
+    if (!r.rows.length) return null;
+    const snap = JSON.parse(r.rows[0].value);
+    return snap && typeof snap === 'object' ? snap : null;
+  } catch (e) { return null; }
+}
+
 // ---------------------------------------------------------------------------
 // Динамика по месяцам — для графика на дашборде
 // ---------------------------------------------------------------------------
@@ -691,4 +716,4 @@ async function buildTrend(pool, endPeriod, months) {
   return { months: n, from: bounds.f, to: bounds.t, points: out };
 }
 
-module.exports = { buildPnl, buildTrend, UNITS_KEY, SALES_KEY, SKU_KEY, planCogs };
+module.exports = { buildPnl, buildTrend, UNITS_KEY, SALES_KEY, SKU_KEY, SNAP_KEY, planCogs, saveSnapshot, loadSnapshot };

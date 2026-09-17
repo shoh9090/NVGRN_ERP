@@ -889,6 +889,13 @@
     catch (e) { box.innerHTML = ''; box.appendChild(el('div', { class: 'cash-empty' }, 'Ошибка: ' + e.message)); return; }
     box.innerHTML = '';
 
+    // Закрытый месяц показывается из снимка, сделанного при закрытии.
+    if (d.snapshot_at) {
+      box.appendChild(el('div', { class: 'cash-pnl-warn' },
+        el('div', {}, '🔒 Месяц закрыт. Цифры зафиксированы ' + d.snapshot_at
+          + ' и больше не меняются от новых закупок и правок Калькуляции. Чтобы пересчитать, откройте месяц.')));
+    }
+
     // Что в отчёте неполно — говорим сразу, на обеих вкладках.
     if (d.warnings && d.warnings.length) {
       box.appendChild(el('div', { class: 'cash-pnl-warn' },
