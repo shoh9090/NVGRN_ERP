@@ -212,7 +212,7 @@ router.get('/staff', async (req, res) => {
   catch (e) { res.status(500).send('Ошибка раздела: ' + e.message); }
 });
 router.post('/staff/load-agents', async (req, res) => {
-  try { const n = await integrations.syncCrmAgents(); res.redirect('/tgbot?staff=1&msg=' + encodeURIComponent('Загружено агентов из CRM: ' + n)); }
+  try { const r = await integrations.syncCrmAgents(); res.redirect('/tgbot?staff=1&msg=' + encodeURIComponent(require('./driver-sync').describe(r, 'agent'))); }
   catch (e) { res.redirect('/tgbot?staff=1&err=' + encodeURIComponent(e.message)); }
 });
 router.post('/staff/load-expeditors', async (req, res) => {
@@ -595,6 +595,11 @@ async function driverSyncTick() {
     await require('./staff-link').linkStaffChats(db.pool).catch(() => {});
     const r = await integrations.syncCrmExpeditors();
     if (r && (r.created || r.enabled || r.disabled)) console.log('[ВОДИТЕЛИ]', require('./driver-sync').describe(r));
+    // Агенты — тем же порядком, отдельной попыткой: сбой одного списка не мешает другому.
+    try {
+      const ra = await integrations.syncCrmAgents();
+      if (ra && (ra.created || ra.enabled || ra.disabled)) console.log('[АГЕНТЫ]', require('./driver-sync').describe(ra, 'agent'));
+    } catch (e) { console.warn('[АГЕНТЫ]', e.message); }
   } catch (e) { console.warn('[ВОДИТЕЛИ]', e.message); }
 }
 if (process.env.NODE_ENV !== 'test') {

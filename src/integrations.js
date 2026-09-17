@@ -566,18 +566,27 @@ async function syncCrmAgents() {
   if (!cfg.url || !cfg.login || !cfg.password) throw new Error('Сначала заполните доступ к SalesDoctor в разделе «Интеграции».');
   const auth = await sdLogin(cfg);
   const agents = await sdGetAll(cfg, auth, 'getAgent', 'agent', {});
+  // Телефон агента — чтобы завести его в бот автоматически (как водителей).
+  await db.pool.query('ALTER TABLE tgbot.crm_agents ADD COLUMN IF NOT EXISTS phone_normalized TEXT').catch(() => {});
+  const norm = (v) => { const d = String(v || '').replace(/\D/g, ''); return d.length > 9 ? d.slice(-9) : d; };
   let n = 0;
   for (const a of agents) {
     if (!a.SD_id) continue;
     await db.pool.query(
-      `INSERT INTO tgbot.crm_agents (sd_agent_id, sd_agent_code, sd_agent_name, is_active, last_synced_at)
-       VALUES ($1,$2,$3,$4,now())
-       ON CONFLICT (sd_agent_id) DO UPDATE SET sd_agent_code=$2, sd_agent_name=$3, is_active=$4, last_synced_at=now()`,
-      [a.SD_id, a.code_1C || null, a.name || a.SD_id, a.active !== 'N']);
+      `INSERT INTO tgbot.crm_agents (sd_agent_id, sd_agent_code, sd_agent_name, is_active, phone_normalized, last_synced_at)
+       VALUES ($1,$2,$3,$4,$5,now())
+       ON CONFLICT (sd_agent_id) DO UPDATE SET sd_agent_code=$2, sd_agent_name=$3, is_active=$4, phone_normalized=$5, last_synced_at=now()`,
+      [a.SD_id, a.code_1C || null, a.name || a.SD_id, a.active !== 'N', norm(a.tel || a.phone) || null]);
     n++;
   }
   await db.pool.query(`INSERT INTO tgbot.salesdoctor_sync_log (sync_type, created, updated) VALUES ('agents', 0, $1)`, [n]).catch(() => {});
-  return n;
+  // Пустой ответ — сбой SD, а не «всех уволили»: иначе сверка отключила бы всем доступ.
+  if (!n) throw new Error('SalesDoctor не вернул ни одного агента — сверку пропускаю, чтобы никого не отключить по ошибке.');
+  const seen = agents.filter((a) => a.SD_id);
+  await db.pool.query('UPDATE tgbot.crm_agents SET is_active = false WHERE NOT (sd_agent_id = ANY($1))', [seen.map((a) => a.SD_id)]);
+  // Агенты в боте — по списку SD, так же как водители (см. driver-sync.js).
+  return require('./driver-sync').applyDriverStaff(db.pool,
+    seen.map((a) => ({ sd_id: a.SD_id, name: a.name || a.SD_id, phone9: norm(a.tel || a.phone), active: a.active !== 'N' })), 'agent');
 }
 
 // Экспедиторы (водители) из SD — как агенты, но с телефоном (для роли expeditor).

@@ -64,3 +64,15 @@ test('сводка по-человечески', () => {
   assert.match(t, /добавлено в бот: 3, отключено \(нет среди активных в SD\): 2\./);
   assert.match(t, /Без телефона в SD — бот их не узнает: Абидов\./);
 });
+
+test('агенты сверяются так же: привязка по crm_agent_id, водителей не трогаем', () => {
+  const staff = [
+    { id: 1, role: 'agent', status: 'confirmed', crm_agent_id: 'a1' },          // активен в SD — без изменений
+    { id: 2, role: 'agent', status: 'confirmed', crm_agent_id: 'a9' },          // нет в SD — отключить
+    { id: 3, role: 'expeditor', status: 'confirmed', expeditor_sd_id: 'd1' },   // водитель — не касается
+  ];
+  const p = planDriverStaff([E('a1', '901111111'), E('a2', '902222222')], staff, 'agent');
+  assert.deepEqual(p.create.map((x) => x.sd_id), ['a2']);
+  assert.deepEqual(p.disable.map((x) => x.id), [2]);
+  assert.equal(describe({ total: 5, active: 4, created: 1, enabled: 0, disabled: 1, noPhone: [], conflict: [] }, 'agent').startsWith('Агентов в SalesDoctor: 5'), true);
+});
