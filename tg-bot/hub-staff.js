@@ -15,7 +15,12 @@ const MANAGER_ROLES = new Set(['head_of_sales', 'logistics', 'marketing', 'admin
 
 module.exports = function hubStaff(db) {
   const USER_SQL = `
-    SELECT u.id, u.full_name, u.tg_chat_id, u.bot_role,
+    SELECT u.id, u.full_name, u.tg_chat_id,
+           -- Роль в боте — из ролей ERP. Если их несколько, берём старшую.
+           (SELECT r2.bot_role FROM public.user_roles ur2 JOIN public.roles r2 ON r2.id = ur2.role_id
+             WHERE ur2.user_id = u.id AND r2.bot_role IS NOT NULL
+             ORDER BY CASE r2.bot_role WHEN 'admin' THEN 1 WHEN 'head_of_sales' THEN 2 WHEN 'logistics' THEN 3 ELSE 4 END
+             LIMIT 1) AS bot_role,
            COALESCE(string_agg(r.name, ', ' ORDER BY r.name), '') AS roles
       FROM public.users u
       LEFT JOIN public.user_roles ur ON ur.user_id = u.id
@@ -42,7 +47,9 @@ module.exports = function hubStaff(db) {
       try {
         const r = await db.query(
           `SELECT DISTINCT u.tg_chat_id AS chat_id FROM public.users u
-            WHERE u.is_active AND u.bot_role = $1 AND u.tg_chat_id IS NOT NULL AND COALESCE(u.tg_phone, '') <> ''`, [role]);
+            WHERE u.is_active AND u.tg_chat_id IS NOT NULL AND COALESCE(u.tg_phone, '') <> ''
+              AND EXISTS (SELECT 1 FROM public.user_roles ur JOIN public.roles r ON r.id = ur.role_id
+                           WHERE ur.user_id = u.id AND r.bot_role = $1)`, [role]);
         return r.rows.map((x) => x.chat_id);
       } catch (e) { return []; }
     },

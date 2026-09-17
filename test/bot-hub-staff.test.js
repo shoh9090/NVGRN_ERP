@@ -54,7 +54,7 @@ test('руководители из ERP по «Роли в боте»: толь�
   const db = fakeDb([{ chat_id: 111 }, { chat_id: 222 }]);
   const chats = await hubStaff(db).chatsByRole('logistics');
   assert.deepEqual(chats, [111, 222]);
-  assert.match(db.calls[0].sql, /u\.bot_role = \$1/);
+  assert.match(db.calls[0].sql, /r\.bot_role = \$1/);   // роль в боте — из ролей ERP
   assert.match(db.calls[0].sql, /u\.is_active/);
   assert.match(db.calls[0].sql, /tg_chat_id IS NOT NULL/);
   assert.deepEqual(db.calls[0].params, ['logistics']);
