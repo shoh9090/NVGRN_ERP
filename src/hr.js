@@ -341,14 +341,19 @@ async function periodsOfPayrollIds(ids) {
 //
 // Пусто — ограничения нет (так работали все до появления привязки).
 // Админ не ограничивается никогда.
+// Считаем один раз на запрос: область спрашивают и фильтры, и сторож записи,
+// и лишние походы в базу тут ни к чему.
 async function hrScope(req) {
   if (!req || !req.user) return new Set();
   if (req.user.isAdmin) return null;
+  if (req._hrScope !== undefined) return req._hrScope;
+  let scope = null;
   try {
     const r = await db.pool.query('SELECT department_id FROM hr_user_departments WHERE user_id = $1', [req.user.id]);
-    if (!r.rows.length) return null;
-    return new Set(r.rows.map((x) => x.department_id));
-  } catch (e) { return null; }
+    if (r.rows.length) scope = new Set(r.rows.map((x) => x.department_id));
+  } catch (e) { scope = null; }
+  req._hrScope = scope;
+  return scope;
 }
 // Сузить запрошенный фильтр отделов до разрешённых. Возвращает строку для
 // deptFilter/deptFilterMem: человек может фильтровать внутри своих отделов,
@@ -481,6 +486,140 @@ function hrTabOf(req) {
 }
 router.use(require('./tab-access').requireTab(db.pool, '/hr', hrTabOf));
 
+// ---------------------------------------------------------------------------
+// Стена по отделу — один сторож на все операции записи
+// ---------------------------------------------------------------------------
+// Правило: кто ограничен отделом, работает ВНУТРИ своей области и ничего из неё
+// не выносит. Из этого сами собой получаются запреты «не трогать чужого» и
+// «не переводить своего в чужой отдел» — отдельных галочек на это не нужно.
+//
+// Проверять такое в каждом маршруте руками нельзя: про одну проверку однажды
+// забудут, и дыра вернётся. Поэтому список ниже — единственное место, где
+// записано, что ограниченному вообще можно и чьи это данные. Маршрута в списке
+// нет = ограниченному нельзя. Забытый маршрут закрывается, а не открывается;
+// что список не разъехался с маршрутами, стережёт npm run check.
+const A = (v) => (Array.isArray(v) ? v : [v]).map((x) => parseInt(x, 10)).filter((n) => Number.isInteger(n));
+const SCOPED_WRITES = [
+  // Карточка: свой сотрудник, свой отдел. Отдел обязателен — «Без отдела»
+  // ограниченный не видит, значит и завести туда человека не может.
+  { re: /^\/api\/employee$/, emp: (b) => A(b.id), dept: (b) => A(b.department_id), needDept: true },
+  { re: /^\/api\/employee\/(\d+)\/status$/, emp: (b, m) => A(m[1]) },
+  { re: /^\/api\/employee\/(\d+)\/recurring$/, emp: (b, m) => A(m[1]) },
+  { re: /^\/api\/employee\/(\d+)\/recurring\/\d+\/delete$/, emp: (b, m) => A(m[1]) },
+  { re: /^\/api\/employee\/(\d+)\/delete-duplicate$/, emp: (b, m) => A(m[1]) },
+  { re: /^\/api\/employees\/set-schedule$/, emp: (b) => A(b.ids) },
+  // Массовое: увольнение/архив/график — только по своим. Перевод сюда же:
+  // отдел назначения проверяется как свой, поэтому вынести человека нельзя.
+  { re: /^\/api\/employees\/bulk$/, emp: (b) => A(b.ids), dept: (b) => A(b.department_id) },
+  { re: /^\/api\/events$/, emp: (b) => A(b.employee_id) },
+  { re: /^\/api\/events\/(\d+)\/delete$/, event: (b, m) => A(m[1]) },
+  { re: /^\/api\/timesheet$/, emp: (b) => A((b.rows || []).map((r) => r && r.employee_id)) },
+  { re: /^\/api\/timesheet\/mark$/, emp: (b) => A(b.employee_id) },
+  { re: /^\/api\/timesheet\/mark-day$/, dept: (b) => A(String(b.department || '').split(',')), needDept: true },
+  { re: /^\/api\/timesheet\/submit$/, dept: (b) => A(b.department_id), needDept: true },
+  { re: /^\/api\/payroll$/, emp: (b) => A(b.employee_id) },
+  { re: /^\/api\/payroll\/cell$/, emp: (b) => A(b.employee_id) },
+  { re: /^\/api\/payroll\/accrue$/, emp: (b) => A(b.employee_ids) },
+  { re: /^\/api\/payroll\/unaccrue$/, emp: (b) => A(b.employee_ids) },
+  { re: /^\/api\/payroll\/fact-from-plan$/, emp: (b) => A(b.employee_ids) },
+  { re: /^\/api\/payroll\/bulk-delete$/, payroll: (b) => A(b.ids) },
+  { re: /^\/api\/mass-op$/, emp: (b) => A((b.items || []).map((i) => i && i.employee_id)) },
+  { re: /^\/api\/payouts\/pay$/, emp: (b) => A(b.employee_ids) },
+  { re: /^\/api\/payouts\/(\d+)\/delete$/, payout: (b, m) => A(m[1]) },
+];
+// Второй список — операции на всю компанию: ограниченному их не даём, сузить
+// их нечем. Сторожу он не нужен (запрещено и так всё, чего нет в SCOPED_WRITES),
+// он нужен людям: новый маршрут записи обязан попасть в один из двух списков,
+// чтобы решение «своим можно / только кадрам» принималось осознанно.
+// Это и проверяет npm run check.
+const COMPANY_WRITES = [
+  /^\/api\/period-lock$/,
+  /^\/api\/payroll\/apply-recurring$/,
+  /^\/api\/payroll\/import$/,
+  /^\/api\/salary\/cash-hide$/,
+  /^\/api\/timesheet\/limit$/,
+  /^\/api\/timesheet\/unsubmit$/,
+  /^\/api\/timesheet\/import$/,
+  /^\/api\/timesheet-import$/,
+  /^\/api\/fill-norms$/,
+  /^\/api\/fot-taxes$/,
+  /^\/api\/department$/,
+  /^\/api\/department\/\d+\/users$/,
+  /^\/api\/department\/\d+\/archive$/,
+  /^\/api\/employees\/import$/,
+  /^\/api\/employees\/restore-seed$/,
+  /^\/api\/employees\/undo-restore$/,
+  /^\/api\/cards\/import$/,
+  /^\/api\/cards\/statement-import$/,
+];
+// Чтение сужают фильтры по отделу (scopeDept). Отдельно закрываем то, что
+// фильтром не сужается: считается сразу по всей компании.
+const COMPANY_READS = /^\/api\/(cards\/paysheet\.xlsx|employees\/restore-preview)$/;
+const SCOPE_DENIED = 'Эта операция затрагивает всю компанию — она доступна только кадрам.';
+const SCOPE_UNKNOWN = 'Эта операция не размечена по отделам — обратитесь к администратору.';
+
+// Строки ведомости, выплат и кадровых событий сами отдела не знают —
+// находим по ним сотрудника, а дальше проверка общая.
+async function ownersOf(table, ids) {
+  if (!ids.length) return [];
+  return (await db.pool.query(`SELECT employee_id FROM ${table} WHERE id = ANY($1::int[])`, [ids]))
+    .rows.map((r) => r.employee_id);
+}
+
+// Какое правило отвечает за адрес. Пусто — операции в списке нет, значит нельзя.
+function scopeRuleFor(path) { return SCOPED_WRITES.find((r) => r.re.test(path)) || null; }
+// Чьи данные трогает запрос: из тела (и из уже найденных владельцев строк).
+function scopeEmpsOf(rule, b, m, extra = []) {
+  return new Set([...(rule.emp ? rule.emp(b, m) : []), ...extra]);
+}
+// Само решение — без базы, чтобы его можно было проверить тестами: именно оно
+// решает, увидит ли человек чужие зарплаты. deptOf возвращает отдел сотрудника
+// (undefined — сотрудника нет или он «Без отдела», и то и другое мимо области).
+function scopeVerdict(rule, b, m, scope, deptOf, extra = []) {
+  const depts = rule.dept ? rule.dept(b, m) : [];
+  if (rule.needDept && !depts.length) return 'Укажите отдел — вы ведёте только свои отделы.';
+  for (const d of depts) if (!scope.has(d)) return 'Этот отдел вам не доступен.';
+  for (const id of scopeEmpsOf(rule, b, m, extra)) {
+    if (!scope.has(deptOf(id))) return 'Этот сотрудник не из вашего отдела.';
+  }
+  return null;
+}
+
+async function scopeWall(req, res, next) {
+  let scope;
+  try { scope = await hrScope(req); } catch (e) { return next(); }
+  if (!scope) return next();                       // отделы не назначены — всё как раньше
+  if (req.method !== 'POST') {
+    if (COMPANY_READS.test(req.path)) return res.status(403).json({ error: SCOPE_DENIED });
+    return next();
+  }
+  const rule = scopeRuleFor(req.path);
+  if (!rule) {
+    return res.status(403).json({
+      error: COMPANY_WRITES.some((r) => r.test(req.path)) ? SCOPE_DENIED : SCOPE_UNKNOWN,
+    });
+  }
+  try {
+    const m = req.path.match(rule.re);
+    const b = req.body || {};
+    // Строки ведомости, выплат и событий отдела не знают — сначала находим,
+    // чьи они, и дальше решение общее для всех операций.
+    const extra = [];
+    if (rule.payroll) extra.push(...await ownersOf('hr_payroll', rule.payroll(b, m)));
+    if (rule.payout) extra.push(...await ownersOf('hr_payouts', rule.payout(b, m)));
+    if (rule.event) extra.push(...await ownersOf('hr_events', rule.event(b, m)));
+    const emps = scopeEmpsOf(rule, b, m, extra);
+    const byId = emps.size ? new Map((await db.pool.query(
+      'SELECT id, department_id FROM hr_employees WHERE id = ANY($1::int[])', [[...emps]]))
+      .rows.map((r) => [r.id, r.department_id])) : new Map();
+    const err = scopeVerdict(rule, b, m, scope, (id) => byId.get(id), extra);
+    if (err) return res.status(403).json({ error: err });
+  } catch (e) { return res.status(403).json({ error: SCOPE_DENIED }); }
+  next();
+}
+router.use(J);            // тело нужно сторожу ниже; повторный разбор в маршруте безвреден
+router.use(scopeWall);
+
 // ---------- Страница ----------
 router.get('/', async (req, res) => {
   const settings = await db.getSettings();
@@ -495,14 +634,21 @@ router.get('/', async (req, res) => {
 });
 
 // ---------- Справочники ----------
+// Справочник отделов — тоже по области: иначе ограниченный видит в выпадашке
+// все отделы компании и их численность, хотя людей открыть не может.
 router.get('/api/dicts', async (req, res) => {
+  const scope = await hrScope(req);
+  const ids = scope ? [...scope] : null;
   const departments = (await db.pool.query(
     `SELECT d.id, d.name, d.sort_order,
             (SELECT COUNT(*) FROM hr_employees e WHERE e.department_id = d.id AND e.status = 'active')::int AS emp_count
-     FROM hr_departments d WHERE d.status='active' ORDER BY d.sort_order, d.name`)).rows;
-  const counts = (await db.pool.query("SELECT status, count(*)::int n FROM hr_employees GROUP BY status")).rows;
+     FROM hr_departments d WHERE d.status='active' AND ($1::int[] IS NULL OR d.id = ANY($1::int[]))
+     ORDER BY d.sort_order, d.name`, [ids])).rows;
+  const counts = (await db.pool.query(
+    `SELECT status, count(*)::int n FROM hr_employees
+      WHERE ($1::int[] IS NULL OR department_id = ANY($1::int[])) GROUP BY status`, [ids])).rows;
   const byStatus = {}; counts.forEach((c) => { byStatus[c.status] = c.n; });
-  res.json({ departments, schedules: SCHEDULES, statuses: STATUSES, counts: byStatus });
+  res.json({ departments, schedules: SCHEDULES, statuses: STATUSES, counts: byStatus, scoped: !!scope });
 });
 
 // ---------- Сотрудники ----------
@@ -651,6 +797,7 @@ router.post('/api/employee', J, async (req, res) => {
 
 // ===== Постоянные надбавки/удержания сотрудника (закреплены в карточке) =====
 router.get('/api/employee/:id(\\d+)/recurring', async (req, res) => {
+  { const _e = await scopeGuardEmp(req, req.params.id); if (_e) return res.status(403).json({ error: _e }); }
   const rows = (await db.pool.query(
     'SELECT id, field, amount, date_from, date_to, comment, active FROM hr_employee_recurring WHERE employee_id=$1 ORDER BY id',
     [req.params.id])).rows;
@@ -2746,7 +2893,8 @@ router.get('/api/employees/duplicates', async (req, res) => {
               (SELECT COUNT(*) FROM hr_payroll p WHERE p.employee_id = e.id) AS payroll_rows,
               (SELECT COUNT(*) FROM hr_payouts o WHERE o.employee_id = e.id) AS payout_rows
          FROM hr_employees e LEFT JOIN hr_departments d ON d.id = e.department_id
-        WHERE e.status <> 'archived' ORDER BY e.full_name`)).rows;
+        WHERE e.status <> 'archived' AND ($1::int[] IS NULL OR e.department_id = ANY($1::int[]))
+        ORDER BY e.full_name`, [await hrScope(req).then((s) => (s ? [...s] : null))])).rows;
     const norm = (s) => String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/[^a-zа-я0-9 ]/gi, ' ').replace(/\s+/g, ' ').trim();
     const words = (s) => new Set(norm(s).split(' ').filter((w) => w.length >= 3));
     const groups = [];
@@ -2878,3 +3026,7 @@ module.exports = router;
 module.exports.scopeDept = scopeDept;
 // Открыто для тестов: это соответствие решает, данные какой вкладки закрывать.
 module.exports.hrTabOf = hrTabOf;
+// Открыто для тестов: сторож по отделу — правило и решение по нему.
+module.exports.scopeRuleFor = scopeRuleFor;
+module.exports.scopeVerdict = scopeVerdict;
+module.exports.scopeCompanyWrite = (p) => COMPANY_WRITES.some((r) => r.test(p));

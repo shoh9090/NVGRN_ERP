@@ -113,6 +113,11 @@
   }
   async function reloadDicts() { try { DICTS = await api('/dicts'); (DICTS.schedules || []).forEach((s) => { SCHED_NAME[s.code] = s.name; }); } catch (e) {} }
 
+  // Доступ ограничен своими отделами: сервер сказал это вместе со справочником.
+  // Экран прячет операции, которые выводят данные за пределы отдела, — чтобы
+  // человек не упирался в отказ. Настоящая проверка всё равно на сервере.
+  function scoped() { return !!(DICTS && DICTS.scoped); }
+
   // Доступ по вкладкам: сервер прислал список разрешённых (null — все). Экран
   // просто не рисует лишние кнопки; данные закрыты на сервере отдельно.
   const TABS_OK = (window.HUB_TABS === null || window.HUB_TABS === undefined)
@@ -831,12 +836,15 @@
         modal('Групповой перевод', body, [el('button', { class: 'btn-ghost', onclick: closeModal }, 'Отмена'), ok]);
       }
       bulk.appendChild(bulkN);
-      bulk.appendChild(el('button', { class: 'btn-ghost', onclick: bulkTransfer }, 'Перевести'));
+      // Перевод и удаление — операции «наружу»: перевод уводит человека из отдела,
+      // удаление стирает карточку насовсем. Тому, кто ведёт один отдел, их не
+      // показываем (сервер их всё равно не пропустит).
+      if (!scoped()) bulk.appendChild(el('button', { class: 'btn-ghost', onclick: bulkTransfer }, 'Перевести'));
       bulk.appendChild(el('button', { class: 'btn-ghost hrf-warn', onclick: () => doBulk('archived', 'В архив') }, 'В архив'));
       bulk.appendChild(el('button', { class: 'btn-ghost hrf-warn', onclick: bulkFire }, 'Уволить'));
       // Удаление стирает карточку вместе с зарплатной историей — предупреждаем прямо в тексте.
       // Сервер не даст удалить тех, у кого есть начисления/выплаты (предложит «Уволить»/«В архив»).
-      bulk.appendChild(el('button', { class: 'btn-ghost hr-del', title: 'Только для пустых карточек, заведённых по ошибке',
+      if (!scoped()) bulk.appendChild(el('button', { class: 'btn-ghost hr-del', title: 'Только для пустых карточек, заведённых по ошибке',
         onclick: () => doBulk('delete', 'УДАЛИТЬ безвозвратно карточку вместе с начислениями, выплатами и кадровой историей.\nДля работавших сотрудников используйте «Уволить» или «В архив».\n\nПродолжить') }, '🗑 Удалить'));
       // Массовая простановка графика выбранным.
       const schedSel = el('select', { class: 'hrf-inp', style: 'height:32px' }, (DICTS.schedules || []).map((s) => el('option', { value: s.code }, s.name)));
@@ -1054,7 +1062,10 @@
   function openEmp(e) {
     e = e || {};
     const name = finp(e.full_name, { placeholder: 'Фамилия Имя Отчество' });
-    const dept = fsel([{ v: '', t: '— отдел —' }, ...DICTS.departments.map((d) => ({ v: d.id, t: d.name }))], e.department_id || '');
+    // У кого доступ ограничен отделом, в списке только его отделы. Если он один —
+    // подставляем сразу: выбирать не из чего, а без отдела карточка не сохранится.
+    const only = (scoped() && DICTS.departments.length === 1) ? DICTS.departments[0].id : '';
+    const dept = fsel([{ v: '', t: '— отдел —' }, ...DICTS.departments.map((d) => ({ v: d.id, t: d.name }))], e.department_id || only);
     const pos = finp(e.position, { placeholder: 'Должность' });
     const sched = fsel([{ v: '', t: '— график —' }, ...(DICTS.schedules || []).map((s) => ({ v: s.code, t: s.name }))], e.schedule_type || '');
     const fullMonth = el('input', { type: 'checkbox' });

@@ -174,6 +174,53 @@ for (const f of files) {
   }
 }
 
+// (и) Доступ по отделу в Кадрах: каждая операция записи должна быть размечена.
+// Руководитель отдела видит и правит только свой отдел. Если новый маршрут
+// записи не попал ни в один список, сторож его просто закроет — а человек
+// упрётся в «нет доступа» и не поймёт почему. Поэтому требуем решения заранее:
+// либо «своим можно» (SCOPED_WRITES, с указанием чьи это данные), либо
+// «только кадрам» (COMPANY_WRITES).
+{
+  const hr = read('src/hr.js');
+  const firstRoute = hr.search(/router\.(post|get)\(/);
+  const wall = hr.indexOf('router.use(scopeWall)');
+  if (wall < 0) {
+    errors.push('src/hr.js: сторож по отделу (scopeWall) не подключён — операции записи откроются всем отделам.');
+  } else if (firstRoute >= 0 && wall > firstRoute) {
+    errors.push('src/hr.js: сторож по отделу подключён ПОСЛЕ маршрутов — он не сработает. router.use(scopeWall) должен идти до них.');
+  }
+  // Маршруты записи, как они объявлены: ':id(\\d+)' подставляем как обычный номер.
+  const declared = [...hr.matchAll(/router\.post\('([^']+)'/g)]
+    .map((m) => m[1].replace(/:\w+\(\\\\d\+\)/g, '1').replace(/:\w+/g, '1'));
+  const listOf = (name) => {
+    const i = hr.indexOf('const ' + name + ' = [');
+    if (i < 0) return [];
+    const block = hr.slice(i, hr.indexOf('\n];', i));
+    return [...block.matchAll(/(?:^|\{ )re: \/(.+?)\/,|^\s+\/(\^.+?)\/,\s*$/gm)]
+      .map((m) => m[1] || m[2]).filter(Boolean).map((src) => ({ src, re: new RegExp(src) }));
+  };
+  const scoped = listOf('SCOPED_WRITES');
+  const company = listOf('COMPANY_WRITES');
+  if (!scoped.length || !company.length) {
+    errors.push('src/hr.js: не нашёл списки SCOPED_WRITES / COMPANY_WRITES — правило доступа по отделу проверить нечем.');
+  } else {
+    const all = scoped.concat(company);
+    for (const p of declared) {
+      if (!all.some((r) => r.re.test(p))) {
+        errors.push('src/hr.js: маршрут записи ' + p + ' не размечен по отделам. Добавьте его в SCOPED_WRITES '
+          + '(если руководитель отдела делает это у себя — укажите, чьи это данные) или в COMPANY_WRITES (если операция только для кадров).');
+      }
+    }
+    // Обратная сторона: переименовали маршрут — правило осталось висеть в воздухе,
+    // и руководитель отдела молча потеряет операцию.
+    for (const r of all) {
+      if (!declared.some((p) => r.re.test(p))) {
+        errors.push('src/hr.js: правило доступа по отделу /' + r.src + '/ не подходит ни к одному маршруту записи — маршрут переименовали или удалили.');
+      }
+    }
+  }
+}
+
 // ---- Итог ----
 console.log(`Проверено: ${jsCount} JS-файлов, ${ejsCount} EJS-шаблонов.`);
 if (errors.length) {
