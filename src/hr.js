@@ -107,6 +107,10 @@ async function ensureSchema() {
     comment TEXT,
     created_by INT, created_at TIMESTAMPTZ NOT NULL DEFAULT now()
   )`);
+  // Откуда событие. Пусто — завели руками. 'timesheet' — собрано из табеля при
+  // его утверждении: такие события система пересобирает сама, поэтому их надо
+  // отличать от ручных, чтобы не затереть чужую запись.
+  await q(`ALTER TABLE hr_events ADD COLUMN IF NOT EXISTS source TEXT`);
   await q(`CREATE INDEX IF NOT EXISTS idx_hr_events_emp ON hr_events (employee_id)`);
   await q(`CREATE INDEX IF NOT EXISTS idx_hr_events_date ON hr_events (event_date)`);
   // История окладов (для расчёта месяца изменения по частям). Каждая запись — оклад с даты действия.
@@ -229,9 +233,9 @@ const fmtSum = (v) => (v == null || v === '' ? '—' : Number(v).toLocaleString(
 async function deptName(id) { if (!id) return '—'; const r = await db.pool.query('SELECT name FROM hr_departments WHERE id=$1', [id]); return r.rows[0] ? r.rows[0].name : '—'; }
 async function addEvent(empId, type, date, opts = {}) {
   await db.pool.query(
-    `INSERT INTO hr_events (employee_id, event_type, event_date, date_to, from_text, to_text, comment, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-    [empId, type, date || new Date().toISOString().slice(0, 10), opts.date_to || null, opts.from_text || null, opts.to_text || null, opts.comment || null, opts.created_by || null]);
+    `INSERT INTO hr_events (employee_id, event_type, event_date, date_to, from_text, to_text, comment, created_by, source)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+    [empId, type, date || new Date().toISOString().slice(0, 10), opts.date_to || null, opts.from_text || null, opts.to_text || null, opts.comment || null, opts.created_by || null, opts.source || null]);
 }
 // Поля начислений/удержаний/выплат — для расчётов и сохранения.
 // Списки живут в общем src/hr-fields.js: тем же составом «Начислено» считает
@@ -997,6 +1001,12 @@ router.post('/api/events', J, async (req, res) => {
   res.json({ ok: true, recalculated: recalcNote, status_note: statusNote });
 });
 router.post('/api/events/:id(\\d+)/delete', async (req, res) => {
+  // Запись, собранную из табеля, здесь не удаляем: она вернётся при следующем
+  // утверждении, а человек решит, что система его не слушает. Правится отметка.
+  const src = (await db.pool.query('SELECT source FROM hr_events WHERE id=$1', [req.params.id])).rows[0];
+  if (src && src.source === 'timesheet') {
+    return res.status(409).json({ error: 'Эта запись собрана из табеля. Уберите отметку в табеле — запись уйдёт вместе с ней.' });
+  }
   await db.pool.query('DELETE FROM hr_events WHERE id=$1', [req.params.id]);
   await db.log(req.user.id, 'hr_event_delete', '#' + req.params.id);
   res.json({ ok: true });
@@ -1495,6 +1505,59 @@ async function submitGuard(req, empId, period) {
   return 'Табель за этот месяц уже утверждён — правки закрыты. Обратитесь к администратору.';
 }
 
+// Подряд идущие даты — в отрезки: пять больничных со 2 по 6 число должны стать
+// одной записью в истории, а не пятью. Даты приходят отсортированными.
+function dateRuns(dates) {
+  const day = (s) => Date.UTC(Number(s.slice(0, 4)), Number(s.slice(5, 7)) - 1, Number(s.slice(8, 10)));
+  const out = [];
+  for (const d of dates) {
+    const last = out[out.length - 1];
+    if (last && day(d) - day(last.to) === 86400000) last.to = d;
+    else out.push({ from: d, to: d });
+  }
+  return out;
+}
+
+// Отпуска и больничные из табеля — в кадровую историю.
+// Собираем при УТВЕРЖДЕНИИ табеля: до него отметки ещё правятся, и история
+// дёргалась бы «взял отпуск — отменил — снова взял».
+// Каждый раз пересобираем заново: свои прошлые записи за этот месяц удаляем,
+// ручные (source пуст) не трогаем. Поэтому повторное утверждение не плодит дублей.
+const TS_EVENT_OF = { vacation: 'vacation', sick: 'sick' };
+async function syncTimesheetEvents(period, deptId, userId) {
+  const rows = (await db.pool.query(
+    `SELECT t.employee_id, t.mark, to_char(t.work_date,'YYYY-MM-DD') AS d
+       FROM hr_timesheet t JOIN hr_employees e ON e.id = t.employee_id
+      WHERE to_char(t.work_date,'YYYY-MM') = $1 AND e.department_id = $2
+        AND t.mark = ANY($3::text[]) ORDER BY t.employee_id, t.mark, t.work_date`,
+    [period, deptId, Object.keys(TS_EVENT_OF)])).rows;
+  await dropTimesheetEvents(period, deptId);
+  const by = new Map();
+  for (const r of rows) {
+    const k = r.employee_id + '|' + r.mark;
+    if (!by.has(k)) by.set(k, []);
+    by.get(k).push(r.d);
+  }
+  let made = 0;
+  for (const [k, dates] of by) {
+    const [empId, mark] = k.split('|');
+    for (const run of dateRuns(dates)) {
+      await addEvent(Number(empId), TS_EVENT_OF[mark], run.from, {
+        date_to: run.to === run.from ? null : run.to,
+        comment: 'Из табеля', created_by: userId, source: 'timesheet',
+      });
+      made++;
+    }
+  }
+  return made;
+}
+async function dropTimesheetEvents(period, deptId) {
+  await db.pool.query(
+    `DELETE FROM hr_events v USING hr_employees e
+      WHERE v.employee_id = e.id AND e.department_id = $2 AND v.source = 'timesheet'
+        AND to_char(v.event_date,'YYYY-MM') = $1`, [period, deptId]);
+}
+
 router.post('/api/timesheet/submit', J, async (req, res) => {
   const b = req.body || {};
   const period = /^\d{4}-\d{2}$/.test(b.period) ? b.period : null;
@@ -1513,8 +1576,12 @@ router.post('/api/timesheet/submit', J, async (req, res) => {
        ON CONFLICT (period, department_id) DO UPDATE
           SET submitted_at = now(), submitted_by = $3, submitted_by_name = $4, comment = $5`,
       [period, dept, req.user.id, req.user.name || '', String(b.comment || '').trim().slice(0, 200)]);
-    await db.log(req.user.id, 'hr_timesheet_submit', `${period} отдел ${dept}`);
-    res.json({ ok: true });
+    // Отпуска и больничные месяца уходят в кадровую историю — начальник смены
+    // ставит их один раз в табеле, второй раз руками вносить не надо.
+    let events = 0;
+    try { events = await syncTimesheetEvents(period, dept, req.user.id); } catch (e) { /* не валим утверждение */ }
+    await db.log(req.user.id, 'hr_timesheet_submit', `${period} отдел ${dept}, в историю ${events}`);
+    res.json({ ok: true, events });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
@@ -1528,6 +1595,9 @@ router.post('/api/timesheet/unsubmit', J, async (req, res) => {
   const dept = intOrNull(b.department_id);
   if (!period || !dept) return res.status(400).json({ error: 'Укажите месяц и отдел' });
   await db.pool.query('DELETE FROM hr_timesheet_submits WHERE period=$1 AND department_id=$2', [period, dept]);
+  // Утверждение сняли — табель снова правится, значит собранные из него записи
+  // в истории больше не факт. Убираем их; при новом утверждении соберутся заново.
+  try { await dropTimesheetEvents(period, dept); } catch (e) { /* не валим снятие */ }
   await db.log(req.user.id, 'hr_timesheet_unsubmit', `${period} отдел ${dept}`);
   res.json({ ok: true });
 });
@@ -3033,3 +3103,6 @@ module.exports.hrTabOf = hrTabOf;
 module.exports.scopeRuleFor = scopeRuleFor;
 module.exports.scopeVerdict = scopeVerdict;
 module.exports.scopeCompanyWrite = (p) => COMPANY_WRITES.some((r) => r.test(p));
+// Открыто для тестов: склейка дней в отрезки — от неё зависит, будет в кадровой
+// истории одна запись об отпуске или пятнадцать.
+module.exports.dateRuns = dateRuns;

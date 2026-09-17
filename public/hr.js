@@ -401,7 +401,10 @@
       el('td', { style: 'padding:7px 10px;color:#7c8579' }, x.dept_name || '—'),
       el('td', { style: 'padding:7px 10px;white-space:nowrap' }, el('span', { style: 'font-size:12px;font-weight:700;padding:3px 9px;border-radius:999px;color:#fff;background:' + ((EV[x.event_type] || EV.other).c) }, (EV[x.event_type] || EV.other).t)),
       el('td', { style: 'padding:7px 10px' }, evDetail(x)),
-      el('td', { style: 'padding:7px 10px;text-align:right' }, el('button', { class: 'btn-ghost hr-del', style: 'padding:3px 8px;font-size:12px', title: 'Удалить', onclick: async () => { if (!confirm('Удалить это событие?')) return; try { await post('/events/' + x.id + '/delete', {}); loadEv(); } catch (e) { toast(e.message, true); } } }, '🗑')),
+      // Записи из табеля не удаляем отсюда: они пересобираются при утверждении.
+      el('td', { style: 'padding:7px 10px;text-align:right;white-space:nowrap' }, x.source === 'timesheet'
+        ? el('span', { style: 'font-size:11px;color:#7c8579', title: 'Собрано из табеля. Уберите отметку в табеле — запись уйдёт вместе с ней.' }, 'из табеля')
+        : el('button', { class: 'btn-ghost hr-del', style: 'padding:3px 8px;font-size:12px', title: 'Удалить', onclick: async () => { if (!confirm('Удалить это событие?')) return; try { await post('/events/' + x.id + '/delete', {}); loadEv(); } catch (e) { toast(e.message, true); } } }, '🗑')),
     ])));
     box.appendChild(el('div', { style: 'overflow-x:auto;border:0.5px solid var(--line,#e3e0d4);border-radius:12px;background:#fff' }, el('table', { style: 'border-collapse:collapse;width:100%;font-size:13px' }, [el('thead', {}, head), tb])));
   }
@@ -1454,7 +1457,13 @@
     const btn = el('button', { class: 'btn-primary', onclick: async () => {
       if (!confirm('Утвердить табель за ' + monthLabel(d.period) + '? После этого править отметки будет нельзя.')) return;
       btn.disabled = true;
-      try { await post('/timesheet/submit', { period: d.period, department_id: d.department }); toast('Табель утверждён'); await reload(); }
+      try {
+        const r = await post('/timesheet/submit', { period: d.period, department_id: d.department });
+        // Отпуска и больничные месяца ушли в кадровую историю — говорим об этом,
+        // иначе непонятно, надо ли вносить их ещё раз руками.
+        toast('Табель утверждён' + (r && r.events ? ' · в кадровую историю: ' + r.events : ''));
+        await reload();
+      }
       catch (e) { toast(e.message, true); btn.disabled = false; }
     } }, '✓ Утвердить табель');
     return el('div', { class: 'hr-ts-sub' }, [
