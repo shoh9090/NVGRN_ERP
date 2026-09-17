@@ -2082,6 +2082,8 @@ router.post('/api/payouts/pay', J, async (req, res) => {
   { const _e = await hrLockError(period); if (_e) return res.status(423).json({ error: _e }); }
   const method = b.method === 'card' ? 'card' : 'cash';
   const payDate = b.pay_date || new Date().toISOString().slice(0, 10);
+  // Наличные уходят расходом в Кассу — закрытый месяц Кассы менять нельзя и отсюда.
+  if (method === 'cash') { const _e = await require('./cash-lock').cashLockError(db.pool, payDate); if (_e) return res.status(423).json({ error: _e }); }
   const comment = b.comment || null;
   const ids = Array.isArray(b.employee_ids) ? b.employee_ids.map((x) => parseInt(x)).filter(Boolean) : [];
   if (!ids.length) return res.status(400).json({ error: 'Не выбраны сотрудники' });
@@ -2143,6 +2145,11 @@ router.post('/api/payouts/:id(\\d+)/delete', async (req, res) => {
       'SELECT employee_id, period, amount, method, cash_tx_id FROM hr_payouts WHERE id=$1 FOR UPDATE', [id])).rows[0];
     if (!p) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Выплата не найдена' }); }
     { const _e = await hrLockError(p.period); if (_e) { await client.query('ROLLBACK'); return res.status(423).json({ error: _e }); } }
+    if (p.cash_tx_id) {
+      const t = (await client.query("SELECT to_char(tx_date, 'YYYY-MM-DD') AS d FROM cash_transactions WHERE id=$1", [p.cash_tx_id])).rows[0];
+      const _e = t && await require('./cash-lock').cashLockError(client, t.d);
+      if (_e) { await client.query('ROLLBACK'); return res.status(423).json({ error: _e }); }
+    }
     const amt = Number(p.amount) || 0;
     const col = p.method === 'card' ? 'paid_card' : 'paid_cash';
     // Возвращаем сумму в ведомость (не уводим в минус).

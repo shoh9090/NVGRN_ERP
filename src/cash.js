@@ -956,9 +956,17 @@ router.get('/api/opening', async (req, res) => {
   });
 });
 router.post('/api/opening', J, async (req, res) => {
+  // Начальные остатки задают все балансы с нуля — только админ/финансы, и не в закрытом
+  // периоде: ни новая дата, ни дата заменяемых записей не должны попадать под замок.
+  if (!canFin(req)) return res.status(403).json({ error: 'Начальные остатки может менять администратор или финансы' });
   const b = req.body || {};
   const date = b.date || new Date().toISOString().slice(0, 10);
   const balances = b.balances || {};
+  {
+    const old = (await db.pool.query("SELECT to_char(MIN(tx_date), 'YYYY-MM-DD') AS d FROM cash_transactions WHERE source='opening'")).rows[0];
+    const err = await lockError(date, old && old.d);
+    if (err) return res.status(423).json({ error: err });
+  }
   const client = await db.pool.connect();
   try {
     await client.query('BEGIN');
@@ -1005,7 +1013,12 @@ router.post('/api/cash-opening', J, async (req, res) => {
   const date = b.date || new Date().toISOString().slice(0, 10);
   const uzs = numOrNull(b.uzs);
   const usd = numOrNull(b.usd);
-  { const err = await lockError(date); if (err) return res.status(423).json({ error: err }); }
+  if (!canFin(req)) return res.status(403).json({ error: 'Начальные остатки может менять администратор или финансы' });
+  {
+    const old = (await db.pool.query("SELECT to_char(MIN(tx_date), 'YYYY-MM-DD') AS d FROM cash_transactions WHERE source='opening' AND wallet_id=$1", [wid])).rows[0];
+    const err = await lockError(date, old && old.d);
+    if (err) return res.status(423).json({ error: err });
+  }
   const client = await db.pool.connect();
   try {
     await client.query('BEGIN');
@@ -1444,9 +1457,14 @@ router.post('/api/pending/:id(\\d+)/pay', J, async (req, res) => {
   const p = (await db.pool.query("SELECT * FROM cash_pending_payments WHERE id=$1 AND status='pending'", [pid])).rows[0];
   if (!p) return res.status(404).json({ error: 'Долг не найден или уже выплачен' });
   const payDate = b.pay_date || new Date().toISOString().slice(0, 10);
+  { const err = await lockError(payDate); if (err) return res.status(423).json({ error: err }); }
   const client = await db.pool.connect();
   try {
     await client.query('BEGIN');
+    // Сначала «забираем» долг: из двух одновременных нажатий пройдёт только одно,
+    // второе увидит, что долг уже не pending, и расход не задвоится.
+    const claim = await client.query("UPDATE cash_pending_payments SET status='paid' WHERE id=$1 AND status='pending' RETURNING id", [pid]);
+    if (!claim.rows.length) { await client.query('ROLLBACK'); return res.status(409).json({ error: 'Долг уже выплачен' }); }
     const tx = await client.query(
       `INSERT INTO cash_transactions (tx_date, amount, tx_type, wallet_id, category_id, purpose, source, is_classified, currency, created_by)
        VALUES ($1,$2,'out',$3,$4,$5,'manual',$6,'UZS',$7) RETURNING id`,
@@ -1474,6 +1492,7 @@ router.post('/api/reconcile', J, async (req, res) => {
     const date = b.date || new Date().toISOString().slice(0, 10);
     const fact = Number(b.fact_amount);
     if (!isFinite(fact)) return res.status(400).json({ error: 'Укажите фактический остаток' });
+    { const err = await lockError(date); if (err) return res.status(423).json({ error: err }); }
     const erp = await walletBalanceUpTo(wid, date);
     const diff = Math.round((fact - erp) * 100) / 100;
     if (!diff) { await db.log(req.user.id, 'cash_reconcile', `кошелёк ${wid}: совпадает (${erp})`); return res.json({ ok: true, erp, diff: 0, created: false }); }
