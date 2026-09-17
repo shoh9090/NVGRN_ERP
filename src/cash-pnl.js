@@ -235,7 +235,7 @@ async function cashSide(pool, from, to) {
 //
 // Показатель взят из отчёта финансиста: у него «ОТХОДЫ сырья» отдельной
 // строкой и «% отходов» от выручки. Для зелени это одно из главных чисел.
-async function wasteCost(pool, from, to) {
+async function wasteCost(pool, from, to, priceOf) {
   const rows = (await pool.query(
     `SELECT w.waste_of_id AS parent_id, SUM(m.qty) AS qty
        FROM stock_movements m
@@ -245,18 +245,11 @@ async function wasteCost(pool, from, to) {
       GROUP BY w.waste_of_id`, [from, to])).rows;
   if (!rows.length) return { qty: 0, amount: 0, priced: 0, no_price: 0, has_data: false };
 
-  const prices = (await pool.query(
-    `SELECT item_id, SUM(qty * price) / NULLIF(SUM(qty), 0) AS avg_price
-       FROM stock_movements
-      WHERE item_kind = 'raw' AND reason = 'receive' AND price > 0 AND qty > 0 AND moved_at <= $1
-      GROUP BY item_id`, [to])).rows;
-  const priceOf = new Map(prices.map((x) => [x.item_id, Number(x.avg_price)]));
-
   let qty = 0, amount = 0, priced = 0, noPrice = 0;
   for (const r of rows) {
     const q = num(r.qty);
     qty += q;
-    const price = priceOf.get(r.parent_id);
+    const price = priceOf.get('raw#' + r.parent_id);
     // Без цены родителя отход не оцениваем — молча считать его бесплатным
     // нельзя, иначе показатель отходов занизится.
     if (price === undefined) { noPrice++; continue; }
@@ -277,7 +270,60 @@ async function stockAdjustments(pool, from, to) {
   return { qty: num(r.qty), cnt: Number(r.cnt) || 0 };
 }
 
-async function factCogs(pool, from, to) {
+// ---------------------------------------------------------------------------
+// Цены сырья и упаковки по месяцам — одна функция для карточки, графика и Excel
+// ---------------------------------------------------------------------------
+// Решение Шоха (сентябрь 2026): позиция оценивается СРЕДНЕЙ ЦЕНОЙ ПРИХОДОВ ЭТОГО
+// МЕСЯЦА, а если в месяце прихода не было — последней известной ценой до него.
+// Так у зелени видны сезонные скачки, а прошлые месяцы не «плывут»: раньше
+// карточка брала все приходы с начала времён до конца месяца, а график — до
+// конца всего показанного отрезка, и сентябрьская закупка меняла себестоимость
+// августа на графике, но не в карточке августа (аудит A12).
+// Последний день месяца, строкой для базы. Считаем в JS: так запрос остаётся
+// простым и его легко подменить в тесте.
+const monthEnd = (month) => {
+  const [y, m] = String(month).split('-').map(Number);
+  return new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10);
+};
+const monthList = (fromMonth, toMonth) => {
+  const out = [];
+  const [fy, fm] = String(fromMonth).split('-').map(Number);
+  const [ty, tm] = String(toMonth).split('-').map(Number);
+  for (let y = fy, m = fm; y * 12 + m <= ty * 12 + tm; m === 12 ? (y++, m = 1) : m++) {
+    out.push(`${y}-${String(m).padStart(2, '0')}`);
+  }
+  return out;
+};
+
+// Возвращает Map 'ГГГГ-ММ' → Map 'вид#id' → цена. Цены накапливаются по
+// месяцам: цена «переносится» вперёд, пока не появится новый приход.
+async function monthlyPriceMaps(pool, fromMonth, toMonth) {
+  const rows = (await pool.query(
+    `SELECT to_char(moved_at, 'YYYY-MM') AS m, item_kind, item_id,
+            SUM(qty * price) / NULLIF(SUM(qty), 0) AS avg_price
+       FROM stock_movements
+      WHERE reason = 'receive' AND price > 0 AND qty > 0 AND moved_at <= $1
+      GROUP BY 1, 2, 3
+      ORDER BY 1`, [monthEnd(toMonth)])).rows;
+  const carry = new Map();                  // последняя известная цена позиции
+  const byMonth = new Map();
+  for (const r of rows) {
+    const key = r.item_kind + '#' + r.item_id;
+    const price = Number(r.avg_price);
+    if (!r.m) { carry.set(key, price); continue; }   // приходы до начала отрезка
+    if (!byMonth.has(r.m)) byMonth.set(r.m, []);
+    byMonth.get(r.m).push([key, price]);
+  }
+  const months = [...new Set([...byMonth.keys(), ...monthList(fromMonth, toMonth)])].sort();
+  const out = new Map();
+  for (const m of months) {
+    for (const [key, price] of byMonth.get(m) || []) carry.set(key, price);
+    if (m >= fromMonth && m <= toMonth) out.set(m, new Map(carry));
+  }
+  return out;
+}
+
+async function factCogs(pool, from, to, priceOf) {
   const used = (await pool.query(
     `SELECT item_kind, item_id, SUM(-qty) AS qty
        FROM stock_movements
@@ -288,15 +334,6 @@ async function factCogs(pool, from, to) {
   if (!used.length) {
     return { raw: 0, packaging: 0, total: 0, lines: [], no_price: [], has_data: false };
   }
-
-  // Средневзвешенная цена прихода — по всем поставкам до конца периода.
-  const prices = (await pool.query(
-    `SELECT item_kind, item_id,
-            SUM(qty * price) / NULLIF(SUM(qty), 0) AS avg_price
-       FROM stock_movements
-      WHERE reason = 'receive' AND price > 0 AND qty > 0 AND moved_at <= $1
-      GROUP BY item_kind, item_id`, [to])).rows;
-  const priceOf = new Map(prices.map((p) => [p.item_kind + '#' + p.item_id, Number(p.avg_price)]));
 
   const names = new Map();
   for (const kind of ['raw', 'packaging']) {
@@ -414,12 +451,13 @@ async function buildPnl(pool, period) {
   const shippedLoaded = salesLoaded(byKey.get(SALES_KEY(period)));
   const shipped = shippedLoaded ? Number(byKey.get(SALES_KEY(period))) : 0;
 
+  const priceOf = (await monthlyPriceMaps(pool, period, period)).get(period) || new Map();
   const [cash, fact, plan, adjust, waste] = await Promise.all([
     cashSide(pool, from, toStr),
-    factCogs(pool, from, toStr),
+    factCogs(pool, from, toStr, priceOf),
     planCogs(pool, units),
     stockAdjustments(pool, from, toStr),
-    wasteCost(pool, from, toStr),
+    wasteCost(pool, from, toStr, priceOf),
   ]);
 
   // ВЫРУЧКА В P&L = РЕАЛИЗАЦИЯ (отгружено за месяц по SalesDoctor).
@@ -555,12 +593,9 @@ async function buildTrend(pool, endPeriod, months) {
       WHERE reason = 'production' AND moved_at BETWEEN $1 AND $2
       GROUP BY 1, item_kind, item_id
      HAVING SUM(-qty) > 0`, [bounds.f, bounds.t])).rows;
-  const priceRows = usedRows.length ? (await pool.query(
-    `SELECT item_kind, item_id, SUM(qty * price) / NULLIF(SUM(qty), 0) AS avg_price
-       FROM stock_movements
-      WHERE reason = 'receive' AND price > 0 AND qty > 0 AND moved_at <= $1
-      GROUP BY item_kind, item_id`, [bounds.t])).rows : [];
-  const priceOf = new Map(priceRows.map((p) => [p.item_kind + '#' + p.item_id, Number(p.avg_price)]));
+  // Цены — по месяцу списания, ровно как в карточке месяца.
+  const firstMonth = bounds.f.slice(0, 7);
+  const priceMaps = await monthlyPriceMaps(pool, firstMonth, endPeriod);
 
   // Раскладываем по месяцам
   const byMonth = new Map();
@@ -576,7 +611,7 @@ async function buildTrend(pool, endPeriod, months) {
   cashRows.forEach((r) => monthOf(r.m).rows.push(r));
   usedRows.forEach((u) => {
     const slot = monthOf(u.m);
-    const price = priceOf.get(u.item_kind + '#' + u.item_id);
+    const price = (priceMaps.get(u.m) || new Map()).get(u.item_kind + '#' + u.item_id);
     if (price === undefined) return;          // без цены прихода не оцениваем
     slot.cogs += (Number(u.qty) || 0) * price;
     slot.cogs_known = true;

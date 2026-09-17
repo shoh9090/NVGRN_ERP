@@ -385,3 +385,32 @@ test('SD загружен, продаж за месяц ноль — выруч�
   assert.strictEqual(r.revenue.receivable, -1000000);    // клиенты погасили долг
   assert.ok(!r.warnings.some((w) => w.includes('ПОСТУПЛЕНИЮ ДЕНЕГ')));
 });
+
+test('цена сырья — средняя за этот месяц; сентябрьская закупка не меняет август', async () => {
+  // Аудит A12: в карточке цены брались со всех приходов до конца месяца, а на
+  // графике — до конца всего показанного отрезка, и прошлое «плыло».
+  // Теперь: цена месяца, а если прихода в месяце не было — последняя известная.
+  const prices = [
+    { m: '2026-07', item_kind: 'raw', item_id: 1, avg_price: 10000 },
+    { m: '2026-08', item_kind: 'raw', item_id: 1, avg_price: 12000 },
+    { m: '2026-09', item_kind: 'raw', item_id: 1, avg_price: 30000 },  // подорожало позже
+    { m: '2026-08', item_kind: 'raw', item_id: 2, avg_price: 5000 },
+  ];
+  const pool = makePool({
+    cash: [{ code: '200', name: 'Выручка', group_name: 'Доходы и поступления', flow_type: 'operating', inc: 1, exp: 0, cnt: 1 }],
+    used: [{ item_kind: 'raw', item_id: 1, qty: 10 }, { item_kind: 'raw', item_id: 2, qty: 2 }],
+    prices,
+  });
+  const r = await buildPnl(pool, '2026-08');
+  assert.strictEqual(r.cogs.fact.total, 10 * 12000 + 2 * 5000);       // по августовским ценам
+});
+
+test('в месяце без приходов берётся последняя известная цена', async () => {
+  const pool = makePool({
+    cash: [{ code: '200', name: 'Выручка', group_name: 'Доходы и поступления', flow_type: 'operating', inc: 1, exp: 0, cnt: 1 }],
+    used: [{ item_kind: 'raw', item_id: 1, qty: 10 }],
+    prices: [{ m: '2026-06', item_kind: 'raw', item_id: 1, avg_price: 9000 }],
+  });
+  const r = await buildPnl(pool, '2026-08');
+  assert.strictEqual(r.cogs.fact.total, 90000);
+});
