@@ -750,6 +750,9 @@ async function getMonthlySalesUnits(period, opts = {}) {
   // на месяц, и отчёт о прибыли на поступлениях показывает мнимый убыток.
   let units = 0, amount = 0, returned = 0, positions = 0, orders = 0, page = 1, truncated = false;
   const byStatus = {};
+  // Разбивка по товарам нужна для плановой себестоимости: план должен считаться
+  // по тому, ЧТО продали, а не по «средней пачке» (аудит A11).
+  const byProduct = new Map();
   const limit = 500;
   for (;;) {
     if (Date.now() - started > maxMs || page > maxPages) { truncated = true; break; }
@@ -770,7 +773,16 @@ async function getMonthlySalesUnits(period, opts = {}) {
         // returned — вычитаем их, иначе реализация будет завышена.
         const sum = Number(op.summa) || 0;
         const ret = Number(op.returned) || 0;
-        if (q > 0) { units += q; positions++; byStatus[st].units += q; }
+        if (q > 0) {
+          units += q; positions++; byStatus[st].units += q;
+          const prod = op.product || {};
+          const pid = String(prod.SD_id || '').trim();
+          if (pid) {
+            const cur = byProduct.get(pid) || { id: pid, name: prod.name || pid, units: 0, amount: 0 };
+            cur.units += q; cur.amount += sum - ret;
+            byProduct.set(pid, cur);
+          }
+        }
         amount += sum;
         returned += ret;
         byStatus[st].amount = (byStatus[st].amount || 0) + sum;
@@ -784,6 +796,7 @@ async function getMonthlySalesUnits(period, opts = {}) {
   return {
     period, from, to, statuses, orders, positions, units,
     amount, returned, net_amount: amount - returned,
+    by_product: [...byProduct.values()].sort((a, b) => b.units - a.units),
     by_status: byStatus,
     truncated,                                   // данные неполные: уперлись в предел
     took_ms: Date.now() - started,

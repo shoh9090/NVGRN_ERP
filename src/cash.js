@@ -6,7 +6,7 @@ const multer = require('multer');
 const XLSX = require('xlsx');
 const db = require('./db');
 const integrations = require('./integrations');
-const { buildPnl, buildTrend, UNITS_KEY, SALES_KEY } = require('./cash-pnl');
+const { buildPnl, buildTrend, UNITS_KEY, SALES_KEY, SKU_KEY } = require('./cash-pnl');
 const pfin = require('./purchase-finance'); // общий расчёт долга поставщикам (read-only в «Обязательствах»)
 
 const router = express.Router();
@@ -1545,6 +1545,8 @@ router.post('/api/pnl/units', express.json(), async (req, res) => {
     await db.setSetting(UNITS_KEY(period), String(Math.round(r.units || 0)));
     // Сумма реализации — основа выручки в P&L (отгружено, а не оплачено)
     await db.setSetting(SALES_KEY(period), String(Math.round(r.net_amount || 0)));
+    // Разбивка по товарам — для плановой себестоимости по ассортименту.
+    await db.setSetting(SKU_KEY(period), JSON.stringify((r.by_product || []).map((x) => [x.id, Math.round(x.units), x.name])));
     await db.setSetting(UNITS_KEY(period) + '_at', new Date().toISOString().slice(0, 16).replace('T', ' '));
     await db.log(req.user.id, 'pnl_units_refresh', { period, units: r.units, truncated: r.truncated });
     res.json({ ok: true, units: r.units, amount: r.net_amount, returned: r.returned,

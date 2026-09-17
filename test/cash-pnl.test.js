@@ -414,3 +414,54 @@ test('в месяце без приходов берётся последняя 
   const r = await buildPnl(pool, '2026-08');
   assert.strictEqual(r.cogs.fact.total, 90000);
 });
+
+test('план по ассортименту: дорогой товар с одной продажей не тянет средний вверх', async () => {
+  // Аудит A11. Руккола 100 г (материалы 2 000) и микс (10 000). Продали 99 и 1.
+  // «Средняя пачка» дала бы 100 × 6 000 = 600 000, по ассортименту — 208 000.
+  const pool = makePool({
+    cash: [{ code: '200', name: 'Выручка', group_name: 'Доходы и поступления', flow_type: 'operating', inc: 1, exp: 0, cnt: 1 }],
+    settings: [
+      { key: 'pnl_units_2026-08', value: '100' },
+      { key: 'pnl_sku_2026-08', value: JSON.stringify([['SD1', 99, 'Руккола 100 гр'], ['SD2', 1, 'Микс']]) },
+    ],
+    products: [
+      { name: 'Руккола 100 гр', sd_product_id: 'SD1', net_weight_g: 100, raw_price_per_kg: 20000, pack_template_id: null, recipe_id: null, raw_cost: null },
+      { name: 'Микс', sd_product_id: 'SD2', net_weight_g: null, raw_price_per_kg: null, raw_cost: 10000, pack_template_id: null, recipe_id: null },
+    ],
+  });
+  const r = await buildPnl(pool, '2026-08');
+  assert.strictEqual(r.cogs.plan.method, 'assortment');
+  assert.strictEqual(r.cogs.plan.total, 99 * 2000 + 1 * 10000);
+  assert.strictEqual(r.cogs.plan.unmatched_units, 0);
+});
+
+test('товар продан, но его нет в Калькуляции — не в сумме и видно отдельно', async () => {
+  const pool = makePool({
+    cash: [{ code: '200', name: 'Выручка', group_name: 'Доходы и поступления', flow_type: 'operating', inc: 1, exp: 0, cnt: 1 }],
+    settings: [
+      { key: 'pnl_units_2026-08', value: '30' },
+      { key: 'pnl_sku_2026-08', value: JSON.stringify([['SD1', 20, 'Руккола 100 гр'], ['SDX', 10, 'Новый салат']]) },
+    ],
+    products: [{ name: 'Руккола 100 гр', sd_product_id: 'SD1', net_weight_g: 100, raw_price_per_kg: 20000, pack_template_id: null, recipe_id: null, raw_cost: null }],
+  });
+  const r = await buildPnl(pool, '2026-08');
+  assert.strictEqual(r.cogs.plan.total, 40000);
+  assert.strictEqual(r.cogs.plan.unmatched_units, 10);
+  assert.deepStrictEqual(r.cogs.plan.unmatched.map((x) => x.name), ['Новый салат']);
+  assert.ok(r.warnings.some((w) => w.includes('Новый салат')), r.warnings.join(' | '));
+});
+
+test('разбивки по товарам нет — считаем средней пачкой, но честно говорим об этом', async () => {
+  const pool = makePool({
+    cash: [{ code: '200', name: 'Выручка', group_name: 'Доходы и поступления', flow_type: 'operating', inc: 1, exp: 0, cnt: 1 }],
+    settings: [{ key: 'pnl_units_2026-08', value: '100' }],
+    products: [
+      { name: 'A', sd_product_id: 'SD1', net_weight_g: 100, raw_price_per_kg: 20000, pack_template_id: null, recipe_id: null, raw_cost: null },
+      { name: 'B', sd_product_id: 'SD2', net_weight_g: null, raw_price_per_kg: null, raw_cost: 10000, pack_template_id: null, recipe_id: null },
+    ],
+  });
+  const r = await buildPnl(pool, '2026-08');
+  assert.strictEqual(r.cogs.plan.method, 'average');
+  assert.strictEqual(r.cogs.plan.total, 600000);
+  assert.ok(r.warnings.some((w) => w.includes('средней пачкой')));
+});

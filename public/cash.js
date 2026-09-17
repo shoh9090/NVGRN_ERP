@@ -996,9 +996,19 @@
     });
     row('   план по Калькуляции', pnlMoney(d.cogs.plan.total), {
       cls: 'cash-pnl-sub',
-      hint: d.cogs.plan.reason
-        || (money(d.cogs.plan.units) + ' шт × ' + money(d.cogs.plan.unit_cost) + ' (зелень + упаковка)'),
+      hint: d.cogs.plan.reason || (d.cogs.plan.method === 'assortment'
+        ? 'По ассортименту: штуки каждого товара из SalesDoctor × его зелень и упаковка из Калькуляции'
+        : (money(d.cogs.plan.units) + ' шт × ' + money(d.cogs.plan.unit_cost) + ' (средняя пачка — грубая оценка)')),
     });
+    // Товары, которых нет в Калькуляции, в план не попали. Молчать об этом нельзя:
+    // иначе неполная сумма выглядит полной.
+    if (d.cogs.plan.unmatched_units > 0) {
+      row('   не оценено (нет в Калькуляции)', money(d.cogs.plan.unmatched_units) + ' шт', {
+        cls: 'cash-pnl-sub cash-pnl-bad',
+        hint: 'В плане не учтены: ' + (d.cogs.plan.unmatched || []).slice(0, 8).map((x) => x.name + ' — ' + money(x.units) + ' шт').join('; ')
+          + '. Впишите код товара SalesDoctor в Калькуляции, и они попадут в расчёт.',
+      });
+    }
     if (d.cogs.diff !== null) {
       row('   расхождение факт − план', money(d.cogs.diff) + ' · ' + pnlPct(d.cogs.diff_pct), {
         cls: 'cash-pnl-sub' + (d.cogs.diff > 0 ? ' cash-pnl-bad' : ''),
@@ -1154,9 +1164,12 @@
     }
     line('План по Калькуляции', d.cogs.plan.reason
       ? d.cogs.plan.reason
-      : ('Отгружено ' + money(d.cogs.plan.units) + ' шт × ' + money(d.cogs.plan.unit_cost)
-        + ' (средняя зелень + упаковка по ' + d.cogs.plan.products + ' товарам Калькуляции)'),
-    d.cogs.plan.total);
+      : (d.cogs.plan.method === 'assortment'
+        ? ('По ассортименту: оценено ' + money(d.cogs.plan.matched_units) + ' шт'
+          + (d.cogs.plan.unmatched_units > 0 ? ', не оценено ' + money(d.cogs.plan.unmatched_units) + ' шт (нет в Калькуляции)' : ''))
+        : ('Отгружено ' + money(d.cogs.plan.units) + ' шт × ' + money(d.cogs.plan.unit_cost)
+          + ' — средняя пачка по ' + d.cogs.plan.products + ' товарам Калькуляции (грубая оценка)')),
+    d.cogs.plan.total, d.cogs.plan.unmatched_units > 0 ? 'cash-src-warn' : null);
     line('Себестоимость в расчёте', d.cogs_source === 'fact'
       ? 'Взят ФАКТ со склада'
       : (d.cogs_source === 'plan' ? 'Взят ПЛАН: склад за месяц не вёлся' : 'Считать не из чего'),

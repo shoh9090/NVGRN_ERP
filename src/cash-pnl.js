@@ -26,6 +26,9 @@ const UNITS_KEY = (period) => 'pnl_units_' + period;
 // а не «деньги пришли»: при отсрочке до 30 дней поступления отстают от
 // отгрузок на месяц, и отчёт на поступлениях показывает мнимый убыток.
 const SALES_KEY = (period) => 'pnl_sales_' + period;
+// Продажи по товарам SalesDoctor за месяц: [[sd_id, штук, название], …].
+// Нужны, чтобы план считался по ассортименту, а не по «средней пачке».
+const SKU_KEY = (period) => 'pnl_sku_' + period;
 // Реализация за месяц загружена из SD: в настройке есть число (в том числе 0 или минус).
 const salesLoaded = (v) => v != null && String(v).trim() !== '' && isFinite(Number(v));
 
@@ -367,10 +370,10 @@ async function factCogs(pool, from, to, priceOf) {
 // Считается только материальная часть (зелень + упаковка) — ровно то же, что
 // меряет склад. Сравнивать полную себестоимость с материальным списанием было
 // бы подлогом: в полную входят ещё ФОТ и общезаводские расходы.
-async function planCogs(pool, units) {
+async function planCogs(pool, units, sold) {
   if (!(units > 0)) return { units: 0, unit_cost: null, total: null, products: 0, reason: 'Не подтянуто количество отгрузок' };
   const r = await pool.query(
-    `SELECT p.net_weight_g, p.raw_price_per_kg, p.raw_cost, p.pack_template_id, p.recipe_id
+    `SELECT p.name, p.sd_product_id, p.net_weight_g, p.raw_price_per_kg, p.raw_cost, p.pack_template_id, p.recipe_id
        FROM calc_sheet_products p
       WHERE p.status = 'active'`);
   if (!r.rows.length) return { units, unit_cost: null, total: null, products: 0, reason: 'В Калькуляции нет товаров' };
@@ -408,7 +411,9 @@ async function planCogs(pool, units) {
       GROUP BY rp.recipe_id`)).rows;
   const recTotal = new Map(rec.map((x) => [x.recipe_id, Number(x.priced) > 0 ? Number(x.total) : null]));
 
+  // Материальная стоимость одной единицы каждого товара Калькуляции.
   let sum = 0, counted = 0, skipped = 0;
+  const costBySd = new Map();
   for (const p of r.rows) {
     const weight = p.net_weight_g === null ? null : Number(p.net_weight_g);
     const perKg = p.raw_price_per_kg === null ? null : Number(p.raw_price_per_kg);
@@ -418,12 +423,45 @@ async function planCogs(pool, units) {
         : (p.raw_cost === null ? null : Number(p.raw_cost)));
     const pack = p.pack_template_id ? (tplTotal.get(p.pack_template_id) || null) : null;
     if (green === null && pack === null) { skipped++; continue; }
-    sum += (green || 0) + (pack || 0);
+    const cost = (green || 0) + (pack || 0);
+    sum += cost;
     counted++;
+    const sd = String(p.sd_product_id || '').trim();
+    if (sd) costBySd.set(sd, { cost, name: p.name });
   }
   if (!counted) return { units, unit_cost: null, total: null, products: 0, skipped, reason: 'У товаров не заполнены зелень и упаковка' };
+
+  // Решение Шоха (сентябрь 2026): план считается ПО АССОРТИМЕНТУ — штуки каждого
+  // товара из SalesDoctor × его себестоимость из Калькуляции. Раньше бралась
+  // «средняя пачка» по всем карточкам, и товар с одной продажей весил столько
+  // же, сколько самый ходовой (аудит A11). Товары, которых нет в Калькуляции
+  // (не заполнен код SD), в сумму не попадают и показываются отдельно.
+  if (Array.isArray(sold) && sold.length) {
+    let total = 0, matchedUnits = 0;
+    const unmatched = [];
+    for (const [sd, qty, name] of sold) {
+      const q = Number(qty) || 0;
+      if (q <= 0) continue;
+      const hit = costBySd.get(String(sd));
+      if (!hit) { unmatched.push({ sd_id: String(sd), name: name || String(sd), units: q }); continue; }
+      total += q * hit.cost;
+      matchedUnits += q;
+    }
+    unmatched.sort((a, b) => b.units - a.units);
+    const unmatchedUnits = unmatched.reduce((acc, x) => acc + x.units, 0);
+    return {
+      units, total, method: 'assortment',
+      unit_cost: matchedUnits > 0 ? total / matchedUnits : null,
+      products: counted, skipped,
+      matched_units: matchedUnits, unmatched_units: unmatchedUnits, unmatched,
+      reason: null,
+    };
+  }
+
+  // Разбивки по товарам нет (старые месяцы, подтянутые до этой правки) —
+  // считаем как раньше, средней карточкой, и честно это называем.
   const unitCost = sum / counted;
-  return { units, unit_cost: unitCost, total: unitCost * units, products: counted, skipped, reason: null };
+  return { units, unit_cost: unitCost, total: unitCost * units, products: counted, skipped, method: 'average', reason: null };
 }
 
 // ---------------------------------------------------------------------------
@@ -441,7 +479,7 @@ async function buildPnl(pool, period) {
   // Настройки читаем через ПЕРЕДАННЫЙ пул, а не через глобальный: иначе
   // функцию нельзя проверить тестом, не поднимая настоящую базу.
   const st = (await pool.query('SELECT key, value FROM settings WHERE key = ANY($1)',
-    [[UNITS_KEY(period), UNITS_KEY(period) + '_at', SALES_KEY(period)]])).rows;
+    [[UNITS_KEY(period), UNITS_KEY(period) + '_at', SALES_KEY(period), SKU_KEY(period)]])).rows;
   const byKey = new Map(st.map((x) => [x.key, x.value]));
   const units = Number(byKey.get(UNITS_KEY(period))) || 0;
   const unitsAt = byKey.get(UNITS_KEY(period) + '_at') || '';
@@ -450,12 +488,14 @@ async function buildPnl(pool, period) {
   // оплата старых долгов превращается в выручку месяца без продаж (аудит A10).
   const shippedLoaded = salesLoaded(byKey.get(SALES_KEY(period)));
   const shipped = shippedLoaded ? Number(byKey.get(SALES_KEY(period))) : 0;
+  let sold = null;                       // продажи по товарам: [[sd_id, штук, название], …]
+  try { const raw = byKey.get(SKU_KEY(period)); if (raw) sold = JSON.parse(raw); } catch (e) { sold = null; }
 
   const priceOf = (await monthlyPriceMaps(pool, period, period)).get(period) || new Map();
   const [cash, fact, plan, adjust, waste] = await Promise.all([
     cashSide(pool, from, toStr),
     factCogs(pool, from, toStr, priceOf),
-    planCogs(pool, units),
+    planCogs(pool, units, sold),
     stockAdjustments(pool, from, toStr),
     wasteCost(pool, from, toStr, priceOf),
   ]);
@@ -492,6 +532,15 @@ async function buildPnl(pool, period) {
       + '. Пока они не разнесены, отчёт неполный.');
   }
   if (!units) warnings.push('Количество отгрузок за месяц не подтянуто — плановая себестоимость не посчитана.');
+  if (plan.unmatched_units > 0) {
+    warnings.push(`В Калькуляции не найдено ${plan.unmatched.length} товаров из продаж (${Math.round(plan.unmatched_units)} шт): `
+      + plan.unmatched.slice(0, 5).map((x) => x.name).join(', ')
+      + '. В плановую себестоимость они не вошли — впишите им код товара SalesDoctor в Калькуляции.');
+  }
+  if (plan.method === 'average' && plan.total !== null) {
+    warnings.push('Плановая себестоимость посчитана «средней пачкой» по всем товарам Калькуляции: разбивка продаж по товарам за этот месяц не сохранена. '
+      + 'Нажмите «обновить» внизу, чтобы пересчитать по ассортименту.');
+  }
   if (revenueSource === 'cash') {
     warnings.push('Выручка считается по ПОСТУПЛЕНИЮ ДЕНЕГ — реализация из SalesDoctor не подтянута. '
       + 'При отсрочке платежа это занижает выручку и даёт мнимый убыток. Нажмите «обновить» внизу.');
@@ -642,4 +691,4 @@ async function buildTrend(pool, endPeriod, months) {
   return { months: n, from: bounds.f, to: bounds.t, points: out };
 }
 
-module.exports = { buildPnl, buildTrend, UNITS_KEY, SALES_KEY };
+module.exports = { buildPnl, buildTrend, UNITS_KEY, SALES_KEY, SKU_KEY, planCogs };
