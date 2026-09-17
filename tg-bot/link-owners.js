@@ -45,6 +45,25 @@ function ownerKeyboard(id, critical, resolutions) {
   return { inline_keyboard: rows };
 }
 
+// Кому и какое напоминание пора слать. Чистая функция — проверяется тестом.
+//   критичная без решения: 4 ч — повтор руководителю звена, 24 ч — ещё раз и РОПу/Шоху;
+//   простая без причины: 24 ч — руководителю звена «напишите причину».
+function dueReminders(rows, nowMs, criticalTypes) {
+  const out = [];
+  for (const c of rows) {
+    const hours = (nowMs - new Date(c.created_at).getTime()) / 3600000;
+    if (criticalTypes.has(c.complaint_type)) {
+      if (c.status === 'resolved') continue;
+      if (hours >= 24) out.push({ id: c.id, stage: 'crit24', critical: true, escalate: true, hours });
+      else if (hours >= 4) out.push({ id: c.id, stage: 'crit4', critical: true, escalate: false, hours });
+    } else {
+      if (String(c.internal_note || '').trim()) continue;
+      if (hours >= 24) out.push({ id: c.id, stage: 'simple24', critical: false, escalate: false, hours });
+    }
+  }
+  return out;
+}
+
 module.exports = function linkOwners({ db, bot }) {
   // Люди роли, отвечающей за звено этой претензии, подключённые к боту.
   async function ownersOf(complaintId) {
@@ -102,17 +121,22 @@ module.exports = function linkOwners({ db, bot }) {
   }
 
   // Карточка новой претензии всем руководителям звена. Возвращает, скольким ушла.
-  async function sendCard(complaintId, { critical, resolutions }) {
+  // remindHours — это напоминание: сверху строка «нет ответа N ч», медиа не шлём повторно.
+  async function sendCard(complaintId, { critical, resolutions, remindHours }) {
     const owners = await ownersOf(complaintId);
     if (!owners.length) return 0;
     const card = await loadCard(complaintId);
     if (!card) return 0;
-    const text = formatCard(card.c, critical);
+    let text = formatCard(card.c, critical);
+    if (remindHours) {
+      text = `⏰ Напоминание: по претензии №${complaintId} нет ${critical ? 'решения' : 'причины'} уже ${Math.floor(remindHours)} ч.\n\n` + text;
+      if (!critical) text += '\n\nНапишите, в чём причина и что сделали, — кнопкой ниже.';
+    }
     const kb = ownerKeyboard(complaintId, critical, resolutions);
     let sent = 0;
     for (const o of owners) {
       // Медиа не должно мешать главному: не ушло фото — текст с кнопками всё равно отправляем.
-      try { await sendMedia(o.chat_id, card.files); } catch (e) { console.warn('[ЗВЕНО медиа]', e.message); }
+      if (!remindHours) { try { await sendMedia(o.chat_id, card.files); } catch (e) { console.warn('[ЗВЕНО медиа]', e.message); } }
       try { await bot.sendMessage(o.chat_id, text, { reply_markup: kb }); sent++; } catch (e) { console.warn('[ЗВЕНО карточка]', e.message); }
     }
     return sent;
@@ -133,3 +157,4 @@ module.exports = function linkOwners({ db, bot }) {
 
 module.exports.formatCard = formatCard;
 module.exports.ownerKeyboard = ownerKeyboard;
+module.exports.dueReminders = dueReminders;

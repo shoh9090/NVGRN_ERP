@@ -425,6 +425,33 @@ async function agentAskComment(q, id, lang) {
   return true;
 }
 
+// ---------- Напоминания руководителю звена ----------
+// Раз в 15 минут (из index.js). Только днём: ночью никого не будим — напоминание
+// уйдёт утром. Только претензии из бота за неделю — старая история не спамит.
+async function reminderTick() {
+  const hour = Number(new Date(Date.now() + 5 * 3600000).toISOString().slice(11, 13)); // Ташкент
+  if (hour < 9 || hour >= 20) return 0;
+  const rows = (await db.query(
+    `SELECT id, created_at, complaint_type, status, internal_note FROM tgbot.complaints
+      WHERE source IN ('client_bot', 'agent') AND link_code IS NOT NULL
+        AND created_at > now() - interval '7 days'`)).rows;
+  const due = linkOwnersMod.dueReminders(rows, Date.now(), CRITICAL_TYPES);
+  let sent = 0;
+  for (const d of due) {
+    const key = `cmprem:${d.id}:${d.stage}`;
+    if ((await db.query("SELECT 1 FROM notification_log WHERE dedup_key=$1", [key])).rows.length) continue;
+    await LO.sendCard(d.id, { critical: d.critical, resolutions: await getResolutions(), remindHours: d.hours });
+    if (d.escalate) {
+      await H.notifyManagers(`⏰ Критичная претензия №${d.id}: руководитель звена не принял решение больше суток. Нужен ваш разбор.`)
+        .catch((e) => console.warn("[ПРЕТЕНЗИЯ эскалация]", e.message));
+    }
+    await db.query("INSERT INTO notification_log (kind, dedup_key) VALUES ('complaint_remind', $1) ON CONFLICT (dedup_key) DO NOTHING", [key]);
+    sent++;
+  }
+  if (sent) console.log(`[ПРЕТЕНЗИИ] Напоминаний руководителям звеньев: ${sent}`);
+  return sent;
+}
+
 // ---------- Маршрутизация из index.js ----------
 // Возвращает true, если сообщение «съедено» мастером (тогда index.js не обрабатывает дальше).
 async function onMessage(msg) {
@@ -550,4 +577,4 @@ async function onCallback(q) {
   }
 }
 
-module.exports = { init, onMessage, onCallback, menuText, startForAgent, isActive: (chatId) => sessions.has(chatId) };
+module.exports = { init, onMessage, onCallback, menuText, startForAgent, reminderTick, isActive: (chatId) => sessions.has(chatId) };

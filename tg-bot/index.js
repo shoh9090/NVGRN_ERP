@@ -768,6 +768,8 @@ async function main() {
     } catch (e) { console.error("[ЛОГИСТИКА]", e.message); }
   }
   setInterval(logisticsDigestTick, 60000);
+  // Напоминания руководителям звеньев по претензиям без ответа (см. complaints.js).
+  setInterval(() => { complaints.reminderTick().catch((e) => console.error("[ПРЕТЕНЗИИ напоминание]", e.message)); }, 15 * 60 * 1000);
 
   // ===== Сводка упущенных продаж РОПу и админу (ежедневно/еженедельно) =====
   let lastLostDay = "";
