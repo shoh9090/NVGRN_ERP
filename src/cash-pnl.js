@@ -26,6 +26,8 @@ const UNITS_KEY = (period) => 'pnl_units_' + period;
 // а не «деньги пришли»: при отсрочке до 30 дней поступления отстают от
 // отгрузок на месяц, и отчёт на поступлениях показывает мнимый убыток.
 const SALES_KEY = (period) => 'pnl_sales_' + period;
+// Реализация за месяц загружена из SD: в настройке есть число (в том числе 0 или минус).
+const salesLoaded = (v) => v != null && String(v).trim() !== '' && isFinite(Number(v));
 
 // Группы классификатора ДДС. Первая — оплаты поставщикам за сырьё и упаковку:
 // в P&L они НЕ расход, иначе себестоимость посчиталась бы дважды (её мы берём
@@ -406,7 +408,11 @@ async function buildPnl(pool, period) {
   const byKey = new Map(st.map((x) => [x.key, x.value]));
   const units = Number(byKey.get(UNITS_KEY(period))) || 0;
   const unitsAt = byKey.get(UNITS_KEY(period) + '_at') || '';
-  const shipped = Number(byKey.get(SALES_KEY(period))) || 0;
+  // Загружена ли реализация вообще — отдельно от её суммы. Ноль продаж из SD — это
+  // честный ноль, а не «данных нет»: подменять его поступлениями денег нельзя, иначе
+  // оплата старых долгов превращается в выручку месяца без продаж (аудит A10).
+  const shippedLoaded = salesLoaded(byKey.get(SALES_KEY(period)));
+  const shipped = shippedLoaded ? Number(byKey.get(SALES_KEY(period))) : 0;
 
   const [cash, fact, plan, adjust, waste] = await Promise.all([
     cashSide(pool, from, toStr),
@@ -420,8 +426,8 @@ async function buildPnl(pool, period) {
   // Поступления денег остаются в отчёте, но как справка: это Кэш-флоу.
   // Разница между ними — то, что отгрузили и ещё не получили (отсрочка).
   const cashIn = cash.revenue.total;
-  const revenue = shipped > 0 ? shipped : cashIn;
-  const revenueSource = shipped > 0 ? 'shipped' : 'cash';
+  const revenue = shippedLoaded ? shipped : cashIn;
+  const revenueSource = shippedLoaded ? 'shipped' : 'cash';
   // Себестоимость берём фактическую. Если склад за месяц не вёлся, считаем по
   // плану — иначе отчёт бесполезен целые месяцы. Чем посчитано, отдаём наружу:
   // подменять факт планом молча нельзя, человек должен это видеть.
@@ -464,7 +470,7 @@ async function buildPnl(pool, period) {
       cash_in: cashIn,         // поступило денег (как в Кэш-флоу)
       // Отгрузили, но денег ещё не получили. При отсрочке это норма,
       // но если растёт месяц к месяцу — деньги зависают у клиентов.
-      receivable: shipped > 0 ? shipped - cashIn : null,
+      receivable: shippedLoaded ? shipped - cashIn : null,
     },
     cogs: {
       fact,
@@ -566,7 +572,7 @@ async function buildTrend(pool, endPeriod, months) {
   // и сохранённая. Где её нет, на графике честно берём поступления денег.
   const salesRows = (await pool.query(
     "SELECT key, value FROM settings WHERE key LIKE 'pnl_sales_%'")).rows;
-  const shippedOf = new Map(salesRows.map((x) => [String(x.key).replace('pnl_sales_', ''), Number(x.value) || 0]));
+  const shippedOf = new Map(salesRows.filter((x) => salesLoaded(x.value)).map((x) => [String(x.key).replace('pnl_sales_', ''), Number(x.value)]));
   cashRows.forEach((r) => monthOf(r.m).rows.push(r));
   usedRows.forEach((u) => {
     const slot = monthOf(u.m);
@@ -587,12 +593,12 @@ async function buildTrend(pool, endPeriod, months) {
     if (!slot) { out.push({ period: key, revenue: 0, cogs: null, opex: 0, profit: null }); continue; }
     const c = classifyRows(slot.rows);
     const cogs = slot.cogs_known ? slot.cogs : null;
-    const shippedM = shippedOf.get(key) || 0;
-    const rev = shippedM > 0 ? shippedM : c.revenueTotal;
+    const shippedLoadedM = shippedOf.has(key);
+    const rev = shippedLoadedM ? shippedOf.get(key) : c.revenueTotal;
     out.push({
       period: key,
       revenue: rev,
-      revenue_source: shippedM > 0 ? 'shipped' : 'cash',
+      revenue_source: shippedLoadedM ? 'shipped' : 'cash',
       cogs,
       opex: c.opexTotal,
       profit: cogs === null ? null : rev - cogs - c.opexTotal,

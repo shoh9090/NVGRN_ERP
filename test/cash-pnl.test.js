@@ -368,3 +368,20 @@ test('реализация не подтянута — считаем по де�
   assert.ok(r.warnings.some((w) => w.includes('ПОСТУПЛЕНИЮ ДЕНЕГ') && w.includes('мнимый убыток')),
     'должно быть предупреждение о мнимом убытке: ' + r.warnings.join(' | '));
 });
+
+test('SD загружен, продаж за месяц ноль — выручка ноль, оплата старых долгов её не подменяет', async () => {
+  // Аудит A10: раньше условие «реализация > 0» превращало поступления денег
+  // (оплату прошлых отгрузок) в выручку месяца, в котором ничего не продали.
+  const pool = makePool({
+    cash: [{ code: '200', name: 'Выручка', group_name: 'Доходы и поступления', flow_type: 'operating', inc: 1000000, exp: 0, cnt: 1 }],
+    settings: [{ key: 'pnl_sales_2026-08', value: '0' }],
+    used: [{ item_kind: 'raw', item_id: 1, qty: 1 }],
+    prices: [{ item_kind: 'raw', item_id: 1, avg_price: 1 }],
+  });
+  const r = await buildPnl(pool, '2026-08');
+  assert.strictEqual(r.revenue.source, 'shipped');
+  assert.strictEqual(r.revenue.total, 0);
+  assert.strictEqual(r.revenue.cash_in, 1000000);        // деньги видны справочно
+  assert.strictEqual(r.revenue.receivable, -1000000);    // клиенты погасили долг
+  assert.ok(!r.warnings.some((w) => w.includes('ПОСТУПЛЕНИЮ ДЕНЕГ')));
+});
