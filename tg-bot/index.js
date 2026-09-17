@@ -584,6 +584,19 @@ async function main() {
     bot.setMyCommands([{ command: "menu", description: "Что приходит в этот чат" }], { scope: { type: "chat", chat_id: chatId } })
       .catch((e) => { hubMenuDone.delete(key); console.warn("[МЕНЮ сотрудника]", e.message); });
   }
+  // Сотрудникам бота (агенты, водители, РОП, логистика…) — тоже свой список команд:
+  // общий клиентский («Оформить заказ», «Мой заказ и статус») им не нужен.
+  const staffCmdDone = new Set();
+  function applyStaffCommands(chatId) {
+    const key = String(chatId);
+    if (staffCmdDone.has(key)) return;
+    staffCmdDone.add(key);
+    bot.setMyCommands([
+      { command: "menu", description: "Меню" },
+      { command: "start", description: "Старт / язык" },
+    ], { scope: { type: "chat", chat_id: chatId } })
+      .catch((e) => { staffCmdDone.delete(key); console.warn("[КОМАНДЫ сотрудника]", e.message); });
+  }
   // Сотрудник ERP нажал клиентскую команду (меню у него могло остаться старым):
   // объясняем, что сюда приходит, вместо «номер не привязан к точке».
   // Telegram-сотрудников и клиентов не трогаем — у них свои меню.
@@ -1361,7 +1374,7 @@ async function main() {
   bot.onText(/\/whoami/, (msg) => bot.sendMessage(msg.chat.id, "Ваш Telegram ID: " + msg.chat.id));
   bot.onText(/\/menu/, async (msg) => {
     const stf = await getStaff(msg.from.id);
-    if (stf) { bot.sendMessage(msg.chat.id, `Меню (${roleTitle(stf.role)}):`, staffMenu(stf.role)); return; }
+    if (stf) { applyStaffCommands(msg.chat.id); bot.sendMessage(msg.chat.id, `Меню (${roleTitle(stf.role)}):`, staffMenu(stf.role)); return; }
     if (await hubHelpIfStaff(msg)) return;
     const lang = await getLang(msg.chat.id);
     if (!(await isClientUser(msg.from.id))) { bot.sendMessage(msg.chat.id, lang === "uz" ? "Botdan foydalanish uchun raqamingizni yuboring yoki agentingizga murojaat qiling." : "Чтобы пользоваться ботом, поделитесь номером или обратитесь к вашему агенту.", askContact(lang)); return; }
@@ -1382,6 +1395,7 @@ async function main() {
         await db.query(`UPDATE telegram_staff SET telegram_user_id=$1, telegram_chat_id=$2, telegram_username=$3, telegram_first_name=$4, telegram_last_name=$5, phone_original=COALESCE(phone_original,$6), updated_at=now() WHERE id=$7`,
           [msg.from.id, chatId, msg.from.username || null, msg.from.first_name || null, msg.from.last_name || null, c.phone_number, stf.id]);
         await db.logEvent("staff_auth", chatId, { role: stf.role });
+        applyStaffCommands(chatId);
         bot.sendMessage(chatId, `Здравствуйте! Вы подключены как ${roleTitle(stf.role)}.`, staffMenu(stf.role));
         await db.query("INSERT INTO notification_log (kind, dedup_key, target_chat_id, target_role) VALUES ('confirm',$1,$2,$3) ON CONFLICT (dedup_key) DO NOTHING", [`confirm:${stf.id}`, chatId, stf.role]).catch(() => {});
         return;
@@ -1395,6 +1409,7 @@ async function main() {
         await db.logEvent("hub_user_auth", chatId, { user_id: hu.id });
         // Руководитель с «Ролью в боте» — сразу меню его роли.
         if (hubStaffMod.MANAGER_ROLES.has(hu.bot_role)) {
+          applyStaffCommands(chatId);
           bot.sendMessage(chatId, `Здравствуйте, ${hu.full_name}! Вы подключены как ${roleTitle(hu.bot_role)}.`, staffMenu(hu.bot_role));
           return;
         }
@@ -1627,7 +1642,7 @@ async function main() {
     }
     if (msg.contact || (msg.text && msg.text.startsWith("/"))) return;
     const stf = await getStaff(msg.from.id);
-    if (stf) return handleStaffText(chatId, msg.from.id, stf, txt);
+    if (stf) { applyStaffCommands(chatId); return handleStaffText(chatId, msg.from.id, stf, txt); }
     const lang = await getLang(chatId);
     // Не сотрудник и не привязанный клиент/сеть — доступа к меню и данным нет.
     if (!(await isClientUser(msg.from.id))) {
