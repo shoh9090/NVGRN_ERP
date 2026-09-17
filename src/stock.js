@@ -107,6 +107,28 @@ router.get('/api/receipt/:id(\\d+)', async (req, res) => {
   res.json({ order: o.rows[0], items: items.rows, isAdmin: !!req.user.isAdmin });
 });
 
+// Сверить замеры приёмки со спецификацией. Меняет c.passed у числовых параметров
+// по коридору min/max; качественные (✓/✗) берём как отметил кладовщик. Пустой замер
+// не считается провалом (замер не обязателен). Возвращает true, если что-то не прошло.
+function applySpecVerdict(checks, specRows) {
+  let failed = false;
+  for (const c of checks) {
+    const sp = specRows.find((r) => String(r.item_id) === String(c.item_id) && r.name === String(c.param_name || ''));
+    if (sp && sp.ptype === 'range') {
+      const raw = String(c.measured == null ? '' : c.measured).trim();
+      if (raw === '') c.passed = true;
+      else {
+        const v = Number(raw.replace(',', '.'));
+        c.passed = isFinite(v)
+          && !(sp.min_val != null && v < Number(sp.min_val))
+          && !(sp.max_val != null && v > Number(sp.max_val));
+      }
+    }
+    if (c.passed === false) failed = true;
+  }
+  return failed;
+}
+
 router.post('/api/receipt/:id(\\d+)', express.json({ limit: '2mb' }), async (req, res) => {
   const o = await db.pool.query(
     `SELECT po.number, po.created_by, c.name AS supplier_name
@@ -118,12 +140,20 @@ router.post('/api/receipt/:id(\\d+)', express.json({ limit: '2mb' }), async (req
   const temperature = String(req.body.temperature || '').trim();
   const receiptComment = String(req.body.comment || '').trim();
   const receiptReason = String(req.body.reason || '').trim();
-  const overrideSpec = !!req.body.override_spec; // принять с отклонением (админ/руководитель)
+  // Принять с отклонением может только администратор — как и кнопка в интерфейсе.
+  // Флагу из запроса не доверяем: раньше его мог прислать кто угодно (аудит A07).
+  const overrideSpec = !!req.body.override_spec && !!req.user.isAdmin;
 
-  // проверка спеки: есть ли проваленные параметры
-  let specFailed = false;
+  // Проверка спеки. Числовые замеры сервер пересчитывает сам по коридору из спецификации,
+  // а не верит пометке «в норме» из браузера.
   const checks = Array.isArray(req.body.checks) ? req.body.checks : [];
-  for (const c of checks) { if (c.passed === false) specFailed = true; }
+  const specRows = (await db.pool.query(
+    `SELECT i.id AS item_id, p.name, p.ptype, p.min_val, p.max_val
+       FROM purchase_order_items i
+       JOIN specifications s ON s.item_kind = i.item_kind AND s.item_id = i.item_id
+       JOIN specification_params p ON p.spec_id = s.id
+      WHERE i.order_id = $1`, [req.params.id])).rows;
+  const specFailed = applySpecVerdict(checks, specRows);
 
   // мягкая блокировка: спека провалена и нет override → отказ
   if (specFailed && !overrideSpec) {
@@ -611,3 +641,4 @@ router.get('/api/day-summary', async (req, res) => {
 });
 
 module.exports = router;
+module.exports.applySpecVerdict = applySpecVerdict;
