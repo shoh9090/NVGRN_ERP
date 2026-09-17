@@ -1195,7 +1195,10 @@
       ? d.cogs.plan.reason
       : (d.cogs.plan.method === 'assortment'
         ? ('По ассортименту: оценено ' + money(d.cogs.plan.matched_units) + ' шт'
-          + (d.cogs.plan.unmatched_units > 0 ? ', не оценено ' + money(d.cogs.plan.unmatched_units) + ' шт (нет в Калькуляции)' : ''))
+          + (d.cogs.plan.unmatched_units > 0 ? ', не оценено ' + money(d.cogs.plan.unmatched_units) + ' шт (нет в Калькуляции)' : '')
+          + (d.cogs.plan.linked_by ? '. Товары сшиты с SalesDoctor сами: по коду '
+            + d.cogs.plan.linked_by.code + ', по справочнику ' + d.cogs.plan.linked_by.good
+            + ', по штрих-коду ' + d.cogs.plan.linked_by.barcode + ', по названию ' + d.cogs.plan.linked_by.name : ''))
         : ('Отгружено ' + money(d.cogs.plan.units) + ' шт × ' + money(d.cogs.plan.unit_cost)
           + ' — средняя пачка по ' + d.cogs.plan.products + ' товарам Калькуляции (грубая оценка)')),
     d.cogs.plan.total, d.cogs.plan.unmatched_units > 0 ? 'cash-src-warn' : null);

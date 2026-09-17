@@ -497,3 +497,71 @@ test('снимок закрытого месяца сохраняется и ч�
   assert.strictEqual(back.cogs.fact.total, 120000);
   assert.strictEqual(await loadSnapshot(pool, '2026-07'), null);
 });
+
+// ---------------------------------------------------------------------------
+// Связь товара Калькуляции с товаром SalesDoctor ищется сама
+// ---------------------------------------------------------------------------
+const { linkProducts, matchKey } = require('../src/cash-pnl');
+
+test('название сравнивается «на слух»: руколла = руккола, но 500 ≠ 50', () => {
+  assert.strictEqual(matchKey('Руколла 100 гр '), matchKey('Руккола 100гр'));
+  assert.strictEqual(matchKey('Айсберг резанный квадрат 500 гр'), matchKey('Айсберг резаный квадрат 500гр'));
+  assert.notStrictEqual(matchKey('Айсберг 500 гр'), matchKey('Айсберг 50 гр'));
+  assert.notStrictEqual(matchKey('Айсберг 500 гр'), matchKey('Айсберг резанный квадрат 500 гр'));
+});
+
+test('связь по штрих-коду и по названию — без ручных кодов', () => {
+  const products = [
+    { cost: 2000, name: 'Руккола 100 гр', barcode: '4780000000011', sd_product_id: null, finished_good_id: null },
+    { cost: 5000, name: 'Мята пучок свежая 60 гр уп.', barcode: '', sd_product_id: null, finished_good_id: null },
+    { cost: 7000, name: 'Айсберг 500 гр', barcode: '', sd_product_id: null, finished_good_id: 42 },
+  ];
+  const sold = [['SD1', 99, 'Руколла 100 гр'], ['SD2', 10, 'Мята пучок свежая 60 гр уп'], ['SD3', 5, 'Айсберг 500 гр']];
+  const goods = [
+    { id: 7, name: 'Руккола 100 гр', barcode: '4780000000011', sd_sd_id: 'SD1' },
+    { id: 42, name: 'Айсберг 500 гр', barcode: '', sd_sd_id: 'SD3' },
+  ];
+  const { costBySd, by } = linkProducts(products, sold, goods);
+  assert.strictEqual(costBySd.get('SD1').cost, 2000);   // по штрих-коду
+  assert.strictEqual(costBySd.get('SD2').cost, 5000);   // по названию из продаж
+  assert.strictEqual(costBySd.get('SD3').cost, 7000);   // по привязке к готовой продукции
+  assert.strictEqual(by.barcode, 1);
+  assert.strictEqual(by.name, 1);
+  assert.strictEqual(by.good, 1);
+});
+
+test('вписанный код SalesDoctor сильнее любых догадок', () => {
+  const { costBySd, by } = linkProducts(
+    [{ cost: 1000, name: 'Руккола 100 гр', barcode: '111', sd_product_id: 'SD9', finished_good_id: null }],
+    [['SD1', 5, 'Руккола 100 гр']],
+    [{ id: 1, name: 'Руккола 100 гр', barcode: '111', sd_sd_id: 'SD1' }]);
+  assert.ok(costBySd.has('SD9'));
+  assert.ok(!costBySd.has('SD1'));
+  assert.strictEqual(by.code, 1);
+});
+
+test('два товара под одним названием — связь не угадываем', () => {
+  const { costBySd } = linkProducts(
+    [{ cost: 1000, name: 'Айсберг', barcode: '', sd_product_id: null, finished_good_id: null }],
+    [['SD1', 5, 'Айсберг'], ['SD2', 5, 'айсберг ']],
+    []);
+  assert.strictEqual(costBySd.size, 0);
+});
+
+test('план сам находит товары по названию из продаж', async () => {
+  const pool = makePool({
+    cash: [{ code: '200', name: 'Выручка', group_name: 'Доходы и поступления', flow_type: 'operating', inc: 1, exp: 0, cnt: 1 }],
+    settings: [
+      { key: 'pnl_units_2026-08', value: '100' },
+      { key: 'pnl_sku_2026-08', value: JSON.stringify([['SD1', 99, 'Руколла 100 гр'], ['SD2', 1, 'Микс']]) },
+    ],
+    products: [
+      { name: 'Руккола 100 гр', sd_product_id: null, barcode: '', finished_good_id: null, net_weight_g: 100, raw_price_per_kg: 20000, pack_template_id: null, recipe_id: null, raw_cost: null },
+      { name: 'Микс', sd_product_id: null, barcode: '', finished_good_id: null, net_weight_g: null, raw_price_per_kg: null, raw_cost: 10000, pack_template_id: null, recipe_id: null },
+    ],
+  });
+  const r = await buildPnl(pool, '2026-08');
+  assert.strictEqual(r.cogs.plan.total, 99 * 2000 + 10000);
+  assert.strictEqual(r.cogs.plan.unmatched_units, 0);
+  assert.strictEqual(r.cogs.plan.linked_by.name, 2);
+});

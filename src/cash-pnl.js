@@ -370,6 +370,77 @@ async function factCogs(pool, from, to, priceOf) {
 }
 
 // ---------------------------------------------------------------------------
+// Какой товар Калькуляции какому товару SalesDoctor соответствует
+// ---------------------------------------------------------------------------
+// Шох: «нельзя чтобы всё само било? может по штрих-коду?». Да: руками код
+// SalesDoctor вписывать не нужно, связь ищется сама, по очереди:
+//   1) код SD вписан в карточке Калькуляции — берём его;
+//   2) карточка привязана к готовой продукции — берём код SD оттуда;
+//   3) совпал штрих-код карточки и товара SD;
+//   4) совпало название — с готовой продукцией или прямо с названием из продаж.
+// Название сравниваем «на слух»: без пробелов и знаков, ё=е, сдвоенные буквы
+// сжимаем (руколла = руккола = рукола). Цифры не сжимаем, иначе 500 стало бы 50
+// и «Айсберг 500 гр» совпал бы с «Айсберг 50 гр».
+// Если под одно название подходят ДВА разных товара — связь не угадываем, такой
+// товар честно остаётся в списке «не оценено».
+const matchKey = (s) => String(s || '').toLowerCase()
+  .replace(/ё/g, 'е')
+  .replace(/[^a-zа-я0-9]+/g, '')
+  .replace(/([a-zа-я])\1+/g, '$1');
+const normBarcode = (s) => String(s || '').replace(/\D+/g, '');
+
+// Однозначный указатель ключ → значение: второе совпадение делает ключ спорным.
+function uniqueIndex(pairs) {
+  const m = new Map();
+  for (const [k, v] of pairs) {
+    if (!k) continue;
+    if (m.has(k) && m.get(k) !== v) { m.set(k, null); continue; }   // null = спорно
+    m.set(k, v);
+  }
+  return m;
+}
+
+// products — карточки Калькуляции [{ cost, name, barcode, sd_product_id, finished_good_id }],
+// sold — продажи SD [[sd_id, штук, название]], goods — ref_finished_goods.
+// Возвращает Map код SD → { cost, name } и статистику, чем именно сшилось.
+function linkProducts(products, sold, goods) {
+  const sdOfGoodId = new Map();
+  const sdOfBarcode = [];
+  const sdOfGoodName = [];
+  for (const g of goods || []) {
+    const sd = String(g.sd_sd_id || '').trim();
+    if (!sd) continue;
+    sdOfGoodId.set(Number(g.id), sd);
+    sdOfBarcode.push([normBarcode(g.barcode), sd]);
+    sdOfGoodName.push([matchKey(g.name), sd]);
+  }
+  const byBarcode = uniqueIndex(sdOfBarcode);
+  const byGoodName = uniqueIndex(sdOfGoodName);
+  const bySoldName = uniqueIndex((sold || []).map(([sd, , name]) => [matchKey(name), String(sd)]));
+
+  const costBySd = new Map();
+  const by = { code: 0, good: 0, barcode: 0, name: 0, ambiguous: 0 };
+  for (const p of products) {
+    const direct = String(p.sd_product_id || '').trim();
+    let sd = null, how = null;
+    if (direct) { sd = direct; how = 'code'; }
+    else if (p.finished_good_id && sdOfGoodId.has(Number(p.finished_good_id))) { sd = sdOfGoodId.get(Number(p.finished_good_id)); how = 'good'; }
+    else {
+      const bc = normBarcode(p.barcode);
+      const nk = matchKey(p.name);
+      const cands = [[byBarcode.get(bc), 'barcode'], [byGoodName.get(nk), 'name'], [bySoldName.get(nk), 'name']];
+      // null в указателе — спорное название/штрих-код: не угадываем.
+      if (cands.some(([v]) => v === null)) by.ambiguous++;
+      const hit = cands.find(([v]) => v);
+      if (hit) { sd = hit[0]; how = hit[1]; }
+    }
+    if (!sd) continue;
+    if (!costBySd.has(sd)) { costBySd.set(sd, { cost: p.cost, name: p.name }); by[how]++; }
+  }
+  return { costBySd, by };
+}
+
+// ---------------------------------------------------------------------------
 // Плановая себестоимость: сколько материалов ДОЛЖНО было уйти
 // ---------------------------------------------------------------------------
 // Считается только материальная часть (зелень + упаковка) — ровно то же, что
@@ -378,7 +449,8 @@ async function factCogs(pool, from, to, priceOf) {
 async function planCogs(pool, units, sold) {
   if (!(units > 0)) return { units: 0, unit_cost: null, total: null, products: 0, reason: 'Не подтянуто количество отгрузок' };
   const r = await pool.query(
-    `SELECT p.name, p.sd_product_id, p.net_weight_g, p.raw_price_per_kg, p.raw_cost, p.pack_template_id, p.recipe_id
+    `SELECT p.name, p.sd_product_id, p.barcode, p.finished_good_id,
+            p.net_weight_g, p.raw_price_per_kg, p.raw_cost, p.pack_template_id, p.recipe_id
        FROM calc_sheet_products p
       WHERE p.status = 'active'`);
   if (!r.rows.length) return { units, unit_cost: null, total: null, products: 0, reason: 'В Калькуляции нет товаров' };
@@ -418,7 +490,7 @@ async function planCogs(pool, units, sold) {
 
   // Материальная стоимость одной единицы каждого товара Калькуляции.
   let sum = 0, counted = 0, skipped = 0;
-  const costBySd = new Map();
+  const costed = [];
   for (const p of r.rows) {
     const weight = p.net_weight_g === null ? null : Number(p.net_weight_g);
     const perKg = p.raw_price_per_kg === null ? null : Number(p.raw_price_per_kg);
@@ -431,8 +503,7 @@ async function planCogs(pool, units, sold) {
     const cost = (green || 0) + (pack || 0);
     sum += cost;
     counted++;
-    const sd = String(p.sd_product_id || '').trim();
-    if (sd) costBySd.set(sd, { cost, name: p.name });
+    costed.push({ cost, name: p.name, barcode: p.barcode, sd_product_id: p.sd_product_id, finished_good_id: p.finished_good_id });
   }
   if (!counted) return { units, unit_cost: null, total: null, products: 0, skipped, reason: 'У товаров не заполнены зелень и упаковка' };
 
@@ -442,6 +513,10 @@ async function planCogs(pool, units, sold) {
   // же, сколько самый ходовой (аудит A11). Товары, которых нет в Калькуляции
   // (не заполнен код SD), в сумму не попадают и показываются отдельно.
   if (Array.isArray(sold) && sold.length) {
+    // Связь товаров ищется сама: код SD → готовая продукция → штрих-код → название.
+    const goods = (await pool.query(
+      "SELECT id, name, barcode, sd_sd_id FROM ref_finished_goods WHERE COALESCE(sd_sd_id, '') <> ''")).rows;
+    const { costBySd, by } = linkProducts(costed, sold, goods);
     let total = 0, matchedUnits = 0;
     const unmatched = [];
     for (const [sd, qty, name] of sold) {
@@ -457,7 +532,7 @@ async function planCogs(pool, units, sold) {
     return {
       units, total, method: 'assortment',
       unit_cost: matchedUnits > 0 ? total / matchedUnits : null,
-      products: counted, skipped,
+      products: counted, skipped, linked_by: by,
       matched_units: matchedUnits, unmatched_units: unmatchedUnits, unmatched,
       reason: null,
     };
@@ -548,7 +623,8 @@ async function buildPnl(pool, period) {
   if (plan.unmatched_units > 0) {
     warnings.push({
       text: `В Калькуляции не найдено ${plan.unmatched.length} товаров из продаж (${Math.round(plan.unmatched_units)} шт). `
-        + 'В плановую себестоимость они не вошли — впишите им код товара SalesDoctor в Калькуляции.',
+        + 'Связь ищется сама — по штрих-коду и названию; этим товарам ничего не подошло. '
+        + 'В плановую себестоимость они не вошли: добавьте товар в Калькуляцию или впишите ему код SalesDoctor.',
       href: '/calculation', label: 'Открыть Калькуляцию',
       items: plan.unmatched.map((x) => `${x.name} — ${Math.round(x.units)} шт (код SD: ${x.sd_id})`),
     });
@@ -727,4 +803,4 @@ async function buildTrend(pool, endPeriod, months) {
   return { months: n, from: bounds.f, to: bounds.t, points: out };
 }
 
-module.exports = { buildPnl, buildTrend, UNITS_KEY, SALES_KEY, SKU_KEY, SNAP_KEY, planCogs, saveSnapshot, loadSnapshot };
+module.exports = { buildPnl, buildTrend, UNITS_KEY, SALES_KEY, SKU_KEY, SNAP_KEY, planCogs, saveSnapshot, loadSnapshot, linkProducts, matchKey };
