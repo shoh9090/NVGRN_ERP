@@ -1222,6 +1222,9 @@
       el('div', {}, [
         el('div', { class: 'hr-h2' }, 'Табель — ' + monthLabel(tsState.period)),
         el('div', { class: 'hr-sub' }, 'Клик по ячейке — отметить день. Факт-дни и часы в зарплате складываются отсюда, вводить их руками не нужно.'),
+        // Видно сразу, ограничен человек отделом или нет. Иначе понять, сработала
+        // ли привязка, можно было только сев за его компьютер.
+        scoped() ? el('div', { class: 'hr-sub' }, 'Ваш доступ: ' + (DICTS.departments || []).map((x) => x.name).join(', ')) : null,
       ]),
     ]));
     const mInp = HubDateRange.create({
@@ -1255,8 +1258,9 @@
       // Пересчёт показателей после правки ячейки — по строкам, которые на экране.
       TS_REDRAW_STATS = () => drawStats(TS_ITEMS.reduce((s, x) => ({
         days: s.days + (x.days || 0), hours: s.hours + (x.hours || 0),
-        overtime: s.overtime + (x.overtime || 0), accrued: s.accrued + (x.accrued || 0),
-      }), { days: 0, hours: 0, overtime: 0, accrued: 0 }), items, today, isThisMonth);
+        overtime: s.overtime + (x.overtime || 0),
+        accrued: s.accrued === null ? null : s.accrued + (x.accrued || 0),
+      }), { days: 0, hours: 0, overtime: 0, accrued: d.money === false ? null : 0 }), items, today, isThisMonth);
       drawStats(d.totals, items, today, isThisMonth);
 
       if (d.locked) box.appendChild(el('div', { class: 'hr-note' }, 'Месяц закрыт — правка табеля запрещена.'));
@@ -1304,7 +1308,7 @@
         bits.push(part('дней', String(t.days)));
         bits.push(part('часов', nH((t.hours || 0) + (t.overtime || 0))));
         if (t.overtime) bits.push(part('переработка', '+' + nH(t.overtime * 2), 'hr-ts-ot'));
-        bits.push(part('начислено', money(t.accrued), 'hr-ts-money'));
+        if (t.accrued !== null && t.accrued !== undefined) bits.push(part('начислено', money(t.accrued), 'hr-ts-money'));
         bits.forEach((b, i) => {
           if (i) stats.appendChild(el('span', { class: 'hr-ts-sep' }, '·'));
           b.forEach((n) => stats.appendChild(n));
@@ -1344,9 +1348,11 @@
         .concat(d.days.map((x) => el('th', {
           class: 'hr-ts-d' + (x.weekend ? ' wk' : '') + (isThisMonth && x.d === today ? ' now' : ''),
         }, String(x.n))))
+        // Колонку «Начислено» видит только тот, кому открыты денежные вкладки
+        // Кадров. Начальнику смены нужны часы, чужие зарплаты ему не нужны.
         .concat([['Дней', 'Отмеченных смен'], ['Часов', 'Всего отработано, вместе с переработкой'],
           ['Перераб. ×2', 'Часы сверх смены в двойном размере — столько их в оплате'],
-          ['Начислено', 'Оплата по факту: часы по норме плюс переработка в двойном размере']]
+          ...(d.money === false ? [] : [['Начислено', 'Оплата по факту: часы по норме плюс переработка в двойном размере']])]
           .map((x) => el('th', { class: 'hr-ts-sum', title: x[1] }, x[0]))));
 
       const rows = items.map((r) => el('tr', {}, [
@@ -1359,7 +1365,7 @@
           el('td', { class: 'hr-ts-sum tnum' }, String(r.days)),
           el('td', { class: 'hr-ts-sum tnum' }, nH((r.hours || 0) + (r.overtime || 0))),
           el('td', { class: 'hr-ts-sum tnum', style: r.overtime > 0 ? 'color:#b25b00;font-weight:700' : '' }, r.overtime ? '+' + nH(r.overtime * 2) : '—'),
-          el('td', { class: 'hr-ts-sum tnum', style: 'font-weight:700' }, money(r.accrued)),
+          ...(d.money === false ? [] : [el('td', { class: 'hr-ts-sum tnum', style: 'font-weight:700' }, money(r.accrued))]),
         ])));
 
       box.appendChild(el('div', { class: 'hr-ts-wrap' },
@@ -1636,12 +1642,13 @@
     const tr = td && td.closest('tr');
     if (!tr) return;
     const sums = tr.querySelectorAll('td.hr-ts-sum');
-    if (sums.length >= 4) {
+    if (sums.length >= 3) {
       sums[0].textContent = String(row.days);
       sums[1].textContent = nH((row.hours || 0) + (row.overtime || 0));
       sums[2].textContent = row.overtime ? '+' + nH(row.overtime * 2) : '—';
       sums[2].style.color = row.overtime ? '#b25b00' : '';
-      sums[3].textContent = money(row.accrued);
+      // Колонки «Начислено» может не быть — деньги видят не все.
+      if (sums[3]) sums[3].textContent = money(row.accrued);
     }
     if (TS_REDRAW_STATS) TS_REDRAW_STATS();
   }

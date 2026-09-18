@@ -1234,9 +1234,22 @@ async function recomputeTimesheetFact(empId, period) {
   };
 }
 
+// Видит ли человек в табеле ДЕНЬГИ (оклад, начислено, прогноз и лимит).
+// Табель ведут двое разных людей: начальник смены — ему нужны часы и ничего
+// больше; начальник производства — ему нужен прогноз ФОТ, у него лимит.
+// Поэтому смотрим не на сам табель, а на денежные вкладки Кадров: открыта
+// хотя бы одна (Зарплата, Выплаты, Дашборд) — цифры видно, нет — только часы.
+async function canSeeMoney(req) {
+  try {
+    const ta = require('./tab-access');
+    return ta.tabAllowed(await ta.allowedTabs(db.pool, req.user, '/hr'), ['salary', 'payouts', 'dashboard']);
+  } catch (e) { return true; }
+}
+
 // Сетка табеля за месяц.
 router.get('/api/timesheet', async (req, res) => {
   try {
+    const money = await canSeeMoney(req);
     const period = /^\d{4}-\d{2}$/.test(req.query.period) ? req.query.period : new Date().toISOString().slice(0, 7);
     // Фильтр отделов умеет несколько значений и «Без отдела» — фильтруем тем же
     // помощником, что и остальные вкладки, чтобы вести себя одинаково.
@@ -1274,13 +1287,16 @@ router.get('/api/timesheet', async (req, res) => {
         emp_id: e.id, full_name: e.full_name, department_name: e.department_name || '—',
         schedule_type: e.schedule_type || '', schedule_name: sch ? sch.name : '—',
         hourly: POCHASOVOY.has(e.schedule_type), shift_hours: sch ? sch.shift_hours : 8,
-        base_salary: Number(e.base_salary) || 0,
+        // Оклад и начисление — деньги. Кому их видеть не положено, тому их
+        // не показываем и не отдаём: спрятать колонку на экране мало,
+        // цифра всё равно уехала бы в браузер.
+        base_salary: money ? (Number(e.base_salary) || 0) : null,
         plan_days: e.plan_days === null ? null : Number(e.plan_days),
         plan_hours: e.plan_hours === null ? null : Number(e.plan_hours),
         marks: cells, days, hours, overtime: ot,
         // «Начислено на сегодня» — та же цифра, что в ведомости: свою здесь не
         // считаем, иначе табель и зарплата разошлись бы.
-        accrued: Number(e.accr_fact) || 0,
+        accrued: money ? (Number(e.accr_fact) || 0) : null,
         accrued_locked: !!e.accrued,
       };
     });
@@ -1301,14 +1317,15 @@ router.get('/api/timesheet', async (req, res) => {
       'SELECT * FROM hr_timesheet_submits WHERE period=$1 AND department_id=$2', [period, dept])).rows[0] : null;
 
     res.json({
-      period, department: dept, days,
-      forecast: dept ? await payrollForecast(period, dept, items) : null,
+      period, department: dept, days, money,
+      forecast: (dept && money) ? await payrollForecast(period, dept, items) : null,
       today: new Date().toISOString().slice(0, 10),
       items,
       totals: items.reduce((s, x) => ({
         days: s.days + x.days, hours: s.hours + x.hours,
-        overtime: s.overtime + x.overtime, accrued: s.accrued + x.accrued,
-      }), { days: 0, hours: 0, overtime: 0, accrued: 0 }),
+        overtime: s.overtime + x.overtime,
+        accrued: money ? s.accrued + (x.accrued || 0) : null,
+      }), { days: 0, hours: 0, overtime: 0, accrued: money ? 0 : null }),
       marks: TS_MARKS.map((m) => ({ code: m, label: TS_MARK_LABEL[m] })),
       submitted: sub ? { at: sub.submitted_at, by: sub.submitted_by_name || '' } : null,
       locked: !!(await hrLockError(period)),
@@ -1350,11 +1367,11 @@ router.post('/api/timesheet/mark', J, async (req, res) => {
     }
     const r = await recomputeTimesheetFact(empId, period);
     await db.log(req.user.id, 'hr_timesheet_mark', `${date} emp#${empId} ${b.mark || 'clear'}`);
-    res.json({
-      ok: true,
-      accrual_locked: !!(r && r.recomputed === false),
-      row: (r && r.row) || { days: 0, hours: 0, overtime: 0, accrued: 0 },
-    });
+    // Итог строки возвращаем, чтобы экран обновил её на месте. Начисление — только
+    // тем, кому деньги в табеле видно (см. canSeeMoney).
+    const row = Object.assign({ days: 0, hours: 0, overtime: 0, accrued: 0 }, (r && r.row) || {});
+    if (!(await canSeeMoney(req))) row.accrued = null;
+    res.json({ ok: true, accrual_locked: !!(r && r.recomputed === false), row });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
