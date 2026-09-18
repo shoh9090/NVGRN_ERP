@@ -267,6 +267,40 @@ async function wasteCost(pool, from, to, priceOf) {
   return { qty, amount, priced, no_price: noPrice, has_data: true };
 }
 
+// Списания со склада по статьям. В отличие от корректировок, тут причина
+// известна, поэтому деньги можно разнести:
+//   loss     — порча, усушка, зачистка, недостача: наши потери;
+//   supplier — брак поставщика: не наш расход, если предъявили ему;
+//   internal — дегустации и образцы: это не потеря, а представительские.
+// Оцениваем той же ценой месяца, что и себестоимость, — иначе Склад и P&L
+// показали бы разные суммы за одно и то же списание.
+async function writeoffCost(pool, from, to, priceOf) {
+  let rows = [];
+  try {
+    rows = (await pool.query(
+      `SELECT COALESCE(r.pnl_group, 'loss') AS grp, r.name AS reason,
+              i.item_kind, i.item_id, SUM(i.qty) AS qty
+         FROM stock_writeoffs w
+         JOIN stock_writeoff_items i ON i.writeoff_id = w.id
+         LEFT JOIN reject_reasons r ON r.id = w.reason_id
+        WHERE w.moved_at BETWEEN $1 AND $2
+        GROUP BY 1, 2, 3, 4`, [from, to])).rows;
+  } catch (e) { return { amount: 0, loss: 0, supplier: 0, internal: 0, qty: 0, by_reason: {}, has_data: false }; }
+  const out = { amount: 0, loss: 0, supplier: 0, internal: 0, qty: 0, by_reason: {}, has_data: rows.length > 0 };
+  for (const r of rows) {
+    const q = num(r.qty);
+    const price = priceOf.get(r.item_kind + '#' + r.item_id);
+    const amount = price ? q * Number(price) : 0;
+    const grp = ['loss', 'supplier', 'internal'].includes(r.grp) ? r.grp : 'loss';
+    out.qty += q;
+    out[grp] += amount;
+    if (grp === 'loss') out.amount += amount;      // в потери идёт только наше
+    const key = r.reason || 'Без статьи';
+    out.by_reason[key] = (out.by_reason[key] || 0) + amount;
+  }
+  return out;
+}
+
 // Корректировки остатка (инвентаризация, порча). Не считаем их себестоимостью
 // автоматически — причина у них разная, — но и не прячем: минус на складе,
 // который никуда не делся, должен быть виден.
@@ -572,12 +606,13 @@ async function buildPnl(pool, period) {
   try { const raw = byKey.get(SKU_KEY(period)); if (raw) sold = JSON.parse(raw); } catch (e) { sold = null; }
 
   const priceOf = (await monthlyPriceMaps(pool, period, period)).get(period) || new Map();
-  const [cash, fact, plan, adjust, waste] = await Promise.all([
+  const [cash, fact, plan, adjust, waste, writeoff] = await Promise.all([
     cashSide(pool, from, toStr),
     factCogs(pool, from, toStr, priceOf),
     planCogs(pool, units, sold),
     stockAdjustments(pool, from, toStr),
     wasteCost(pool, from, toStr, priceOf),
+    writeoffCost(pool, from, toStr, priceOf),
   ]);
 
   // ВЫРУЧКА В P&L = РЕАЛИЗАЦИЯ (отгружено за месяц по SalesDoctor).
@@ -670,6 +705,8 @@ async function buildPnl(pool, period) {
     // сырьё и отходы. Считаем от выручки ОТ ПРОДАЖ — от той же цифры, что
     // в Кэш-флоу, иначе процент не с чем будет сверить.
     waste,
+    // Потери по статьям списания — строкой рядом с отходами.
+    writeoff,
     ratios: {
       // Считаем от той же выручки, что и прибыль: иначе проценты и итог
       // будут про разные величины.
@@ -677,6 +714,7 @@ async function buildPnl(pool, period) {
       base_source: revenueSource,
       raw_load_pct: pct((fact.has_data ? fact.raw : 0) + waste.amount, revenue),
       waste_pct: pct(waste.amount, revenue),
+      writeoff_pct: pct(writeoff.amount, revenue),
       pack_pct: fact.has_data ? pct(fact.packaging, revenue) : null,
       opex_pct: pct(cash.opex.total, revenue),
     },
@@ -807,3 +845,6 @@ module.exports = { buildPnl, buildTrend, UNITS_KEY, SALES_KEY, SKU_KEY, SNAP_KEY
 // Открыто для Склада: списания оцениваются ТОЙ ЖЕ ценой, что себестоимость в
 // P&L, иначе отчёт о потерях и P&L покажут разные деньги за одно и то же.
 module.exports.monthlyPriceMaps = monthlyPriceMaps;
+// Открыто для тестов: разнесение списаний по группам решает, какие деньги
+// станут потерями компании, а какие — счётом поставщику.
+module.exports.writeoffCost = writeoffCost;
