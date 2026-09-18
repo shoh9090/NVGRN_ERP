@@ -1859,20 +1859,28 @@
   // Мультивыбор отделов: кнопка + панель с галочками. Значение хранится строкой id через запятую
   // («1,5»), поэтому совместимо со старыми фильтрами: пусто = все отделы, '__none__' = без отдела.
   function deptMulti(state, key, onChange, withNone) {
-    const opts = (withNone ? [{ id: '__none__', name: 'Без отдела' }] : []).concat(DICTS.departments || []);
+    // У кого доступ ограничен отделом, в списке только его отделы — но подпись
+    // «Все отделы» это скрывала, и выглядело так, будто ограничения нет.
+    // Если отдел один, выбирать нечего: показываем его название, а не фильтр.
+    const mine = DICTS.departments || [];
+    if (scoped() && mine.length === 1 && !withNone) {
+      return el('div', { class: 'hrf-inp hr-filt', style: 'display:flex;align-items:center;color:#7c8579' }, mine[0].name);
+    }
+    const opts = (withNone ? [{ id: '__none__', name: 'Без отдела' }] : []).concat(mine);
+    const allLabel = scoped() ? 'Мои отделы' : 'Все отделы';
     const selected = () => new Set(String(state[key] || '').split(',').filter(Boolean));
     const btn = el('button', { type: 'button', class: 'hrf-inp hr-filt hr-dm-btn' }, '');
     const panel = el('div', { class: 'hr-dm-panel' });
     const wrap = el('div', { class: 'hr-dm' }, [btn, panel]);
     const label = () => {
       const s = selected();
-      if (!s.size) return 'Все отделы';
+      if (!s.size) return allLabel;
       if (s.size === 1) { const o = opts.find((x) => String(x.id) === [...s][0]); return o ? o.name : '1 отдел'; }
       return 'Отделов: ' + s.size;
     };
     const sync = () => { btn.textContent = label() + ' ▾'; btn.classList.toggle('on', selected().size > 0); };
     const apply = (s) => { state[key] = [...s].join(','); sync(); onChange(); };
-    panel.appendChild(el('label', { class: 'hr-dm-item hr-dm-all', onclick: () => { apply(new Set()); build(); } }, 'Все отделы'));
+    panel.appendChild(el('label', { class: 'hr-dm-item hr-dm-all', onclick: () => { apply(new Set()); build(); } }, allLabel));
     function build() {
       panel.querySelectorAll('.hr-dm-opt').forEach((n) => n.remove());
       const s = selected();
