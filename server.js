@@ -190,11 +190,23 @@ app.get('/file/:id', async (req, res) => {
       isComplaintMedia = c.rows.length > 0;
     } catch (e) { /* схемы претензий может не быть — тогда это не медиа претензии */ }
   }
+  // Фото списаний со склада — такие же персональные данные компании, как медиа
+  // претензий: показываем только тем, у кого есть плитка «Склад сырья».
+  let isStockMedia = false;
+  if (!isPublicAsset && !isComplaintMedia && req.user) {
+    try {
+      const s = await db.pool.query('SELECT 1 FROM stock_writeoff_files WHERE file_ref = $1 LIMIT 1', [id]);
+      isStockMedia = s.rows.length > 0;
+    } catch (e) { /* таблицы может ещё не быть — тогда это не фото списания */ }
+  }
   const hasComplaintsTile = (isComplaintMedia && req.user && !req.user.isAdmin)
     ? await userHasTileAccess(req.user.id, '/complaints') : false;
+  const hasStockTile = (isStockMedia && req.user && !req.user.isAdmin)
+    ? await userHasTileAccess(req.user.id, '/stock') : false;
   const decision = decideFileAccess({
     isPublicAsset, hasUser: !!req.user, isComplaintMedia,
     isAdmin: !!(req.user && req.user.isAdmin), hasComplaintsTile,
+    isStockMedia, hasStockTile,
   });
   if (decision === 'deny') return res.status(404).end();
   const r = await db.pool.query('SELECT mime, data FROM files WHERE id = $1', [id]);

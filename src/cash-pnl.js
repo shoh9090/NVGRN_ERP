@@ -804,3 +804,6 @@ async function buildTrend(pool, endPeriod, months) {
 }
 
 module.exports = { buildPnl, buildTrend, UNITS_KEY, SALES_KEY, SKU_KEY, SNAP_KEY, planCogs, saveSnapshot, loadSnapshot, linkProducts, matchKey };
+// Открыто для Склада: списания оцениваются ТОЙ ЖЕ ценой, что себестоимость в
+// P&L, иначе отчёт о потерях и P&L покажут разные деньги за одно и то же.
+module.exports.monthlyPriceMaps = monthlyPriceMaps;

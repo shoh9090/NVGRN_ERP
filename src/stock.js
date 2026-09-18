@@ -1,5 +1,6 @@
 // stock.js — блок «Склад сырья»: рабочее место кладовщика (приёмка, передача в производство, итоги дня)
 const express = require('express');
+const multer = require('multer');
 const db = require('./db');
 const { notify } = require('./notifications');
 
@@ -23,12 +24,85 @@ async function ensureWasteItem(rawId, userId) {
   return ins.rows[0].id;
 }
 
+// ---------------------------------------------------------------------------
+// Списание со склада
+// ---------------------------------------------------------------------------
+// Раньше испорченное сырьё уходило через «Корректировку»: остаток уменьшался,
+// а причина была свободным текстом. Из-за этого деньги нельзя было отнести
+// ни к себестоимости, ни к потерям — в P&L так и написано, что корректировки
+// в себестоимость не берём, «причина у них разная».
+//
+// Списание — та же операция, но со СТАТЬЁЙ. Статья решает, куда уйдут деньги:
+//   loss     — потери (порча, усушка, зачистка, недостача): наш расход;
+//   supplier — брак поставщика: не наш расход, если предъявили ему;
+//   internal — внутреннее расходование (дегустации, образцы): не потеря.
+// Статьи живут в справочнике `reject_reasons` со scope='writeoff' — там же,
+// где причины отклонения приёмки, чтобы не заводить вторую такую таблицу.
+const WRITEOFF_SCOPE = 'writeoff';
+const WRITEOFF_REASONS = [
+  ['Порча / истёк срок', 'loss', 10],
+  ['Брак поставщика', 'supplier', 20],
+  ['Зачистка / переборка', 'loss', 30],
+  ['Усушка / естественная убыль', 'loss', 40],
+  ['Внутреннее расходование', 'internal', 50],
+  ['Недостача', 'loss', 60],
+];
+
+let _woReady = false;
+async function ensureWriteoffSchema() {
+  if (_woReady) return;
+  const q = (s, p) => db.pool.query(s, p);
+  await q(`ALTER TABLE reject_reasons ADD COLUMN IF NOT EXISTS pnl_group TEXT`);
+  // Документ списания. Суммы в нём НЕ храним: количество берём из позиций,
+  // деньги считаются по цене месяца — той же, что в P&L.
+  await q(`CREATE TABLE IF NOT EXISTS stock_writeoffs (
+    id SERIAL PRIMARY KEY,
+    reason_id INT REFERENCES reject_reasons(id),
+    comment TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',      -- pending | confirmed
+    supplier_claim BOOLEAN DEFAULT FALSE,        -- брак поставщика предъявлен
+    moved_at DATE NOT NULL DEFAULT CURRENT_DATE,
+    created_by INT, created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    confirmed_by INT, confirmed_at TIMESTAMPTZ
+  )`);
+  await q(`CREATE TABLE IF NOT EXISTS stock_writeoff_items (
+    id SERIAL PRIMARY KEY,
+    writeoff_id INT NOT NULL REFERENCES stock_writeoffs(id) ON DELETE CASCADE,
+    item_kind TEXT NOT NULL DEFAULT 'raw',
+    item_id INT NOT NULL,
+    qty NUMERIC NOT NULL
+  )`);
+  // Фото обязательно: сфотографировать надо до того, как выбросил.
+  // Байты лежат в общей таблице files, отдаются через /file/:id с проверкой прав.
+  await q(`CREATE TABLE IF NOT EXISTS stock_writeoff_files (
+    id SERIAL PRIMARY KEY,
+    writeoff_id INT NOT NULL REFERENCES stock_writeoffs(id) ON DELETE CASCADE,
+    file_ref INT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  await q(`CREATE INDEX IF NOT EXISTS idx_stock_wo_items ON stock_writeoff_items (writeoff_id)`);
+  await q(`CREATE INDEX IF NOT EXISTS idx_stock_wo_date ON stock_writeoffs (moved_at)`);
+  // Статьи сидируются идемпотентно: имя — ключ, группа и порядок обновляются.
+  for (const [name, group, sort] of WRITEOFF_REASONS) {
+    const ex = await q('SELECT id FROM reject_reasons WHERE scope=$1 AND name=$2 LIMIT 1', [WRITEOFF_SCOPE, name]);
+    if (ex.rows.length) {
+      await q('UPDATE reject_reasons SET pnl_group=$1, sort_order=$2 WHERE id=$3', [group, sort, ex.rows[0].id]);
+    } else {
+      await q('INSERT INTO reject_reasons (name, scope, sort_order, pnl_group) VALUES ($1,$2,$3,$4)',
+        [name, WRITEOFF_SCOPE, sort, group]);
+    }
+  }
+  _woReady = true;
+}
+router.use(async (req, res, next) => { try { await ensureWriteoffSchema(); } catch (e) { /* не роняем плитку */ } next(); });
+
 // Какая вкладка Склада стоит за адресом — чтобы закрывать её данные на сервере.
 // null — общее для всей плитки (справочник причин, доступное сырьё).
 function stockTabOf(req) {
   const p = req.path;
   if (p.startsWith('/api/receipt')) return 'receiving';
   if (p.startsWith('/api/issue')) return 'issue';
+  if (p.startsWith('/api/writeoff')) return 'writeoff';
   if (p.startsWith('/api/inventory')) return 'inventory';
   if (p.startsWith('/api/day-summary') || p.startsWith('/api/calendar')) return 'summary';
   return null;
@@ -640,6 +714,216 @@ router.get('/api/day-summary', async (req, res) => {
     problems: problems.rows, problemsCount: problems.rows.length,
     notArrived: problems.rows.filter((x) => x.receipt_status === 'not_arrived').length,
   });
+});
+
+// ===== Вкладка: СПИСАНИЕ =====
+// Право менять цифру остатка — это вкладка «Резюме / Остатки». У кого она есть,
+// тот и заверяет списание. Отдельной галочки не заводим: подтверждать списание
+// и править остаток — одна и та же ответственность.
+async function canConfirmWriteoff(req) {
+  try {
+    const ta = require('./tab-access');
+    return ta.tabAllowed(await ta.allowedTabs(db.pool, req.user, '/stock'), 'inventory');
+  } catch (e) { return !!(req.user && req.user.isAdmin); }
+}
+
+// Цены месяца — те же, что в P&L (средняя приходов месяца, иначе последняя известная).
+async function priceMapFor(month) {
+  try {
+    const maps = await require('./cash-pnl').monthlyPriceMaps(db.pool, month, month);
+    return maps.get(month) || new Map();
+  } catch (e) { return new Map(); }
+}
+const monthOf = (d) => String(d).slice(0, 7);
+
+router.get('/api/writeoff/reasons', async (req, res) => {
+  const r = await db.pool.query(
+    'SELECT id, name, pnl_group FROM reject_reasons WHERE scope=$1 AND status=$2 ORDER BY sort_order, name',
+    [WRITEOFF_SCOPE, 'active']);
+  res.json({ items: r.rows, can_confirm: await canConfirmWriteoff(req) });
+});
+
+// Список списаний за период + итоги. Процент считаем от ПРИХОДА за тот же
+// период: «сколько из купленного не дошло до производства». Это операционная
+// цифра склада; в P&L потери меряются от выручки — там другой вопрос.
+router.get('/api/writeoff/list', async (req, res) => {
+  try {
+    const to = /^\d{4}-\d{2}-\d{2}$/.test(req.query.to) ? req.query.to : new Date().toISOString().slice(0, 10);
+    const from = /^\d{4}-\d{2}-\d{2}$/.test(req.query.from) ? req.query.from : to.slice(0, 8) + '01';
+    const docs = (await db.pool.query(
+      `SELECT w.*, r.name AS reason_name, r.pnl_group,
+              u.full_name AS created_name, c.full_name AS confirmed_name
+         FROM stock_writeoffs w
+         LEFT JOIN reject_reasons r ON r.id = w.reason_id
+         LEFT JOIN users u ON u.id = w.created_by
+         LEFT JOIN users c ON c.id = w.confirmed_by
+        WHERE w.moved_at BETWEEN $1 AND $2 ORDER BY w.moved_at DESC, w.id DESC`, [from, to])).rows;
+    const ids = docs.map((d) => d.id);
+    const items = ids.length ? (await db.pool.query(
+      `SELECT i.*, COALESCE(rm.name, pk.name) AS name, COALESCE(ur.short_name, up.short_name) AS unit
+         FROM stock_writeoff_items i
+         LEFT JOIN ref_raw_materials rm ON i.item_kind='raw' AND rm.id = i.item_id
+         LEFT JOIN ref_packaging pk ON i.item_kind='packaging' AND pk.id = i.item_id
+         LEFT JOIN ref_units ur ON ur.id = rm.unit_id
+         LEFT JOIN ref_units up ON up.id = pk.unit_id
+        WHERE i.writeoff_id = ANY($1::int[])`, [ids])).rows : [];
+    const files = ids.length ? (await db.pool.query(
+      'SELECT writeoff_id, file_ref FROM stock_writeoff_files WHERE writeoff_id = ANY($1::int[]) ORDER BY id', [ids])).rows : [];
+    // Оценка по цене месяца, в котором списали.
+    const priceCache = new Map();
+    const priceOf = async (mon, kind, id) => {
+      if (!priceCache.has(mon)) priceCache.set(mon, await priceMapFor(mon));
+      return priceCache.get(mon).get(kind + '#' + id);
+    };
+    const byDoc = new Map(docs.map((d) => [d.id, Object.assign(d, { items: [], files: [], qty: 0, amount: 0, no_price: 0 })]));
+    for (const it of items) {
+      const doc = byDoc.get(it.writeoff_id);
+      if (!doc) continue;
+      const price = await priceOf(monthOf(doc.moved_at.toISOString ? doc.moved_at.toISOString().slice(0, 10) : doc.moved_at), it.item_kind, it.item_id);
+      const qty = Number(it.qty) || 0;
+      const amount = price ? qty * Number(price) : 0;
+      if (!price) doc.no_price += qty;
+      doc.qty += qty; doc.amount += amount;
+      doc.items.push({ ...it, qty, price: price ? Number(price) : null, amount });
+    }
+    for (const f of files) { const d = byDoc.get(f.writeoff_id); if (d) d.files.push(f.file_ref); }
+    const list = [...byDoc.values()];
+    // Приход за тот же период — знаменатель процента потерь.
+    const inc = (await db.pool.query(
+      `SELECT COALESCE(SUM(qty),0) AS qty, COALESCE(SUM(qty*price),0) AS amount
+         FROM stock_movements WHERE reason='receive' AND moved_at BETWEEN $1 AND $2`, [from, to])).rows[0];
+    const byReason = {};
+    for (const d of list) {
+      const k = d.reason_name || 'Без статьи';
+      byReason[k] = byReason[k] || { qty: 0, amount: 0, cnt: 0, group: d.pnl_group || 'loss' };
+      byReason[k].qty += d.qty; byReason[k].amount += d.amount; byReason[k].cnt += 1;
+    }
+    const qty = list.reduce((s, d) => s + d.qty, 0);
+    const amount = list.reduce((s, d) => s + d.amount, 0);
+    const incQty = Number(inc.qty) || 0, incAmount = Number(inc.amount) || 0;
+    res.json({
+      from, to, items: list,
+      can_confirm: await canConfirmWriteoff(req),
+      totals: {
+        qty, amount, docs: list.length,
+        pending: list.filter((d) => d.status === 'pending').length,
+        pending_amount: list.filter((d) => d.status === 'pending').reduce((s, d) => s + d.amount, 0),
+        received_qty: incQty, received_amount: incAmount,
+        pct_qty: incQty > 0 ? (qty / incQty) * 100 : null,
+        pct_amount: incAmount > 0 ? (amount / incAmount) * 100 : null,
+        by_reason: byReason,
+      },
+    });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Создание списания. Остаток уменьшается СРАЗУ: товар уже выброшен, и склад
+// не должен показывать то, чего нет. Подтверждение — вторая подпись на причине
+// и сумме, оно товар не воскрешает.
+const woUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 12 * 1024 * 1024, files: 6 } });
+router.post('/api/writeoff', woUpload.array('photos', 6), async (req, res) => {
+  let b = {};
+  try { b = JSON.parse(req.body.payload || '{}'); } catch (e) { return res.status(400).json({ error: 'Не разобрал данные формы' }); }
+  const reasonId = parseInt(b.reason_id, 10);
+  const photos = req.files || [];
+  const items = (Array.isArray(b.items) ? b.items : [])
+    .map((x) => ({ kind: x.item_kind === 'packaging' ? 'packaging' : 'raw', id: parseInt(x.item_id, 10), qty: Number(x.qty) }))
+    .filter((x) => x.id && x.qty > 0);
+  if (!reasonId) return res.status(400).json({ error: 'Выберите статью списания' });
+  if (!items.length) return res.status(400).json({ error: 'Добавьте хотя бы одну позицию с количеством' });
+  // Фото обязательно для всех статей. Исключения не делаем специально: иначе
+  // всё начнут списывать по той статье, где фотографировать не надо.
+  if (!photos.length) return res.status(400).json({ error: 'Приложите фото — без него списание не проводим' });
+  if (photos.some((f) => !String(f.mimetype || '').startsWith('image/'))) {
+    return res.status(400).json({ error: 'Прикладывать можно только фотографии' });
+  }
+  const reason = (await db.pool.query(
+    'SELECT id FROM reject_reasons WHERE id=$1 AND scope=$2', [reasonId, WRITEOFF_SCOPE])).rows[0];
+  if (!reason) return res.status(400).json({ error: 'Неизвестная статья списания' });
+  // Больше, чем лежит, списать нельзя — иначе на складе появится минус,
+  // и остаток перестанет быть правдой.
+  for (const it of items) {
+    const bal = Number((await db.pool.query(
+      'SELECT COALESCE(SUM(qty),0) AS b FROM stock_movements WHERE item_kind=$1 AND item_id=$2',
+      [it.kind, it.id])).rows[0].b) || 0;
+    if (it.qty > bal + 1e-9) {
+      const nm = (await db.pool.query(
+        it.kind === 'raw' ? 'SELECT name FROM ref_raw_materials WHERE id=$1' : 'SELECT name FROM ref_packaging WHERE id=$1',
+        [it.id])).rows[0];
+      return res.status(400).json({ error: `«${(nm && nm.name) || it.id}»: на складе ${bal}, списать больше нельзя` });
+    }
+  }
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    const doc = (await client.query(
+      `INSERT INTO stock_writeoffs (reason_id, comment, supplier_claim, created_by)
+       VALUES ($1,$2,$3,$4) RETURNING id, moved_at`,
+      [reasonId, String(b.comment || '').trim().slice(0, 500), !!b.supplier_claim, req.user.id])).rows[0];
+    for (const it of items) {
+      await client.query(
+        'INSERT INTO stock_writeoff_items (writeoff_id, item_kind, item_id, qty) VALUES ($1,$2,$3,$4)',
+        [doc.id, it.kind, it.id, it.qty]);
+      await client.query(
+        `INSERT INTO stock_movements (item_kind, item_id, qty, direction, reason, ref_type, ref_id, comment, moved_at, created_by)
+         VALUES ($1,$2,$3,'out','writeoff','stock_writeoff',$4,$5,CURRENT_DATE,$6)`,
+        [it.kind, it.id, -it.qty, doc.id, String(b.comment || '').slice(0, 200), req.user.id]);
+    }
+    for (const f of photos) {
+      const ins = await client.query(
+        'INSERT INTO files (name, mime, data) VALUES ($1,$2,$3) RETURNING id',
+        [f.originalname || 'photo.jpg', f.mimetype, f.buffer]);
+      await client.query('INSERT INTO stock_writeoff_files (writeoff_id, file_ref) VALUES ($1,$2)', [doc.id, ins.rows[0].id]);
+    }
+    await client.query('COMMIT');
+    await db.log(req.user.id, 'stock_writeoff', `#${doc.id}: ${items.length} поз.`);
+    // Тот, кто заверяет остаток, должен узнать сразу — иначе списание повиснет.
+    await notify({
+      tile: '/stock', kind: 'warning', link: '/stock#writeoff',
+      title: 'Списание ждёт подтверждения',
+      body: `${items.length} поз. · внёс ${req.user.name || '—'}`,
+    });
+    res.json({ ok: true, id: doc.id });
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    res.status(400).json({ error: e.message });
+  } finally { client.release(); }
+});
+
+router.post('/api/writeoff/:id(\\d+)/confirm', express.json(), async (req, res) => {
+  if (!(await canConfirmWriteoff(req))) {
+    return res.status(403).json({ error: 'Подтверждать списания может тот, кто отвечает за остатки склада' });
+  }
+  const r = await db.pool.query(
+    `UPDATE stock_writeoffs SET status='confirmed', confirmed_by=$1, confirmed_at=now()
+      WHERE id=$2 AND status='pending'`, [req.user.id, req.params.id]);
+  if (!r.rowCount) return res.status(409).json({ error: 'Списание уже подтверждено или не найдено' });
+  await db.log(req.user.id, 'stock_writeoff_confirm', '#' + req.params.id);
+  res.json({ ok: true });
+});
+
+// Отмена до подтверждения — возвращает товар на склад. После подтверждения
+// отменять нельзя: подпись уже стоит, и цифра ушла в отчёты.
+router.post('/api/writeoff/:id(\\d+)/cancel', express.json(), async (req, res) => {
+  const doc = (await db.pool.query('SELECT status, created_by FROM stock_writeoffs WHERE id=$1', [req.params.id])).rows[0];
+  if (!doc) return res.status(404).json({ error: 'Списание не найдено' });
+  if (doc.status !== 'pending') return res.status(409).json({ error: 'Подтверждённое списание отменить нельзя — обратитесь к администратору' });
+  const mine = String(doc.created_by) === String(req.user.id);
+  if (!mine && !(await canConfirmWriteoff(req))) {
+    return res.status(403).json({ error: 'Отменить может тот, кто внёс, или тот, кто подтверждает' });
+  }
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query("DELETE FROM stock_movements WHERE ref_type='stock_writeoff' AND ref_id=$1", [req.params.id]);
+    await client.query('DELETE FROM stock_writeoffs WHERE id=$1', [req.params.id]);
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    return res.status(400).json({ error: e.message });
+  } finally { client.release(); }
+  await db.log(req.user.id, 'stock_writeoff_cancel', '#' + req.params.id);
+  res.json({ ok: true });
 });
 
 module.exports = router;

@@ -30,3 +30,19 @@ test('медиа претензии: есть доступ к плитке — �
 test('медиа претензии: админ — можно', () => {
   assert.strictEqual(decideFileAccess({ isPublicAsset: false, hasUser: true, isComplaintMedia: true, isAdmin: true, hasComplaintsTile: false }), 'serve');
 });
+
+test('фото списания: аноним — отказ', () => {
+  assert.strictEqual(decideFileAccess({ isPublicAsset: false, hasUser: false, isStockMedia: true }), 'deny');
+});
+
+test('фото списания: вошёл, но плитки склада нет — отказ', () => {
+  assert.strictEqual(decideFileAccess({ isPublicAsset: false, hasUser: true, isStockMedia: true, isAdmin: false, hasStockTile: false }), 'deny');
+});
+
+test('фото списания: есть плитка склада — можно', () => {
+  assert.strictEqual(decideFileAccess({ isPublicAsset: false, hasUser: true, isStockMedia: true, isAdmin: false, hasStockTile: true }), 'serve');
+});
+
+test('фото списания: админ — можно', () => {
+  assert.strictEqual(decideFileAccess({ isPublicAsset: false, hasUser: true, isStockMedia: true, isAdmin: true, hasStockTile: false }), 'serve');
+});
