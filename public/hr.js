@@ -52,7 +52,9 @@
   }
 
   async function api(path) { const r = await fetch('/hr/api' + path); const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || 'Ошибка'); return d; }
-  async function post(path, body) { const r = await fetch('/hr/api' + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) }); const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || 'Ошибка'); return d; }
+  // Ответ сервера кладём в саму ошибку: иногда отказ несёт данные (например,
+  // список похожих ФИО), и без них переспросить пользователя нечем.
+  async function post(path, body) { const r = await fetch('/hr/api' + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) }); const d = await r.json().catch(() => ({})); if (!r.ok) { const e = new Error(d.error || 'Ошибка'); e.status = r.status; e.data = d; throw e; } return d; }
   function toast(msg, err) { const t = el('div', { class: 'hr-toast' + (err ? ' err' : '') }, msg); document.body.appendChild(t); setTimeout(() => t.classList.add('show'), 10); setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 300); }, 3200); }
   function modal(title, body, acts) {
     const root = $('#hr-modal-root');
@@ -413,7 +415,7 @@
     try { emps = (await api('/employees?status=')).items || []; } catch (e) { return toast(e.message, true); }
     const active = emps.filter((e) => e.status !== 'archived');
     const empSel = fsel(active.map((e) => ({ v: e.id, t: e.full_name })), presetEmpId || (active[0] && active[0].id) || '');
-    const typeSel = fsel([['transfer', 'Перемещение'], ['salary', 'Изменение оклада'], ['vacation', 'Отпуск'], ['sick', 'Больничный'], ['other', 'Прочее'], ['hire', 'Приём'], ['fire', 'Увольнение']].map(([v, t]) => ({ v, t })), 'transfer');
+    const typeSel = fsel([['transfer', 'Перемещение'], ['schedule', 'Смена графика'], ['salary', 'Изменение оклада'], ['vacation', 'Отпуск'], ['sick', 'Больничный'], ['other', 'Прочее'], ['hire', 'Приём'], ['fire', 'Увольнение']].map(([v, t]) => ({ v, t })), 'transfer');
     const dFrom = finp(new Date().toISOString().slice(0, 10), { type: 'date' });
     const dTo = finp('', { type: 'date' });
     const dToRow = frow('По (для отпуска/больничного)', dTo);
@@ -433,17 +435,19 @@
       dToRow.style.display = (typeSel.value === 'vacation' || typeSel.value === 'sick') ? '' : 'none';
       deptRow.style.display = (typeSel.value === 'transfer') ? '' : 'none';
       posRow.style.display = (typeSel.value === 'transfer') ? '' : 'none';
-      schedRow.style.display = (typeSel.value === 'transfer') ? '' : 'none';
+      // График нужен и в перемещении, и отдельным событием «Смена графика».
+      schedRow.style.display = (typeSel.value === 'transfer' || typeSel.value === 'schedule') ? '' : 'none';
       salRow.style.display = (typeSel.value === 'salary') ? '' : 'none';
     };
     typeSel.onchange = applyType; applyType();
     const save = el('button', { class: 'btn-primary', onclick: async () => {
       if (!empSel.value) return toast('Выберите сотрудника', true);
       if (typeSel.value === 'transfer' && !deptSel.value) return toast('Выберите отдел, куда переводим', true);
+      if (typeSel.value === 'schedule' && !schedSel.value) return toast('Выберите график', true);
       if (typeSel.value === 'salary' && !(Number(mval(salInp)) > 0)) return toast('Укажите новый оклад', true);
       try {
-        const rr = await post('/events', { employee_id: empSel.value, event_type: typeSel.value, event_date: dFrom.value, date_to: (dToRow.style.display !== 'none' ? dTo.value : null) || null, to_department_id: (typeSel.value === 'transfer' ? deptSel.value : null), to_position: (typeSel.value === 'transfer' ? posInp.value : null), to_schedule: (typeSel.value === 'transfer' ? schedSel.value : null), new_salary: (typeSel.value === 'salary' ? mval(salInp) : null), comment: comment.value });
-        toast(typeSel.value === 'transfer' ? 'Сотрудник переведён ✅' : (typeSel.value === 'salary' ? 'Оклад изменён ✅' : 'Событие добавлено'));
+        const rr = await post('/events', { employee_id: empSel.value, event_type: typeSel.value, event_date: dFrom.value, date_to: (dToRow.style.display !== 'none' ? dTo.value : null) || null, to_department_id: (typeSel.value === 'transfer' ? deptSel.value : null), to_position: (typeSel.value === 'transfer' ? posInp.value : null), to_schedule: (typeSel.value === 'transfer' || typeSel.value === 'schedule' ? schedSel.value : null), new_salary: (typeSel.value === 'salary' ? mval(salInp) : null), comment: comment.value });
+        toast(typeSel.value === 'transfer' ? 'Сотрудник переведён ✅' : (typeSel.value === 'salary' ? 'Оклад изменён ✅' : (typeSel.value === 'schedule' ? 'График изменён ✅' : 'Событие добавлено')));
         // Увольнение/приём меняют и карточку — говорим об этом вслух, чтобы не
         // пришлось идти проверять вкладку «Сотрудники».
         if (rr && rr.status_note) toast(rr.status_note + ' ✅');
@@ -1108,15 +1112,40 @@
       body.appendChild(recurBox);
       loadRecurring(e.id, recurBox);
     }
-    const save = el('button', { class: 'btn-primary', onclick: async () => {
+    async function doSave(dupOk) {
       try {
         const payload = { id: e.id, full_name: name.value, department_id: dept.value, position: pos.value, schedule_type: sched.value, hire_date: hire.value, base_salary: mval(base), salary_official: mval(off), salary_unofficial: mval(unoff), phone: phone.value, card_number: card.value, telegram_id: tg.value, comment: comment.value, full_month: fullMonth.checked };
         // Дату увольнения шлём только у уволенных — у активных поле скрыто и трогать его нечего.
         if (e.status === 'fired') payload.fire_date = fire.value || null;
+        if (dupOk) payload.dup_ok = true;          // «да, это новый человек» — уже переспросили
         await post('/employee', payload);
         toast('Сохранено'); closeModal(); await reloadDicts(); render();
-      } catch (err) { toast(err.message, true); }
-    } }, 'Сохранить');
+      } catch (err) {
+        // Новая карточка похожа на существующую — не создаём молча, спрашиваем.
+        if (err.status === 409 && err.data && err.data.matches) return askDuplicate(err.data.matches, name.value);
+        toast(err.message, true);
+      }
+    }
+    // Окно «а не тот же это человек?». Слева — кто уже есть в системе.
+    function askDuplicate(matches, newName) {
+      const line = (m) => el('div', { style: 'padding:7px 0;border-bottom:0.5px solid var(--line,#e3e0d4)' }, [
+        el('div', { style: 'font-weight:700' }, m.full_name),
+        el('div', { class: 'hr-sub' }, [m.department_name || 'Без отдела', m.position || null,
+          m.status === 'fired' ? 'уволен' : null].filter(Boolean).join(' · ')),
+      ]);
+      const body = el('div', { class: 'hrf' }, [
+        el('div', { class: 'hr-note' }, 'В системе уже есть похожие: «' + newName + '»'),
+        el('div', {}, matches.map(line)),
+        el('div', { class: 'hr-sub', style: 'margin-top:8px' },
+          'Если это тот же человек, новую карточку заводить не надо — откройте существующую. '
+          + 'Две карточки на одного разведут табель и зарплату.'),
+      ]);
+      modal('Похоже, такой сотрудник уже есть', body, [
+        el('button', { class: 'btn-ghost', onclick: () => closeModal() }, 'Это тот же — отмена'),
+        el('button', { class: 'btn-primary', onclick: () => { closeModal(); doSave(true); } }, 'Нет, это новый человек'),
+      ]);
+    }
+    const save = el('button', { class: 'btn-primary', onclick: () => doSave(false) }, 'Сохранить');
     const acts = [save];
     if (e.id) {
       if (e.status === 'active') acts.unshift(el('button', { class: 'btn-ghost hrf-warn', onclick: () => changeStatus(e, 'fired') }, 'Уволить'));

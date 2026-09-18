@@ -3,6 +3,7 @@ const express = require('express');
 const multer = require('multer');
 const XLSX = require('xlsx');
 const db = require('./db');
+const { notify } = require('./notifications');
 
 const router = express.Router();
 const J = express.json();
@@ -741,10 +742,37 @@ router.get('/api/employees-export.xlsx', async (req, res) => {
   } catch (e) { res.status(400).send('Ошибка выгрузки: ' + e.message); }
 });
 
+// Похожи ли два ФИО. Одно имя целиком входит в другое: «Азиза» ↔ «Мурадова Азиза»,
+// «Каримова Висола» ↔ «Каримова Висола Бахтияровна». Короткие слова (инициалы,
+// «оглы») не считаем — иначе половина списка окажется «похожей».
+const normName = (s) => String(s || '').toLowerCase().replace(/ё/g, 'е')
+  .replace(/[^a-zа-я0-9 ]/gi, ' ').replace(/\s+/g, ' ').trim();
+const nameWords = (s) => new Set(normName(s).split(' ').filter((w) => w.length >= 3));
+function sameName(a, b) {
+  const wa = nameWords(a), wb = nameWords(b);
+  if (!wa.size || !wb.size) return false;
+  const small = wa.size <= wb.size ? wa : wb;
+  const big = wa.size <= wb.size ? wb : wa;
+  for (const w of small) if (!big.has(w)) return false;
+  return true;
+}
+
 router.post('/api/employee', J, async (req, res) => {
   const b = req.body || {};
   const name = String(b.full_name || '').trim();
   if (!name) return res.status(400).json({ error: 'Укажите ФИО' });
+  // Новая карточка: ищем похожие ФИО и переспрашиваем. Один человек двумя
+  // карточками — самая дорогая ошибка в Кадрах: табель ведётся на одной,
+  // зарплата считается на двух, и расходится вся история.
+  // Ответил «это новый человек» — создаём и больше не спрашиваем (dup_ok).
+  if (!b.id && !b.dup_ok) {
+    const all = (await db.pool.query(
+      `SELECT e.id, e.full_name, e.position, e.status, d.name AS department_name
+         FROM hr_employees e LEFT JOIN hr_departments d ON d.id = e.department_id
+        WHERE e.status <> 'archived'`)).rows;
+    const matches = all.filter((x) => sameName(x.full_name, name)).slice(0, 5);
+    if (matches.length) return res.status(409).json({ error: 'duplicate', matches });
+  }
   const sched = SCHEDULE_CODES.includes(b.schedule_type) ? b.schedule_type : null;
   // При правке карточки статус и дату увольнения НЕ сбрасываем, если их не прислали:
   // раньше сохранение карточки уволенного молча возвращало его в актив и стирало дату.
@@ -796,6 +824,18 @@ router.post('/api/employee', J, async (req, res) => {
         `INSERT INTO hr_employees (full_name, department_id, position, schedule_type, hire_date, fire_date, status, base_salary, salary_official, salary_unofficial, phone, telegram_id, erp_user_id, comment, card_number, full_month)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id`, args);
       await addEvent(ins.rows[0].id, 'hire', b.hire_date || today, { created_by: req.user.id });
+      // Карточку завёл руководитель отдела — Кадры должны узнать об этом сразу,
+      // а не в конце месяца по выросшему ФОТ. Это не согласование: человек уже
+      // заведён, уведомление просто делает это видимым.
+      if (await hrScope(req)) {
+        await notify({
+          tile: '/hr', kind: 'info', link: '/hr#employees',
+          title: 'Новый сотрудник: ' + name,
+          body: [await deptName(intOrNull(b.department_id)), b.position || null,
+            numOrNull(b.base_salary) ? 'оклад ' + fmtSum(numOrNull(b.base_salary)) : null,
+            'завёл: ' + (req.user.name || '—')].filter(Boolean).join(' · '),
+        });
+      }
     }
     await db.log(req.user.id, 'hr_employee_save', name);
     res.json({ ok: true });
@@ -954,6 +994,24 @@ router.post('/api/events', J, async (req, res) => {
     if (newSched && newSched !== (cur.schedule_type || '')) {
       await db.pool.query('UPDATE hr_employees SET schedule_type=$1, updated_at=now() WHERE id=$2', [newSched, empId]);
       await addEvent(empId, 'schedule', b.event_date, { from_text: schedLabel(cur.schedule_type), to_text: schedLabel(newSched), created_by: req.user.id });
+    }
+  }
+  // Смена графика отдельным событием — чтобы поменять график с нужной даты, не
+  // трогая отдел. Через «Перемещение» это требовало выбрать отдел, и в истории
+  // оставалась пустая запись «Производство → Производство».
+  if (type === 'schedule') {
+    const newSched = SCHEDULE_CODES.includes(b.to_schedule) ? b.to_schedule : null;
+    if (!newSched) return res.status(400).json({ error: 'Выберите график' });
+    const cur = (await db.pool.query('SELECT schedule_type FROM hr_employees WHERE id=$1', [empId])).rows[0];
+    if (!cur) return res.status(404).json({ error: 'Сотрудник не найден' });
+    if ((cur.schedule_type || '') === newSched) return res.status(400).json({ error: 'У сотрудника уже этот график' });
+    fromText = schedLabel(cur.schedule_type); toText = schedLabel(newSched);
+    await db.pool.query('UPDATE hr_employees SET schedule_type=$1, updated_at=now() WHERE id=$2', [newSched, empId]);
+    // Месяц считается по текущему графику целиком — истории графиков у нас нет.
+    // Если за месяц уже есть строка зарплаты, пересчитываем её по новому графику.
+    for (const pr of (await db.pool.query(
+      'SELECT DISTINCT period FROM hr_payroll WHERE employee_id=$1 AND period >= $2', [empId, String(b.event_date).slice(0, 7)])).rows) {
+      await recomputeAccrFact(empId, pr.period);
     }
   }
   // Изменение оклада с даты: пишем в историю окладов, обновляем текущий оклад, пересчитываем месяцы с даты.
@@ -2985,22 +3043,16 @@ router.get('/api/employees/duplicates', async (req, res) => {
          FROM hr_employees e LEFT JOIN hr_departments d ON d.id = e.department_id
         WHERE e.status <> 'archived' AND ($1::int[] IS NULL OR e.department_id = ANY($1::int[]))
         ORDER BY e.full_name`, [await hrScope(req).then((s) => (s ? [...s] : null))])).rows;
-    const norm = (s) => String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/[^a-zа-я0-9 ]/gi, ' ').replace(/\s+/g, ' ').trim();
-    const words = (s) => new Set(norm(s).split(' ').filter((w) => w.length >= 3));
+    // Правило сходства одно на всю плитку (sameName) — то же, что переспрашивает
+    // при заведении новой карточки. Разъедутся — начнём ловить разные дубли.
     const groups = [];
     const used = new Set();
     for (let i = 0; i < rows.length; i++) {
       if (used.has(rows[i].id)) continue;
-      const wi = words(rows[i].full_name);
       const grp = [rows[i]];
       for (let j = i + 1; j < rows.length; j++) {
         if (used.has(rows[j].id)) continue;
-        const wj = words(rows[j].full_name);
-        if (!wi.size || !wj.size) continue;
-        // считаем дублем, если все слова короткого имени входят в длинное
-        const small = wi.size <= wj.size ? wi : wj, big = wi.size <= wj.size ? wj : wi;
-        let all = true; for (const w of small) if (!big.has(w)) { all = false; break; }
-        if (all) { grp.push(rows[j]); used.add(rows[j].id); }
+        if (sameName(rows[i].full_name, rows[j].full_name)) { grp.push(rows[j]); used.add(rows[j].id); }
       }
       if (grp.length > 1) { grp.forEach((g) => used.add(g.id)); groups.push(grp); }
     }
@@ -3123,3 +3175,6 @@ module.exports.scopeCompanyWrite = (p) => COMPANY_WRITES.some((r) => r.test(p));
 // Открыто для тестов: склейка дней в отрезки — от неё зависит, будет в кадровой
 // истории одна запись об отпуске или пятнадцать.
 module.exports.dateRuns = dateRuns;
+// Открыто для тестов: сходство ФИО. Ошибка здесь либо пропустит дубль, либо
+// будет переспрашивать на каждом однофамильце.
+module.exports.sameName = sameName;
