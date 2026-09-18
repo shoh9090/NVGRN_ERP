@@ -12,6 +12,7 @@
   <link rel="stylesheet" href="/static/filters.css?v=<%= V %>">
   <link rel="stylesheet" href="/static/chips.css?v=<%= V %>">
   <link rel="stylesheet" href="/static/conn.css?v=<%= V %>">
+  <link rel="stylesheet" href="/static/daterange.css?v=<%= V %>">
   <style>:root { --brand: <%= settings.brand_color || '#2E7D32' %>; }</style>
 </head>
 <body class="admin-body pur-body">
@@ -25,6 +26,7 @@
   <nav class="pur-tabs">
 <% if (tabOk('receiving')) { %>    <a href="#receiving" data-tab="receiving" class="pur-tab">📥 Приёмка сегодня</a><% } %>
 <% if (tabOk('issue')) { %>    <a href="#issue" data-tab="issue" class="pur-tab">📤 Остатки и передача</a><% } %>
+<% if (tabOk('writeoff')) { %>    <a href="#writeoff" data-tab="writeoff" class="pur-tab">🗑 Списание</a><% } %>
 <% if (tabOk('inventory')) { %>    <a href="#inventory" data-tab="inventory" class="pur-tab">📋 Резюме / Остатки</a><% } %>
 <% if (tabOk('summary')) { %>    <a href="#summary" data-tab="summary" class="pur-tab">📊 Итоги дня</a><% } %>
   </nav>
@@ -33,6 +35,7 @@
   <div id="stk-modal-root"></div>
 
   <script>window.HUB_USER = { isAdmin: <%= user.isAdmin ? "true" : "false" %>, name: "<%= user.name %>" };</script>
+  <script src="/static/daterange.js?v=<%= V %>"></script>
   <script src="/static/conn.js?v=<%= V %>"></script>
   <script src="/static/bell.js?v=<%= V %>"></script>
   <script src="/static/stock.js?v=<%= V %>"></script>

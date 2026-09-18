@@ -854,10 +854,187 @@
     const mm = modal('🕘 История — ' + m.name, body, [el('button', { onclick: () => mm.close() }, 'Закрыть')]);
   }
 
+  // ================= СПИСАНИЕ =================
+  // Списание — это «корректировка с причиной». Статья решает, куда уйдут деньги
+  // в P&L, поэтому она обязательна, как и фото: сфотографировать надо до того,
+  // как выбросил.
+  const fmtMoney = (v) => fmt.format(Math.round(Number(v) || 0));
+  const woState = { from: '', to: '' };
+  let woReasons = [];
+
+  async function viewWriteoff() {
+    const main = $('#stk-main');
+    main.innerHTML = '';
+    if (!woState.to) { woState.to = todayISO(); woState.from = todayISO().slice(0, 8) + '01'; }
+    let d;
+    try {
+      if (!woReasons.length) woReasons = (await api('/writeoff/reasons')).items || [];
+      d = await api('/writeoff/list?from=' + woState.from + '&to=' + woState.to);
+    } catch (e) { main.appendChild(el('p', { class: 'dict-empty' }, 'Ошибка: ' + e.message)); return; }
+    const t = d.totals;
+
+    main.appendChild(el('div', { class: 'stk-head' }, [
+      el('div', {}, [
+        el('div', { class: 'stk-today' }, 'Списание со склада'),
+        el('div', { class: 'stk-counts' }, [el('span', {}, 'Документов: ' + t.docs
+          + (t.pending ? ' · ждут подтверждения: ' + t.pending : ''))]),
+      ]),
+      el('div', {}, [el('button', { class: 'btn-primary', onclick: openWriteoffForm }, '🗑 Списать')]),
+    ]));
+
+    // Период — общим компонентом Hub, как в остальных плитках.
+    const bar = el('div', { class: 'pur-bar' }, [HubDateRange.create({
+      mode: 'range', from: woState.from, to: woState.to,
+      onChange: (v) => { woState.from = v.from; woState.to = v.to; viewWriteoff(); },
+    })]);
+    main.appendChild(bar);
+
+    // Итог: сколько списали и какая это доля от прихода за тот же период.
+    // Одна сумма ничего не говорит — доля говорит.
+    const pct = (v) => (v === null || v === undefined ? '—' : (Math.round(v * 10) / 10).toString().replace('.', ',') + '%');
+    main.appendChild(el('div', { class: 'stk-sum-row' }, [
+      el('div', { class: 'stk-sum' }, [el('span', {}, 'Списано'), el('b', {}, fmtQty(t.qty) + ' ед · ' + fmtMoney(t.amount) + ' сум')]),
+      el('div', { class: 'stk-sum' }, [el('span', {}, 'Доля от прихода'),
+        el('b', {}, pct(t.pct_amount) + ' по деньгам · ' + pct(t.pct_qty) + ' по количеству')]),
+      t.pending ? el('div', { class: 'stk-sum' }, [el('span', {}, 'Не подтверждено'),
+        el('b', { style: 'color:#b25b00' }, t.pending + ' на ' + fmtMoney(t.pending_amount) + ' сум')]) : null,
+    ]));
+    const rs = Object.entries(t.by_reason || {});
+    if (rs.length) {
+      main.appendChild(el('div', { class: 'stk-counts', style: 'margin:2px 0 10px;flex-wrap:wrap' },
+        rs.sort((a, b) => b[1].amount - a[1].amount).map(([name, v]) =>
+          el('span', {}, name + ' — ' + fmtQty(v.qty) + ' ед · ' + fmtMoney(v.amount)))));
+    }
+
+    if (!d.items.length) {
+      main.appendChild(el('p', { class: 'dict-empty' }, 'За этот период списаний не было.'));
+      return;
+    }
+    const rows = d.items.map((w) => {
+      const when = String(w.moved_at).slice(0, 10);
+      const acts = [];
+      if (w.status === 'pending' && d.can_confirm) {
+        acts.push(el('button', { class: 'btn-primary', style: 'padding:3px 10px', onclick: async () => {
+          try { await api('/writeoff/' + w.id + '/confirm', { method: 'POST' }); toast('Подтверждено'); viewWriteoff(); }
+          catch (e) { toast(e.message, true); }
+        } }, 'Подтвердить'));
+      }
+      if (w.status === 'pending') {
+        acts.push(el('button', { class: 'inv-mini', title: 'Отменить — товар вернётся на склад', onclick: async () => {
+          if (!confirm('Отменить списание? Товар вернётся на склад.')) return;
+          try { await api('/writeoff/' + w.id + '/cancel', { method: 'POST' }); toast('Отменено'); viewWriteoff(); }
+          catch (e) { toast(e.message, true); }
+        } }, '✕'));
+      }
+      return el('tr', {}, [
+        el('td', { class: 'tnum muted' }, ruDate(when)),
+        el('td', { style: 'font-weight:600' }, [
+          el('div', {}, w.reason_name || 'Без статьи'),
+          w.supplier_claim ? el('div', { class: 'muted', style: 'font-size:12px' }, 'предъявлено поставщику') : null,
+          w.comment ? el('div', { class: 'muted', style: 'font-size:12px' }, w.comment) : null,
+        ]),
+        el('td', {}, w.items.map((i) => el('div', { style: 'font-size:13px' },
+          i.name + ' — ' + fmtQty(i.qty) + ' ' + (i.unit || '')
+          + (i.price ? '' : '  (нет цены прихода)')))),
+        el('td', { class: 'tnum' }, fmtQty(w.qty)),
+        el('td', { class: 'tnum', style: 'font-weight:700' }, fmtMoney(w.amount)),
+        el('td', {}, (w.files || []).map((id) => el('a', { href: '/file/' + id, target: '_blank', style: 'margin-right:6px' }, '📷'))),
+        el('td', {}, [
+          el('span', { class: 'status-pill ' + (w.status === 'confirmed' ? 'st-received' : 'st-draft') },
+            w.status === 'confirmed' ? 'Подтверждено' : 'Ждёт подтверждения'),
+          el('div', { class: 'muted', style: 'font-size:11px' },
+            'внёс ' + (w.created_name || '—') + (w.confirmed_name ? ' · принял ' + w.confirmed_name : '')),
+        ]),
+        el('td', { style: 'white-space:nowrap;text-align:right' }, acts),
+      ]);
+    });
+    main.appendChild(el('div', { class: 'dict-wrap' }, el('table', { class: 'dict-table' }, [
+      el('thead', {}, el('tr', {}, ['Дата', 'Статья', 'Позиции', 'Кол-во', 'Сумма', 'Фото', 'Статус', ''].map((h) => el('th', {}, h)))),
+      el('tbody', {}, rows),
+    ])));
+  }
+
+  async function openWriteoffForm() {
+    let avail;
+    try { avail = await api('/available'); } catch (e) { return toast(e.message, true); }
+    const picked = [];                                   // [{item_kind, item_id, name, unit, balance, qty}]
+    const reasonSel = el('select', { class: 'hrf-inp' },
+      [el('option', { value: '' }, '— статья списания —')]
+        .concat(woReasons.map((r) => el('option', { value: r.id }, r.name))));
+    const itemSel = el('select', { class: 'hrf-inp', style: 'flex:1;min-width:220px' },
+      [el('option', { value: '' }, '— позиция —')].concat(avail.items.map((m) =>
+        el('option', { value: m.kind + '|' + m.id }, m.name + ' (есть ' + fmtQty(m.balance) + ' ' + (m.unit || '') + ')'))));
+    const qtyInp = el('input', { class: 'hrf-inp', type: 'number', step: '0.01', min: '0', placeholder: 'кол-во', style: 'width:110px' });
+    const list = el('div', { style: 'margin:8px 0' });
+    const comment = el('input', { class: 'hrf-inp', placeholder: 'Комментарий (что случилось)' });
+    const claim = el('input', { type: 'checkbox' });
+    const claimRow = el('label', { style: 'display:none;align-items:center;gap:8px;margin:6px 0' }, [claim, el('span', {}, 'Предъявлено поставщику')]);
+    const photos = el('input', { type: 'file', accept: 'image/*', multiple: true, capture: 'environment' });
+
+    reasonSel.onchange = () => {
+      const r = woReasons.find((x) => String(x.id) === reasonSel.value);
+      claimRow.style.display = (r && r.pnl_group === 'supplier') ? 'flex' : 'none';
+    };
+    function drawList() {
+      list.innerHTML = '';
+      if (!picked.length) { list.appendChild(el('div', { class: 'muted' }, 'Позиции не добавлены.')); return; }
+      picked.forEach((p, i) => list.appendChild(el('div', { style: 'display:flex;gap:8px;align-items:center;padding:4px 0;border-bottom:0.5px solid var(--line,#e3e0d4)' }, [
+        el('span', { style: 'flex:1' }, p.name),
+        el('b', {}, fmtQty(p.qty) + ' ' + (p.unit || '')),
+        el('button', { class: 'inv-mini', onclick: () => { picked.splice(i, 1); drawList(); } }, '✕'),
+      ])));
+    }
+    drawList();
+    const addBtn = el('button', { class: 'inv-mini', onclick: () => {
+      if (!itemSel.value) return toast('Выберите позицию', true);
+      const qty = Number(qtyInp.value);
+      if (!(qty > 0)) return toast('Укажите количество', true);
+      const [kind, id] = itemSel.value.split('|');
+      const m = avail.items.find((x) => x.kind === kind && String(x.id) === id);
+      if (!m) return;
+      if (qty > Number(m.balance)) return toast('На складе всего ' + fmtQty(m.balance) + ' ' + (m.unit || ''), true);
+      picked.push({ item_kind: kind, item_id: Number(id), name: m.name, unit: m.unit, qty });
+      qtyInp.value = ''; itemSel.value = ''; drawList();
+    } }, '+ Добавить');
+
+    const body = el('div', {}, [
+      el('div', { class: 'form-row' }, [el('label', {}, 'Статья *'), reasonSel]),
+      claimRow,
+      el('div', { class: 'form-row' }, [el('label', {}, 'Позиции *'),
+        el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' }, [itemSel, qtyInp, addBtn])]),
+      list,
+      el('div', { class: 'form-row' }, [el('label', {}, 'Комментарий'), comment]),
+      el('div', { class: 'form-row' }, [el('label', {}, 'Фото *'), photos]),
+      el('p', { class: 'muted', style: 'font-size:13px' },
+        'Остаток уменьшится сразу. Подтверждает начальник производства — до подтверждения списание можно отменить, товар вернётся.'),
+    ]);
+    const send = el('button', { class: 'btn-primary', onclick: async () => {
+      if (!reasonSel.value) return toast('Выберите статью', true);
+      if (!picked.length) return toast('Добавьте позиции', true);
+      if (!photos.files.length) return toast('Приложите фото — без него списание не проводим', true);
+      send.disabled = true; send.textContent = 'Провожу…';
+      const fd = new FormData();
+      fd.append('payload', JSON.stringify({
+        reason_id: reasonSel.value, comment: comment.value,
+        supplier_claim: claim.checked,
+        items: picked.map((p) => ({ item_kind: p.item_kind, item_id: p.item_id, qty: p.qty })),
+      }));
+      for (const f of photos.files) fd.append('photos', f);
+      try {
+        await api('/writeoff', { method: 'POST', body: fd });
+        toast('Списание проведено'); m.close(); viewWriteoff();
+      } catch (e) { toast(e.message, true); send.disabled = false; send.textContent = 'Списать'; }
+    } }, 'Списать');
+    const m = modal('🗑 Списание со склада', body, [
+      el('button', { onclick: () => m.close() }, 'Отмена'), send,
+    ]);
+  }
+
   // ================= Каркас =================
   function switchTab(tab) {
     document.querySelectorAll('.pur-tab').forEach((a) => a.classList.toggle('active', a.dataset.tab === tab));
     if (tab === 'issue') viewIssue();
+    else if (tab === 'writeoff') viewWriteoff();
     else if (tab === 'inventory') viewInventory();
     else if (tab === 'summary') viewSummary();
     else viewReceiving();
