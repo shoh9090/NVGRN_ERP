@@ -579,6 +579,89 @@ async function planCogs(pool, units, sold) {
 }
 
 // ---------------------------------------------------------------------------
+// Проверка отчёта: почему прибыль может быть не такой, как на самом деле
+// ---------------------------------------------------------------------------
+// Шох: «не может быть 642 млн прибыли за август». Отчёт складывается из трёх
+// источников (реализация SD, склад, Касса), и каждый может быть неполным. Молча
+// показывать красивую прибыль нельзя — считаем те же цифры ещё раз «с другой
+// стороны» и показываем, на сколько прибыль могла бы отличаться.
+//
+// Чистая функция: на вход уже посчитанные блоки, на выход список проверок.
+// Ничего не меняет в самой прибыли — решение о формуле принимает Шох.
+const TAX_CODES = new Set(['65', '66', '67', '68']);       // налоги: от ЗП, НДС, на прибыль, прочие
+const BANKFEE_CODES = new Set(['62', '64']);               // комиссии банка и за обнал
+const SALARY_CODES = new Set(['20', '40']);                // ЗП производства и офиса
+
+function selfCheck({ revenue, cogs, opexTotal, operating, fact, plan, waste, writeoff, cash }) {
+  const checks = [];
+  const add = (key, text, amount, profitIf) => checks.push({ key, text, amount, profit_if: profitIf });
+
+  // 1. Налоги и банковские комиссии лежат в группе «6. Финансы» и в прибыль не входят.
+  const finItems = (cash.finance && cash.finance.items) || [];
+  const taxes = finItems.filter((x) => TAX_CODES.has(String(x.code))).reduce((a, x) => a + num(x.exp), 0);
+  const fees = finItems.filter((x) => BANKFEE_CODES.has(String(x.code))).reduce((a, x) => a + num(x.exp), 0);
+  if (taxes + fees > 0 && operating !== null) {
+    add('taxes', `Налоги и банковские комиссии за месяц (${Math.round((taxes + fees) / 1e6)} млн) в прибыль НЕ входят: `
+      + 'они лежат в группе «6. Финансы», а эта группа из P&L исключена целиком.',
+    taxes + fees, operating - taxes - fees);
+  }
+
+  // 2. Отход и списания со склада показаны отдельно, но себестоимость не увеличивают.
+  const losses = num(waste && waste.amount) + num(writeoff && writeoff.amount);
+  if (losses > 0 && operating !== null) {
+    add('losses', `Отход и списания со склада (${Math.round(losses / 1e6)} млн) показаны отдельной строкой, `
+      + 'но в себестоимость не входят — за это сырьё заплачено, а в прибыли оно не учтено.',
+    losses, operating - losses);
+  }
+
+  // 3. Склад списал заметно меньше, чем оплачено поставщикам за сырьё и упаковку.
+  const paid = num(cash.materials_paid && cash.materials_paid.total);
+  if (paid > 0 && cogs !== null && cogs < paid * 0.7) {
+    add('stock_vs_paid', `Со склада списано ${Math.round(cogs / 1e6)} млн, а поставщикам за сырьё и упаковку `
+      + `заплачено ${Math.round(paid / 1e6)} млн. Оплаты в расходы не берём (себестоимость считается по складу), `
+      + 'поэтому если выдачи в производство отмечены не все — прибыль завышена.',
+    paid - cogs, operating === null ? null : operating - (paid - cogs));
+  }
+
+  // 4. Факт со склада сильно меньше плана по Калькуляции.
+  if (fact && fact.has_data && plan && plan.total > 0 && fact.total < plan.total * 0.8 && operating !== null) {
+    const gap = plan.total - fact.total;
+    add('fact_vs_plan', `По Калькуляции на проданное должно было уйти ${Math.round(plan.total / 1e6)} млн сырья и упаковки, `
+      + `а со склада списано ${Math.round(fact.total / 1e6)} млн. Похоже, часть выдач в производство не отмечена.`,
+    gap, operating - gap);
+  }
+
+  // 5. В расходах месяца нет зарплаты — значит, месяц неполный.
+  const opexItems = [].concat(...((cash.opex && cash.opex.groups) || []).map((g) => g.items || []));
+  const salary = opexItems.filter((x) => SALARY_CODES.has(String(x.code))).reduce((a, x) => a + num(x.exp), 0);
+  if (!salary && opexTotal > 0) {
+    add('no_salary', 'В расходах месяца нет ни одной выплаты зарплаты. Либо зарплата за этот месяц выплачена '
+      + 'в следующем (расходы считаются по дате оплаты), либо выплаты не попали в Кассу.', 0, null);
+  }
+
+  // 6. Деньги без статьи: пока не разнесены, расходы занижены.
+  const un = (cash.unclassified && num(cash.unclassified.exp)) || 0;
+  if (un > 0 && operating !== null) {
+    add('unclassified', `Расходов без статьи: ${Math.round(un / 1e6)} млн. В прибыль они не попали.`,
+      un, operating - un);
+  }
+
+  // Итог «если учесть всё»: складываем только денежные поправки, без повторов —
+  // склад-против-оплат и факт-против-плана меряют одно и то же, берём большую.
+  const byKey = Object.fromEntries(checks.map((c) => [c.key, c]));
+  const stockGap = Math.max(byKey.stock_vs_paid ? byKey.stock_vs_paid.amount : 0,
+    byKey.fact_vs_plan ? byKey.fact_vs_plan.amount : 0);
+  const totalGap = (byKey.taxes ? byKey.taxes.amount : 0) + (byKey.losses ? byKey.losses.amount : 0)
+    + (byKey.unclassified ? byKey.unclassified.amount : 0) + stockGap;
+  return {
+    items: checks,
+    total_gap: totalGap,
+    profit_if_all: operating === null ? null : operating - totalGap,
+    revenue,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Сборка отчёта
 // ---------------------------------------------------------------------------
 async function buildPnl(pool, period) {
@@ -700,6 +783,10 @@ async function buildPnl(pool, period) {
     operating_profit: operating,
     operating_margin_pct: operating === null ? null : pct(operating, revenue),
     reconcile: cash.reconcile,
+    // Самопроверка: из-за чего прибыль в отчёте может быть выше настоящей.
+    self_check: selfCheck({
+      revenue, cogs, opexTotal: cash.opex.total, operating, fact, plan, waste, writeoff, cash,
+    }),
     stock_adjust: adjust,
     // Показатели из отчёта финансиста: сколько копеек с сума выручки съедают
     // сырьё и отходы. Считаем от выручки ОТ ПРОДАЖ — от той же цифры, что
@@ -841,7 +928,7 @@ async function buildTrend(pool, endPeriod, months) {
   return { months: n, from: bounds.f, to: bounds.t, points: out };
 }
 
-module.exports = { buildPnl, buildTrend, UNITS_KEY, SALES_KEY, SKU_KEY, SNAP_KEY, planCogs, saveSnapshot, loadSnapshot, linkProducts, matchKey };
+module.exports = { buildPnl, buildTrend, UNITS_KEY, SALES_KEY, SKU_KEY, SNAP_KEY, planCogs, saveSnapshot, loadSnapshot, linkProducts, matchKey, selfCheck };
 // Открыто для Склада: списания оцениваются ТОЙ ЖЕ ценой, что себестоимость в
 // P&L, иначе отчёт о потерях и P&L покажут разные деньги за одно и то же.
 module.exports.monthlyPriceMaps = monthlyPriceMaps;

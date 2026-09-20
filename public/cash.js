@@ -168,6 +168,26 @@
   let cpFilterSrc = '';
   const triageState = { from: '', to: '', wallet: '' };
 
+  // Блок «Проверка отчёта»: почему прибыль в отчёте может быть выше настоящей.
+  // Сами цифры прибыли не меняем — показываем, на сколько они изменились бы.
+  function pnlSelfCheck(box, d) {
+    const sc = d.self_check;
+    const rows = sc.items.map((c) => el('div', { class: 'cash-chk-row' }, [
+      el('div', { class: 'cash-chk-txt' }, c.text),
+      el('div', { class: 'cash-chk-val' }, c.profit_if === null || c.profit_if === undefined
+        ? '' : 'прибыль была бы ' + money(c.profit_if)),
+    ]));
+    box.appendChild(el('div', { class: 'cash-chk' }, [
+      el('div', { class: 'cash-chk-h' }, '🔍 Проверка отчёта: прибыль может быть завышена'),
+      el('div', { class: 'cash-chk-sub' }, 'Отчёт складывается из трёх источников — реализация SalesDoctor, '
+        + 'склад и Касса. Ниже то, что в прибыль сейчас не попало.'),
+      ...rows,
+      sc.profit_if_all === null || sc.profit_if_all === undefined ? null
+        : el('div', { class: 'cash-chk-total' }, 'Если учесть всё перечисленное: прибыль '
+          + money(sc.profit_if_all) + ' вместо ' + money(d.operating_profit)),
+    ]));
+  }
+
   // Одно предупреждение P&L: текст, ссылка «куда идти» и полный список позиций.
   function pnlWarnRow(w) {
     if (typeof w === 'string') return el('div', {}, '⚠️ ' + w);
@@ -932,6 +952,9 @@
     if (d.warnings && d.warnings.length) {
       box.appendChild(el('div', { class: 'cash-pnl-warn' }, d.warnings.map(pnlWarnRow)));
     }
+
+    // Проверка отчёта: из-за чего прибыль может быть выше настоящей.
+    if (d.self_check && d.self_check.items && d.self_check.items.length) pnlSelfCheck(box, d);
 
     if (PNL_VIEW === 'dash') pnlDashboard(box, d);
     else if (PNL_VIEW === 'src') pnlSources(box, d);

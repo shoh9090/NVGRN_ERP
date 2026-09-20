@@ -534,3 +534,12 @@ select.cb-cell { cursor: pointer; }
   margin: 6px 0 4px 18px; max-height: 240px; overflow: auto;
   font-size: 13px; line-height: 1.5;
 }
+
+/* Проверка отчёта P&L: что не попало в прибыль. */
+.cash-chk { border: 1px solid #e6c88a; background: #fffaf0; border-radius: 12px; padding: 12px 14px; margin-bottom: 14px; }
+.cash-chk-h { font-weight: 800; margin-bottom: 4px; }
+.cash-chk-sub { font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+.cash-chk-row { display: flex; gap: 12px; align-items: flex-start; padding: 6px 0; border-top: 1px solid #f0e2c4; }
+.cash-chk-txt { flex: 1; font-size: 13px; line-height: 1.5; }
+.cash-chk-val { white-space: nowrap; font-weight: 700; font-size: 13px; }
+.cash-chk-total { margin-top: 8px; padding-top: 8px; border-top: 2px solid #e6c88a; font-weight: 800; }

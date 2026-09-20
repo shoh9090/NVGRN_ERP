@@ -565,3 +565,52 @@ test('план сам находит товары по названию из п�
   assert.strictEqual(r.cogs.plan.unmatched_units, 0);
   assert.strictEqual(r.cogs.plan.linked_by.name, 2);
 });
+
+test('проверка отчёта: налоги, отход и неразнесённое показываются как «прибыль была бы»', () => {
+  const { selfCheck } = require('../src/cash-pnl');
+  const sc = selfCheck({
+    revenue: 1_000_000_000,
+    cogs: 200_000_000,
+    opexTotal: 300_000_000,
+    operating: 500_000_000,
+    fact: { has_data: true, total: 200_000_000 },
+    plan: { total: 400_000_000 },
+    waste: { amount: 50_000_000 },
+    writeoff: { amount: 10_000_000 },
+    cash: {
+      finance: { items: [
+        { code: '65', exp: 30_000_000 },   // налоги от ЗП
+        { code: '66', exp: 20_000_000 },   // НДС
+        { code: '61', exp: 99_000_000 },   // возврат кредита — это НЕ расход
+      ] },
+      materials_paid: { total: 500_000_000 },
+      opex: { groups: [{ items: [{ code: '41', exp: 300_000_000 }] }] },   // аренда есть, ЗП нет
+      unclassified: { exp: 5_000_000 },
+    },
+  });
+  const by = Object.fromEntries(sc.items.map((x) => [x.key, x]));
+  assert.strictEqual(by.taxes.amount, 50_000_000);           // возврат кредита не попал
+  assert.strictEqual(by.losses.amount, 60_000_000);          // отход + списания
+  assert.strictEqual(by.stock_vs_paid.amount, 300_000_000);  // оплачено минус списано
+  assert.ok(by.fact_vs_plan);                                // факт меньше плана
+  assert.ok(by.no_salary);                                   // зарплаты в месяце нет
+  assert.strictEqual(by.unclassified.amount, 5_000_000);
+  // Склад-против-оплат и факт-против-плана меряют одно и то же — берём большую, не обе.
+  assert.strictEqual(sc.total_gap, 50_000_000 + 60_000_000 + 5_000_000 + 300_000_000);
+  assert.strictEqual(sc.profit_if_all, 500_000_000 - sc.total_gap);
+});
+
+test('всё сходится — проверка молчит', () => {
+  const { selfCheck } = require('../src/cash-pnl');
+  const sc = selfCheck({
+    revenue: 1_000_000, cogs: 500_000, opexTotal: 200_000, operating: 300_000,
+    fact: { has_data: true, total: 500_000 }, plan: { total: 520_000 },
+    waste: { amount: 0 }, writeoff: { amount: 0 },
+    cash: {
+      finance: { items: [] }, materials_paid: { total: 500_000 },
+      opex: { groups: [{ items: [{ code: '20', exp: 200_000 }] }] }, unclassified: { exp: 0 },
+    },
+  });
+  assert.deepStrictEqual(sc.items, []);
+  assert.strictEqual(sc.total_gap, 0);
+});
