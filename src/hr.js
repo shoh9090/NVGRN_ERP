@@ -363,6 +363,21 @@ async function hrScope(req) {
 // Сузить запрошенный фильтр отделов до разрешённых. Возвращает строку для
 // deptFilter/deptFilterMem: человек может фильтровать внутри своих отделов,
 // но не может выйти за них.
+// Кадровые изменения, сделанные руководителем отдела, Кадры должны видеть сразу,
+// а не в конце месяца по изменившемуся ФОТ. Это не согласование: человек уже
+// заведён или уволен, уведомление просто делает это видимым.
+// Тому, кто отделом не ограничен (самим Кадрам), про свои же действия не пишем.
+async function notifyHrChange(req, title, body) {
+  try {
+    if (!(await hrScope(req))) return;
+    await notify({
+      tile: '/hr', kind: 'info', link: '/hr#employees',
+      title,
+      body: [body, 'сделал: ' + ((req.user && req.user.name) || '—')].filter(Boolean).join(' · '),
+    });
+  } catch (e) { /* уведомление не должно ронять саму операцию */ }
+}
+
 function scopeDept(raw, scope) {
   if (!scope) return raw;
   const allowed = [...scope];
@@ -809,7 +824,11 @@ router.post('/api/employee', J, async (req, res) => {
           }
         }
         if ((old.status || '') !== status) {
-          if (status === 'fired') await addEvent(b.id, 'fire', fireDate || today, { created_by: uid });
+          if (status === 'fired') {
+            await addEvent(b.id, 'fire', fireDate || today, { created_by: uid });
+            await notifyHrChange(req, 'Уволен: ' + name,
+              [await deptName(intOrNull(b.department_id)), 'дата ' + (fireDate || today)].filter(Boolean).join(' · '));
+          }
           else if (old.status === 'fired' && status === 'active') await addEvent(b.id, 'hire', today, { comment: 'Восстановлен', created_by: uid });
         } else if (status === 'fired' && fireDate && fireDate !== (prev ? prev.fire_date : null)) {
           // Уволенному проставили/поправили дату в карточке — это тоже должно попасть в историю.
@@ -824,18 +843,9 @@ router.post('/api/employee', J, async (req, res) => {
         `INSERT INTO hr_employees (full_name, department_id, position, schedule_type, hire_date, fire_date, status, base_salary, salary_official, salary_unofficial, phone, telegram_id, erp_user_id, comment, card_number, full_month)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id`, args);
       await addEvent(ins.rows[0].id, 'hire', b.hire_date || today, { created_by: req.user.id });
-      // Карточку завёл руководитель отдела — Кадры должны узнать об этом сразу,
-      // а не в конце месяца по выросшему ФОТ. Это не согласование: человек уже
-      // заведён, уведомление просто делает это видимым.
-      if (await hrScope(req)) {
-        await notify({
-          tile: '/hr', kind: 'info', link: '/hr#employees',
-          title: 'Новый сотрудник: ' + name,
-          body: [await deptName(intOrNull(b.department_id)), b.position || null,
-            numOrNull(b.base_salary) ? 'оклад ' + fmtSum(numOrNull(b.base_salary)) : null,
-            'завёл: ' + (req.user.name || '—')].filter(Boolean).join(' · '),
-        });
-      }
+      await notifyHrChange(req, 'Новый сотрудник: ' + name,
+        [await deptName(intOrNull(b.department_id)), b.position || null,
+          numOrNull(b.base_salary) ? 'оклад ' + fmtSum(numOrNull(b.base_salary)) : null].filter(Boolean).join(' · '));
     }
     await db.log(req.user.id, 'hr_employee_save', name);
     res.json({ ok: true });
@@ -936,11 +946,15 @@ router.post('/api/employee/:id(\\d+)/status', J, async (req, res) => {
   const st = STATUSES.includes(req.body.status) ? req.body.status : null;
   if (!st) return res.status(400).json({ error: 'Неверный статус' });
   const fire = st === 'fired' ? (req.body.fire_date || new Date().toISOString().slice(0, 10)) : null;
-  const prev = (await db.pool.query('SELECT status FROM hr_employees WHERE id=$1', [req.params.id])).rows[0];
+  const prev = (await db.pool.query(
+    `SELECT e.status, e.full_name, d.name AS dept FROM hr_employees e
+       LEFT JOIN hr_departments d ON d.id = e.department_id WHERE e.id=$1`, [req.params.id])).rows[0];
   await db.pool.query('UPDATE hr_employees SET status=$1, fire_date=COALESCE($2, fire_date), updated_at=now() WHERE id=$3', [st, fire, req.params.id]);
   if (prev && prev.status !== st) {
-    if (st === 'fired') await addEvent(parseInt(req.params.id), 'fire', fire, { created_by: req.user.id });
-    else if (prev.status === 'fired' && st === 'active') await addEvent(parseInt(req.params.id), 'hire', new Date().toISOString().slice(0, 10), { comment: 'Восстановлен', created_by: req.user.id });
+    if (st === 'fired') {
+      await addEvent(parseInt(req.params.id), 'fire', fire, { created_by: req.user.id });
+      await notifyHrChange(req, 'Уволен: ' + prev.full_name, [prev.dept, 'дата ' + fire].filter(Boolean).join(' · '));
+    } else if (prev.status === 'fired' && st === 'active') await addEvent(parseInt(req.params.id), 'hire', new Date().toISOString().slice(0, 10), { comment: 'Восстановлен', created_by: req.user.id });
   }
   await db.log(req.user.id, 'hr_employee_status', `#${req.params.id} → ${st}`);
   res.json({ ok: true });
@@ -1039,11 +1053,17 @@ router.post('/api/events', J, async (req, res) => {
   // давать один и тот же результат, из какого бы места его ни сделали.
   let statusNote = '';
   if (type === 'fire') {
-    const cur = (await db.pool.query('SELECT status FROM hr_employees WHERE id=$1', [empId])).rows[0];
+    const cur = (await db.pool.query(
+      `SELECT e.status, e.full_name, d.name AS dept FROM hr_employees e
+         LEFT JOIN hr_departments d ON d.id = e.department_id WHERE e.id=$1`, [empId])).rows[0];
     if (!cur) return res.status(404).json({ error: 'Сотрудник не найден' });
     await db.pool.query(
       "UPDATE hr_employees SET status='fired', fire_date=$1, updated_at=now() WHERE id=$2", [b.event_date, empId]);
     statusNote = cur.status === 'fired' ? 'Дата увольнения обновлена' : 'Сотрудник переведён в уволенные';
+    // Про уточнение даты не пишем — уволен он был и раньше.
+    if (cur.status !== 'fired') {
+      await notifyHrChange(req, 'Уволен: ' + cur.full_name, [cur.dept, 'дата ' + b.event_date].filter(Boolean).join(' · '));
+    }
   } else if (type === 'hire') {
     const cur = (await db.pool.query('SELECT status FROM hr_employees WHERE id=$1', [empId])).rows[0];
     if (!cur) return res.status(404).json({ error: 'Сотрудник не найден' });
@@ -3144,6 +3164,11 @@ router.post('/api/employees/bulk', J, async (req, res) => {
   if (st === 'fired') {
     const fireDate = String(req.body.fire_date || '').trim();
     if (!/^\d{4}-\d{2}-\d{2}$/.test(fireDate)) return res.status(400).json({ error: 'Укажите дату увольнения' });
+    // Имена берём ДО обновления: нужны для уведомления, и заодно видно,
+    // кто был активным — уточнение даты уволенному это не увольнение.
+    const before = (await db.pool.query(
+      `SELECT e.id, e.full_name, e.status, d.name AS dept FROM hr_employees e
+         LEFT JOIN hr_departments d ON d.id = e.department_id WHERE e.id = ANY($1)`, [ids])).rows;
     const r = await db.pool.query('UPDATE hr_employees SET status=$1, fire_date=$2, updated_at=now() WHERE id = ANY($3)', [st, fireDate, ids]);
     // Событие пишем и тем, кто уже числился уволенным: обычно это как раз простановка даты,
     // которой не хватало. Если событие с этой датой уже есть — ничего не делаем; если есть
@@ -3154,6 +3179,15 @@ router.post('/api/employees/bulk', J, async (req, res) => {
       if (ex && ex.d === fireDate) continue;
       if (ex) await db.pool.query('UPDATE hr_events SET event_date=$1, comment=$2 WHERE id=$3', [fireDate, 'Дата уточнена', ex.id]);
       else await addEvent(id, 'fire', fireDate, { created_by: req.user.id, comment: 'Массовое увольнение' });
+    }
+    // Одно уведомление на всю операцию, а не по человеку: массовое увольнение
+    // десятью сообщениями подряд перестают читать с третьего.
+    const fired = before.filter((x) => x.status !== 'fired');
+    if (fired.length) {
+      await notifyHrChange(req,
+        fired.length === 1 ? 'Уволен: ' + fired[0].full_name : 'Уволено сотрудников: ' + fired.length,
+        [fired[0].dept, fired.map((x) => x.full_name).slice(0, 5).join(', ')
+          + (fired.length > 5 ? ' и ещё ' + (fired.length - 5) : ''), 'дата ' + fireDate].filter(Boolean).join(' · '));
     }
     await db.log(req.user.id, 'hr_employees_bulk_fire', `${ids.length} с ${fireDate}`);
     return res.json({ ok: true, affected: r.rowCount });
