@@ -1501,6 +1501,9 @@ router.get('/api/sandbox', async (req, res) => {
       output_now: base.output,
       min_margin_pct: numOrNull(settings[K_MIN_MARGIN]),
       can_edit: canEdit(req),
+      // Границу маржи ставят только владельцы — поле у остальных закрыто,
+      // а не «нажал и получил отказ».
+      can_set_min_margin: !!(req.user && req.user.isAdmin),
       not_approved: notApproved,
       items,
     });
@@ -1512,10 +1515,14 @@ router.get('/api/sandbox', async (req, res) => {
 
 const PRICE_FIELD = { price: 'price', price2: 'price2', sd: 'sd_price' };
 
-// Нижняя граница маржи. Меняет тот же, кто правит калькуляцию: цифра общая
-// для компании, а не личная настройка продажника.
+// Нижняя граница маржи. Ниже неё скидку давать нельзя — это решение владельцев,
+// а не расчётная величина, поэтому менять её может только администратор
+// (решение Арианны 21.09.2026: «вносить будем только я и Шох»).
+// Видеть цифру может каждый, кто открывает песочницу: без неё вердикт не понять.
 router.post('/api/sandbox/min-margin', J, async (req, res) => {
-  if (!canEdit(req)) return denyEdit(res);
+  if (!(req.user && req.user.isAdmin)) {
+    return res.status(403).json({ error: 'Менять нижнюю границу маржи может только администратор' });
+  }
   const raw = (req.body || {}).pct;
   const pct = (raw === null || raw === undefined || raw === '') ? null : numOrNull(raw);
   if (pct !== null && (pct < 0 || pct >= 100)) {

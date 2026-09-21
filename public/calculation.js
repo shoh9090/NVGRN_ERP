@@ -2138,7 +2138,9 @@
     const mm = el('input', {
       type: 'number', class: 'calc-sb-in', min: '0', max: '99', step: '1',
       value: SB.min_margin_pct === null || SB.min_margin_pct === undefined ? '' : SB.min_margin_pct,
-      placeholder: 'не задана', disabled: SB.can_edit ? null : 'disabled',
+      // Границу маржи ставят только владельцы: остальные её видят, но не правят.
+      placeholder: 'не задана', disabled: SB.can_set_min_margin ? null : 'disabled',
+      title: SB.can_set_min_margin ? null : 'Нижнюю границу маржи задают Шох и Арианна',
       onchange: async (e) => {
         const v = e.target.value.trim();
         try {
