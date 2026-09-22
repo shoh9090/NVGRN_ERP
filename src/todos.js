@@ -104,6 +104,17 @@ async function unmatchedSold(pool) {
     .sort((a, b) => b.units - a.units);
 }
 
+// Поступления, похожие на возврат банка, но стоящие как «Выручка от продаж».
+// Возврат нашего же платежа — не выручка: 20 млн 16.09.2026 развели ERP и CRM.
+async function returnsAsSales(pool) {
+  return (await pool.query(
+    `SELECT t.id, to_char(t.tx_date, 'YYYY-MM-DD') AS d, t.amount, t.purpose
+       FROM cash_transactions t JOIN cash_categories c ON c.id = t.category_id
+      WHERE t.tx_type = 'in' AND c.code = '200' AND t.tx_date >= CURRENT_DATE - $1::int
+        AND (t.purpose ~* 'qaytar|возврат|возвращ|vozvrat|refund')
+      ORDER BY t.tx_date DESC`, [DAYS_BACK])).rows;
+}
+
 // Операции Кассы без статьи — пока не разнесены, P&L и Кэш-флоу неполные.
 async function unclassified(pool) {
   return (await pool.query(
@@ -123,6 +134,7 @@ const TODO_KINDS = [
   { key: 'calc', title: 'Товары из продаж без пары в Калькуляции', tile: '/calculation' },
   { key: 'loss', title: 'Убыточные позиции в Калькуляции', tile: '/calculation' },
   { key: 'unclassified', title: 'Операции Кассы без статьи', tile: '/cash' },
+  { key: 'returns_as_sales', title: 'Возврат банка, учтённый как выручка', tile: '/cash' },
 ];
 
 // Цепочка ответственных: { ключ дела: [{ role, after_h }] } — кто первый и кто
@@ -257,6 +269,18 @@ async function computeTodos(keys, allowed) {
       body: 'Продаём дешевле себестоимости: ' + bad.slice(0, 3).map((p) => p.name).join(', ')
         + (bad.length > 3 ? '…' : '') + '. Поднять цену или пересчитать себестоимость.',
       link: '/calculation#summary', count: bad.length,
+    });
+  });
+
+  await safe(async () => {
+    if (!want('returns_as_sales') || !(await can('returns_as_sales', '/cash'))) return;
+    const rows = await returnsAsSales(db.pool);
+    if (!rows.length) return;
+    items.push({
+      key: 'returns_as_sales', title: `Касса: ${rows.length} поступлений похожи на возврат банка, а стоят как выручка`,
+      body: 'Возврат нашего же платежа — не выручка, из-за него ERP расходится с CRM. Поставьте им статью того платежа, который вернулся.',
+      link: '/cash#tx=' + rows[0].id, count: rows.length,
+      items: rows.map((r) => `${r.d.split('-').reverse().join('.')} · ${mln(r.amount)} · ${String(r.purpose || '').slice(0, 90)}`),
     });
   });
 
