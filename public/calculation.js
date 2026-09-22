@@ -1395,7 +1395,10 @@
     ])))));
 
     // --- Строки идут ровно в том же порядке, что на листе «0000_розница» ---
-    rows.push(skuRow('Граммаж', 'гр', (x) => el('div', {}, [
+    // На листе «Уксус» зелени нет: граммаж, выбор сырья и цена за кг не нужны —
+    // сырьё там покупное и вводится суммой на бутылку.
+    const manualSheet = d.sheet === 'vinegar';
+    if (!manualSheet) rows.push(skuRow('Граммаж', 'гр', (x) => el('div', {}, [
       cell(x.net_weight_g, (v) => save(x.id, { net_weight_g: v }), { dec: 'auto', placeholder: 'гр' }),
       // Сверка с рецептурой: расхождение почти всегда означает опечатку в граммах.
       (x.recipe_id && x.net_weight_g && x.recipe_total_g && Math.abs(x.recipe_total_g - x.net_weight_g) > 1)
@@ -1423,7 +1426,7 @@
       ]);
     }));
 
-    rows.push(skuRow('наименование', '', (x) => {
+    if (!manualSheet) rows.push(skuRow('наименование', '', (x) => {
       // Микс: показываем его название и вес, а не безликое «по рецептуре».
       if (x.recipe_id) {
         return el('div', {}, [
@@ -1447,7 +1450,7 @@
 
     // Цена за кг: из Закупа, если позиция связана и цена там есть. Иначе
     // вписывается вручную — тогда поле открыто для ввода.
-    rows.push(skuRow('Стоимость зелени', 'сум/кг', (x) => {
+    if (!manualSheet) rows.push(skuRow('Стоимость зелени', 'сум/кг', (x) => {
       // Микс: цифра в единицах строки — средняя цена за кг самого микса,
       // под ней итог рецептуры, чтобы обе цифры были на виду.
       if (x.recipe_id) {
@@ -1485,9 +1488,11 @@
       ]);
     }));
 
-    rows.push(skuRow('зелень в упаковке', 'сум', (x) => auto(x.calc.components.raw)));
-
-    const manualSheet = d.sheet === 'vinegar';
+    // На уксусе сырьё — покупной концентрат, вводится суммой на бутылку.
+    rows.push(skuRow(manualSheet ? 'Сырьё (концентрат на бутылку)' : 'зелень в упаковке', 'сум',
+      (x) => (manualSheet
+        ? cell(x.raw_cost, (v) => save(x.id, { raw_cost: v }), { dec: 2, placeholder: 'сум' })
+        : auto(x.calc.components.raw))));
     if (manualSheet) {
       rows.push(skuRow('Упаковка (бутылка + этикетка)', 'сум',
         (x) => cell(x.pack_cost, (v) => save(x.id, { pack_cost: v }), { dec: 2, placeholder: 'сум' })));

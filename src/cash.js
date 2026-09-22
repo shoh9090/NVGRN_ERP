@@ -1677,6 +1677,15 @@ async function salesAutoTick() {
       console.log(`[КАССА] продажи ${period} из SD обновлены: ${Math.round(r.net_amount || 0)} сум, ${r.orders} заказов`);
     } catch (e) { console.warn(`[КАССА] продажи ${period} из SD не обновлены:`, e.message); }
   }
+  // Заодно справочник товаров и прайс-листы: они обновлялись только по кнопке и
+  // успели отстать на три месяца — из-за этого в Калькуляции у новых товаров
+  // (например, уксуса) не было цены из SalesDoctor.
+  try {
+    const g = await integrations.syncFinishedGoods(null);
+    console.log('[КАТАЛОГ] товары из SD:', g.summary || `${g.created}/${g.updated}`);
+    const p = await integrations.syncPrices(null);
+    console.log('[КАТАЛОГ] прайс-листы из SD:', p.summary || '');
+  } catch (e) { console.warn('[КАТАЛОГ] обновление из SD не прошло:', e.message); }
 }
 setInterval(() => { salesAutoTick().catch((e) => console.warn('[КАССА] автообновление продаж:', e.message)); }, 15 * 60 * 1000).unref();
 
