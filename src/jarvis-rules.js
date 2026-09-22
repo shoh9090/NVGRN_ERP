@@ -18,6 +18,8 @@ const DEFAULTS = {
   fine_mention: 0,           // штраф за неответ на упоминание, сум
   fine_overdue: 0,           // штраф за просроченную карточку, сум
   fines_enabled: false,      // штрафы включаются после недели одних напоминаний
+  reminders_enabled: false,  // бот пишет людям; выключено — только читает Trello и ведёт журнал
+  enabled_at: '',            // когда включили: часы по старым упоминаниям идут с этого момента
 };
 
 const num = (v, def, min, max) => {
@@ -48,7 +50,76 @@ function normalizeRules(raw) {
   out.fine_mention = Math.round(num(r.fine_mention, 0, 0, 100000000));
   out.fine_overdue = Math.round(num(r.fine_overdue, 0, 0, 100000000));
   out.fines_enabled = r.fines_enabled === true || r.fines_enabled === 'true';
+  out.reminders_enabled = r.reminders_enabled === true || r.reminders_enabled === 'true';
+  out.enabled_at = out.reminders_enabled && !Number.isNaN(Date.parse(r.enabled_at)) ? String(r.enabled_at) : '';
   return out;
+}
+
+// ---- Рабочее время (Ташкент, UTC+5) ----
+const TZ = 5 * 3600000, HOUR = 3600000, DAY = 86400000;
+const isoDay = (localMs) => ((new Date(localMs).getUTCDay() + 6) % 7) + 1; // 1 = пн … 7 = вс
+
+// Сколько рабочих часов между двумя моментами: считаем только рабочие дни
+// и часы с work_from до work_to. Ночь и выходные не в счёт.
+function workHours(fromMs, toMs, r) {
+  if (!(toMs > fromMs)) return 0;
+  const a0 = fromMs + TZ, b0 = toMs + TZ;
+  let total = 0, n = 0;
+  for (let d = Math.floor(a0 / DAY) * DAY; d < b0 && n < 800; d += DAY, n++) {
+    if (!r.work_days.includes(isoDay(d))) continue;
+    const a = Math.max(a0, d + r.work_from * HOUR), b = Math.min(b0, d + r.work_to * HOUR);
+    if (b > a) total += b - a;
+  }
+  return total / HOUR;
+}
+function isWorkTime(ms, r) {
+  const l = ms + TZ;
+  const h = (l % DAY) / HOUR;
+  return r.work_days.includes(isoDay(l)) && h >= r.work_from && h < r.work_to;
+}
+// Дата по Ташкенту «2026-09-22» — ключ «утреннее напоминание уже было сегодня».
+const localDate = (ms) => new Date(ms + TZ).toISOString().slice(0, 10);
+
+// С какого момента считать часы: старое упоминание до включения Джарвиса —
+// с момента включения, иначе все вчерашние сразу стали бы нарушениями.
+function clockStart(ms, r) {
+  const on = r.enabled_at ? Date.parse(r.enabled_at) : 0;
+  return Math.max(ms, on || 0);
+}
+
+// Что пора сделать с упоминанием без ответа: 'violation' | 'remind' | null.
+function mentionStep(m, nowMs, r) {
+  if (m.answered_at) return null;
+  const h = workHours(clockStart(Date.parse(m.created_at), r), nowMs, r);
+  if (!m.violation_at && h >= r.mention_violation_h) return 'violation';
+  if (!m.reminded_at && !m.violation_at && h >= r.mention_remind_h) return 'remind';
+  return null;
+}
+// Просроченная карточка стала нарушением: прошло N рабочих дней после срока.
+function overdueIsViolation(dueMs, nowMs, r) {
+  const need = r.overdue_violation_days * (r.work_to - r.work_from);
+  return nowMs > dueMs && workHours(clockStart(dueMs, r), nowMs, r) >= need;
+}
+
+// @логины из текста комментария. @card/@board — «всем», их не считаем:
+// упоминание — это когда ждут ответа от конкретного человека.
+function parseMentions(text) {
+  const out = new Set();
+  for (const m of String(text || '').matchAll(/(^|[^a-z0-9_])@([a-z0-9_]{3,})/gi)) {
+    const u = m[2].toLowerCase();
+    if (u !== 'card' && u !== 'board') out.add(u);
+  }
+  return [...out];
+}
+// Колонка «Готово» — карточки в ней не просрочены и не «забыты».
+const isDoneList = (name) => /готов|выполн|сделан|закрыт|архив|done|complete|finished/i.test(String(name || ''));
+// Ответ, отправленный из Telegram, лежит в Trello от учётки владельца токена
+// с подписью «Имя (через Джарвис): …» — узнаём его, чтобы не приписать владельцу.
+const VIA = ' (через Джарвис): ';
+function viaJarvis(text) {
+  const t = String(text || '');
+  const i = t.indexOf(VIA);
+  return i > 0 && i < 80 ? { name: t.slice(0, i), text: t.slice(i + VIA.length) } : null;
 }
 
 // ---- Сопоставление людей с Trello ----
@@ -134,4 +205,8 @@ function suggestPairs(members, employees) {
   });
 }
 
-module.exports = { DEFAULTS, normalizeRules, toLatin, nameWords, nameMatch, suggestPairs };
+module.exports = {
+  DEFAULTS, normalizeRules, toLatin, nameWords, nameMatch, suggestPairs,
+  workHours, isWorkTime, localDate, clockStart, mentionStep, overdueIsViolation,
+  parseMentions, isDoneList, viaJarvis, VIA,
+};

@@ -63,3 +63,52 @@ test('предлагаем только однозначную пару, уво�
   assert.strictEqual(out[4].suggestion, null);
   assert.strictEqual(out[4].ambiguous, false);
 });
+
+// ---- Шаг 3: рабочие часы, упоминания, просрочки ----
+const { workHours, isWorkTime, mentionStep, overdueIsViolation, parseMentions, isDoneList, viaJarvis, VIA } = require('../src/jarvis-rules');
+// Ташкент = UTC+5: «2026-09-22 10:00» по Ташкенту = 05:00 UTC. 22.09.2026 — вторник.
+const T = (s) => Date.parse(s + ':00+05:00');
+const RULES = normalizeRules({ work_days: [1, 2, 3, 4, 5, 6] });
+
+test('рабочие часы: ночь и воскресенье не считаются', () => {
+  assert.strictEqual(workHours(T('2026-09-22T10:00'), T('2026-09-22T14:00'), RULES), 4);
+  // вечер вторника 18:00 → утро среды 11:00 = 2 ч вечером + 2 ч утром
+  assert.strictEqual(workHours(T('2026-09-22T18:00'), T('2026-09-23T11:00'), RULES), 4);
+  // суббота 19:00 → понедельник 10:00: 1 ч в субботу, воскресенье мимо, 1 ч в понедельник
+  assert.strictEqual(workHours(T('2026-09-26T19:00'), T('2026-09-28T10:00'), RULES), 2);
+  assert.strictEqual(isWorkTime(T('2026-09-27T12:00'), RULES), false); // воскресенье
+  assert.strictEqual(isWorkTime(T('2026-09-22T08:59'), RULES), false);
+  assert.strictEqual(isWorkTime(T('2026-09-22T09:00'), RULES), true);
+});
+
+test('упоминание: через 4 раб. ч напоминание, через 10 — нарушение, ответ закрывает', () => {
+  const m = { created_at: new Date(T('2026-09-22T10:00')).toISOString() };
+  assert.strictEqual(mentionStep(m, T('2026-09-22T13:00'), RULES), null);
+  assert.strictEqual(mentionStep(m, T('2026-09-22T14:00'), RULES), 'remind');
+  assert.strictEqual(mentionStep({ ...m, reminded_at: 'x' }, T('2026-09-22T19:00'), RULES), null);
+  assert.strictEqual(mentionStep({ ...m, reminded_at: 'x' }, T('2026-09-23T10:00'), RULES), 'violation');
+  assert.strictEqual(mentionStep({ ...m, answered_at: 'x' }, T('2026-09-25T10:00'), RULES), null);
+});
+
+test('старые упоминания считаются с момента включения, а не задним числом', () => {
+  const on = normalizeRules({ ...RULES, reminders_enabled: true, enabled_at: new Date(T('2026-09-23T09:00')).toISOString() });
+  const old = { created_at: new Date(T('2026-09-15T10:00')).toISOString() };
+  assert.strictEqual(mentionStep(old, T('2026-09-23T12:00'), on), null);
+  assert.strictEqual(mentionStep(old, T('2026-09-23T13:00'), on), 'remind');
+  assert.strictEqual(normalizeRules({ enabled_at: '2026-09-23' }).enabled_at, ''); // выключено — даты нет
+});
+
+test('просрочка: нарушение через 1 рабочий день после срока', () => {
+  const due = T('2026-09-22T12:00');
+  assert.strictEqual(overdueIsViolation(due, T('2026-09-23T11:00'), RULES), false);
+  assert.strictEqual(overdueIsViolation(due, T('2026-09-23T12:00'), RULES), true);
+});
+
+test('упоминания из текста, колонка «Готово», ответ из Telegram', () => {
+  assert.deepStrictEqual(parseMentions('@Abdushukur7472 проверь, cc @lobarchic и @card, почта a@b.uz'), ['abdushukur7472', 'lobarchic']);
+  assert.ok(isDoneList('✅ Готово'));
+  assert.ok(isDoneList('Done'));
+  assert.ok(!isDoneList('В работе'));
+  assert.deepStrictEqual(viaJarvis('Каримов Абдушукур' + VIA + 'привезли, @asilramm'), { name: 'Каримов Абдушукур', text: 'привезли, @asilramm' });
+  assert.strictEqual(viaJarvis('обычный комментарий'), null);
+});

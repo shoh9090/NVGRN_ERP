@@ -1,0 +1,424 @@
+// jarvis-bot.js — внутренний Telegram-бот «Джарвис» (шаг 3, docs/plan-jarvis.md).
+// Живёт внутри Hub: Telegram присылает сообщения на защищённый адрес (webhook),
+// а раз в 5 минут Джарвис читает Trello и решает, кому пора напомнить.
+//
+// Что делает:
+//   • вход — «Поделиться номером»; пускаем только сотрудников Персонала с учёткой ERP;
+//   • упомянули (@) и нет ответа → напоминание, потом нарушение (сроки — в плитке);
+//   • срок карточки прошёл → каждое рабочее утро список; через N дней — нарушение;
+//   • карточка без движения → одно напоминание;
+//   • «✍️ Ответить» — ответ из Telegram ложится комментарием в карточку.
+// Пока в правилах не включены напоминания — только читаем Trello и ведём журнал.
+// Нарушения пишутся в jarvis_log; штрафы из них — шаг 4.
+
+const crypto = require('crypto');
+const trello = require('./trello');
+const R = require('./jarvis-rules');
+const { ensureJarvisSchema } = require('./jarvis-schema');
+
+let pool = null;
+const TICK_MS = 5 * 60 * 1000;
+const status = { last_sync: null, last_error: null, boards: 0, cards: 0 };
+
+// ---------- Telegram ----------
+const token = () => process.env.INTERNAL_BOT_TOKEN || '';
+// Секрет адреса и заголовка берём из самого токена: отдельной переменной не нужно,
+// а без токена адрес не угадать.
+const secret = () => crypto.createHash('sha256').update('jarvis:' + token()).digest('hex').slice(0, 32);
+
+async function tg(method, body) {
+  if (!token()) return null;
+  try {
+    const r = await fetch(`https://api.telegram.org/bot${token()}/${method}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body), signal: AbortSignal.timeout(15000),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!d.ok) console.warn(`[ДЖАРВИС] Telegram ${method}: ${d.description || r.status}`);
+    return d.ok ? d.result : null;
+  } catch (e) { console.warn(`[ДЖАРВИС] Telegram ${method}: ${e.message}`); return null; }
+}
+const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const send = (chatId, html, extra = {}) => tg('sendMessage', { chat_id: chatId, text: html, parse_mode: 'HTML', disable_web_page_preview: true, ...extra });
+const MENU_MY = '📋 Мои карточки';
+const menu = { reply_markup: { keyboard: [[{ text: MENU_MY }]], resize_keyboard: true } };
+const askContact = { reply_markup: { keyboard: [[{ text: '📱 Поделиться номером', request_contact: true }]], resize_keyboard: true, one_time_keyboard: true } };
+// Кнопки под сообщением о карточке: ответить и открыть.
+function cardButtons(cardId, url, mentionId) {
+  const row = [{ text: '✍️ Ответить', callback_data: mentionId ? 'jm:' + mentionId : 'jc:' + cardId }];
+  if (url) row.push({ text: 'Открыть в Trello', url });
+  return { reply_markup: { inline_keyboard: [row] } };
+}
+
+// ---------- Люди ----------
+const last9 = (v) => String(v || '').replace(/\D/g, '').slice(-9);
+// Кто пишет боту: учётка ERP с этим чатом + её карточка в Персонале.
+async function personByChat(chatId) {
+  return (await pool.query(
+    `SELECT u.id AS user_id, u.full_name AS user_name, e.id AS employee_id, e.full_name, e.trello_member_id, e.trello_username
+       FROM users u JOIN hr_employees e ON e.erp_user_id = u.id
+      WHERE u.jv_chat_id = $1 AND u.is_active = TRUE AND e.status = 'active' LIMIT 1`, [chatId])).rows[0] || null;
+}
+// Сотрудники, за которыми следим: связаны с Trello, активны, есть учётка (для чата).
+async function trackedPeople() {
+  return (await pool.query(
+    `SELECT e.id AS employee_id, e.full_name, e.trello_member_id, lower(e.trello_username) AS username, u.jv_chat_id
+       FROM hr_employees e LEFT JOIN users u ON u.id = e.erp_user_id AND u.is_active = TRUE
+      WHERE e.status = 'active' AND e.trello_member_id IS NOT NULL`)).rows;
+}
+
+// Ждём текст ответа: чат → карточка. В памяти: после перезапуска достаточно
+// ещё раз нажать «Ответить».
+const pending = new Map();
+
+// ---------- Входящие от Telegram ----------
+async function handleUpdate(u) {
+  if (u.callback_query) return onCallback(u.callback_query);
+  const m = u.message;
+  if (!m || !m.chat || m.chat.type !== 'private') return;
+  const chatId = m.chat.id;
+
+  if (m.contact) return onContact(m);
+  const me = await personByChat(chatId);
+  if (!me) {
+    return send(chatId, 'Здравствуйте! Это Джарвис — внутренний бот Novagreen.\n'
+      + 'Чтобы я вас узнал, нажмите «📱 Поделиться номером» внизу.', askContact);
+  }
+  const text = String(m.text || '').trim();
+  if (text === '/cancel') { pending.delete(chatId); return send(chatId, 'Отменено.', menu); }
+  const p = pending.get(chatId);
+  if (p && text && !text.startsWith('/') && text !== MENU_MY) {
+    if (Date.now() > p.until) { pending.delete(chatId); return send(chatId, 'Время на ответ вышло — нажмите «✍️ Ответить» ещё раз.', menu); }
+    pending.delete(chatId);
+    return postReply(chatId, me, p, text);
+  }
+  if (text === MENU_MY || text === '/my') return myCards(chatId, me);
+  return send(chatId, `${esc(me.full_name)}, я напоминаю про карточки Trello и публикую ваши ответы.\n`
+    + `Нажмите «${MENU_MY}», чтобы увидеть, что ждёт вашего ответа.`, menu);
+}
+
+async function onContact(m) {
+  const chatId = m.chat.id;
+  // Только свой номер: чужой контакт не даёт войти под чужим именем.
+  if (!m.contact.user_id || m.contact.user_id !== m.from.id) {
+    return send(chatId, 'Нужен ваш собственный номер — нажмите кнопку «📱 Поделиться номером».', askContact);
+  }
+  const phone = last9(m.contact.phone_number);
+  const rows = phone.length === 9 ? (await pool.query(
+    `SELECT u.id, e.full_name FROM users u JOIN hr_employees e ON e.erp_user_id = u.id
+      WHERE u.is_active = TRUE AND e.status = 'active' AND right(regexp_replace(COALESCE(u.tg_phone,''), '\\D', '', 'g'), 9) = $1`,
+    [phone])).rows : [];
+  if (rows.length !== 1) {
+    console.warn(`[ДЖАРВИС] вход отклонён: номер …${phone.slice(-4)} ${rows.length ? 'у нескольких' : 'не найден'}`);
+    return send(chatId, 'Не нашёл вас среди сотрудников. Попросите администратора проверить телефон '
+      + 'в вашей карточке в Персонале (Персонал → сотрудник → Телефон).');
+  }
+  await pool.query('UPDATE users SET jv_chat_id = NULL WHERE jv_chat_id = $1 AND id <> $2', [chatId, rows[0].id]);
+  await pool.query('UPDATE users SET jv_chat_id = $1 WHERE id = $2', [chatId, rows[0].id]);
+  return send(chatId, `Готово, ${esc(rows[0].full_name)}! Теперь я буду напоминать вам про карточки Trello: `
+    + 'упоминания без ответа, просроченные сроки и забытые карточки. '
+    + 'Ответить можно прямо здесь — кнопкой «✍️ Ответить».', menu);
+}
+
+async function onCallback(cq) {
+  const chatId = cq.message && cq.message.chat && cq.message.chat.id;
+  tg('answerCallbackQuery', { callback_query_id: cq.id });
+  if (!chatId) return;
+  const me = await personByChat(chatId);
+  if (!me) return send(chatId, 'Сначала нажмите «📱 Поделиться номером».', askContact);
+  const data = String(cq.data || '');
+  let target = null;
+  if (data.startsWith('jm:')) {
+    const mt = (await pool.query('SELECT id, card_id, card_name, card_url FROM jarvis_mentions WHERE id = $1 AND employee_id = $2',
+      [parseInt(data.slice(3), 10) || 0, me.employee_id])).rows[0];
+    if (mt) target = { cardId: mt.card_id, cardName: mt.card_name, cardUrl: mt.card_url, mentionId: mt.id };
+  } else if (data.startsWith('jc:')) {
+    const c = await cardInWorkspace(data.slice(3));
+    if (c) target = { cardId: c.id, cardName: c.name, cardUrl: c.shortUrl };
+  }
+  if (!target) return send(chatId, 'Эта карточка не найдена или больше не в рабочем пространстве.');
+  pending.set(chatId, { ...target, until: Date.now() + 30 * 60 * 1000 });
+  return send(chatId, `Напишите ответ одним сообщением — опубликую его комментарием в карточке «${esc(target.cardName)}».\n/cancel — отмена`,
+    { reply_markup: { force_reply: true } });
+}
+
+// Карточка — только из контролируемого пространства (не даём писать в чужие доски).
+async function cardInWorkspace(cardId) {
+  if (!/^[a-f0-9]{24}$/i.test(cardId)) return null;
+  const rules = await loadRules();
+  if (!rules.workspace_id) return null;
+  try {
+    const c = await trello.card(cardId);
+    if (!c || c.closed) return null;
+    const boards = await trello.boards(rules.workspace_id);
+    return boards.some((b) => b.id === c.idBoard) ? c : null;
+  } catch (e) { return null; }
+}
+
+async function postReply(chatId, me, p, text) {
+  try {
+    await trello.addComment(p.cardId, me.full_name + R.VIA + text.slice(0, 3000));
+  } catch (e) {
+    return send(chatId, 'Не получилось опубликовать в Trello: ' + esc(e.message) + '\nПопробуйте ещё раз чуть позже.');
+  }
+  // Ответ закрывает все его упоминания в этой карточке.
+  await pool.query(
+    `UPDATE jarvis_mentions SET answered_at = now(), answered_via = 'telegram'
+      WHERE card_id = $1 AND employee_id = $2 AND answered_at IS NULL`, [p.cardId, me.employee_id]);
+  await log('reply', me.employee_id, { id: p.cardId, name: p.cardName, url: p.cardUrl }, text.slice(0, 500), true, null);
+  return send(chatId, `✅ Опубликовано в карточке «${esc(p.cardName)}».`, cardButtons(p.cardId, p.cardUrl));
+}
+
+// «Мои карточки»: что ждёт ответа и что просрочено — из последнего чтения Trello.
+async function myCards(chatId, me) {
+  if (!me.trello_member_id) return send(chatId, 'Ваш Trello ещё не сопоставлен. Попросите администратора: плитка «Джарвис» → «Люди и Trello».', menu);
+  const open = (await pool.query(
+    `SELECT id, card_id, card_name, card_url, author_name, created_at FROM jarvis_mentions
+      WHERE employee_id = $1 AND answered_at IS NULL ORDER BY created_at LIMIT 10`, [me.employee_id])).rows;
+  const scan = await scanCached();
+  const now = Date.now();
+  const overdue = scan ? scan.cards.filter((c) => c.idMembers.includes(me.trello_member_id) && isOverdue(c, scan, now)) : [];
+  if (!open.length && !overdue.length) return send(chatId, '👍 Всё чисто: упоминаний без ответа и просроченных карточек нет.', menu);
+  if (open.length) {
+    await send(chatId, `<b>Ждут вашего ответа (${open.length}):</b>`);
+    for (const m of open) await send(chatId, `💬 «${esc(m.card_name)}» — упомянул(а) ${esc(m.author_name)}`, cardButtons(m.card_id, m.card_url, m.id));
+  }
+  if (overdue.length) {
+    await send(chatId, `<b>Просрочены (${overdue.length}):</b>`);
+    for (const c of overdue.slice(0, 10)) await send(chatId, `⏰ «${esc(c.name)}» — срок был ${dateRu(c.due)}`, cardButtons(c.id, c.shortUrl));
+  }
+}
+
+// ---------- Trello: чтение ----------
+async function loadRules() {
+  const r = await pool.query("SELECT value FROM settings WHERE key = 'jarvis_rules'");
+  let raw = {};
+  try { raw = JSON.parse((r.rows[0] && r.rows[0].value) || '{}'); } catch (e) { raw = {}; }
+  return R.normalizeRules(raw);
+}
+const getSetting = async (k) => ((await pool.query('SELECT value FROM settings WHERE key = $1', [k])).rows[0] || {}).value || null;
+const setSetting = (k, v) => pool.query('INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2', [k, v]);
+const dateRu = (iso) => { const d = new Date(Date.parse(iso) + 5 * 3600000).toISOString(); return `${d.slice(8, 10)}.${d.slice(5, 7)}`; };
+
+// Карточки и колонки всех досок пространства (для просрочек и «без движения»).
+let _scan = null;
+async function scanWorkspace(rules) {
+  const boards = await trello.boards(rules.workspace_id);
+  const cards = [], listName = new Map(), boardName = new Map();
+  for (const b of boards) {
+    boardName.set(b.id, b.name);
+    for (const l of await trello.lists(b.id)) listName.set(l.id, l.name);
+    for (const c of await trello.cards(b.id)) cards.push(c);
+  }
+  _scan = { at: Date.now(), boards, cards, listName, boardName };
+  return _scan;
+}
+async function scanCached() {
+  if (_scan && Date.now() - _scan.at < TICK_MS * 2) return _scan;
+  const rules = await loadRules();
+  if (!rules.workspace_id || !trello.configured()) return null;
+  try { return await scanWorkspace(rules); } catch (e) { return _scan; }
+}
+const isDone = (c, scan) => c.dueComplete || R.isDoneList(scan.listName.get(c.idList));
+const isOverdue = (c, scan, now) => c.due && !isDone(c, scan) && Date.parse(c.due) < now;
+
+// Новые комментарии → упоминания и ответы. Каждый комментарий по порядку:
+// сначала он отвечает на упоминания автора в этой карточке, потом сам кого-то упоминает.
+async function syncComments(rules, scan, people) {
+  const since = (await getSetting('jarvis_sync_since')) || new Date(Date.now() - 7 * 86400000).toISOString();
+  const actions = [];
+  for (const b of scan.boards) actions.push(...await trello.comments(b.id, since));
+  actions.sort((a, b) => Date.parse(a.date) - Date.parse(b.date));
+  const byUser = new Map(people.filter((p) => p.username).map((p) => [p.username, p]));
+  const byName = new Map(people.map((p) => [p.full_name, p]));
+  let maxDate = since;
+  for (const a of actions) {
+    if (a.date > maxDate) maxDate = a.date;
+    const d = a.data || {}, card = d.card || {};
+    if (!card.id) continue;
+    const via = R.viaJarvis(d.text);
+    // Ответ из Telegram уже учтён при отправке; автор — не владелец токена, а подписанный.
+    const author = via ? byName.get(via.name) : people.find((p) => p.trello_member_id === a.idMemberCreator);
+    const authorMember = author ? author.trello_member_id : a.idMemberCreator;
+    if (!via) {
+      await pool.query(
+        `UPDATE jarvis_mentions SET answered_at = $3, answered_via = 'trello'
+          WHERE card_id = $1 AND member_id = $2 AND answered_at IS NULL AND created_at < $3`,
+        [card.id, a.idMemberCreator, a.date]);
+    }
+    for (const u of R.parseMentions(via ? via.text : d.text)) {
+      const p = byUser.get(u);
+      if (!p || p.trello_member_id === authorMember) continue;
+      await pool.query(
+        `INSERT INTO jarvis_mentions (action_id, member_id, employee_id, card_id, card_name, card_url, board_name,
+           author_member_id, author_name, text, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (action_id, member_id) DO NOTHING`,
+        [a.id, p.trello_member_id, p.employee_id, card.id, card.name || '', card.shortLink ? 'https://trello.com/c/' + card.shortLink : null,
+          (d.board && d.board.name) || '', authorMember, via ? via.name : ((a.memberCreator && a.memberCreator.fullName) || ''),
+          String((via ? via.text : d.text) || '').slice(0, 500), a.date]);
+    }
+  }
+  await setSetting('jarvis_sync_since', maxDate);
+  // Карточку архивировали — ждать ответа больше не от кого.
+  const openIds = new Set(scan.cards.map((c) => c.id));
+  const stale = (await pool.query('SELECT DISTINCT card_id FROM jarvis_mentions WHERE answered_at IS NULL')).rows
+    .map((r) => r.card_id).filter((id) => !openIds.has(id));
+  if (stale.length) {
+    await pool.query(`UPDATE jarvis_mentions SET answered_at = now(), answered_via = 'closed'
+      WHERE answered_at IS NULL AND card_id = ANY($1::text[])`, [stale]);
+  }
+}
+
+// Одна запись журнала; вернёт false, если такое уже было (dedup_key).
+async function log(kind, employeeId, card, text, sent, dedupKey) {
+  const r = await pool.query(
+    `INSERT INTO jarvis_log (kind, employee_id, card_id, card_name, card_url, text, sent, dedup_key)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (dedup_key) DO NOTHING RETURNING id`,
+    [kind, employeeId, card ? card.id : null, card ? card.name : null, card ? card.url : null, text, !!sent, dedupKey]);
+  return r.rows.length > 0;
+}
+
+// ---------- Напоминания ----------
+async function remindAll(rules, scan, people, now) {
+  const byEmp = new Map(people.map((p) => [p.employee_id, p]));
+  const byMember = new Map(people.map((p) => [p.trello_member_id, p]));
+  const workNow = R.isWorkTime(now, rules);
+  const canSend = rules.reminders_enabled && workNow;
+  const deliver = async (p, html, extra) => (canSend && p && p.jv_chat_id ? !!(await send(p.jv_chat_id, html, extra)) : false);
+
+  // 1. Упоминания без ответа.
+  // Решаем только в рабочее время и только когда напоминания включены —
+  // иначе ночью или «в тихом режиме» всё ушло бы в журнал без отправки.
+  if (canSend) {
+    const open = (await pool.query('SELECT * FROM jarvis_mentions WHERE answered_at IS NULL AND employee_id IS NOT NULL')).rows;
+    for (const m of open) {
+      const step = R.mentionStep(m, now, rules);
+      if (!step) continue;
+      const p = byEmp.get(m.employee_id);
+      if (!p) continue; // уволен или отвязан от Trello — не спрашиваем
+      const card = { id: m.card_id, name: m.card_name, url: m.card_url };
+      const quote = m.text ? `\n«${esc(m.text.slice(0, 300))}»` : '';
+      if (step === 'remind') {
+        await pool.query('UPDATE jarvis_mentions SET reminded_at = now() WHERE id = $1', [m.id]);
+        const ok = await deliver(p, `🔔 Вас упомянули в карточке <b>«${esc(m.card_name)}»</b> (${esc(m.board_name)}) — ${esc(m.author_name)}:${quote}\n\nОтвета пока нет.`,
+          cardButtons(m.card_id, m.card_url, m.id));
+        await log('remind_mention', m.employee_id, card, m.author_name, ok, 'rm:' + m.id);
+      } else {
+        await pool.query('UPDATE jarvis_mentions SET violation_at = now(), reminded_at = COALESCE(reminded_at, now()) WHERE id = $1', [m.id]);
+        const h = rules.mention_violation_h;
+        const ok = await deliver(p, `⚠️ Нет ответа ${h} рабочих часов на упоминание в карточке <b>«${esc(m.card_name)}»</b> — `
+          + `это нарушение${rules.fines_enabled ? '' : ' (штрафы пока не начисляются)'}.${quote}`, cardButtons(m.card_id, m.card_url, m.id));
+        await log('violation_mention', m.employee_id, card, `Нет ответа ${h} раб. ч, упомянул(а) ${m.author_name}`, ok, 'vm:' + m.id);
+        const author = byMember.get(m.author_member_id);
+        if (author && author.employee_id !== m.employee_id) {
+          await deliver(author, `⏰ ${esc(p.full_name)} не ответил(а) на ваше упоминание в карточке «${esc(m.card_name)}» за ${h} рабочих часов.`,
+            cardButtons(m.card_id, m.card_url));
+        }
+      }
+    }
+  }
+  if (!canSend) return;
+
+  // 2. Просроченные карточки: утренний список каждому + нарушение через N рабочих дней.
+  const today = R.localDate(now);
+  const overdueBy = new Map();
+  for (const c of scan.cards) {
+    if (!isOverdue(c, scan, now)) continue;
+    for (const mid of c.idMembers || []) {
+      const p = byMember.get(mid);
+      if (!p) continue;
+      if (!overdueBy.has(p.employee_id)) overdueBy.set(p.employee_id, []);
+      overdueBy.get(p.employee_id).push(c);
+      if (R.overdueIsViolation(Date.parse(c.due), now, rules)) {
+        const key = `vo:${c.id}:${mid}:${c.due}`;
+        const exists = (await pool.query('SELECT 1 FROM jarvis_log WHERE dedup_key = $1', [key])).rows.length;
+        if (!exists) {
+          const ok = await deliver(p, `⚠️ Карточка <b>«${esc(c.name)}»</b> просрочена (срок был ${dateRu(c.due)}) — `
+            + `это нарушение${rules.fines_enabled ? '' : ' (штрафы пока не начисляются)'}.`, cardButtons(c.id, c.shortUrl));
+          await log('violation_overdue', p.employee_id, { id: c.id, name: c.name, url: c.shortUrl }, 'Срок был ' + dateRu(c.due), ok, key);
+        }
+      }
+    }
+  }
+  for (const [empId, cards] of overdueBy) {
+    const key = `ro:${empId}:${today}`;
+    const exists = (await pool.query('SELECT 1 FROM jarvis_log WHERE dedup_key = $1', [key])).rows.length;
+    if (exists) continue;
+    const p = byEmp.get(empId);
+    const ok = await deliver(p, `☀️ Доброе утро! Просроченные карточки (${cards.length}):\n`
+      + cards.slice(0, 15).map((c) => `• ${esc(c.name)} — срок ${dateRu(c.due)}`).join('\n')
+      + `\n\nОтметьте выполненными или напишите, что мешает. «${MENU_MY}» — список с кнопками.`, menu);
+    await log('remind_overdue', empId, null, cards.map((c) => c.name).slice(0, 15).join('; '), ok, key);
+  }
+
+  // 3. Карточки без движения N дней — одно напоминание участникам.
+  const staleMs = rules.stale_days * 86400000;
+  for (const c of scan.cards) {
+    if (isDone(c, scan) || !(c.idMembers || []).length) continue;
+    if (now - Date.parse(c.dateLastActivity) < staleMs) continue;
+    if (c.due && Date.parse(c.due) < now) continue; // про просрочку уже пишем отдельно
+    for (const mid of c.idMembers) {
+      const p = byMember.get(mid);
+      if (!p) continue;
+      const key = `st:${c.id}:${mid}:${c.dateLastActivity}`;
+      const exists = (await pool.query('SELECT 1 FROM jarvis_log WHERE dedup_key = $1', [key])).rows.length;
+      if (exists) continue;
+      const ok = await deliver(p, `💤 Карточка <b>«${esc(c.name)}»</b> без движения больше ${rules.stale_days} дней. Она ещё нужна?`,
+        cardButtons(c.id, c.shortUrl));
+      await log('remind_stale', p.employee_id, { id: c.id, name: c.name, url: c.shortUrl }, `Без движения с ${dateRu(c.dateLastActivity)}`, ok, key);
+    }
+  }
+}
+
+// ---------- Такт ----------
+let _running = false;
+async function tick() {
+  if (_running || !pool) return;
+  _running = true;
+  // Во время выкладки два экземпляра Hub живут одновременно — такт делает только один.
+  const client = await pool.connect().catch(() => null);
+  if (!client) { _running = false; return; }
+  try {
+    const got = (await client.query('SELECT pg_try_advisory_lock(772031) AS ok')).rows[0].ok;
+    if (!got) return;
+    try {
+      const rules = await loadRules();
+      if (!rules.workspace_id || !trello.configured()) return;
+      const people = await trackedPeople();
+      const scan = await scanWorkspace(rules);
+      await syncComments(rules, scan, people);
+      await remindAll(rules, scan, people, Date.now());
+      Object.assign(status, { last_sync: new Date().toISOString(), last_error: null, boards: scan.boards.length, cards: scan.cards.length });
+    } finally { await client.query('SELECT pg_advisory_unlock(772031)').catch(() => {}); }
+  } catch (e) {
+    status.last_error = e.message;
+    console.warn('[ДЖАРВИС] такт:', e.message);
+  } finally { client.release(); _running = false; }
+}
+
+// ---------- Запуск ----------
+async function start(p) {
+  pool = p;
+  try { await ensureJarvisSchema(pool); } catch (e) { console.warn('[ДЖАРВИС] схема:', e.message); return; }
+  const domain = process.env.RAILWAY_PUBLIC_DOMAIN;
+  if (token() && domain) {
+    const ok = await tg('setWebhook', {
+      url: `https://${domain}/tg/jarvis/${secret()}`, secret_token: secret(),
+      allowed_updates: ['message', 'callback_query'],
+    });
+    console.log(ok ? '[ДЖАРВИС] бот подключён' : '[ДЖАРВИС] не удалось подключить бота');
+  }
+  setTimeout(tick, 60 * 1000);
+  setInterval(tick, TICK_MS);
+}
+
+// Express-обработчик адреса, на который Telegram присылает сообщения.
+function webhook(req, res) {
+  if (!token() || req.params.secret !== secret() || req.get('X-Telegram-Bot-Api-Secret-Token') !== secret()) {
+    return res.status(404).end();
+  }
+  res.sendStatus(200); // Telegram ждёт быстрый ответ; обработка — следом
+  if (pool) handleUpdate(req.body || {}).catch((e) => console.warn('[ДЖАРВИС] сообщение:', e.message));
+}
+
+module.exports = { start, webhook, tick, status };

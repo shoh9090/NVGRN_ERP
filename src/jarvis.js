@@ -21,9 +21,7 @@ let _ready = false;
 async function ensureSchema() {
   if (_ready) return;
   // Trello — поле человека, поэтому лежит в карточке сотрудника, а не в своей таблице.
-  // Те же колонки заводит и Персонал (src/hr.js) — кто откроется первым.
-  await db.pool.query('ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS trello_member_id TEXT');
-  await db.pool.query('ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS trello_username TEXT');
+  await require('./jarvis-schema').ensureJarvisSchema(db.pool);
   _ready = true;
 }
 
@@ -65,7 +63,8 @@ router.get('/', async (req, res) => {
 router.get('/api/state', async (req, res) => {
   try {
     const rules = await loadRules();
-    const out = { rules, can_edit: !!req.user.isAdmin, bot: await botInfo(), trello: { configured: trello.configured() } };
+    const out = { rules, can_edit: !!req.user.isAdmin, bot: await botInfo(), trello: { configured: trello.configured() },
+      sync: require('./jarvis-bot').status };
     if (out.trello.configured) {
       try {
         const me = await trello.me();
@@ -89,7 +88,10 @@ router.post('/api/rules', J, async (req, res) => {
   if (onlyAdmin(req, res)) return;
   try {
     const b = req.body || {};
-    const rules = R.normalizeRules({ ...(await loadRules()), ...b });
+    const old = await loadRules();
+    const rules = R.normalizeRules({ ...old, ...b, enabled_at: old.enabled_at });
+    // Включили напоминания — часы по старым упоминаниям пойдут с этого момента.
+    if (rules.reminders_enabled && !old.reminders_enabled) rules.enabled_at = new Date().toISOString();
     // Пространство — только из тех, что реально видит токен, и с его настоящим именем.
     if (rules.workspace_id) {
       const ws = (await trello.workspaces()).find((w) => w.id === rules.workspace_id);
@@ -98,7 +100,7 @@ router.post('/api/rules', J, async (req, res) => {
     }
     await db.setSetting('jarvis_rules', JSON.stringify(rules));
     await db.log(req.user.id, 'jarvis_rules', JSON.stringify({
-      ws: rules.workspace_name, fines: rules.fines_enabled, fm: rules.fine_mention, fo: rules.fine_overdue }));
+      ws: rules.workspace_name, on: rules.reminders_enabled, fines: rules.fines_enabled, fm: rules.fine_mention, fo: rules.fine_overdue }));
     res.json({ ok: true, rules });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
@@ -108,7 +110,7 @@ async function employeesForMatch() {
   await ensureSchema();
   return (await db.pool.query(
     `SELECT e.id, e.full_name, e.status, e.position, e.trello_member_id, e.trello_username,
-            d.name AS department_name, (u.tg_chat_id IS NOT NULL) AS in_bot, (u.id IS NOT NULL) AS has_erp
+            d.name AS department_name, (u.jv_chat_id IS NOT NULL) AS in_bot, (u.id IS NOT NULL) AS has_erp
        FROM hr_employees e
        LEFT JOIN hr_departments d ON d.id = e.department_id
        LEFT JOIN users u ON u.id = e.erp_user_id
@@ -184,6 +186,27 @@ router.post('/api/people/unlink', J, async (req, res) => {
     await db.pool.query('UPDATE hr_employees SET trello_member_id = NULL, trello_username = NULL, updated_at = now() WHERE id = $1', [empId]);
     await db.log(req.user.id, 'jarvis_trello_unlink', `${e.full_name} ↔ @${e.trello_username || '—'}`);
     res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// ---------- Журнал ----------
+// Что Джарвис напомнил и какие нарушения записал; сверху — что сейчас ждёт ответа.
+const LOG_KINDS = ['remind_mention', 'violation_mention', 'remind_overdue', 'violation_overdue', 'remind_stale', 'reply'];
+router.get('/api/log', async (req, res) => {
+  try {
+    await ensureSchema();
+    const kind = LOG_KINDS.includes(req.query.kind) ? req.query.kind : null;
+    const items = (await db.pool.query(
+      `SELECT l.id, l.kind, l.card_name, l.card_url, l.text, l.sent, l.created_at, e.full_name
+         FROM jarvis_log l LEFT JOIN hr_employees e ON e.id = l.employee_id
+        WHERE ($1::text IS NULL OR l.kind = $1) ORDER BY l.created_at DESC LIMIT 300`, [kind])).rows;
+    const counts = (await db.pool.query(
+      `SELECT kind, count(*)::int AS n FROM jarvis_log WHERE created_at > now() - interval '30 days' GROUP BY kind`)).rows;
+    const waiting = (await db.pool.query(
+      `SELECT m.id, m.card_name, m.card_url, m.author_name, m.created_at, m.reminded_at, m.violation_at, e.full_name
+         FROM jarvis_mentions m LEFT JOIN hr_employees e ON e.id = m.employee_id
+        WHERE m.answered_at IS NULL ORDER BY m.created_at LIMIT 200`)).rows;
+    res.json({ items, counts, waiting });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 

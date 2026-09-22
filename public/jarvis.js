@@ -35,11 +35,11 @@
 
   function render() {
     main.innerHTML = '';
-    const tabs = el('div', { class: 'hub-tabs' }, [['rules', 'Правила'], ['people', 'Люди и Trello']].map(([k, t]) =>
+    const tabs = el('div', { class: 'hub-tabs' }, [['rules', 'Правила'], ['people', 'Люди и Trello'], ['log', 'Журнал']].map(([k, t]) =>
       el('button', { class: 'hub-tab' + (TAB === k ? ' on' : ''), onclick: () => { TAB = k; try { localStorage.setItem('jv_tab', k); } catch (e) { /* ок */ } render(); } }, t)));
     const box = el('div', {}, el('div', { class: 'jv-muted' }, 'Загрузка…'));
     main.append(tabs, box);
-    (TAB === 'rules' ? renderRules : renderPeople)(box).catch((e) => { box.innerHTML = ''; box.appendChild(el('div', { class: 'jv-err' }, e.message)); });
+    ({ rules: renderRules, people: renderPeople, log: renderLog }[TAB] || renderRules)(box).catch((e) => { box.innerHTML = ''; box.appendChild(el('div', { class: 'jv-err' }, e.message)); });
   }
 
   // ---------- Правила ----------
@@ -58,9 +58,18 @@
     const botCard = el('div', { class: 'jv-conn ' + (b.ok ? 'ok' : 'bad') }, [
       el('div', { class: 'jv-conn-t' }, 'Бот для сотрудников'),
       el('div', {}, !b.configured ? 'Не подключён: в Railway нет INTERNAL_BOT_TOKEN'
-        : b.ok ? ['✓ ', el('a', { href: 'https://t.me/' + b.username, target: '_blank', rel: 'noopener' }, '@' + b.username), ' · напоминания заработают на следующем шаге'] : '✗ ' + b.error),
+        : b.ok ? ['✓ ', el('a', { href: 'https://t.me/' + b.username, target: '_blank', rel: 'noopener' }, '@' + b.username),
+          ' · сотрудникам: открыть бота и нажать «Поделиться номером»'] : '✗ ' + b.error),
     ]);
-    box.appendChild(el('div', { class: 'jv-conns' }, [trelloCard, botCard]));
+    const sy = s.sync || {};
+    const syncCard = el('div', { class: 'jv-conn ' + (sy.last_error ? 'bad' : 'ok') }, [
+      el('div', { class: 'jv-conn-t' }, 'Чтение Trello'),
+      el('div', {}, sy.last_error ? '✗ ' + sy.last_error
+        : sy.last_sync ? '✓ ' + new Date(sy.last_sync).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+          + ' · досок ' + sy.boards + ', карточек ' + sy.cards + ' · раз в 5 минут'
+          : 'Ещё не читал — первый раз через минуту после запуска'),
+    ]);
+    box.appendChild(el('div', { class: 'jv-conns' }, [trelloCard, botCard, syncCard]));
 
     const dis = !isAdmin;
     const inp = (val, attrs = {}) => el('input', { class: 'jv-inp', value: String(val), disabled: dis, ...attrs });
@@ -93,8 +102,15 @@
     const fM = numInp(r.fine_mention, { step: '1000' });
     const fO = numInp(r.fine_overdue, { step: '1000' });
     const finesOn = el('input', { type: 'checkbox', checked: r.fines_enabled, disabled: dis });
+    const remOn = el('input', { type: 'checkbox', checked: r.reminders_enabled, disabled: dis });
 
     box.append(
+      sec('Напоминания', r.reminders_enabled
+        ? 'Джарвис пишет людям в Telegram. Включены с ' + new Date(r.enabled_at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+          + ': часы по старым упоминаниям считаются с этого момента.'
+        : 'Выключены: Джарвис только читает Trello и собирает упоминания, людям не пишет.', [
+        row('Напоминания', el('label', { class: 'jv-day' }, [remOn, ' включены'])),
+      ]),
       sec('Что контролируем', 'Джарвис смотрит только это пространство, другие ваши доски не открывает.', wsRows),
       sec('Рабочее время', 'Вне рабочего времени Джарвис не пишет, а часы до напоминания не идут.', [
         row('Часы', 'с ', from, ' до ', to),
@@ -132,6 +148,7 @@
           workspace_id: wsSel.value, work_from: from.value, work_to: to.value, work_days,
           mention_remind_h: mRem.value, mention_violation_h: mVio.value, overdue_violation_days: oVio.value,
           stale_days: stale.value, fine_mention: fM.value, fine_overdue: fO.value, fines_enabled: finesOn.checked,
+          reminders_enabled: remOn.checked,
         });
         toast('Сохранено');
         render();
@@ -215,6 +232,47 @@
         el('div', { class: 'jv-muted' }, 'Джарвис напоминает только тем, кто есть в Trello. Если человеку нужны карточки — пригласите его в пространство.'),
         el('div', { class: 'jv-list' }, d.without.map((e) => el('span', {}, empName(e))))]));
     }
+  }
+
+  // ---------- Журнал ----------
+  const KIND = {
+    remind_mention: '🔔 Напоминание: упоминание', violation_mention: '⚠️ Нарушение: нет ответа',
+    remind_overdue: '☀️ Утренний список просрочек', violation_overdue: '⚠️ Нарушение: просрочка',
+    remind_stale: '💤 Без движения', reply: '✍️ Ответ из Telegram',
+  };
+  const dt = (v) => v ? new Date(v).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+  const cardLink = (name, url) => url ? el('a', { href: url, target: '_blank', rel: 'noopener' }, name || 'карточка') : (name || '');
+  async function renderLog(box) {
+    const d = await api('/log');
+    box.innerHTML = '';
+    const n = (k) => (d.counts.find((c) => c.kind === k) || {}).n || 0;
+    box.appendChild(el('div', { class: 'pur-kpis' }, [
+      ['Ждут ответа сейчас', d.waiting.length],
+      ['Напоминаний за 30 дней', n('remind_mention') + n('remind_overdue') + n('remind_stale')],
+      ['Нарушений за 30 дней', n('violation_mention') + n('violation_overdue')],
+      ['Ответов из Telegram', n('reply')],
+    ].map(([l, v]) => el('div', { class: 'pur-kpi' }, [el('div', { class: 'pur-kpi-label' }, l), el('div', { class: 'pur-kpi-val' }, String(v))]))));
+
+    if (d.waiting.length) {
+      box.appendChild(el('section', { class: 'jv-sec' }, [el('h3', {}, 'Упоминания без ответа'),
+        el('table', { class: 'dict-table jv-table' }, [
+          el('thead', {}, el('tr', {}, ['Кого', 'Карточка', 'Кто упомянул', 'Когда', 'Статус'].map((t) => el('th', {}, t)))),
+          el('tbody', {}, d.waiting.map((m) => el('tr', {}, [
+            el('td', {}, m.full_name || '—'), el('td', {}, cardLink(m.card_name, m.card_url)), el('td', {}, m.author_name || ''),
+            el('td', {}, dt(m.created_at)),
+            el('td', {}, m.violation_at ? '⚠️ нарушение' : m.reminded_at ? '🔔 напомнили' : 'ждём'),
+          ]))),
+        ])]));
+    }
+    box.appendChild(el('section', { class: 'jv-sec' }, [el('h3', {}, 'Что сделал Джарвис'),
+      d.items.length ? el('table', { class: 'dict-table jv-table' }, [
+        el('thead', {}, el('tr', {}, ['Когда', 'Что', 'Кому', 'Карточка', 'Подробно', ''].map((t) => el('th', {}, t)))),
+        el('tbody', {}, d.items.map((x) => el('tr', {}, [
+          el('td', {}, dt(x.created_at)), el('td', {}, KIND[x.kind] || x.kind), el('td', {}, x.full_name || '—'),
+          el('td', {}, cardLink(x.card_name, x.card_url)), el('td', { class: 'jv-muted' }, x.text || ''),
+          el('td', {}, x.sent ? '✓' : el('span', { class: 'jv-warn', title: 'Человек не открыл бота или напоминания выключены' }, 'не дошло')),
+        ]))),
+      ]) : el('div', { class: 'jv-muted' }, 'Пока пусто. Напоминания и нарушения появятся здесь.')]));
   }
 
   render();

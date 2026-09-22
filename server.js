@@ -254,6 +254,12 @@ try {
   console.error('[tgbot] Плитка не загрузилась, Hub работает без неё:', e.message);
 }
 
+// ---------- Джарвис: внутренний бот для сотрудников ----------
+// Telegram присылает сообщения сюда. Адрес без входа в ERP, поэтому защищён
+// секретом из токена бота (в адресе и в заголовке) — см. src/jarvis-bot.js.
+const jarvisBot = require('./src/jarvis-bot');
+app.post('/tg/jarvis/:secret', express.json(), jarvisBot.webhook);
+
 // ---------- Админ-панель ----------
 
 const admin = express.Router();
@@ -1039,6 +1045,8 @@ app.get('/health', (req, res) => res.json({ ok: true }));
     await db.seed();
     await db.migrateLegacyDicts();
     app.listen(PORT, () => console.log(`Hub запущен на порту ${PORT}`));
+    // Бот сам ловит свои ошибки: его сбой не должен ронять ERP.
+    jarvisBot.start(db.pool).catch((e) => console.warn('[ДЖАРВИС] запуск:', e.message));
   } catch (e) {
     console.error('Ошибка запуска:', e);
     process.exit(1);
