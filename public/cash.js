@@ -168,6 +168,37 @@
   let cpFilterSrc = '';
   const triageState = { from: '', to: '', wallet: '' };
 
+  // Таблица «Готовность данных»: месяцы × проверки, светофором. Грузится отдельно,
+  // чтобы не задерживать сам отчёт: считать полгода — несколько секунд.
+  function pnlReadiness(box) {
+    const wrap = el('div', { class: 'cash-ready' }, el('div', { class: 'cash-ready-h' }, 'Готовность данных по месяцам — считаю…'));
+    box.appendChild(wrap);
+    api('/pnl/readiness?months=6&period=' + encodeURIComponent(PNL_PERIOD)).then((r) => {
+      const months = r.months || [];
+      if (!months.length) { wrap.remove(); return; }
+      const dot = { ok: '🟢', warn: '🟡', bad: '🔴' };
+      const labels = months[0].checks.map((c) => [c.key, c.label]);
+      const head = el('tr', {}, [el('th', {}, 'Проверка'), ...months.map((m) => el('th', {},
+        el('button', { class: 'cash-ready-m' + (m.period === PNL_PERIOD ? ' on' : ''), title: 'Открыть месяц',
+          onclick: () => { PNL_PERIOD = m.period; renderReport('pnl'); } },
+        monthLabelRu(m.period) + (m.closed ? ' 🔒' : ''))))]);
+      const verdictRow = el('tr', { class: 'cash-ready-v' }, [el('td', {}, 'Итог'), ...months.map((m) =>
+        el('td', { title: m.verdict_text }, dot[m.verdict] + ' ' + (m.net_profit === null ? '—' : mlrd(m.net_profit))
+          + (m.margin_pct === null ? '' : ' · ' + Math.round(m.margin_pct) + '%')))]);
+      const rows = labels.map(([key, label]) => el('tr', {}, [el('td', {}, label), ...months.map((m) => {
+        const c = m.checks.find((x) => x.key === key) || {};
+        return el('td', { title: c.note || '' }, [dot[c.level] || '', ' ', el('span', { class: 'cash-ready-n' }, c.note || '')]);
+      })]));
+      wrap.innerHTML = '';
+      wrap.appendChild(el('div', { class: 'cash-ready-h' }, 'Готовность данных по месяцам'));
+      wrap.appendChild(el('div', { class: 'cash-ready-sub' },
+        'Формула прибыли одна для всех месяцев. Разница — в полноте данных: 🟢 всё заведено, '
+        + '🟡 прибыль приблизительная, 🔴 прибыли верить нельзя. Нажмите на месяц, чтобы открыть его.'));
+      wrap.appendChild(el('div', { class: 'cash-ready-scroll' },
+        el('table', { class: 'cash-ready-t' }, [el('thead', {}, head), el('tbody', {}, [verdictRow, ...rows])])));
+    }).catch((e) => { wrap.innerHTML = ''; wrap.appendChild(el('div', { class: 'cash-ready-sub' }, 'Готовность данных посчитать не удалось: ' + e.message)); });
+  }
+
   // Блок «Проверка отчёта»: почему прибыль в отчёте может быть выше настоящей.
   // Сами цифры прибыли не меняем — показываем, на сколько они изменились бы.
   function pnlSelfCheck(box, d) {
@@ -952,6 +983,9 @@
     if (d.warnings && d.warnings.length) {
       box.appendChild(el('div', { class: 'cash-pnl-warn' }, d.warnings.map(pnlWarnRow)));
     }
+
+    // Готовность данных по месяцам — один и тот же набор проверок для каждого месяца.
+    if (PNL_VIEW === 'dash') pnlReadiness(box);
 
     // Проверка отчёта: из-за чего прибыль может быть выше настоящей.
     if (d.self_check && d.self_check.items && d.self_check.items.length) pnlSelfCheck(box, d);

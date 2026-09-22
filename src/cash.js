@@ -6,7 +6,7 @@ const multer = require('multer');
 const XLSX = require('xlsx');
 const db = require('./db');
 const integrations = require('./integrations');
-const { buildPnl, buildTrend, UNITS_KEY, SALES_KEY, SKU_KEY, SNAP_KEY, saveSnapshot, loadSnapshot } = require('./cash-pnl');
+const { buildPnl, buildTrend, UNITS_KEY, SALES_KEY, SKU_KEY, SNAP_KEY, saveSnapshot, loadSnapshot, monthReadiness } = require('./cash-pnl');
 const pfin = require('./purchase-finance'); // общий расчёт долга поставщикам (read-only в «Обязательствах»)
 
 const router = express.Router();
@@ -1512,6 +1512,27 @@ router.post('/api/reconcile', J, async (req, res) => {
 // ---------- P&L: управленческий отчёт о прибыли ----------
 // Считается помесячно. Себестоимость берётся со склада, а не из оплат
 // поставщикам, поэтому отчёт не совпадает с Кэш-флоу — и не должен.
+// Готовность данных по месяцам: одни и те же проверки для каждого месяца.
+// Закрытые месяцы берутся из снимка — ровно то, что показывает отчёт.
+router.get('/api/pnl/readiness', async (req, res) => {
+  const end = /^\d{4}-\d{2}$/.test(req.query.period || '') ? req.query.period : new Date().toISOString().slice(0, 7);
+  const n = Math.max(1, Math.min(12, Number(req.query.months) || 6));
+  const [ey, em] = end.split('-').map(Number);
+  const out = [];
+  try {
+    for (let i = n - 1; i >= 0; i--) {
+      const period = new Date(Date.UTC(ey, em - 1 - i, 1)).toISOString().slice(0, 7);
+      const snap = await loadSnapshot(db.pool, period);
+      const r = (snap && await isLocked(period + '-01')) ? snap : await buildPnl(db.pool, period);
+      out.push(monthReadiness(r));
+    }
+    res.json({ months: out });
+  } catch (e) {
+    console.error('[КАССА] готовность P&L:', e.message);
+    res.status(400).json({ error: e.message });
+  }
+});
+
 router.get('/api/pnl', async (req, res) => {
   const period = /^\d{4}-\d{2}$/.test(req.query.period || '')
     ? req.query.period : new Date().toISOString().slice(0, 7);

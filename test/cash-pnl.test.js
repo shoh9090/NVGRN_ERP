@@ -647,3 +647,33 @@ test('всё сходится — проверка молчит', () => {
   assert.deepStrictEqual(sc.items, []);
   assert.strictEqual(sc.total_gap, 0);
 });
+
+test('готовность месяца: один и тот же светофор для любого месяца', async () => {
+  const { monthReadiness } = require('../src/cash-pnl');
+  // Месяц без склада, без SD и без зарплаты — прибыли верить нельзя.
+  const empty = await buildPnl(makePool({
+    cash: [{ code: '200', name: 'Выручка', group_name: 'Доходы и поступления', flow_type: 'operating', inc: 1000000, exp: 0, cnt: 1 },
+      { code: '41', name: 'Аренда', group_name: '4. Административные расходы', flow_type: 'operating', inc: 0, exp: 100000, cnt: 1 }],
+  }), '2026-08');
+  const e = monthReadiness(empty);
+  assert.strictEqual(e.verdict, 'bad');
+  const lv = Object.fromEntries(e.checks.map((c) => [c.key, c.level]));
+  assert.strictEqual(lv.sales, 'bad');
+  assert.strictEqual(lv.stock, 'bad');
+  assert.strictEqual(lv.salary, 'bad');
+
+  // Всё заведено — зелёный.
+  const full = await buildPnl(makePool({
+    cash: [{ code: '200', name: 'Выручка', group_name: 'Доходы и поступления', flow_type: 'operating', inc: 1000000, exp: 0, cnt: 1 },
+      { code: '20', name: 'ЗП производство', group_name: '2. Производственные затраты', flow_type: 'operating', inc: 0, exp: 100000, cnt: 1 },
+      { code: '10', name: 'Сырьё', group_name: '1. Сырьё и переменные затраты', flow_type: 'operating', inc: 0, exp: 100000, cnt: 1 }],
+    settings: [{ key: 'pnl_sales_2026-08', value: '900000' }, { key: 'pnl_units_2026-08', value: '10' },
+      { key: 'pnl_sku_2026-08', value: JSON.stringify([['SD1', 10, 'Руккола']]) }],
+    used: [{ item_kind: 'raw', item_id: 1, qty: 10 }],
+    prices: [{ item_kind: 'raw', item_id: 1, avg_price: 10000 }],
+    waste: [{ parent_id: 1, qty: 1 }],
+    products: [{ name: 'Руккола', sd_product_id: 'SD1', net_weight_g: 100, raw_price_per_kg: 20000, pack_template_id: null, recipe_id: null, raw_cost: null }],
+  }), '2026-08');
+  const f = monthReadiness(full);
+  assert.strictEqual(f.verdict, 'ok', JSON.stringify(f.checks));
+});

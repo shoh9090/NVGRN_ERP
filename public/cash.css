@@ -543,3 +543,16 @@ select.cb-cell { cursor: pointer; }
 .cash-audit-txt { flex: 1; font-size: 13px; line-height: 1.5; }
 .cash-audit-val { white-space: nowrap; font-weight: 700; font-size: 13px; }
 .cash-audit-total { margin-top: 8px; padding-top: 8px; border-top: 2px solid #e6c88a; font-weight: 800; }
+
+/* Готовность данных P&L по месяцам: светофор, одинаковый для всех месяцев. */
+.cash-ready { background: #fff; border: 1px solid #e5e0d2; border-radius: 12px; padding: 12px 14px; margin-bottom: 14px; }
+.cash-ready-h { font-weight: 800; margin-bottom: 4px; }
+.cash-ready-sub { font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+.cash-ready-scroll { overflow-x: auto; }
+.cash-ready-t { border-collapse: collapse; width: 100%; font-size: 13px; }
+.cash-ready-t th, .cash-ready-t td { padding: 6px 8px; border-top: 1px solid #efeadc; text-align: left; vertical-align: top; }
+.cash-ready-t td:first-child { font-weight: 600; white-space: nowrap; }
+.cash-ready-v td { font-weight: 800; background: #faf8f1; }
+.cash-ready-n { color: var(--muted); }
+.cash-ready-m { background: none; border: 0; padding: 0; font: inherit; font-weight: 800; cursor: pointer; text-decoration: underline; color: var(--forest); }
+.cash-ready-m.on { color: var(--ink); text-decoration: none; }

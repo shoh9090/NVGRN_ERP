@@ -665,6 +665,71 @@ function selfCheck({ revenue, cogs, opexTotal, operating, fact, plan, waste, wri
 }
 
 // ---------------------------------------------------------------------------
+// Готовность данных месяца: можно ли верить прибыли
+// ---------------------------------------------------------------------------
+// Шох: «механика везде должна быть одной и той же». Формула и так одна для всех
+// месяцев — отличается только полнота данных. Поэтому каждый месяц проходит один
+// и тот же набор проверок, и по нему видно, где прибыль честная, а где нет.
+// Чистая функция: на вход готовый отчёт buildPnl, на выход светофор.
+function monthReadiness(r) {
+  const checks = [];
+  const add = (key, label, level, note) => checks.push({ key, label, level, note });
+  const mln = (v) => Math.round((Number(v) || 0) / 1e6) + ' млн';
+
+  // 1. Продажи из SalesDoctor.
+  if (r.revenue.source === 'shipped') add('sales', 'Продажи из SalesDoctor', 'ok', mln(r.revenue.total));
+  else add('sales', 'Продажи из SalesDoctor', 'bad', 'не подтянуты — выручка взята по деньгам');
+
+  // 2. Склад: отмечены ли выдачи в производство, и сколько по сравнению с оплатами.
+  const paid = Number(r.excluded && r.excluded.materials_paid && r.excluded.materials_paid.total) || 0;
+  const mat = r.cogs_parts ? Number(r.cogs_parts.materials) || 0 : 0;
+  if (!r.cogs.fact.has_data) add('stock', 'Выдачи сырья в производство', 'bad', 'не отмечены — себестоимость по плану');
+  else if (paid > 0 && mat < paid * 0.7) {
+    add('stock', 'Выдачи сырья в производство', 'warn',
+      `списано ${mln(mat)} при оплатах поставщикам ${mln(paid)} — отмечено не всё`);
+  } else add('stock', 'Выдачи сырья в производство', 'ok', `${mln(mat)}${paid ? ' (оплачено ' + mln(paid) + ')' : ''}`);
+
+  // 3. Цены прихода у всего, что выдали.
+  const noPrice = (r.cogs.fact.no_price || []).length;
+  add('prices', 'Цены закупки', noPrice ? 'warn' : 'ok', noPrice ? `нет цены у ${noPrice} позиц.` : 'у всех позиций');
+
+  // 4. Отход: у зелени он есть всегда, ноль — значит не записывали.
+  if (r.waste && r.waste.has_data) add('waste', 'Отход (обрезь)', 'ok', mln(r.waste.amount));
+  else add('waste', 'Отход (обрезь)', 'warn', 'не отмечен ни разу за месяц');
+
+  // 5. Зарплата в расходах месяца.
+  const noSalary = ((r.self_check && r.self_check.items) || []).some((x) => x.key === 'no_salary');
+  add('salary', 'Зарплата в расходах', noSalary ? 'bad' : 'ok', noSalary ? 'выплат нет' : 'есть');
+
+  // 6. Все деньги разнесены по статьям.
+  const un = r.excluded && r.excluded.unclassified;
+  if (un && un.cnt) add('unclassified', 'Операции без статьи', 'bad', `${un.cnt} шт на ${mln(un.exp)} расходов`);
+  else add('unclassified', 'Операции без статьи', 'ok', 'нет');
+
+  // 7. Калькуляция покрывает проданное (для сравнения факт/план).
+  if (r.cogs.plan && r.cogs.plan.method === 'assortment') {
+    const share = r.cogs.plan.matched_units + r.cogs.plan.unmatched_units > 0
+      ? r.cogs.plan.matched_units / (r.cogs.plan.matched_units + r.cogs.plan.unmatched_units) : 1;
+    add('calc', 'Товары в Калькуляции', share >= 0.9 ? 'ok' : 'warn', Math.round(share * 100) + '% проданного');
+  } else add('calc', 'Товары в Калькуляции', 'warn', 'разбивка продаж по товарам не подтянута');
+
+  const bad = checks.filter((c) => c.level === 'bad').length;
+  const warn = checks.filter((c) => c.level === 'warn').length;
+  const verdict = bad ? 'bad' : (warn ? 'warn' : 'ok');
+  return {
+    period: r.period,
+    verdict,
+    verdict_text: verdict === 'ok' ? 'данные полные — прибыли можно верить'
+      : (verdict === 'warn' ? 'данные неполные — прибыль приблизительная' : 'данных не хватает — прибыли верить нельзя'),
+    revenue: r.revenue.total,
+    net_profit: r.net_profit === undefined ? null : r.net_profit,
+    margin_pct: r.net_margin_pct === undefined ? null : r.net_margin_pct,
+    closed: !!r.snapshot_at,
+    checks,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Сборка отчёта
 // ---------------------------------------------------------------------------
 async function buildPnl(pool, period) {
@@ -956,7 +1021,7 @@ async function buildTrend(pool, endPeriod, months) {
   return { months: n, from: bounds.f, to: bounds.t, points: out };
 }
 
-module.exports = { buildPnl, buildTrend, UNITS_KEY, SALES_KEY, SKU_KEY, SNAP_KEY, planCogs, saveSnapshot, loadSnapshot, linkProducts, matchKey, selfCheck };
+module.exports = { buildPnl, buildTrend, UNITS_KEY, SALES_KEY, SKU_KEY, SNAP_KEY, planCogs, saveSnapshot, loadSnapshot, linkProducts, matchKey, selfCheck, monthReadiness };
 // Открыто для Склада: списания оцениваются ТОЙ ЖЕ ценой, что себестоимость в
 // P&L, иначе отчёт о потерях и P&L покажут разные деньги за одно и то же.
 module.exports.monthlyPriceMaps = monthlyPriceMaps;
