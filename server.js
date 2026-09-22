@@ -703,7 +703,20 @@ admin.get('/api/sd-good', async (req, res) => {
       `SELECT p.product_id, t.name AS price_type, p.price, to_char(p.last_sync_at, 'DD.MM.YYYY') AS at
          FROM ref_prices p JOIN ref_price_types t ON t.id = p.price_type_id
         WHERE p.product_id = ANY($1) ORDER BY t.name`, [ids])).rows : [];
-    res.json({ goods, prices });
+    const stat = (await db.pool.query(
+      "SELECT count(*)::int AS n, to_char(max(last_sync_at), 'DD.MM.YYYY HH24:MI') AS last FROM ref_finished_goods")).rows[0];
+    const out = { goods, prices, catalog: stat };
+    // Заодно смотрим в самом SalesDoctor: может, товар есть там, а к нам не доехал.
+    if (req.query.remote === '1') {
+      try {
+        const all = await integrations.getSdProducts();
+        out.remote = (all || []).filter((x) => (sd && String(x.SD_id) === sd)
+          || (name && String(x.name || '').toLowerCase().includes(name.toLowerCase())))
+          .slice(0, 10).map((x) => ({ SD_id: x.SD_id, name: x.name, barcode: x.barCode || x.barcode || null, active: x.active }));
+        out.remote_total = (all || []).length;
+      } catch (e) { out.remote_error = e.message; }
+    }
+    res.json(out);
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
