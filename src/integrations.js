@@ -835,9 +835,12 @@ async function getPayments(from, to, opts = {}) {
   const num = (v) => Number(String(v == null ? 0 : v).replace(/\s/g, '').replace(',', '.')) || 0;
   const pick = (o, names) => { for (const n of names) if (o && o[n] != null && o[n] !== '') return o[n]; return null; };
   const items = rows.map((r) => ({
-    date: String(pick(r, ['date', 'dateDocument', 'dateCreate', 'payDate']) || '').slice(0, 10),
-    amount: num(pick(r, ['summa', 'amount', 'sum', 'payment'])),
-    type: String(pick(r, ['paymentType', 'type', 'cashType']) || ''),
+    // Проверено на ответе SD 22.09.2026: дата — paymentDate («2026-09-08 12:54:01»),
+    // сумма — amount, вид оплаты — paymentType.SD_id, направление — transactionType.
+    date: String(pick(r, ['paymentDate', 'date', 'dateDocument', 'dateCreate', 'payDate']) || '').slice(0, 10),
+    amount: num(pick(r, ['amount', 'summa', 'sum', 'payment'])),
+    type: String((r.paymentType && (r.paymentType.code_1C || r.paymentType.SD_id)) || pick(r, ['type', 'cashType']) || ''),
+    kind: r.transactionType == null ? null : Number(r.transactionType),
     client: (r.client && (r.client.clientName || r.client.name)) || r.clientName || '',
   }));
   return { from, to, count: items.length, items, truncated, sample: raw0 };
