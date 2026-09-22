@@ -828,8 +828,12 @@ async function getPayments(from, to, opts = {}) {
     const list = (data.result && (data.result.payment || data.result.payments)) || [];
     if (!raw0) raw0 = list[0] || null;
     rows.push(...list);
-    const total = data.pagination ? data.pagination.total : 0;
-    if (!list.length || list.length < limit || page * limit >= total) break;
+    // Листаем, пока страница приходит полной. На total полагаться нельзя: если
+    // SD его не прислал, прежнее условие обрывало выгрузку после первой страницы,
+    // и сверка видела оплаты только за начало месяца.
+    const total = data.pagination ? Number(data.pagination.total) || 0 : 0;
+    if (!list.length || list.length < limit) break;
+    if (total && page * limit >= total) break;
     page++;
   }
   const num = (v) => Number(String(v == null ? 0 : v).replace(/\s/g, '').replace(',', '.')) || 0;

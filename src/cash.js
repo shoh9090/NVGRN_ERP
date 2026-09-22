@@ -1559,7 +1559,7 @@ router.get('/api/sd-reconcile', async (req, res) => {
     const days = [...byDay.values()].sort((a, b) => a.date.localeCompare(b.date))
       .map((r) => ({ ...r, diff: Math.round((r.crm - r.erp) * 100) / 100 }));
     const totals = days.reduce((a, r) => ({ crm: a.crm + r.crm, erp: a.erp + r.erp }), { crm: 0, erp: 0 });
-    res.json({ from, to, truncated: sd.truncated, sample: sd.sample, days, totals: { ...totals, diff: Math.round((totals.crm - totals.erp) * 100) / 100 } });
+    res.json({ from, to, truncated: sd.truncated, crm_count: sd.count, sample: sd.sample, days, totals: { ...totals, diff: Math.round((totals.crm - totals.erp) * 100) / 100 } });
   } catch (e) {
     console.error('[КАССА] сверка с CRM:', e.message);
     res.status(400).json({ error: e.message });
