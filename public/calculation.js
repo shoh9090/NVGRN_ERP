@@ -1069,11 +1069,19 @@
     const selects = [];
     const rows = missing.map((x) => {
       const sel = el('select', { class: 'calc-modal-inp', style: 'max-width:280px' });
+      // Похожие по названию — первыми: общие слова и цифры (граммовка) дают очки.
+      // Выбор всё равно за человеком — «Айсберг квадрат» и «Айсберг вакуум» разные.
+      const words = (t) => String(t || '').toLowerCase().replace(/ё/g, 'е').match(/[a-zа-я]{3,}|\d+/g) || [];
+      const mine = new Set(words(x.name));
+      const score = (p) => words(p.name).reduce((a, w) => a + (mine.has(w) ? (/^\d+$/.test(w) ? 2 : 1) : 0), 0);
+      const sheetTitle = (k) => (SHEETS.find((sh) => sh.key === k) || {}).title || k || '';
       const fill = () => {
         const cur = sel.value;
         sel.innerHTML = '';
         sel.appendChild(el('option', { value: '' }, '— выберите товар —'));
-        free.forEach((p) => sel.appendChild(el('option', { value: String(p.id) }, p.name)));
+        free.slice().sort((a, b) => score(b) - score(a) || a.name.localeCompare(b.name, 'ru'))
+          .forEach((p) => sel.appendChild(el('option', { value: String(p.id) },
+            (score(p) > 0 ? '★ ' : '') + p.name + ' · ' + sheetTitle(p.sheet))));
         sel.value = cur;
       };
       fill(); selects.push(fill);
