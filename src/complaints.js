@@ -267,8 +267,8 @@ router.get('/api/list', async (req, res) => {
             -- которой руководитель не написал причину. Только претензии из бота:
             -- у импортированной истории руководителей не спрашивали.
             (c.source IN ('client_bot', 'agent') AND c.link_code IS NOT NULL AND (
-               CASE WHEN c.complaint_type = 'zhivnost' THEN c.status <> 'resolved'
-                    ELSE btrim(COALESCE(c.internal_note, '')) = '' END)) AS waiting_owner,
+               c.status <> 'resolved' AND (c.complaint_type = 'zhivnost'
+                 OR btrim(COALESCE(c.internal_note, '')) = ''))) AS waiting_owner,
             (SELECT count(*) FROM tgbot.complaint_files f WHERE f.complaint_id = c.id)::int AS media_count
      FROM tgbot.complaints c ${full.whereSQL}
      ORDER BY c.created_at DESC, c.id DESC LIMIT 1000`, full.params
@@ -285,8 +285,8 @@ router.get('/api/list', async (req, res) => {
   const waiting = (await db.pool.query(
     `SELECT count(*)::int AS n FROM tgbot.complaints c ${base.whereSQL}
       ${base.whereSQL ? 'AND' : 'WHERE'} c.source IN ('client_bot', 'agent') AND c.link_code IS NOT NULL
-        AND (CASE WHEN c.complaint_type = 'zhivnost' THEN c.status <> 'resolved'
-                  ELSE btrim(COALESCE(c.internal_note, '')) = '' END)`, base.params)).rows[0].n;
+        AND c.status <> 'resolved'
+        AND (c.complaint_type = 'zhivnost' OR btrim(COALESCE(c.internal_note, '')) = '')`, base.params)).rows[0].n;
   res.json({ items: rows, total: rows.length, counts, waiting_owner: waiting });
 });
 
