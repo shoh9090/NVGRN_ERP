@@ -159,16 +159,21 @@ async function todoState() {
   } catch (e) { return new Map(); }
 }
 // Пересчёт «с какого момента»: зовётся раз в такт Джарвисом, не на каждого человека.
+// Решение Шоха: подключать второго, только если работа ВСТАЛА. Пока число
+// уменьшается (36 → 31 → 24), часы считаются заново и никто никого не дёргает.
+// Дело сделано полностью — строка удаляется.
 async function refreshTodoState(pool) {
   const items = await computeTodos(TODO_KINDS.map((k) => k.key));
-  const live = new Set(items.map((i) => i.key));
+  const byKey = new Map(items.map((i) => [i.key, i]));
   for (const k of TODO_KINDS) {
-    if (live.has(k.key)) {
-      await pool.query(`INSERT INTO jarvis_todo_state (key, first_seen) VALUES ($1, now())
-                        ON CONFLICT (key) DO NOTHING`, [k.key]);
-    } else {
-      await pool.query('DELETE FROM jarvis_todo_state WHERE key = $1', [k.key]);
-    }
+    const it = byKey.get(k.key);
+    if (!it) { await pool.query('DELETE FROM jarvis_todo_state WHERE key = $1', [k.key]); continue; }
+    const n = Number(it.count) || 0;
+    await pool.query(
+      `INSERT INTO jarvis_todo_state (key, first_seen, last_count) VALUES ($1, now(), $2)
+       ON CONFLICT (key) DO UPDATE SET
+         first_seen = CASE WHEN $2 < COALESCE(jarvis_todo_state.last_count, $2) THEN now() ELSE jarvis_todo_state.first_seen END,
+         last_count = $2`, [k.key, n]);
   }
   return items;
 }

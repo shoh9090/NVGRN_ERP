@@ -146,3 +146,12 @@ test('кто вносит: цепочка ответственных, первы
   assert.deepStrictEqual(normalizeRules({ owners: { calc: [{ role: 3 }, { role: 3, after_h: 8 }, { role: 0 }] } }).owners.calc,
     [{ role: 3, after_h: 0 }]);
 });
+
+test('эскалация ждёт, пока дело двигается: часы считаются от последнего сдвига', () => {
+  // Правило считается в SQL (src/todos.js, refreshTodoState), здесь проверяем
+  // сам расчёт часов: 3 рабочих дня по 11 часов = 33 рабочих часа.
+  const RULES6 = normalizeRules({ work_days: [1, 2, 3, 4, 5, 6] });
+  const start = T('2026-09-22T09:00');
+  assert.strictEqual(workHours(start, T('2026-09-24T20:00'), RULES6), 33);
+  assert.ok(workHours(start, T('2026-09-24T17:00'), RULES6) < 33);
+});

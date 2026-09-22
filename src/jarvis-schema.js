@@ -48,6 +48,8 @@ async function ensureJarvisSchema(pool) {
     key TEXT PRIMARY KEY,
     first_seen TIMESTAMPTZ NOT NULL DEFAULT now()
   )`);
+  // Сколько было в прошлый раз: стало меньше — работа идёт, часы считаем заново.
+  await q('ALTER TABLE jarvis_todo_state ADD COLUMN IF NOT EXISTS last_count INT');
 
   // Журнал Джарвиса: каждое напоминание и каждое нарушение — одна запись.
   // dedup_key не даёт отправить одно и то же дважды. Нарушения отсюда
