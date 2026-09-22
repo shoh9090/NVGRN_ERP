@@ -182,7 +182,7 @@
       bodyWrap.style.display = open ? '' : 'none';
       arrow.textContent = open ? '▾' : '▸';
       try { localStorage.setItem(LS, open ? '1' : '0'); } catch (e) { /* без памяти — не страшно */ }
-    } }, [arrow, ' ', title]);
+    } }, [arrow, ' '].concat(title));   // заголовок — строка или несколько частей
     return el('div', { class: cls + ' cash-fold' }, [head, bodyWrap]);
   }
 
