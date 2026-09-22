@@ -88,6 +88,9 @@ function dueReminders(rows, nowMs, criticalTypes) {
       const st = pick(REMIND.crit, hours);
       if (st) out.push({ id: c.id, who: 'owner', stage: st.stage, critical: true, escalate: st.escalate, hours });
     } else {
+      // Агент уже закрыл простую претензию — руководителя больше не дёргаем:
+      // причина полезна, но напоминать о закрытом деле значит приучать не читать.
+      if (c.status === 'resolved') continue;
       if (String(c.internal_note || '').trim()) continue;
       const st = pick(REMIND.simple, hours);
       if (st) out.push({ id: c.id, who: 'owner', stage: st.stage, critical: false, escalate: false, hours });
