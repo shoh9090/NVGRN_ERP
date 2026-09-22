@@ -1483,7 +1483,17 @@
 
     rows.push(skuRow('зелень в упаковке', 'сум', (x) => auto(x.calc.components.raw)));
 
-    rows.push(skuRow('Тип упаковки', '', (x) => {
+    const manualSheet = d.sheet === 'vinegar';
+    if (manualSheet) {
+      rows.push(skuRow('Упаковка (бутылка + этикетка)', 'сум',
+        (x) => cell(x.pack_cost, (v) => save(x.id, { pack_cost: v }), { dec: 2, placeholder: 'сум' })));
+      rows.push(skuRow('Производ.затраты', 'сум',
+        (x) => cell(x.production_cost, (v) => save(x.id, { production_cost: v }), { dec: 2, placeholder: 'сум' })));
+      rows.push(skuRow('ФОТ', 'сум',
+        (x) => cell(x.labor_cost, (v) => save(x.id, { labor_cost: v }), { dec: 2, placeholder: 'сум' })));
+    }
+
+    if (!manualSheet) rows.push(skuRow('Тип упаковки', '', (x) => {
       if (!canEdit()) return el('span', {}, x.pack_template_name || '—');
       const sel = el('select', { class: 'calc-sel' }, [el('option', { value: '' }, '— не выбран —')]
         .concat(tplOptions.map((t) => {
@@ -1501,12 +1511,12 @@
         .concat(tplOptions.map((t) => el('option', { value: String(t.id) }, t.name)))),
       (c) => (c.value ? Number(c.value) : null))));
 
-    rows.push(skuRow('Упаковка', 'сум', (x) => [
+    if (!manualSheet) rows.push(skuRow('Упаковка', 'сум', (x) => [
       auto(x.calc.components.pack),
       x.pack_incomplete ? el('div', { class: 'calc-warn-mini' }, 'в комплекте есть строки без цены') : null,
     ]));
 
-    rows.push(skuRow('Производ.затраты / накладные расходы', 'сум', (x) => [
+    if (!manualSheet) rows.push(skuRow('Производ.затраты / накладные расходы', 'сум', (x) => [
       // Готовая цифра с листа «Производство»: «среднее на шт» по обоим блокам.
       // Расшифровку слагаемых не показываем — она есть на самом листе.
       auto(x.calc.components.production),
@@ -1522,7 +1532,7 @@
     // делённый на среднемесячный выпуск. Руками не вводится.
     // В себестоимость НЕ входит — так в файле Шоха: с/с = зелень в упаковке
     // + упаковка + производ.затраты (сумма ячеек E6;E8;E9).
-    rows.push(skuRow('ФОТ', 'сум', () => (d.base.payroll_fund
+    if (!manualSheet) rows.push(skuRow('ФОТ', 'сум', () => (d.base.payroll_fund
       ? auto(d.base.labor_per_unit)
       : el('div', { class: 'calc-warn-mini' }, 'в Персонале нет окладов'))));
 

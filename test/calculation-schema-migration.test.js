@@ -103,8 +103,11 @@ test('лист «Рознич. тара» наполняется на базе, 
 
   assert.deepStrictEqual(db.failures, [],
     'запросы упали из-за отсутствующих колонок: ' + JSON.stringify(db.failures));
-  assert.strictEqual(db.inserted.length, 8,
-    'ожидали восемь товаров розницы, вставлено: ' + db.inserted.length);
+  // Товары розницы вставляются с параметрами (имя — первый), сид уксуса —
+  // литералом без параметров, поэтому считаем именно именованные вставки.
+  const retail = db.inserted.filter(Boolean);
+  assert.strictEqual(retail.length, 8,
+    'ожидали восемь товаров розницы, вставлено: ' + retail.length);
   assert.ok(db.inserted.includes('Латук 100г'));
   assert.ok(db.inserted.includes('айсберг 150г'));
 });

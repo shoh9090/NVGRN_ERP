@@ -558,6 +558,11 @@ async function ensureCalculationSchema(pool) {
     // локальный справочник готовой продукции.
     ['finished_good_id', 'INTEGER'],
     ['sd_product_id', 'TEXT'],
+    // Лист «Уксус»: упаковка и производственные вводятся прямо у товара.
+    // Импортная бутылка приходит одной ценой DDP (логистика и растаможка внутри),
+    // а производство уксуса не связано с общим выпуском зелени.
+    ['pack_cost', 'NUMERIC'],
+    ['production_cost', 'NUMERIC'],
   ]) {
     await q(`ALTER TABLE calc_sheet_products ADD COLUMN IF NOT EXISTS ${col} ${type}`)
       .catch((e) => console.error('calc_sheet_products ' + col + ':', e.message));
@@ -670,6 +675,27 @@ async function ensureCalculationSchema(pool) {
       .catch((e) => console.error('calc retail латук доля:', e.message));
     await q(
       "INSERT INTO calc_settings (key, value) VALUES ('calc_retail_latuk_factor', '1') ON CONFLICT (key) DO NOTHING");
+  }
+
+  // --- Лист «Уксус» --------------------------------------------------------
+  // Расчёт Шоха от 14.05.2026 (файл с\с уксуса). Себестоимость собирается
+  // из ручных строк: зелени и общего производства зелени здесь нет.
+  //   сырьё (уксус на упаковку)                 7 451
+  //   упаковка: стекло 7 580,62 + упак 650      8 230,62  ← бутылка из Китая, цена DDP Ташкент
+  //   производственные                            100
+  //   ФОТ                                         500
+  //   брак 5%  →  с\с с браком                 17 095,75
+  //   цена 32 000, ретро 20%, НДС 12%, налог на прибыль 15%
+  // Заводим один раз: есть строка на листе — больше не трогаем.
+  const hasVinegar = (await q("SELECT 1 FROM calc_sheet_products WHERE sheet = 'vinegar' LIMIT 1")).rows.length > 0;
+  if (!hasVinegar) {
+    await q(
+      `INSERT INTO calc_sheet_products
+         (sheet, name, sd_product_id, raw_cost, pack_cost, production_cost, labor_cost,
+          defect_pct, price, retro_pct, vat_pct, profit_tax_pct, prod_factor, sort, comment)
+       VALUES ('vinegar', 'Уксус яблочный 350 мл', 'd0_161', 7451, 8230.62, 100, 500,
+               5, 32000, 20, 12, 15, 0, 10, 'Расчёт от 14.05.2026: в упаковке 380 мл, бутылка из Китая по цене DDP Ташкент')`)
+      .catch((e) => console.error('calc vinegar seed:', e.message));
   }
 
   _ready = true;

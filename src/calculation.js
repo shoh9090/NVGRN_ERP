@@ -682,7 +682,13 @@ const SHEETS = {
   bunches: 'Пучки и горшки',
   culinary: 'Кулинарка',
   cutveg: 'Резаные овощи',
+  // Уксус: покупной концентрат в импортной бутылке. Зелени и общего
+  // производства зелени здесь нет, поэтому упаковка, производственные и ФОТ
+  // вводятся на самом товаре (pack_cost / production_cost / labor_cost).
+  vinegar: 'Уксус',
 };
+// Листы, где производство не общее: себестоимость собирается из ручных строк.
+const MANUAL_SHEETS = new Set(['vinegar']);
 
 // Какой прайс-лист SalesDoctor показывать на листе. Настройка листа,
 // а не товара: в рознице все товары смотрят на один и тот же прайс.
@@ -901,13 +907,18 @@ async function sheetPayload(sheet) {
       // Себестоимость и ставки общие, отличается только отпускная цена,
       // поэтому считаем один и тот же расчёт дважды — по каждому прайсу.
       // Ставки (ретро, НДС, налог) от прайса не зависят: они из договора.
+      // Ручные строки (лист «Уксус»): упаковка и производственные вводятся у
+      // товара, а не приходят с листов «Упаковка» и «Производство».
+      const packManual = numOrNull(p.pack_cost);
+      const prodManual = numOrNull(p.production_cost);
+      const laborManual = numOrNull(p.labor_cost);
       const inputs = {
-        pack: tpl ? Number(tpl.total) : null,
+        pack: tpl ? Number(tpl.total) : packManual,
         raw: rawCost,
-        production: scale(base.combined),
+        production: prodManual !== null ? prodManual : scale(base.combined),
         // ФОТ на штуку одинаков для всех товаров листа: доля производственных
         // затрат к нему не применяется — так описал Шох (ФОТ / выпуск).
-        labor: base.labor,
+        labor: laborManual !== null ? laborManual : base.labor,
         defect_pct: p.defect_pct,
         retro_pct: p.retro_pct,
         vat_pct: p.vat_pct,
@@ -961,6 +972,9 @@ async function sheetPayload(sheet) {
         raw_price_stale: rawInfo.diff_pct !== null && Math.abs(rawInfo.diff_pct) >= RAW_PRICE_DIFF_PCT,
         raw_cost: rawCost,
         labor_cost: numOrNull(p.labor_cost),
+        // Ручные строки листа «Уксус»
+        pack_cost: packManual,
+        production_cost: prodManual,
         defect_pct: Number(p.defect_pct) || 0,
         price: numOrNull(p.price),
         price2: numOrNull(p.price2),
@@ -1916,6 +1930,7 @@ router.post('/api/sheet/:sheet/product', J, async (req, res) => {
 // через этот маршрут не меняется.
 const SKU_TEXT_FIELDS = ['name', 'barcode', 'sd_product_id'];
 const SKU_NUM_FIELDS = ['prod_factor', 'raw_cost', 'net_weight_g', 'raw_price_per_kg', 'labor_cost',
+  'pack_cost', 'production_cost',
   'defect_pct', 'price', 'price2', 'retro_pct', 'vat_pct', 'profit_tax_pct'];
 
 // «Нужно внести»: товары из продаж SalesDoctor, у которых нет пары в Калькуляции.
@@ -2047,6 +2062,7 @@ router.post('/api/sd-prices/refresh', J, async (req, res) => {
 
 module.exports = router;
 module.exports.summaryProducts = summaryProducts;
+module.exports.MANUAL_SHEETS = MANUAL_SHEETS;
 // Открыто для тестов: именно это соответствие решает, данные какой вкладки
 // закрывать. Промах здесь тихо открыл бы чужой лист.
 module.exports.calcTabOf = calcTabOf;
