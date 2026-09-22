@@ -260,13 +260,14 @@ async function syncComments(rules, scan, people) {
     }
   }
   await setSetting('jarvis_sync_since', maxDate);
-  // Карточку архивировали — ждать ответа больше не от кого.
-  const openIds = new Set(scan.cards.map((c) => c.id));
-  const stale = (await pool.query('SELECT DISTINCT card_id FROM jarvis_mentions WHERE answered_at IS NULL')).rows
-    .map((r) => r.card_id).filter((id) => !openIds.has(id));
-  if (stale.length) {
-    await pool.query(`UPDATE jarvis_mentions SET answered_at = now(), answered_via = 'closed'
-      WHERE answered_at IS NULL AND card_id = ANY($1::text[])`, [stale]);
+  // Карточка сделана — ждать ответа больше не от кого: её перенесли в колонку
+  // «Сделано/Готово», отметили выполненной или убрали в архив (решение Шоха).
+  const waiting = new Set(scan.cards.filter((c) => !isDone(c, scan)).map((c) => c.id));
+  const closed = (await pool.query('SELECT DISTINCT card_id FROM jarvis_mentions WHERE answered_at IS NULL')).rows
+    .map((r) => r.card_id).filter((id) => !waiting.has(id));
+  if (closed.length) {
+    await pool.query(`UPDATE jarvis_mentions SET answered_at = now(), answered_via = 'done'
+      WHERE answered_at IS NULL AND card_id = ANY($1::text[])`, [closed]);
   }
 }
 

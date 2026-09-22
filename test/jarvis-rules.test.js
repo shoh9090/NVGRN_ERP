@@ -108,6 +108,7 @@ test('упоминания из текста, колонка «Готово», �
   assert.deepStrictEqual(parseMentions('@Abdushukur7472 проверь, cc @lobarchic и @card, почта a@b.uz'), ['abdushukur7472', 'lobarchic']);
   assert.ok(isDoneList('✅ Готово'));
   assert.ok(isDoneList('Done'));
+  assert.ok(isDoneList('Сделано'));   // решение Шоха: карточка в этой колонке — закрыта
   assert.ok(!isDoneList('В работе'));
   assert.deepStrictEqual(viaJarvis('Каримов Абдушукур' + VIA + 'привезли, @asilramm'), { name: 'Каримов Абдушукур', text: 'привезли, @asilramm' });
   assert.strictEqual(viaJarvis('обычный комментарий'), null);

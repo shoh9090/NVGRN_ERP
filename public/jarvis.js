@@ -86,6 +86,10 @@
       wsRows.push(el('div', { class: 'jv-boards' }, boards.length
         ? ['Контролируем все доски (' + boards.length + '): ', ...boards.map((x, i) => [i ? ', ' : '', el('a', { href: x.url, target: '_blank', rel: 'noopener' }, x.name)]).flat()]
         : 'В пространстве нет открытых досок.'));
+      wsRows.push(el('div', { class: 'jv-boards' }, (tr.done_lists || []).length
+        ? 'Карточка считается закрытой в колонках: ' + tr.done_lists.join(', ')
+          + '. В таких карточках Джарвис не ждёт ответа и не считает просрочку.'
+        : 'Колонок «Сделано/Готово» не нашёл — назовите колонку так, и карточки в ней будут считаться закрытыми.'));
     }
 
     // Рабочее время
