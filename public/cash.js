@@ -168,10 +168,28 @@
   let cpFilterSrc = '';
   const triageState = { from: '', to: '', wallet: '' };
 
+  // Сворачиваемый блок: одна строка-заголовок, по нажатию раскрывается тело.
+  // По умолчанию свёрнут — на экране отчёта главное цифры, а не подсказки.
+  // Выбор запоминается в этом браузере (localStorage); нет доступа — просто свёрнут.
+  function pnlFold(key, cls, title, body) {
+    const LS = 'pnl_fold_' + key;
+    let open = false;
+    try { open = localStorage.getItem(LS) === '1'; } catch (e) { open = false; }
+    const bodyWrap = el('div', { class: 'cash-fold-body', style: open ? '' : 'display:none' }, body);
+    const arrow = el('span', { class: 'cash-fold-arrow' }, open ? '▾' : '▸');
+    const head = el('button', { class: 'cash-fold-head', type: 'button', onclick: () => {
+      open = !open;
+      bodyWrap.style.display = open ? '' : 'none';
+      arrow.textContent = open ? '▾' : '▸';
+      try { localStorage.setItem(LS, open ? '1' : '0'); } catch (e) { /* без памяти — не страшно */ }
+    } }, [arrow, ' ', title]);
+    return el('div', { class: cls + ' cash-fold' }, [head, bodyWrap]);
+  }
+
   // Таблица «Готовность данных»: месяцы × проверки, светофором. Грузится отдельно,
   // чтобы не задерживать сам отчёт: считать полгода — несколько секунд.
   function pnlReadiness(box) {
-    const wrap = el('div', { class: 'cash-ready' }, el('div', { class: 'cash-ready-h' }, 'Готовность данных по месяцам — считаю…'));
+    const wrap = el('div', {}, el('div', { class: 'cash-ready cash-ready-sub' }, 'Готовность данных по месяцам — считаю…'));
     box.appendChild(wrap);
     api('/pnl/readiness?months=6&period=' + encodeURIComponent(PNL_PERIOD)).then((r) => {
       const months = r.months || [];
@@ -190,13 +208,16 @@
         return el('td', { title: c.note || '' }, [dot[c.level] || '', ' ', el('span', { class: 'cash-ready-n' }, c.note || '')]);
       })]));
       wrap.innerHTML = '';
-      wrap.appendChild(el('div', { class: 'cash-ready-h' }, 'Готовность данных по месяцам'));
-      wrap.appendChild(el('div', { class: 'cash-ready-sub' },
-        'Формула прибыли одна для всех месяцев. Разница — в полноте данных: 🟢 всё заведено, '
-        + '🟡 прибыль приблизительная, 🔴 прибыли верить нельзя, ⚪ контроль — на прибыль не влияет. '
-        + 'Нажмите на месяц, чтобы открыть его.'));
-      wrap.appendChild(el('div', { class: 'cash-ready-scroll' },
-        el('table', { class: 'cash-ready-t' }, [el('thead', {}, head), el('tbody', {}, [verdictRow, ...rows])])));
+      // В свёрнутом виде — светофор месяцев одной строкой.
+      const summary = months.map((m) => dot[m.verdict] + ' ' + monthLabelRu(m.period).replace(/\s*\d{4}$/, '')).join('  ');
+      wrap.appendChild(pnlFold('ready', 'cash-ready', [el('b', {}, 'Готовность данных: '), el('span', { class: 'cash-ready-n' }, summary)], [
+        el('div', { class: 'cash-ready-sub' },
+          'Формула прибыли одна для всех месяцев. Разница — в полноте данных: 🟢 всё заведено, '
+          + '🟡 прибыль приблизительная, 🔴 прибыли верить нельзя, ⚪ контроль — на прибыль не влияет. '
+          + 'Нажмите на месяц, чтобы открыть его.'),
+        el('div', { class: 'cash-ready-scroll' },
+          el('table', { class: 'cash-ready-t' }, [el('thead', {}, head), el('tbody', {}, [verdictRow, ...rows])])),
+      ]));
     }).catch((e) => { wrap.innerHTML = ''; wrap.appendChild(el('div', { class: 'cash-ready-sub' }, 'Готовность данных посчитать не удалось: ' + e.message)); });
   }
 
@@ -209,10 +230,8 @@
       el('div', { class: 'cash-audit-val' }, c.profit_if === null || c.profit_if === undefined
         ? '' : 'прибыль была бы ' + money(c.profit_if)),
     ]));
-    box.appendChild(el('div', { class: 'cash-audit' }, [
-      el('div', { class: 'cash-audit-h' }, '🔍 Проверка отчёта: прибыль может быть завышена'),
-      el('div', { class: 'cash-audit-sub' }, 'Отчёт складывается из трёх источников — реализация SalesDoctor, '
-        + 'склад и Касса. Ниже то, что в прибыль сейчас не попало.'),
+    box.appendChild(pnlFold('audit', 'cash-audit', '🔍 Проверка отчёта: прибыль может быть завышена (' + sc.items.length + ')', [
+      el('div', { class: 'cash-audit-sub' }, 'Ниже то, что в прибыль сейчас не попало.'),
       ...rows,
       sc.profit_if_all === null || sc.profit_if_all === undefined ? null
         : el('div', { class: 'cash-audit-total' }, 'Если учесть всё перечисленное: прибыль '
@@ -982,7 +1001,8 @@
     // идти исправлять: ссылка на плитку или переход внутри Кассы, а список
     // позиций раскрывается целиком — переписывать названия руками не нужно.
     if (d.warnings && d.warnings.length) {
-      box.appendChild(el('div', { class: 'cash-pnl-warn' }, d.warnings.map(pnlWarnRow)));
+      box.appendChild(pnlFold('warn', 'cash-pnl-warn', '⚠️ Подсказки по отчёту: ' + d.warnings.length,
+        d.warnings.map(pnlWarnRow)));
     }
 
     // Готовность данных по месяцам — один и тот же набор проверок для каждого месяца.

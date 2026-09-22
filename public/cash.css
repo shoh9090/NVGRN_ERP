@@ -556,3 +556,12 @@ select.cb-cell { cursor: pointer; }
 .cash-ready-n { color: var(--muted); }
 .cash-ready-m { background: none; border: 0; padding: 0; font: inherit; font-weight: 800; cursor: pointer; text-decoration: underline; color: var(--forest); }
 .cash-ready-m.on { color: var(--ink); text-decoration: none; }
+
+/* Сворачиваемые блоки P&L (подсказки, готовность, проверка): одна строка, по нажатию — подробности. */
+.cash-fold { padding-top: 8px; padding-bottom: 8px; }
+.cash-fold-head {
+  background: none; border: 0; padding: 0; width: 100%; text-align: left;
+  font: inherit; color: inherit; cursor: pointer; display: block;
+}
+.cash-fold-arrow { display: inline-block; width: 12px; }
+.cash-fold-body { margin-top: 8px; }
