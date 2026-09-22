@@ -211,9 +211,23 @@ app.get('/file/:id', async (req, res) => {
   if (decision === 'deny') return res.status(404).end();
   const r = await db.pool.query('SELECT mime, data FROM files WHERE id = $1', [id]);
   if (r.rows.length === 0) return res.status(404).end();
+  let data = r.rows[0].data;
+  // Видео претензий хранятся в Telegram, а в базе — пустая строка (см. src/tg-files.js).
+  // Подгружаем ролик из Telegram по его номеру в момент просмотра.
+  if (isComplaintMedia && (!data || !data.length)) {
+    try {
+      const t = (await db.pool.query(
+        'SELECT tg_file_id FROM tgbot.complaint_files WHERE file_ref = $1 AND tg_file_id IS NOT NULL LIMIT 1', [id])).rows[0];
+      if (!t) return res.status(404).end();
+      data = await require('./src/tg-files').download(t.tg_file_id);
+    } catch (e) {
+      console.warn('[ФАЙЛ из Telegram]', id, e.message);
+      return res.status(502).send('Видео хранится в Telegram и сейчас недоступно: ' + e.message);
+    }
+  }
   res.set('Content-Type', r.rows[0].mime);
   res.set('Cache-Control', isPublicAsset ? 'public, max-age=3600' : 'private, no-store');
-  res.send(r.rows[0].data);
+  res.send(data);
 });
 
 // Смена собственного пароля
@@ -615,6 +629,38 @@ admin.post('/appearance', upload.fields([{ name: 'logo' }, { name: 'bg' }]), asy
 // Интеграции
 const integrations = require('./src/integrations');
 
+// Освободить базу от видео претензий: байты остаются только в Telegram.
+// Для каждого ролика сначала спрашиваем Telegram, отдаёт ли он файл и совпадает
+// ли размер с нашим; совпал — очищаем байты в базе, нет — оставляем как было.
+// dry=1 — только проверить и показать, ничего не меняя.
+admin.post('/api/files/offload-videos', express.json(), async (req, res) => {
+  const tg = require('./src/tg-files');
+  if (!tg.hasToken()) return res.status(400).json({ error: 'Сначала добавьте TELEGRAM_BOT_TOKEN в переменные сервиса ERP в Railway' });
+  const dry = !!(req.body && req.body.dry);
+  const rows = (await db.pool.query(
+    `SELECT f.id, octet_length(f.data) AS bytes, cf.tg_file_id
+       FROM files f JOIN tgbot.complaint_files cf ON cf.file_ref = f.id
+      WHERE cf.kind IN ('video', 'video_note') AND octet_length(f.data) > 0 AND cf.tg_file_id IS NOT NULL
+      ORDER BY f.id`)).rows;
+  const out = { total: rows.length, offloaded: 0, kept: [], freed_bytes: 0, dry };
+  for (const x of rows) {
+    let info = null, why = null;
+    try { info = await tg.fileInfo(x.tg_file_id); } catch (e) { why = e.message; }
+    if (!tg.safeToOffload(Number(x.bytes), info)) {
+      out.kept.push({ id: x.id, why: why || ('размер в Telegram ' + (info && info.size) + ' ≠ в базе ' + x.bytes) });
+      continue;
+    }
+    if (!dry) await db.pool.query("UPDATE files SET data = ''::bytea WHERE id = $1", [x.id]);
+    out.offloaded++; out.freed_bytes += Number(x.bytes);
+  }
+  // Место на диске Postgres возвращает только после полного пересбора таблицы.
+  if (!dry && out.offloaded) {
+    try { await db.pool.query('VACUUM FULL files'); out.vacuum = 'ok'; } catch (e) { out.vacuum = e.message; }
+  }
+  await db.log(req.user.id, 'files_offload_videos', `${dry ? 'проверка' : 'очистка'}: ${out.offloaded} из ${out.total}, ${Math.round(out.freed_bytes / 1048576)} МБ`);
+  res.json(out);
+});
+
 // Сколько места занимает база: таблицы по размеру. Только чтение, только админ.
 // Нужно, когда Railway предупреждает, что диск базы заполняется.
 admin.get('/api/db-size', async (req, res) => {
@@ -860,6 +906,15 @@ async function requireHrAccess(req, res, next) {
   next();
 }
 app.use('/hr', requireHrAccess, require('./src/hr'));
+
+// Плитка «Джарвис» — правила внутреннего бота: Trello, сроки, штрафы, люди ↔ Trello.
+// Смотреть — у кого плитка в роли; менять — только админ (проверка внутри модуля).
+async function requireJarvisAccess(req, res, next) {
+  if (!req.user) return res.redirect('/login');
+  if (req.user.isAdmin || await userHasTileAccess(req.user.id, '/jarvis')) return next();
+  res.status(403).send('Нет доступа к блоку «Джарвис». Обратитесь к администратору.');
+}
+app.use('/jarvis', requireJarvisAccess, require('./src/jarvis'));
 
 // Уведомления (колокольчик) — для всех авторизованных
 const notificationsRouter = require('./src/notifications');
