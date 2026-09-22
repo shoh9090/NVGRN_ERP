@@ -103,6 +103,8 @@
     const mVio = numInp(r.mention_violation_h, { step: '0.5' });
     const oVio = numInp(r.overdue_violation_days);
     const stale = numInp(r.stale_days, { min: '1' });
+    const dueH = numInp(r.due_required_h, { step: '0.5' });
+    const moves = numInp(r.moves_alert, { min: '1' });
     const fM = numInp(r.fine_mention, { step: '1000' });
     const fO = numInp(r.fine_overdue, { step: '1000' });
     const finesOn = el('input', { type: 'checkbox', checked: r.fines_enabled, disabled: dis });
@@ -123,6 +125,12 @@
       sec('Упомянули (@) — и нет ответа в карточке', null, [
         row('Напомнить через', mRem, ' рабочих часов'),
         row('Нарушение через', mVio, ' рабочих часов'),
+      ]),
+      sec('Карточка в работе, но срока нет', 'У карточки с исполнителем должен быть срок, иначе задача «принята» и висит. '
+        + 'Джарвис спрашивает срок кнопками в боте («Сегодня», «Завтра», «Через неделю», своя дата) и сам ставит его в Trello. '
+        + 'Переносы срока не запрещены, но видны в журнале.', [
+        row('Нарушение через', dueH, ' рабочих часов без срока'),
+        row('Сигнал руководителю', 'после ', moves, ' переносов срока'),
       ]),
       sec('Срок карточки прошёл, а она не выполнена', 'Напоминание — каждое рабочее утро, в начале рабочего дня.', [
         row('Нарушение через', oVio, ' рабочих дней после срока'),
@@ -152,7 +160,7 @@
           workspace_id: wsSel.value, work_from: from.value, work_to: to.value, work_days,
           mention_remind_h: mRem.value, mention_violation_h: mVio.value, overdue_violation_days: oVio.value,
           stale_days: stale.value, fine_mention: fM.value, fine_overdue: fO.value, fines_enabled: finesOn.checked,
-          reminders_enabled: remOn.checked,
+          reminders_enabled: remOn.checked, due_required_h: dueH.value, moves_alert: moves.value,
         });
         toast('Сохранено');
         render();
@@ -242,7 +250,8 @@
   const KIND = {
     remind_mention: '🔔 Напоминание: упоминание', violation_mention: '⚠️ Нарушение: нет ответа',
     remind_overdue: '☀️ Утренний список просрочек', violation_overdue: '⚠️ Нарушение: просрочка',
-    remind_stale: '💤 Без движения', reply: '✍️ Ответ из Telegram', morning: '☀️ Утренняя сводка',
+    remind_stale: '💤 Без движения', remind_no_due: '📅 Спросили срок', violation_no_due: '⚠️ Нарушение: нет срока',
+    due_set: '📅 Срок поставлен', due_moved: '🔁 Срок перенесён', reply: '✍️ Ответ из Telegram', morning: '☀️ Утренняя сводка',
   };
   const dt = (v) => v ? new Date(v).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
   const cardLink = (name, url) => url ? el('a', { href: url, target: '_blank', rel: 'noopener' }, name || 'карточка') : (name || '');
@@ -252,8 +261,8 @@
     const n = (k) => (d.counts.find((c) => c.kind === k) || {}).n || 0;
     box.appendChild(el('div', { class: 'pur-kpis' }, [
       ['Ждут ответа сейчас', d.waiting.length],
-      ['Напоминаний за 30 дней', n('remind_mention') + n('remind_overdue') + n('remind_stale') + n('morning')],
-      ['Нарушений за 30 дней', n('violation_mention') + n('violation_overdue')],
+      ['Напоминаний за 30 дней', n('remind_mention') + n('remind_overdue') + n('remind_stale') + n('morning') + n('remind_no_due')],
+      ['Нарушений за 30 дней', n('violation_mention') + n('violation_overdue') + n('violation_no_due')],
       ['Ответов из Telegram', n('reply')],
     ].map(([l, v]) => el('div', { class: 'pur-kpi' }, [el('div', { class: 'pur-kpi-label' }, l), el('div', { class: 'pur-kpi-val' }, String(v))]))));
 

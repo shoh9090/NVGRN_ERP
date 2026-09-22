@@ -198,7 +198,7 @@ router.post('/api/people/unlink', J, async (req, res) => {
 
 // ---------- Журнал ----------
 // Что Джарвис напомнил и какие нарушения записал; сверху — что сейчас ждёт ответа.
-const LOG_KINDS = ['morning', 'remind_mention', 'violation_mention', 'remind_overdue', 'violation_overdue', 'remind_stale', 'reply'];
+const LOG_KINDS = ['morning', 'remind_no_due', 'violation_no_due', 'due_set', 'due_moved', 'remind_mention', 'violation_mention', 'remind_overdue', 'violation_overdue', 'remind_stale', 'reply'];
 router.get('/api/log', async (req, res) => {
   try {
     await ensureSchema();

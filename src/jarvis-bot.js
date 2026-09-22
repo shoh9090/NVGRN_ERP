@@ -50,6 +50,14 @@ function cardButtons(cardId, url, mentionId) {
   if (url) row.push({ text: 'Открыть в Trello', url });
   return { reply_markup: { inline_keyboard: [row] } };
 }
+// Кнопки постановки срока: нажал — Джарвис сам проставит дату в Trello.
+function dueButtons(cardId, url) {
+  return { reply_markup: { inline_keyboard: [
+    [{ text: 'Сегодня', callback_data: `jd:${cardId}:0` }, { text: 'Завтра', callback_data: `jd:${cardId}:1` }],
+    [{ text: 'Через 3 дня', callback_data: `jd:${cardId}:3` }, { text: 'Через неделю', callback_data: `jd:${cardId}:7` }],
+    [{ text: '📅 Своя дата', callback_data: 'jx:' + cardId }, ...(url ? [{ text: 'Открыть в Trello', url }] : [])],
+  ] } };
+}
 
 // ---------- Люди ----------
 const last9 = (v) => String(v || '').replace(/\D/g, '').slice(-9);
@@ -89,7 +97,13 @@ async function handleUpdate(u) {
   if (text === '/cancel') { pending.delete(chatId); return send(chatId, 'Отменено.', menu); }
   const p = pending.get(chatId);
   if (p && text && !text.startsWith('/') && text !== MENU_MY) {
-    if (Date.now() > p.until) { pending.delete(chatId); return send(chatId, 'Время на ответ вышло — нажмите «✍️ Ответить» ещё раз.', menu); }
+    if (Date.now() > p.until) { pending.delete(chatId); return send(chatId, 'Время вышло — нажмите кнопку ещё раз.', menu); }
+    if (p.kind === 'due') {
+      const due = R.parseDueDate(text, Date.now(), await loadRules());
+      if (!due) return send(chatId, 'Не понял дату. Напишите так: 25.09 или 25.09.2026, либо «завтра». /cancel — отмена');
+      pending.delete(chatId);
+      return applyDue(chatId, me, p, due);
+    }
     pending.delete(chatId);
     return postReply(chatId, me, p, text);
   }
@@ -136,6 +150,18 @@ async function onCallback(cq) {
   } else if (data.startsWith('jc:')) {
     const c = await cardInWorkspace(data.slice(3));
     if (c) target = { cardId: c.id, cardName: c.name, cardUrl: c.shortUrl };
+  } else if (data.startsWith('jd:') || data.startsWith('jx:')) {
+    // Срок: кнопкой на N дней или своей датой.
+    const [, cardId, days] = data.split(':');
+    const c = await cardInWorkspace(cardId);
+    if (!c) return send(chatId, 'Эта карточка не найдена или больше не в рабочем пространстве.');
+    const t = { cardId: c.id, cardName: c.name, cardUrl: c.shortUrl };
+    if (data.startsWith('jx:')) {
+      pending.set(chatId, { ...t, kind: 'due', until: Date.now() + 30 * 60 * 1000 });
+      return send(chatId, `Напишите дату для карточки «${esc(c.name)}»: например 25.09 или 25.09.2026.\n/cancel — отмена`,
+        { reply_markup: { force_reply: true } });
+    }
+    return applyDue(chatId, me, t, R.dueInDays(Number(days) || 0, Date.now(), await loadRules()));
   }
   if (!target) return send(chatId, 'Эта карточка не найдена или больше не в рабочем пространстве.');
   pending.set(chatId, { ...target, until: Date.now() + 30 * 60 * 1000 });
@@ -168,6 +194,20 @@ async function postReply(chatId, me, p, text) {
       WHERE card_id = $1 AND employee_id = $2 AND answered_at IS NULL`, [p.cardId, me.employee_id]);
   await log('reply', me.employee_id, { id: p.cardId, name: p.cardName, url: p.cardUrl }, text.slice(0, 500), true, null);
   return send(chatId, `✅ Опубликовано в карточке «${esc(p.cardName)}».`, cardButtons(p.cardId, p.cardUrl));
+}
+
+// Срок поставлен из бота — сразу в Trello и в журнал.
+async function applyDue(chatId, me, target, dueIso) {
+  try { await trello.setDue(target.cardId, dueIso); }
+  catch (e) { return send(chatId, 'Не получилось поставить срок в Trello: ' + esc(e.message)); }
+  await pool.query(
+    `INSERT INTO jarvis_cards (card_id, name, url, due, no_due_since, updated_at)
+     VALUES ($1,$2,$3,$4,NULL,now())
+     ON CONFLICT (card_id) DO UPDATE SET due = $4, no_due_since = NULL, updated_at = now()`,
+    [target.cardId, target.cardName, target.cardUrl, dueIso]);
+  await log('due_set', me.employee_id, { id: target.cardId, name: target.cardName, url: target.cardUrl },
+    'Срок ' + dateRu(dueIso), true, null);
+  return send(chatId, `📅 Срок карточки «${esc(target.cardName)}» — ${dateRu(dueIso)}. Напомню, если подойдёт и не будет сделано.`, menu);
 }
 
 // «Мои карточки»: что ждёт ответа и что просрочено — из последнего чтения Trello.
@@ -341,6 +381,7 @@ async function remindAll(rules, scan, people, now) {
       }
     }
   }
+  await dueControl(rules, scan, byMember, deliver, now);
   await morning(rules, overdueBy, now);
 
   // 3. Карточки без движения N дней — одно напоминание участникам.
@@ -358,6 +399,92 @@ async function remindAll(rules, scan, people, now) {
       const ok = await deliver(p, `💤 Карточка <b>«${esc(c.name)}»</b> без движения больше ${rules.stale_days} дней. Она ещё нужна?`,
         cardButtons(c.id, c.shortUrl));
       await log('remind_stale', p.employee_id, { id: c.id, name: c.name, url: c.shortUrl }, `Без движения с ${dateRu(c.dateLastActivity)}`, ok, key);
+    }
+  }
+}
+
+// ---------- Срок задачи (решение Шоха, 22.09.2026) ----------
+// «Задача принята» без даты — это не ответ, а отписка: карточка висит месяцами.
+// Поэтому у карточки с исполнителем должен быть срок. Нет срока — Джарвис
+// спрашивает его кнопками; не поставили за due_required_h рабочих часов —
+// нарушение. Переносы не запрещаем, но считаем: перенос виден в журнале,
+// а после moves_alert переносов Джарвис говорит об этом руководителю.
+const seen = async (key) => (await pool.query('SELECT 1 FROM jarvis_log WHERE dedup_key = $1', [key])).rows.length > 0;
+
+const ASK_LIMIT = 5;     // столько вопросов про срок одному человеку за полдня
+async function dueControl(rules, scan, byMember, deliver, now) {
+  const rows = new Map((await pool.query('SELECT * FROM jarvis_cards')).rows.map((r) => [r.card_id, r]));
+  // Старых карточек без срока много — спрашиваем порциями, а не сваливаем всё разом.
+  const asked = new Map((await pool.query(
+    `SELECT employee_id, count(*)::int AS n FROM jarvis_log
+      WHERE kind = 'remind_no_due' AND created_at > now() - interval '12 hours' GROUP BY employee_id`))
+    .rows.map((r) => [r.employee_id, r.n]));
+  const admins = (await pool.query(
+    `SELECT DISTINCT u.jv_chat_id FROM users u
+       JOIN user_roles ur ON ur.user_id = u.id JOIN roles r ON r.id = ur.role_id
+      WHERE r.is_admin = TRUE AND u.is_active = TRUE AND u.jv_chat_id IS NOT NULL`)).rows.map((r) => r.jv_chat_id);
+  for (const c of scan.cards) {
+    const people = (c.idMembers || []).map((m) => byMember.get(m)).filter(Boolean);
+    if (isDone(c, scan) || !people.length) continue;         // без исполнителя это заметка, а не задача
+    const card = { id: c.id, name: c.name, url: c.shortUrl };
+    const row = rows.get(c.id);
+
+    if (c.due) {
+      const was = row && row.due ? Date.parse(row.due) : null;
+      const isNew = Date.parse(c.due);
+      const moved = was && isNew > was;                       // срок отодвинули
+      const moves = (row ? row.due_moves : 0) + (moved ? 1 : 0);
+      await pool.query(
+        `INSERT INTO jarvis_cards (card_id, name, url, board_name, due, due_moves, no_due_since, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,NULL,now())
+         ON CONFLICT (card_id) DO UPDATE SET name=$2, url=$3, board_name=$4, due=$5, due_moves=$6, no_due_since=NULL, updated_at=now()`,
+        [c.id, c.name, c.shortUrl, scan.boardName.get(c.idBoard) || '', c.due, moves]);
+      if (!moved) continue;
+      const key = `dm:${c.id}:${c.due}`;
+      if (await seen(key)) continue;
+      for (const p of people) {
+        await deliver(p, `📅 Срок карточки <b>«${esc(c.name)}»</b> перенесён на ${dateRu(c.due)} (перенос №${moves}).\n`
+          + 'Напишите одной строкой причину — она ляжет комментарием в карточку.', cardButtons(c.id, c.shortUrl));
+      }
+      await log('due_moved', people[0].employee_id, card, `Перенос №${moves}, новый срок ${dateRu(c.due)}`, true, key);
+      if (moves >= rules.moves_alert) {
+        const akey = `dma:${c.id}:${moves}`;
+        if (!(await seen(akey))) {
+          for (const chat of admins) {
+            await send(chat, `🔁 Карточка <b>«${esc(c.name)}»</b> переносится ${moves}-й раз (${esc(people.map((p) => p.full_name).join(', '))}). Новый срок ${dateRu(c.due)}.`,
+              cardButtons(c.id, c.shortUrl));
+          }
+          await log('due_moved', people[0].employee_id, card, `Сигнал руководителю: ${moves} переносов`, true, akey);
+        }
+      }
+      continue;
+    }
+
+    // Срока нет: с какого момента ждём.
+    const since = row && row.no_due_since ? row.no_due_since : new Date(now).toISOString();
+    await pool.query(
+      `INSERT INTO jarvis_cards (card_id, name, url, board_name, due, no_due_since, updated_at)
+       VALUES ($1,$2,$3,$4,NULL,$5,now())
+       ON CONFLICT (card_id) DO UPDATE SET name=$2, url=$3, board_name=$4, due=NULL, no_due_since=$5, updated_at=now()`,
+      [c.id, c.name, c.shortUrl, scan.boardName.get(c.idBoard) || '', since]);
+    const hours = R.workHours(R.clockStart(Date.parse(since), rules), now, rules);
+    for (const p of people) {
+      const ask = `rd:${c.id}:${p.employee_id}:${since}`;
+      if (!(await seen(ask))) {
+        const n = asked.get(p.employee_id) || 0;
+        if (n >= ASK_LIMIT) continue;                        // остальные спросим следующей порцией
+        asked.set(p.employee_id, n + 1);
+        const ok = await deliver(p, `📅 Карточка <b>«${esc(c.name)}»</b> за вами, но срока нет. Когда сделаете?`,
+          dueButtons(c.id, c.shortUrl));
+        await log('remind_no_due', p.employee_id, card, 'Спросили срок', ok, ask);
+        continue;                                            // нарушение — не в ту же минуту
+      }
+      if (hours < rules.due_required_h) continue;
+      const vkey = `vd:${c.id}:${p.employee_id}:${since}`;
+      if (await seen(vkey)) continue;
+      const ok = await deliver(p, `⚠️ Карточка <b>«${esc(c.name)}»</b> в работе без срока больше ${rules.due_required_h} рабочих часов — `
+        + `это нарушение${rules.fines_enabled ? '' : ' (штрафы пока не начисляются)'}. Поставьте срок:`, dueButtons(c.id, c.shortUrl));
+      await log('violation_no_due', p.employee_id, card, `Без срока ${Math.round(hours)} раб. ч`, ok, vkey);
     }
   }
 }

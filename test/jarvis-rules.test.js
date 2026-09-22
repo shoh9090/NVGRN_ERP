@@ -113,3 +113,24 @@ test('упоминания из текста, колонка «Готово», �
   assert.deepStrictEqual(viaJarvis('Каримов Абдушукур' + VIA + 'привезли, @asilramm'), { name: 'Каримов Абдушукур', text: 'привезли, @asilramm' });
   assert.strictEqual(viaJarvis('обычный комментарий'), null);
 });
+
+test('срок с кнопки и датой словами — конец рабочего дня по Ташкенту', () => {
+  const { dueInDays, parseDueDate } = require('../src/jarvis-rules');
+  const now = T('2026-09-22T10:00');
+  assert.strictEqual(dueInDays(0, now, RULES), new Date(T('2026-09-22T20:00')).toISOString());
+  assert.strictEqual(dueInDays(7, now, RULES), new Date(T('2026-09-29T20:00')).toISOString());
+  assert.strictEqual(parseDueDate('завтра', now, RULES), new Date(T('2026-09-23T20:00')).toISOString());
+  assert.strictEqual(parseDueDate('25.09', now, RULES), new Date(T('2026-09-25T20:00')).toISOString());
+  assert.strictEqual(parseDueDate('25/09/2026', now, RULES), new Date(T('2026-09-25T20:00')).toISOString());
+  // год не указан, дата уже прошла — значит, следующий год
+  assert.strictEqual(parseDueDate('01.09', now, RULES), new Date(T('2027-09-01T20:00')).toISOString());
+  assert.strictEqual(parseDueDate('когда-нибудь', now, RULES), null);
+  assert.strictEqual(parseDueDate('45.13', now, RULES), null);
+});
+
+test('срок задачи: значения по умолчанию и границы', () => {
+  assert.strictEqual(normalizeRules({}).due_required_h, 4);
+  assert.strictEqual(normalizeRules({}).moves_alert, 3);
+  assert.strictEqual(normalizeRules({ due_required_h: 0, moves_alert: 0 }).due_required_h, 0.5);
+  assert.strictEqual(normalizeRules({ moves_alert: 99 }).moves_alert, 20);
+});

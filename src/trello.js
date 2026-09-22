@@ -41,4 +41,6 @@ module.exports = {
   card: (c) => get(`/cards/${id(c)}`, { fields: 'name,shortUrl,idBoard,closed' }),
   // Ответ из Telegram — комментарием в карточку (от учётки владельца токена).
   addComment: (c, text) => call('POST', `/cards/${id(c)}/actions/comments`, { text }),
+  // Срок, поставленный кнопкой в боте.
+  setDue: (c, due) => call('PUT', `/cards/${id(c)}`, { due }),
 };

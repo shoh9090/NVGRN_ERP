@@ -15,6 +15,8 @@ const DEFAULTS = {
   mention_violation_h: 10,   // …и нарушение через N рабочих часов
   overdue_violation_days: 1, // срок карточки прошёл: нарушение через N рабочих дней
   stale_days: 7,             // карточка без движения: одно напоминание, без штрафа
+  due_required_h: 4,         // карточка в работе без срока: столько рабочих часов на срок
+  moves_alert: 3,            // столько переносов срока — сигнал руководителю
   fine_mention: 0,           // штраф за неответ на упоминание, сум
   fine_overdue: 0,           // штраф за просроченную карточку, сум
   fines_enabled: false,      // штрафы включаются после недели одних напоминаний
@@ -47,6 +49,8 @@ function normalizeRules(raw) {
     num(r.mention_violation_h, DEFAULTS.mention_violation_h, 0.5, 200));
   out.overdue_violation_days = Math.round(num(r.overdue_violation_days, DEFAULTS.overdue_violation_days, 0, 30));
   out.stale_days = Math.round(num(r.stale_days, DEFAULTS.stale_days, 1, 90));
+  out.due_required_h = num(r.due_required_h, DEFAULTS.due_required_h, 0.5, 100);
+  out.moves_alert = Math.round(num(r.moves_alert, DEFAULTS.moves_alert, 1, 20));
   out.fine_mention = Math.round(num(r.fine_mention, 0, 0, 100000000));
   out.fine_overdue = Math.round(num(r.fine_overdue, 0, 0, 100000000));
   out.fines_enabled = r.fines_enabled === true || r.fines_enabled === 'true';
@@ -205,8 +209,33 @@ function suggestPairs(members, employees) {
   });
 }
 
+// Срок с кнопки бота: конец рабочего дня через N дней по Ташкенту.
+function dueInDays(days, nowMs, r) {
+  const l = nowMs + TZ;
+  const day = Math.floor(l / DAY) * DAY + Math.round(days) * DAY;
+  return new Date(day + r.work_to * HOUR - TZ).toISOString();
+}
+// Дата словами или цифрами: «сегодня», «завтра», «25.09», «25.09.2026», «25/09».
+// Год не указан, а дата уже прошла — значит, следующий год.
+function parseDueDate(text, nowMs, r) {
+  const t = String(text || '').trim().toLowerCase();
+  if (/^сегодня$/.test(t)) return dueInDays(0, nowMs, r);
+  if (/^завтра$/.test(t)) return dueInDays(1, nowMs, r);
+  if (/^послезавтра$/.test(t)) return dueInDays(2, nowMs, r);
+  const m = t.match(/^(\d{1,2})[.\-/](\d{1,2})(?:[.\-/](\d{2,4}))?$/);
+  if (!m) return null;
+  const d = +m[1], mo = +m[2];
+  if (d < 1 || d > 31 || mo < 1 || mo > 12) return null;
+  const nowY = new Date(nowMs + TZ).getUTCFullYear();
+  let y = m[3] ? +m[3] : nowY;
+  if (y < 100) y += 2000;
+  const at = Date.UTC(y, mo - 1, d) + r.work_to * HOUR - TZ;
+  if (!m[3] && at < nowMs) return new Date(Date.UTC(y + 1, mo - 1, d) + r.work_to * HOUR - TZ).toISOString();
+  return new Date(at).toISOString();
+}
+
 module.exports = {
-  DEFAULTS, normalizeRules, toLatin, nameWords, nameMatch, suggestPairs,
+  DEFAULTS, normalizeRules, toLatin, nameWords, nameMatch, suggestPairs, dueInDays, parseDueDate,
   workHours, isWorkTime, localDate, clockStart, mentionStep, overdueIsViolation,
   parseMentions, isDoneList, viaJarvis, VIA,
 };

@@ -30,6 +30,18 @@ async function ensureJarvisSchema(pool) {
   )`);
   await q('CREATE INDEX IF NOT EXISTS idx_jv_mentions_open ON jarvis_mentions (card_id, member_id) WHERE answered_at IS NULL');
 
+  // Карточки в работе: нужен ли срок и сколько раз его переносили.
+  // Решение Шоха: у карточки с исполнителем должен быть срок, иначе задача
+  // «принята» и висит. Переносы не запрещаем, но считаем.
+  await q(`CREATE TABLE IF NOT EXISTS jarvis_cards (
+    card_id TEXT PRIMARY KEY,
+    name TEXT, url TEXT, board_name TEXT,
+    due TIMESTAMPTZ,
+    due_moves INT NOT NULL DEFAULT 0,
+    no_due_since TIMESTAMPTZ,            -- с какого момента карточка в работе без срока
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+
   // Журнал Джарвиса: каждое напоминание и каждое нарушение — одна запись.
   // dedup_key не даёт отправить одно и то же дважды. Нарушения отсюда
   // потом станут штрафами в Персонале (шаг 4).
