@@ -42,6 +42,13 @@ async function ensureJarvisSchema(pool) {
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
   )`);
 
+  // С какого момента висит дело ERP («Нужно внести»). Нужно для цепочки
+  // ответственных: не сделал первый — через N рабочих часов подключается второй.
+  await q(`CREATE TABLE IF NOT EXISTS jarvis_todo_state (
+    key TEXT PRIMARY KEY,
+    first_seen TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+
   // Журнал Джарвиса: каждое напоминание и каждое нарушение — одна запись.
   // dedup_key не даёт отправить одно и то же дважды. Нарушения отсюда
   // потом станут штрафами в Персонале (шаг 4).

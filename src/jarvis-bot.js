@@ -239,7 +239,11 @@ async function loadRules() {
 }
 const getSetting = async (k) => ((await pool.query('SELECT value FROM settings WHERE key = $1', [k])).rows[0] || {}).value || null;
 const setSetting = (k, v) => pool.query('INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2', [k, v]);
-const dateRu = (iso) => { const d = new Date(Date.parse(iso) + 5 * 3600000).toISOString(); return `${d.slice(8, 10)}.${d.slice(5, 7)}`; };
+const dateRu = (v) => {
+  const ms = typeof v === 'number' ? v : Date.parse(v);
+  const d = new Date(ms + 5 * 3600000).toISOString();
+  return `${d.slice(8, 10)}.${d.slice(5, 7)}`;
+};
 
 // Карточки и колонки всех досок пространства (для просрочек и «без движения»).
 let _scan = null;
@@ -507,7 +511,9 @@ async function morning(rules, overdueBy, now) {
        LEFT JOIN user_roles ur ON ur.user_id = u.id LEFT JOIN roles r ON r.id = ur.role_id
       WHERE u.is_active = TRUE AND e.status = 'active' AND u.jv_chat_id IS NOT NULL
       GROUP BY u.id, e.id`)).rows;
-  const { todosFor } = require('./todos');
+  const { todosFor, refreshTodoState } = require('./todos');
+  // Сколько дело уже висит — считаем один раз на такт, не на каждого человека.
+  await refreshTodoState(pool).catch((e) => console.warn('[ДЕЛА] состояние:', e.message));
   for (const p of people) {
     const key = `am:${p.employee_id}:${today}`;
     if (morningChecked.has(key)) continue;
@@ -532,7 +538,14 @@ async function morning(rules, overdueBy, now) {
     }
     if (todos.length) {
       parts.push('\n<b>ERP — нужно внести</b>');
-      todos.forEach((t) => parts.push(`• <b>${esc(t.title)}</b>\n  ${esc(t.body)}`));
+      todos.forEach((t) => {
+        parts.push(`• <b>${esc(t.title)}</b>\n  ${esc(t.body)}`);
+        // Дело дошло до второго в цепочке: человек должен понимать, почему оно у него.
+        if (t.escalated) {
+          parts.push(`  ⚠️ Это с ${dateRu(t.escalated.since)} у роли «${esc(t.escalated.prev_role || '—')}», до сих пор не сделано. `
+            + 'Поправьте сами или напомните.');
+        }
+      });
     }
     // Кнопки ведут прямо в окно ERP, где это вносится.
     const buttons = process.env.RAILWAY_PUBLIC_DOMAIN

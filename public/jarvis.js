@@ -110,18 +110,34 @@
     const finesOn = el('input', { type: 'checkbox', checked: r.fines_enabled, disabled: dis });
     const remOn = el('input', { type: 'checkbox', checked: r.reminders_enabled, disabled: dis });
 
-    // Кто вносит: у каждого дела ERP своя ответственная роль.
-    const ownerSel = {};
+    // Кто вносит: у дела цепочка ответственных — кто первый и кто подхватывает.
+    const ownerChain = {};
+    const roleOpt = (val) => el('select', { class: 'jv-inp', disabled: dis }, [el('option', { value: '' }, '— не назначено —'),
+      ...(s.roles || []).map((ro) => el('option', { value: String(ro.id), selected: String(val || '') === String(ro.id) },
+        ro.name + ' — ' + ro.people + ' чел., в боте ' + ro.in_bot))]);
+    const roleWarn = (sel, tile) => {
+      const chosen = (s.roles || []).find((ro) => String(ro.id) === String(sel.value || ''));
+      if (!chosen) return null;
+      if (!chosen.tiles.includes(tile)) return el('div', { class: 'jv-warn' }, 'У роли «' + chosen.name + '» нет доступа к плитке ' + tile + ' — внести не сможет.');
+      if (!chosen.in_bot) return el('div', { class: 'jv-warn' }, 'Никто из роли «' + chosen.name + '» не открыл бота — напоминание не дойдёт.');
+      return null;
+    };
     const ownerRows = (s.todo_kinds || []).map((k) => {
-      const sel = el('select', { class: 'jv-inp', disabled: dis }, [el('option', { value: '' }, '— все, у кого есть доступ к плитке —'),
-        ...(s.roles || []).map((ro) => el('option', { value: String(ro.id), selected: String((r.owners || {})[k.key] || '') === String(ro.id) },
-          ro.name + ' — ' + ro.people + ' чел., в боте ' + ro.in_bot))]);
-      ownerSel[k.key] = sel;
-      const chosen = (s.roles || []).find((ro) => String(ro.id) === String((r.owners || {})[k.key] || ''));
-      const warn = chosen && !chosen.tiles.includes(k.tile)
-        ? el('div', { class: 'jv-warn' }, 'У роли «' + chosen.name + '» нет доступа к плитке ' + k.tile + ' — внести не сможет.')
-        : (chosen && !chosen.in_bot ? el('div', { class: 'jv-warn' }, 'Никто из роли не открыл бота — напоминание не дойдёт.') : null);
-      return el('div', {}, [row(k.title, sel), warn]);
+      const steps = ((r.owners || {})[k.key] || []);
+      const first = roleOpt(steps[0] && steps[0].role);
+      const second = roleOpt(steps[1] && steps[1].role);
+      const after = el('input', { class: 'jv-inp', type: 'number', min: '1', step: '1', disabled: dis,
+        value: String(steps[1] ? steps[1].after_h : 8), style: 'width:90px' });
+      ownerChain[k.key] = { first, second, after };
+      const box = el('div', { class: 'jv-chain' }, [
+        el('div', { class: 'jv-lab' }, k.title),
+        el('div', { class: 'jv-ctl' }, ['Делает: ', first]),
+        el('div', { class: 'jv-ctl' }, ['Не сделано через ', after, ' рабочих часов — подключаем: ', second]),
+      ]);
+      const w1 = roleWarn(first, k.tile), w2 = roleWarn(second, k.tile);
+      if (w1) box.appendChild(w1);
+      if (w2) box.appendChild(w2);
+      return box;
     });
 
     box.append(
@@ -152,8 +168,9 @@
       sec('Карточка без движения', 'Одно напоминание участникам, без штрафа.', [
         row('Напомнить через', stale, ' дней'),
       ]),
-      sec('Кто вносит', 'Дело ERP приходит ответственной роли, а не всем подряд: цены — закупщику, Кассу — бухгалтеру. '
-        + 'Пока роль не выбрана, дело видят все, у кого есть доступ к плитке (и админ).', ownerRows),
+      sec('Кто вносит', 'У дела ERP есть ответственный и, если нужно, второй — он подключается, когда дело провисело. '
+        + 'Второму Джарвис пишет прямо: «это с такого-то числа у роли …, не сделано — поправьте сами или напомните». '
+        + 'Пока никто не выбран, дело видят все, у кого есть доступ к плитке (и админ).', ownerRows),
       sec('Штрафы', 'Нарушение уходит руководителю отдела: «Провести» или «Отменить». Без ответа за сутки — проводится само и попадает в зарплату. '
         + 'Включать после недели работы одних напоминаний.', [
         row('Не ответил на упоминание', fM, ' сум'),
@@ -177,7 +194,9 @@
           mention_remind_h: mRem.value, mention_violation_h: mVio.value, overdue_violation_days: oVio.value,
           stale_days: stale.value, fine_mention: fM.value, fine_overdue: fO.value, fines_enabled: finesOn.checked,
           reminders_enabled: remOn.checked, due_required_h: dueH.value, moves_alert: moves.value,
-          owners: Object.fromEntries(Object.entries(ownerSel).map(([k, sel]) => [k, sel.value || 0])),
+          owners: Object.fromEntries(Object.entries(ownerChain).map(([k, c]) => [k,
+            [c.first.value ? { role: c.first.value, after_h: 0 } : null,
+              c.second.value ? { role: c.second.value, after_h: c.after.value } : null].filter(Boolean)])),
         });
         toast('Сохранено');
         render();

@@ -135,8 +135,14 @@ test('срок задачи: значения по умолчанию и гра�
   assert.strictEqual(normalizeRules({ moves_alert: 99 }).moves_alert, 20);
 });
 
-test('кто вносит: только настоящие роли, «по доступу к плитке» = пусто', () => {
+test('кто вносит: цепочка ответственных, первый — сразу', () => {
   const r = normalizeRules({ owners: { noprice: '7', unclassified: 0, calc: 'нет', 'плохой ключ': 3 } });
-  assert.deepStrictEqual(r.owners, { noprice: 7 });
+  assert.deepStrictEqual(r.owners, { noprice: [{ role: 7, after_h: 0 }] });   // старая запись с одним ответственным
   assert.deepStrictEqual(normalizeRules({}).owners, {});
+  // двое: маркетолог сразу, бухгалтерия — через 8 рабочих часов
+  const two = normalizeRules({ owners: { calc: [{ role: 9, after_h: 5 }, { role: 3, after_h: 8 }] } });
+  assert.deepStrictEqual(two.owners.calc, [{ role: 9, after_h: 0 }, { role: 3, after_h: 8 }]);
+  // один и тот же дважды и мусор — отбрасываем
+  assert.deepStrictEqual(normalizeRules({ owners: { calc: [{ role: 3 }, { role: 3, after_h: 8 }, { role: 0 }] } }).owners.calc,
+    [{ role: 3, after_h: 0 }]);
 });

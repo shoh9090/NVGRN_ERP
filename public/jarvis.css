@@ -36,3 +36,9 @@ select.jv-inp{min-width:240px;max-width:100%}
   .jv-lab{width:100%}
   select.jv-inp,.jv-table select.jv-inp{min-width:0;width:100%}
 }
+
+/* Цепочка ответственных за дело ERP */
+.jv-chain{padding:8px 0;border-bottom:1px solid var(--line-soft)}
+.jv-chain:last-child{border-bottom:none}
+.jv-chain .jv-lab{width:auto;margin-bottom:4px;color:var(--ink)}
+.jv-chain .jv-ctl{margin:3px 0}

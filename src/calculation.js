@@ -1339,9 +1339,11 @@ async function approvedCostMap() {
   return { byProduct: m, atBySheet: at };
 }
 
-router.get('/api/summary', async (req, res) => {
-  const approved = String(req.query.mode || '') === 'approved';
-  try {
+// Сводка по товарам: цена, себестоимость, маржа и признаки («в минусе»,
+// «маржа ниже порога», «расходится с СД»). Считается в одном месте: экран
+// Калькуляции и напоминания Джарвиса должны говорить одно и то же.
+async function summaryProducts(approved) {
+  {
     const snaps = await approvedCostMap();
     const products = [];
     const noApproval = [];
@@ -1418,7 +1420,7 @@ router.get('/api/summary', async (req, res) => {
       });
     }
 
-    res.json({
+    return {
       mode: approved ? 'approved' : 'current',
       low_margin_pct: SUMMARY_LOW_MARGIN,
       products, sheets, no_approval: noApproval,
@@ -1428,7 +1430,13 @@ router.get('/api/summary', async (req, res) => {
         sd_diff: products.filter((x) => x.sd_diff).length,
         not_ready: products.filter((x) => x.not_ready).length,
       },
-    });
+    };
+  }
+}
+
+router.get('/api/summary', async (req, res) => {
+  try {
+    res.json(await summaryProducts(String(req.query.mode || '') === 'approved'));
   } catch (e) {
     console.error('[КАЛЬКУЛЯЦИЯ] сводка:', e.message);
     res.status(400).json({ error: e.message });
@@ -2038,6 +2046,7 @@ router.post('/api/sd-prices/refresh', J, async (req, res) => {
 });
 
 module.exports = router;
+module.exports.summaryProducts = summaryProducts;
 // Открыто для тестов: именно это соответствие решает, данные какой вкладки
 // закрывать. Промах здесь тихо открыл бы чужой лист.
 module.exports.calcTabOf = calcTabOf;

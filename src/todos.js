@@ -121,37 +121,99 @@ const mln = (v) => (Math.round((Number(v) || 0) / 1e5) / 10).toLocaleString('ru-
 const TODO_KINDS = [
   { key: 'noprice', title: 'Цены (с НДС) на принятое и на складе', tile: '/purchase' },
   { key: 'calc', title: 'Товары из продаж без пары в Калькуляции', tile: '/calculation' },
+  { key: 'loss', title: 'Убыточные позиции в Калькуляции', tile: '/calculation' },
   { key: 'unclassified', title: 'Операции Кассы без статьи', tile: '/cash' },
 ];
 
-// Кому какое дело: { ключ дела: id роли }. Пусто — как раньше, всем,
-// у кого есть доступ к плитке.
+// Цепочка ответственных: { ключ дела: [{ role, after_h }] } — кто первый и кто
+// подхватывает, если через after_h рабочих часов дело так и висит.
+// Решение Шоха: карточки в Калькуляции заводит маркетолог, не сделал за день —
+// то же дело видит бухгалтерия: «сказали вчера, не сделано — проверьте сами
+// или напомните». Пусто — как раньше, всем, у кого есть доступ к плитке.
 async function todoOwners() {
   try {
     const r = await db.pool.query("SELECT value FROM settings WHERE key = 'jarvis_rules'");
     const o = JSON.parse((r.rows[0] && r.rows[0].value) || '{}').owners || {};
-    return o && typeof o === 'object' ? o : {};
+    return require('./jarvis-rules').normalizeRules({ owners: o }).owners;
   } catch (e) { return {}; }
+}
+
+// С какого момента дело висит: нужно, чтобы понять, пора ли подключать
+// следующего в цепочке. Появилось — запомнили, сделали — забыли.
+async function todoState() {
+  try {
+    return new Map((await db.pool.query('SELECT key, first_seen FROM jarvis_todo_state')).rows
+      .map((r) => [r.key, r.first_seen]));
+  } catch (e) { return new Map(); }
+}
+// Пересчёт «с какого момента»: зовётся раз в такт Джарвисом, не на каждого человека.
+async function refreshTodoState(pool) {
+  const items = await computeTodos(TODO_KINDS.map((k) => k.key));
+  const live = new Set(items.map((i) => i.key));
+  for (const k of TODO_KINDS) {
+    if (live.has(k.key)) {
+      await pool.query(`INSERT INTO jarvis_todo_state (key, first_seen) VALUES ($1, now())
+                        ON CONFLICT (key) DO NOTHING`, [k.key]);
+    } else {
+      await pool.query('DELETE FROM jarvis_todo_state WHERE key = $1', [k.key]);
+    }
+  }
+  return items;
 }
 
 // Дела человека. user: { id, isAdmin, isFinance } — как req.user.
 // Тем же списком пользуется утренняя сводка Джарвиса в Telegram (src/jarvis-bot.js).
 async function todosFor(user) {
   const owners = await todoOwners();
+  const state = await todoState();
   const myRoles = user && user.id
     ? (await db.pool.query('SELECT role_id FROM user_roles WHERE user_id = $1', [user.id])).rows.map((x) => Number(x.role_id))
     : [];
-  // Назначен ответственный — дело только у него (даже у админа: иначе Шоху
-  // приходят чужие напоминания). Не назначен — по доступу к плитке, как раньше.
-  const allowed = async (key, tile) => {
-    const role = Number(owners[key]) || 0;
-    return role ? myRoles.includes(role) : hasTile(user, tile);
+  const roleName = new Map((await db.pool.query('SELECT id, name FROM roles')).rows.map((r) => [Number(r.id), r.name]));
+  const rules = require('./jarvis-rules').normalizeRules(await jarvisRulesRaw());
+  const now = Date.now();
+  // Чьё это дело сейчас: первый в цепочке — сразу, следующие — когда дело
+  // провисело свои рабочие часы. Назначена цепочка — дело только у неё
+  // (даже у админа: иначе Шоху приходят чужие напоминания).
+  const mine = (key) => {
+    const steps = owners[key] || [];
+    if (!steps.length) return { ok: null };                  // решает доступ к плитке
+    const since = state.get(key) ? Date.parse(state.get(key)) : now;
+    const hours = require('./jarvis-rules').workHours(since, now, rules);
+    const active = steps.filter((s) => hours >= s.after_h);
+    const at = active.findIndex((s) => myRoles.includes(s.role));
+    if (at < 0) return { ok: false };
+    const prev = at > 0 ? steps[at - 1] : null;
+    return { ok: true, escalated: at > 0, since, prev_role: prev ? roleName.get(prev.role) : null };
   };
+  const meta = {};
+  const allowed = async (key, tile) => {
+    const m = mine(key);
+    if (m.ok === null) return hasTile(user, tile);
+    if (m.ok) meta[key] = m;
+    return m.ok;
+  };
+  const items = (await computeTodos(TODO_KINDS.map((k) => k.key), allowed));
+  items.forEach((i) => { if (meta[i.key] && meta[i.key].escalated) i.escalated = meta[i.key]; });
+  return items;
+}
+
+async function jarvisRulesRaw() {
+  try {
+    const r = await db.pool.query("SELECT value FROM settings WHERE key = 'jarvis_rules'");
+    return JSON.parse((r.rows[0] && r.rows[0].value) || '{}');
+  } catch (e) { return {}; }
+}
+
+// Сами дела. keys — какие считать; allowed — фильтр доступа (без него считаем всё).
+async function computeTodos(keys, allowed) {
+  const want = (k) => keys.includes(k);
+  const can = async (k, tile) => (allowed ? allowed(k, tile) : true);
   const items = [];
   const safe = async (fn) => { try { await fn(); } catch (e) { console.warn('[ДЕЛА]', e.message); } };
 
   await safe(async () => {
-    if (!(await allowed('noprice', '/purchase'))) return;
+    if (!want('noprice') || !(await can('noprice', '/purchase'))) return;
     const rows = await noPriceItems(db.pool);
     const stock = await stockNoPriceItems(db.pool);
     if (!rows.length && !stock.length) return;
@@ -171,7 +233,7 @@ async function todosFor(user) {
   });
 
   await safe(async () => {
-    if (!(await allowed('calc', '/calculation'))) return;
+    if (!want('calc') || !(await can('calc', '/calculation'))) return;
     const rows = await unmatchedSold(db.pool);
     if (!rows.length) return;
     items.push({
@@ -182,8 +244,24 @@ async function todosFor(user) {
     });
   });
 
+  // Убыточные позиции: цена ниже себестоимости. Считает Калькуляция
+  // (summaryProducts) — своей формулы здесь нет, иначе цифры разойдутся с экраном.
   await safe(async () => {
-    if (!(await allowed('unclassified', '/cash'))) return;
+    if (!want('loss') || !(await can('loss', '/calculation'))) return;
+    const { products } = await require('./calculation').summaryProducts(false);
+    const bad = products.filter((p) => p.negative)
+      .sort((a, b) => (a.net_profit || 0) - (b.net_profit || 0));
+    if (!bad.length) return;
+    items.push({
+      key: 'loss', title: `Калькуляция: ${bad.length} позиций в минусе`,
+      body: 'Продаём дешевле себестоимости: ' + bad.slice(0, 3).map((p) => p.name).join(', ')
+        + (bad.length > 3 ? '…' : '') + '. Поднять цену или пересчитать себестоимость.',
+      link: '/calculation#summary', count: bad.length,
+    });
+  });
+
+  await safe(async () => {
+    if (!want('unclassified') || !(await can('unclassified', '/cash'))) return;
     const u = await unclassified(db.pool);
     if (!u || !u.cnt) return;
     items.push({
@@ -204,6 +282,7 @@ router.get('/api/todos', async (req, res) => {
 
 module.exports = router;
 module.exports.todosFor = todosFor;
+module.exports.refreshTodoState = refreshTodoState;
 module.exports.TODO_KINDS = TODO_KINDS;
 module.exports.noPriceItems = noPriceItems;
 module.exports.stockNoPriceItems = stockNoPriceItems;

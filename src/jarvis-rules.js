@@ -56,11 +56,21 @@ function normalizeRules(raw) {
   out.fine_overdue = Math.round(num(r.fine_overdue, 0, 0, 100000000));
   out.fines_enabled = r.fines_enabled === true || r.fines_enabled === 'true';
   out.reminders_enabled = r.reminders_enabled === true || r.reminders_enabled === 'true';
-  // Кто вносит: ключ дела → id роли ERP. Пусто/0 — по доступу к плитке, как раньше.
+  // Кто вносит: ключ дела → цепочка [{ role, after_h }]. Первый берётся сразу
+  // (after_h = 0), следующий подключается, когда дело провисело свои рабочие часы.
+  // Одно число вместо списка — старая запись с одним ответственным.
   out.owners = {};
   for (const [k, v] of Object.entries((r.owners && typeof r.owners === 'object') ? r.owners : {})) {
-    const id = parseInt(v, 10);
-    if (/^[a-z_]{2,30}$/.test(k) && id > 0) out.owners[k] = id;
+    if (!/^[a-z_]{2,30}$/.test(k)) continue;
+    const raw = Array.isArray(v) ? v : [{ role: v, after_h: 0 }];
+    const steps = [];
+    for (const s of raw) {
+      const role = parseInt(s && s.role !== undefined ? s.role : s, 10);
+      if (!(role > 0) || steps.some((x) => x.role === role)) continue;
+      steps.push({ role, after_h: steps.length === 0 ? 0 : num(s && s.after_h, 8, 0, 400) });
+    }
+    steps.sort((a, b) => a.after_h - b.after_h);
+    if (steps.length) { steps[0].after_h = 0; out.owners[k] = steps; }
   }
   out.enabled_at = out.reminders_enabled && !Number.isNaN(Date.parse(r.enabled_at)) ? String(r.enabled_at) : '';
   return out;
