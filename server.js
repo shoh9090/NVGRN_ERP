@@ -615,6 +615,22 @@ admin.post('/appearance', upload.fields([{ name: 'logo' }, { name: 'bg' }]), asy
 // Интеграции
 const integrations = require('./src/integrations');
 
+// Сколько места занимает база: таблицы по размеру. Только чтение, только админ.
+// Нужно, когда Railway предупреждает, что диск базы заполняется.
+admin.get('/api/db-size', async (req, res) => {
+  try {
+    const total = (await db.pool.query('SELECT pg_database_size(current_database()) AS b')).rows[0].b;
+    const tables = (await db.pool.query(
+      `SELECT n.nspname || '.' || c.relname AS name,
+              pg_total_relation_size(c.oid) AS total, pg_relation_size(c.oid) AS data,
+              c.reltuples::bigint AS rows_est
+         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE c.relkind = 'r' AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+        ORDER BY pg_total_relation_size(c.oid) DESC LIMIT 25`)).rows;
+    res.json({ total: Number(total), tables: tables.map((t) => ({ ...t, total: Number(t.total), data: Number(t.data), rows_est: Number(t.rows_est) })) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 admin.get('/integrations', async (req, res) => {
   const sd = await integrations.getSdConfig();
   sd.password = undefined; // пароль в интерфейс не отдаём
