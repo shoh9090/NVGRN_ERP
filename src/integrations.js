@@ -803,4 +803,44 @@ async function getMonthlySalesUnits(period, opts = {}) {
   };
 }
 
-module.exports = { sdHealth, getMonthlySalesUnits, getSdConfig, saveSdConfig, testConnection, syncFinishedGoods, syncPrices, diagSD, getHorecaPoints, getAgentCoverage, syncCrmAgents, syncCrmExpeditors, syncClientsToContacts, getSdProducts, syncCashClients, probeContragent };
+// Оплаты клиентов из SalesDoctor за период (метод getPayment).
+// Нужны для сверки: в CRM деньги видит агент/бухгалтер сразу, в ERP — только
+// после загрузки выписки, и расхождение приходится искать руками.
+// Формат ответа SD заранее не известен, поэтому вытаскиваем поля терпимо:
+// дату и сумму ищем среди нескольких возможных названий.
+async function getPayments(from, to, opts = {}) {
+  const cfg = await getSdConfig();
+  if (!cfg.url || !cfg.login || !cfg.password) throw new Error('SalesDoctor не настроен: заполните адрес, логин и пароль в Интеграциях');
+  const auth = await sdLogin(cfg);
+  const limit = opts.limit || 500;
+  const maxPages = opts.maxPages || 40;
+  const maxMs = opts.maxMs || 60000;
+  const started = Date.now();
+  const rows = [];
+  let page = 1, truncated = false, raw0 = null;
+  for (;;) {
+    if (Date.now() - started > maxMs || page > maxPages) { truncated = true; break; }
+    const data = await sdRequest(cfg.url, {
+      method: 'getPayment',
+      auth: { userId: auth.userId, token: auth.token },
+      params: { limit, page, filter: { period: { date: { from, to } } } },
+    });
+    const list = (data.result && (data.result.payment || data.result.payments)) || [];
+    if (!raw0) raw0 = list[0] || null;
+    rows.push(...list);
+    const total = data.pagination ? data.pagination.total : 0;
+    if (!list.length || list.length < limit || page * limit >= total) break;
+    page++;
+  }
+  const num = (v) => Number(String(v == null ? 0 : v).replace(/\s/g, '').replace(',', '.')) || 0;
+  const pick = (o, names) => { for (const n of names) if (o && o[n] != null && o[n] !== '') return o[n]; return null; };
+  const items = rows.map((r) => ({
+    date: String(pick(r, ['date', 'dateDocument', 'dateCreate', 'payDate']) || '').slice(0, 10),
+    amount: num(pick(r, ['summa', 'amount', 'sum', 'payment'])),
+    type: String(pick(r, ['paymentType', 'type', 'cashType']) || ''),
+    client: (r.client && (r.client.clientName || r.client.name)) || r.clientName || '',
+  }));
+  return { from, to, count: items.length, items, truncated, sample: raw0 };
+}
+
+module.exports = { sdHealth, getMonthlySalesUnits, getPayments, getSdConfig, saveSdConfig, testConnection, syncFinishedGoods, syncPrices, diagSD, getHorecaPoints, getAgentCoverage, syncCrmAgents, syncCrmExpeditors, syncClientsToContacts, getSdProducts, syncCashClients, probeContragent };

@@ -1537,6 +1537,35 @@ router.post('/api/reconcile', J, async (req, res) => {
 // поставщикам, поэтому отчёт не совпадает с Кэш-флоу — и не должен.
 // Готовность данных по месяцам: одни и те же проверки для каждого месяца.
 // Закрытые месяцы берутся из снимка — ровно то, что показывает отчёт.
+// Сверка с CRM: оплаты клиентов в SalesDoctor против поступлений в Кассе по дням.
+// Шох: «в CRM и в ERP разные суммы поступлений». Причины бывают разные — не
+// загружена выписка за день, возврат банка записан как выручка, оплату отметили
+// в CRM раньше, чем деньги дошли. Сверка показывает это по дням, а не «в целом».
+router.get('/api/sd-reconcile', async (req, res) => {
+  const from = /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || '') ? req.query.from : new Date().toISOString().slice(0, 8) + '01';
+  const to = /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || '') ? req.query.to : new Date().toISOString().slice(0, 10);
+  try {
+    const sd = await integrations.getPayments(from, to);
+    const erp = (await db.pool.query(
+      `SELECT to_char(t.tx_date, 'YYYY-MM-DD') AS d, COALESCE(SUM(t.amount), 0) AS s, COUNT(*)::int AS n
+         FROM cash_transactions t JOIN cash_categories c ON c.id = t.category_id
+        WHERE t.tx_type = 'in' AND c.code = '200' AND t.source <> 'opening'
+          AND t.tx_date BETWEEN $1 AND $2
+        GROUP BY 1`, [from, to])).rows;
+    const byDay = new Map();
+    const get = (d) => { if (!byDay.has(d)) byDay.set(d, { date: d, crm: 0, erp: 0, crm_n: 0, erp_n: 0 }); return byDay.get(d); };
+    for (const x of sd.items) { if (!x.date) continue; const r = get(x.date); r.crm += x.amount; r.crm_n++; }
+    for (const x of erp) { const r = get(x.d); r.erp += Number(x.s); r.erp_n = x.n; }
+    const days = [...byDay.values()].sort((a, b) => a.date.localeCompare(b.date))
+      .map((r) => ({ ...r, diff: Math.round((r.crm - r.erp) * 100) / 100 }));
+    const totals = days.reduce((a, r) => ({ crm: a.crm + r.crm, erp: a.erp + r.erp }), { crm: 0, erp: 0 });
+    res.json({ from, to, truncated: sd.truncated, sample: sd.sample, days, totals: { ...totals, diff: Math.round((totals.crm - totals.erp) * 100) / 100 } });
+  } catch (e) {
+    console.error('[КАССА] сверка с CRM:', e.message);
+    res.status(400).json({ error: e.message });
+  }
+});
+
 router.get('/api/pnl/readiness', async (req, res) => {
   const end = /^\d{4}-\d{2}$/.test(req.query.period || '') ? req.query.period : new Date().toISOString().slice(0, 7);
   const n = Math.max(1, Math.min(12, Number(req.query.months) || 6));
