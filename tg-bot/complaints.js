@@ -121,7 +121,20 @@ function extractMedia(msg) {
 }
 
 // Скачать медиа из Telegram и положить байты в public.files; вернуть id записи.
+// Видео в базу НЕ кладём: 52 ролика заняли 233 МБ и заполнили диск базы.
+// Видео хранит сам Telegram; в files — строка без байтов (по ней ERP проверяет
+// права), а ERP подгружает ролик из Telegram по tg_file_id (src/tg-files.js).
+// Фото лёгкие — их по-прежнему храним в базе.
 async function saveTgMedia(fileId, kind) {
+  if (kind !== "photo") {
+    // Проверяем, что Telegram отдаёт этот файл боту (до 20 МБ): иначе ERP потом
+    // не сможет его показать. Раньше это проверялось самим скачиванием.
+    await bot.getFile(fileId);
+    const ins = await db.query(
+      "INSERT INTO public.files (name, mime, data) VALUES ($1, 'video/mp4', ''::bytea) RETURNING id",
+      [`complaint_${Date.now()}.mp4`]);
+    return ins.rows[0].id;
+  }
   const link = await bot.getFileLink(fileId);
   const resp = await fetch(link);
   if (!resp.ok) throw new Error("HTTP " + resp.status);

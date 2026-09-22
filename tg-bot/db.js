@@ -14,6 +14,9 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
   options: `-c search_path=${SCHEMA},public`,
 });
+// Обрыв связи с базой (перезапуск Postgres) не должен ронять бота целиком —
+// без обработчика pg бросает «Unhandled 'error' event» и процесс падает.
+pool.on("error", (e) => console.error("[БАЗА] обрыв соединения:", e.message));
 
 // Простой запрос к базе.
 async function query(text, params) {
