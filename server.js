@@ -637,12 +637,14 @@ admin.post('/api/files/offload-videos', express.json(), async (req, res) => {
   const tg = require('./src/tg-files');
   if (!tg.hasToken()) return res.status(400).json({ error: 'Сначала добавьте TELEGRAM_BOT_TOKEN в переменные сервиса ERP в Railway' });
   const dry = !!(req.body && req.body.dry);
+  // limit — сколько роликов за раз: сначала один, проверить просмотр, потом все.
+  const limit = Math.max(0, parseInt((req.body || {}).limit, 10) || 0);
   const rows = (await db.pool.query(
     `SELECT f.id, octet_length(f.data) AS bytes, cf.tg_file_id
        FROM files f JOIN tgbot.complaint_files cf ON cf.file_ref = f.id
       WHERE cf.kind IN ('video', 'video_note') AND octet_length(f.data) > 0 AND cf.tg_file_id IS NOT NULL
-      ORDER BY f.id`)).rows;
-  const out = { total: rows.length, offloaded: 0, kept: [], freed_bytes: 0, dry };
+      ORDER BY f.id`)).rows.slice(0, limit || undefined);
+  const out = { total: rows.length, offloaded: 0, kept: [], freed_bytes: 0, dry, ids: [] };
   for (const x of rows) {
     let info = null, why = null;
     try { info = await tg.fileInfo(x.tg_file_id); } catch (e) { why = e.message; }
@@ -651,7 +653,7 @@ admin.post('/api/files/offload-videos', express.json(), async (req, res) => {
       continue;
     }
     if (!dry) await db.pool.query("UPDATE files SET data = ''::bytea WHERE id = $1", [x.id]);
-    out.offloaded++; out.freed_bytes += Number(x.bytes);
+    out.offloaded++; out.freed_bytes += Number(x.bytes); out.ids.push({ id: x.id, bytes: Number(x.bytes) });
   }
   // Место на диске Postgres возвращает только после полного пересбора таблицы.
   if (!dry && out.offloaded) {
