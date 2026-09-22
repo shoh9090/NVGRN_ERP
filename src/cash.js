@@ -1541,6 +1541,13 @@ router.post('/api/reconcile', J, async (req, res) => {
 // Шох: «в CRM и в ERP разные суммы поступлений». Причины бывают разные — не
 // загружена выписка за день, возврат банка записан как выручка, оплату отметили
 // в CRM раньше, чем деньги дошли. Сверка показывает это по дням, а не «в целом».
+// Разведка формата фильтра оплат в SD (разовая, только для отладки сверки).
+router.get('/api/sd-payments-probe', async (req, res) => {
+  if (!canFin(req)) return res.status(403).json({ error: 'Только администратор/финансы' });
+  try { res.json(await integrations.probePayments(req.query.from || '2026-09-01', req.query.to || '2026-09-22')); }
+  catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 router.get('/api/sd-reconcile', async (req, res) => {
   const from = /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || '') ? req.query.from : new Date().toISOString().slice(0, 8) + '01';
   const to = /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || '') ? req.query.to : new Date().toISOString().slice(0, 10);

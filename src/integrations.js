@@ -850,4 +850,34 @@ async function getPayments(from, to, opts = {}) {
   return { from, to, count: items.length, items, truncated, sample: raw0 };
 }
 
-module.exports = { sdHealth, getMonthlySalesUnits, getPayments, getSdConfig, saveSdConfig, testConnection, syncFinishedGoods, syncPrices, diagSD, getHorecaPoints, getAgentCoverage, syncCrmAgents, syncCrmExpeditors, syncClientsToContacts, getSdProducts, syncCashClients, probeContragent };
+// Разведка: какой формат фильтра по датам понимает getPayment. Нужна один раз,
+// чтобы сверка с CRM видела все оплаты, а не только начало месяца.
+async function probePayments(from, to) {
+  const cfg = await getSdConfig();
+  const auth = await sdLogin(cfg);
+  const variants = {
+    'period.date': { period: { date: { from, to } } },
+    'period.paymentDate': { period: { paymentDate: { from, to } } },
+    'date': { date: { from, to } },
+    'paymentDate': { paymentDate: { from, to } },
+    'без фильтра': {},
+  };
+  const out = {};
+  for (const [name, filter] of Object.entries(variants)) {
+    try {
+      const data = await sdRequest(cfg.url, {
+        method: 'getPayment',
+        auth: { userId: auth.userId, token: auth.token },
+        params: { limit: 500, page: 1, filter },
+      });
+      const list = (data.result && (data.result.payment || data.result.payments)) || [];
+      const dates = list.map((x) => String(x.paymentDate || '').slice(0, 10)).filter(Boolean).sort();
+      const sum = list.reduce((a, x) => a + (Number(x.amount) || 0), 0);
+      out[name] = { n: list.length, first: dates[0] || null, last: dates[dates.length - 1] || null,
+        sum: Math.round(sum), total: data.pagination ? data.pagination.total : null, err: data.error || null };
+    } catch (e) { out[name] = { err: e.message }; }
+  }
+  return out;
+}
+
+module.exports = { sdHealth, getMonthlySalesUnits, getPayments, probePayments, getSdConfig, saveSdConfig, testConnection, syncFinishedGoods, syncPrices, diagSD, getHorecaPoints, getAgentCoverage, syncCrmAgents, syncCrmExpeditors, syncClientsToContacts, getSdProducts, syncCashClients, probeContragent };
