@@ -596,14 +596,14 @@
   // полосе читаются точнее. Между сегментами зазор в 2 пикселя подложки.
   function shareBar(d) {
     const rev = d.revenue.total;
-    const cogs = d.cogs_source === 'plan' ? d.cogs.plan.total
-      : (d.cogs.fact.has_data ? d.cogs.fact.total : null);
+    // Себестоимость целиком (материалы + отход + потери) считает сервер — не собираем свою.
+    const cogs = d.cogs_total === undefined ? null : d.cogs_total;
     const opex = d.opex.total;
     const profit = d.operating_profit;
     if (!(rev > 0) || cogs === null || profit === null) return null;
 
     const parts = [
-      { label: 'Товар', value: cogs, color: CH.green, note: d.cogs_source === 'plan' ? 'по калькуляции' : 'сырьё и упаковка со склада' },
+      { label: 'Товар', value: cogs, color: CH.green, note: d.cogs_source === 'plan' ? 'по калькуляции + отход и потери' : 'сырьё, упаковка, отход и потери со склада' },
       { label: 'Работа компании', value: opex, color: CH.blue, note: 'зарплата, аренда, логистика' },
       { label: profit >= 0 ? 'Прибыль' : 'Убыток', value: Math.abs(profit), color: profit >= 0 ? CH.amber : CH.loss, note: profit >= 0 ? 'то, что осталось' : 'месяц в минусе' },
     ];
@@ -847,8 +847,8 @@
 
   function humanSummary(d) {
     const rev = d.revenue.total;
-    const cogs = d.cogs_source === 'plan' ? d.cogs.plan.total
-      : (d.cogs.fact.has_data ? d.cogs.fact.total : null);
+    // Себестоимость целиком (материалы + отход + потери) считает сервер — не собираем свою.
+    const cogs = d.cogs_total === undefined ? null : d.cogs_total;
     const opex = d.opex.total;
     const profit = d.operating_profit;
 
@@ -863,8 +863,8 @@
         d.revenue.source === 'shipped'
           ? 'реализация по SalesDoctor'
           : 'по поступлению денег — реализация не подтянута'),
-      card('Товар обошёлся в', cogs, d.cogs_source === 'plan' ? 'по калькуляции — склад не вёлся' : 'сырьё и упаковка со склада'),
-      card('Работа компании', opex, 'зарплата, аренда, логистика и прочее'),
+      card('Товар обошёлся в', cogs, d.cogs_source === 'plan' ? 'по калькуляции — склад не вёлся' : 'сырьё, упаковка, отход и потери'),
+      card('Работа компании', opex, 'зарплата, аренда, логистика, налоги'),
       card('Осталось прибыли', profit,
         profit === null ? 'не хватает данных'
           : (d.operating_margin_pct === null ? null
@@ -1042,13 +1042,19 @@
     gap();
 
     const byPlan = d.cogs_source === 'plan';
-    row('Себестоимость (материалы)' + (byPlan ? ' — по плану' : ''),
-      pnlMoney(byPlan ? d.cogs.plan.total : (d.cogs.fact.has_data ? d.cogs.fact.total : null)), {
-        cls: 'cash-pnl-head',
-        hint: byPlan
-          ? 'Считаем по Калькуляции: за месяц нет выдач сырья со склада.'
-          : 'Сырьё и упаковка, списанные со склада в производство, по средней цене прихода.',
-      });
+    const parts = d.cogs_parts || {};
+    row('Себестоимость' + (byPlan ? ' — материалы по плану' : ''), pnlMoney(d.cogs_total), {
+      cls: 'cash-pnl-head',
+      hint: 'Материалы + отход + потери со склада. За отход и потери заплачено, поэтому они часть себестоимости.',
+    });
+    row('   материалы в производство', pnlMoney(parts.materials === undefined ? null : parts.materials), {
+      cls: 'cash-pnl-sub',
+      hint: byPlan
+        ? 'По Калькуляции: за месяц нет выдач сырья со склада.'
+        : 'Сырьё и упаковка, выданные в производство, по средней цене закупки месяца.',
+    });
+    row('   отход (обрезь)', money(parts.waste || 0), { cls: 'cash-pnl-sub', hint: 'По цене сырья, из которого получен.' });
+    row('   потери со склада', money(parts.writeoff || 0), { cls: 'cash-pnl-sub', hint: 'Списания по нашей вине. Брак поставщика сюда не входит.' });
     row('   факт: списано со склада', pnlMoney(d.cogs.fact.has_data ? d.cogs.fact.total : null), {
       cls: 'cash-pnl-sub',
       hint: d.cogs.fact.has_data
@@ -1096,6 +1102,13 @@
     gap();
     row('Операционная прибыль', pnlMoney(d.operating_profit), { cls: 'cash-pnl-total' });
     row('Рентабельность', pnlPct(d.operating_margin_pct), { cls: 'cash-pnl-sub' });
+
+    gap();
+    row('Налог на прибыль', money((d.profit_tax && d.profit_tax.total) || 0), {
+      cls: 'cash-pnl-sub',
+      hint: 'По дате оплаты (статья 67). Платится не каждый месяц, поэтому чистая прибыль по месяцам скачет.',
+    });
+    row('Чистая прибыль', pnlMoney(d.net_profit === undefined ? null : d.net_profit), { cls: 'cash-pnl-total' });
 
     box.appendChild(el('table', { class: 'cash-pnl-t' }, el('tbody', {}, rows)));
 
@@ -1234,10 +1247,13 @@
         : ('Отгружено ' + money(d.cogs.plan.units) + ' шт × ' + money(d.cogs.plan.unit_cost)
           + ' — средняя пачка по ' + d.cogs.plan.products + ' товарам Калькуляции (грубая оценка)')),
     d.cogs.plan.total, d.cogs.plan.unmatched_units > 0 ? 'cash-src-warn' : null);
-    line('Себестоимость в расчёте', d.cogs_source === 'fact'
-      ? 'Взят ФАКТ со склада'
-      : (d.cogs_source === 'plan' ? 'Взят ПЛАН: склад за месяц не вёлся' : 'Считать не из чего'),
-    d.cogs_source === 'fact' ? d.cogs.fact.total : d.cogs.plan.total, 'cash-src-total');
+    line('Отход (обрезь)', 'Склад → отход при приёмке, по цене сырья, из которого получен', (d.cogs_parts || {}).waste || 0);
+    line('Потери со склада', 'Склад → списания по нашей вине (брак поставщика не входит)', (d.cogs_parts || {}).writeoff || 0);
+    line('Себестоимость в расчёте', (d.cogs_source === 'fact'
+      ? 'ФАКТ со склада'
+      : (d.cogs_source === 'plan' ? 'ПЛАН: склад за месяц не вёлся' : 'Считать не из чего'))
+      + ' + отход + потери',
+    d.cogs_total === undefined ? null : d.cogs_total, 'cash-src-total');
 
     // --- 3. Валовая прибыль ---
     head('3. Валовая прибыль');
@@ -1251,16 +1267,20 @@
         line('    ' + i.code + ' · ' + i.name, 'Касса → расходы по статье ' + i.code + ', операций: ' + i.cnt, i.exp, 'cash-src-sub');
       });
     });
-    line('Итого операционных расходов', 'Сумма всех групп выше. Сырьё и упаковка сюда НЕ входят — они в себестоимости', d.opex.total, 'cash-src-total');
+    line('Итого операционных расходов', 'Сумма всех групп выше. Сырьё и упаковка сюда НЕ входят — они в себестоимости. '
+      + 'Налоги и комиссии банка — входят; налог на прибыль — ниже, после прибыли', d.opex.total, 'cash-src-total');
 
     // --- 5. Итог ---
     head('5. Операционная прибыль');
     line(d.operating_profit !== null && d.operating_profit < 0 ? 'Убыток' : 'Прибыль',
       'Валовая прибыль минус операционные расходы', d.operating_profit, 'cash-src-total');
+    line('Налог на прибыль', 'Касса → статья 67, по дате оплаты', (d.profit_tax && d.profit_tax.total) || 0);
+    line('Чистая прибыль', 'Операционная прибыль минус налог на прибыль',
+      d.net_profit === undefined ? null : d.net_profit, 'cash-src-total');
 
     // Если месяц в минусе — прямо говорим, что именно съело прибыль
     if (d.operating_profit !== null && d.operating_profit < 0) {
-      const cogs = d.cogs_source === 'fact' ? d.cogs.fact.total : d.cogs.plan.total;
+      const cogs = d.cogs_total || 0;
       const top = d.opex.groups.slice().sort((a, b) => b.amount - a.amount)[0];
       box.appendChild(el('div', { class: 'cash-src-why' }, [
         el('b', {}, 'Почему минус. '),

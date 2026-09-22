@@ -63,6 +63,15 @@ const GRP_CAPEX = '7.';
 const isMaterials = (g) => String(g || '').startsWith(GRP_MATERIALS);
 const isFinance = (g) => String(g || '').startsWith(GRP_FINANCE);
 const isCapex = (g) => String(g || '').startsWith(GRP_CAPEX);
+// Решение Шоха (сентябрь 2026): в группе «6. Финансы» лежат не только кредиты, но и
+// настоящие расходы — налоги и комиссии банка. Раньше вся группа выпадала из
+// прибыли, и прибыль была завышена на налоги. Теперь:
+//   • налоги от ЗП, НДС, прочие налоги, % банка, % за обнал — операционные расходы;
+//   • налог на прибыль — отдельной строкой ПОСЛЕ операционной прибыли;
+//   • кредиты, займы, возвраты долгов, резервы — по-прежнему вне прибыли.
+const OPEX_FROM_FINANCE = new Set(['62', '64', '65', '66', '68']);
+const PROFIT_TAX_CODE = '67';
+const GRP_TAXES = 'Налоги и комиссии банка';
 
 const num = (v) => Number(v) || 0;
 const pct = (part, whole) => (whole > 0 ? (part / whole) * 100 : null);
@@ -83,6 +92,7 @@ function classifyRows(rows) {
   const otherIn = [];      // приходы по РАСХОДНЫМ статьям — это возвраты, не выручка
   const refunds = [];      // расход по ДОХОДНОЙ статье — возврат покупателю
   const conversion = [];   // конверсия валюты: обе ноги, деньги никуда не делись
+  const profitTax = [];    // налог на прибыль — после операционной прибыли
 
   // Приход и расход по одной статье разбираем ОТДЕЛЬНО. Раньше статья целиком
   // уходила в одну корзину, и возврат от поставщика сырья пропадал из сверки:
@@ -114,7 +124,16 @@ function classifyRows(rows) {
 
     // --- расход ---
     if (item.exp > 0) {
-      if (fin) { if (item.inc <= 0) finance.push(item); }
+      const code = String(r.code);
+      if (code === PROFIT_TAX_CODE) profitTax.push(item);
+      else if (OPEX_FROM_FINANCE.has(code)) {
+        // Налоги и комиссии банка — расход, хоть статья и в группе «Финансы».
+        if (!opex.has(GRP_TAXES)) opex.set(GRP_TAXES, { group_name: GRP_TAXES, amount: 0, items: [] });
+        const g = opex.get(GRP_TAXES);
+        g.amount += item.exp;
+        g.items.push(item);
+      }
+      else if (fin) { if (item.inc <= 0) finance.push(item); }
       else if (cap) capex.push(item);
       else if (mat) materials.push(item);
       // Расход по ДОХОДНОЙ статье — это возврат покупателю. Он уменьшает
@@ -134,7 +153,8 @@ function classifyRows(rows) {
   const sum = (list, f) => list.reduce((s, x) => s + x[f], 0);
   const refundsTotal = sum(refunds, 'exp');
   return {
-    revenue, opex, materials, finance, capex, otherIn, otherIncome, refunds, conversion,
+    revenue, opex, materials, finance, capex, otherIn, otherIncome, refunds, conversion, profitTax,
+    profitTaxTotal: sum(profitTax, 'exp'),
     // Выручка от продаж — ровно статья 200, как в Кэш-флоу
     salesTotal: sum(revenue, 'inc'),
     otherIncomeTotal: sum(otherIncome, 'inc'),
@@ -209,6 +229,7 @@ async function cashSide(pool, from, to) {
     other_inflows: { total: otherInTotal, items: otherIn },
     refunds: { total: refundsTotal, items: refunds },
     conversion: { in: convIn, out: sum(conversion, 'exp'), items: conversion },
+    profit_tax: { total: c.profitTaxTotal, items: c.profitTax },
     unclassified: { inc: num(un.inc), exp: num(un.exp), cnt: Number(un.cnt) },
     // Сверка: из чего складывается расхождение с приходом в Кэш-флоу.
     // Показываем арифметикой, чтобы не выяснять это в переписке.
@@ -588,31 +609,14 @@ async function planCogs(pool, units, sold) {
 //
 // Чистая функция: на вход уже посчитанные блоки, на выход список проверок.
 // Ничего не меняет в самой прибыли — решение о формуле принимает Шох.
-const TAX_CODES = new Set(['65', '66', '67', '68']);       // налоги: от ЗП, НДС, на прибыль, прочие
-const BANKFEE_CODES = new Set(['62', '64']);               // комиссии банка и за обнал
 const SALARY_CODES = new Set(['20', '40']);                // ЗП производства и офиса
 
 function selfCheck({ revenue, cogs, opexTotal, operating, fact, plan, waste, writeoff, cash }) {
   const checks = [];
   const add = (key, text, amount, profitIf) => checks.push({ key, text, amount, profit_if: profitIf });
 
-  // 1. Налоги и банковские комиссии лежат в группе «6. Финансы» и в прибыль не входят.
-  const finItems = (cash.finance && cash.finance.items) || [];
-  const taxes = finItems.filter((x) => TAX_CODES.has(String(x.code))).reduce((a, x) => a + num(x.exp), 0);
-  const fees = finItems.filter((x) => BANKFEE_CODES.has(String(x.code))).reduce((a, x) => a + num(x.exp), 0);
-  if (taxes + fees > 0 && operating !== null) {
-    add('taxes', `Налоги и банковские комиссии за месяц (${Math.round((taxes + fees) / 1e6)} млн) в прибыль НЕ входят: `
-      + 'они лежат в группе «6. Финансы», а эта группа из P&L исключена целиком.',
-    taxes + fees, operating - taxes - fees);
-  }
-
-  // 2. Отход и списания со склада показаны отдельно, но себестоимость не увеличивают.
-  const losses = num(waste && waste.amount) + num(writeoff && writeoff.amount);
-  if (losses > 0 && operating !== null) {
-    add('losses', `Отход и списания со склада (${Math.round(losses / 1e6)} млн) показаны отдельной строкой, `
-      + 'но в себестоимость не входят — за это сырьё заплачено, а в прибыли оно не учтено.',
-    losses, operating - losses);
-  }
+  // Налоги, комиссии банка, отход и списания раньше тоже были здесь — теперь они
+  // в самой формуле прибыли (решение Шоха), проверять их отдельно не нужно.
 
   // 3. Склад списал заметно меньше, чем оплачено поставщикам за сырьё и упаковку.
   const paid = num(cash.materials_paid && cash.materials_paid.total);
@@ -651,8 +655,7 @@ function selfCheck({ revenue, cogs, opexTotal, operating, fact, plan, waste, wri
   const byKey = Object.fromEntries(checks.map((c) => [c.key, c]));
   const stockGap = Math.max(byKey.stock_vs_paid ? byKey.stock_vs_paid.amount : 0,
     byKey.fact_vs_plan ? byKey.fact_vs_plan.amount : 0);
-  const totalGap = (byKey.taxes ? byKey.taxes.amount : 0) + (byKey.losses ? byKey.losses.amount : 0)
-    + (byKey.unclassified ? byKey.unclassified.amount : 0) + stockGap;
+  const totalGap = (byKey.unclassified ? byKey.unclassified.amount : 0) + stockGap;
   return {
     items: checks,
     total_gap: totalGap,
@@ -708,10 +711,18 @@ async function buildPnl(pool, period) {
   // плану — иначе отчёт бесполезен целые месяцы. Чем посчитано, отдаём наружу:
   // подменять факт планом молча нельзя, человек должен это видеть.
   const factTotal = fact.has_data ? fact.total : null;
-  const cogs = factTotal !== null ? factTotal : plan.total;
+  const materials = factTotal !== null ? factTotal : plan.total;
   const cogsSource = factTotal !== null ? 'fact' : (plan.total !== null ? 'plan' : null);
+  // Решение Шоха (сентябрь 2026): отход и потери со склада — часть себестоимости.
+  // За это сырьё заплачено, просто в продукт оно не попало. Раньше они были
+  // отдельной справочной строкой, и прибыль была завышена на их стоимость.
+  const losses = num(waste.amount) + num(writeoff.amount);
+  const cogs = materials === null ? null : materials + losses;
   const gross = cogs === null ? null : revenue - cogs;
   const operating = gross === null ? null : gross - cash.opex.total;
+  // Налог на прибыль — после операционной прибыли, по дате оплаты.
+  const profitTax = num(cash.profit_tax.total);
+  const net = operating === null ? null : operating - profitTax;
 
   // Честные предупреждения: пусть человек видит, чему верить нельзя.
   // Каждое — не только «что не так», но и куда идти исправлять: ссылка на нужную
@@ -777,11 +788,18 @@ async function buildPnl(pool, period) {
       diff_pct: (fact.has_data && plan.total > 0) ? pct(fact.total - plan.total, plan.total) : null,
     },
     cogs_source: cogsSource,
+    // Себестоимость целиком и из чего она сложилась. Экран, график и Excel берут
+    // ЭТУ цифру, а не собирают свою.
+    cogs_total: cogs,
+    cogs_parts: { materials, waste: num(waste.amount), writeoff: num(writeoff.amount) },
     gross_profit: gross,
     gross_margin_pct: gross === null ? null : pct(gross, revenue),
     opex: cash.opex,
     operating_profit: operating,
     operating_margin_pct: operating === null ? null : pct(operating, revenue),
+    profit_tax: cash.profit_tax,
+    net_profit: net,
+    net_margin_pct: net === null ? null : pct(net, revenue),
     reconcile: cash.reconcile,
     // Самопроверка: из-за чего прибыль в отчёте может быть выше настоящей.
     self_check: selfCheck({
@@ -903,6 +921,16 @@ async function buildTrend(pool, endPeriod, months) {
     slot.cogs_known = true;
   });
 
+  // Отход и потери — по каждому месяцу, той же оценкой, что в карточке месяца.
+  const lossOf = new Map();
+  for (const m of monthList(firstMonth, endPeriod)) {
+    const f = m + '-01';
+    const t = monthEnd(m);
+    const pm = priceMaps.get(m) || new Map();
+    const [w, wo] = await Promise.all([wasteCost(pool, f, t, pm), writeoffCost(pool, f, t, pm)]);
+    lossOf.set(m, num(w.amount) + num(wo.amount));
+  }
+
   // Идём по всем месяцам подряд, включая пустые: провал в данных должен быть
   // виден дырой на графике, а не «съеденным» месяцем.
   const out = [];
@@ -913,7 +941,7 @@ async function buildTrend(pool, endPeriod, months) {
     const slot = byMonth.get(key);
     if (!slot) { out.push({ period: key, revenue: 0, cogs: null, opex: 0, profit: null }); continue; }
     const c = classifyRows(slot.rows);
-    const cogs = slot.cogs_known ? slot.cogs : null;
+    const cogs = slot.cogs_known ? slot.cogs + (lossOf.get(key) || 0) : null;
     const shippedLoadedM = shippedOf.has(key);
     const rev = shippedLoadedM ? shippedOf.get(key) : c.revenueTotal;
     out.push({

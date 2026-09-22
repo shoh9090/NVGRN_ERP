@@ -566,7 +566,7 @@ test('план сам находит товары по названию из п�
   assert.strictEqual(r.cogs.plan.linked_by.name, 2);
 });
 
-test('проверка отчёта: налоги, отход и неразнесённое показываются как «прибыль была бы»', () => {
+test('проверка отчёта: склад против оплат, план, зарплата и неразнесённое', () => {
   const { selfCheck } = require('../src/cash-pnl');
   const sc = selfCheck({
     revenue: 1_000_000_000,
@@ -578,26 +578,59 @@ test('проверка отчёта: налоги, отход и неразне�
     waste: { amount: 50_000_000 },
     writeoff: { amount: 10_000_000 },
     cash: {
-      finance: { items: [
-        { code: '65', exp: 30_000_000 },   // налоги от ЗП
-        { code: '66', exp: 20_000_000 },   // НДС
-        { code: '61', exp: 99_000_000 },   // возврат кредита — это НЕ расход
-      ] },
+      finance: { items: [] },
       materials_paid: { total: 500_000_000 },
       opex: { groups: [{ items: [{ code: '41', exp: 300_000_000 }] }] },   // аренда есть, ЗП нет
       unclassified: { exp: 5_000_000 },
     },
   });
   const by = Object.fromEntries(sc.items.map((x) => [x.key, x]));
-  assert.strictEqual(by.taxes.amount, 50_000_000);           // возврат кредита не попал
-  assert.strictEqual(by.losses.amount, 60_000_000);          // отход + списания
+  assert.ok(!by.taxes && !by.losses, 'налоги и отход теперь в самой формуле — в проверке их нет');
   assert.strictEqual(by.stock_vs_paid.amount, 300_000_000);  // оплачено минус списано
   assert.ok(by.fact_vs_plan);                                // факт меньше плана
   assert.ok(by.no_salary);                                   // зарплаты в месяце нет
   assert.strictEqual(by.unclassified.amount, 5_000_000);
   // Склад-против-оплат и факт-против-плана меряют одно и то же — берём большую, не обе.
-  assert.strictEqual(sc.total_gap, 50_000_000 + 60_000_000 + 5_000_000 + 300_000_000);
+  assert.strictEqual(sc.total_gap, 5_000_000 + 300_000_000);
   assert.strictEqual(sc.profit_if_all, 500_000_000 - sc.total_gap);
+});
+
+test('налоги и комиссии банка — расход; налог на прибыль — после операционной; кредит — вне прибыли', async () => {
+  // Решение Шоха: раньше вся группа «6. Финансы» выпадала из прибыли вместе с налогами.
+  const pool = makePool({
+    cash: [
+      { code: '200', name: 'Выручка', group_name: 'Доходы и поступления', flow_type: 'operating', inc: 1000000, exp: 0, cnt: 1 },
+      { code: '65', name: 'Налоги от ЗП', group_name: '6. Финансы', flow_type: 'financing', inc: 0, exp: 30000, cnt: 1 },
+      { code: '66', name: 'НДС', group_name: '6. Финансы', flow_type: 'financing', inc: 0, exp: 20000, cnt: 1 },
+      { code: '62', name: '% банка', group_name: '6. Финансы', flow_type: 'financing', inc: 0, exp: 5000, cnt: 1 },
+      { code: '67', name: 'Налог на прибыль', group_name: '6. Финансы', flow_type: 'financing', inc: 0, exp: 40000, cnt: 1 },
+      { code: '61', name: 'Возврат кредитов', group_name: '6. Финансы', flow_type: 'financing', inc: 0, exp: 99000, cnt: 1 },
+    ],
+    used: [{ item_kind: 'raw', item_id: 1, qty: 10 }],
+    prices: [{ item_kind: 'raw', item_id: 1, avg_price: 10000 }],
+  });
+  const r = await buildPnl(pool, '2026-08');
+  const taxes = r.opex.groups.find((g) => g.group_name === 'Налоги и комиссии банка');
+  assert.strictEqual(taxes.amount, 55000);                       // 65 + 66 + 62
+  assert.strictEqual(r.opex.total, 55000);                       // кредит в расходы не попал
+  assert.strictEqual(r.operating_profit, 1000000 - 100000 - 55000);
+  assert.strictEqual(r.profit_tax.total, 40000);
+  assert.strictEqual(r.net_profit, r.operating_profit - 40000);
+  assert.strictEqual(r.excluded.finance.out, 99000);             // кредит — справочно, вне прибыли
+});
+
+test('отход и потери со склада входят в себестоимость', async () => {
+  const pool = makePool({
+    cash: [{ code: '200', name: 'Выручка', group_name: 'Доходы и поступления', flow_type: 'operating', inc: 1000000, exp: 0, cnt: 1 }],
+    used: [{ item_kind: 'raw', item_id: 1, qty: 10 }],
+    prices: [{ item_kind: 'raw', item_id: 1, avg_price: 10000 }],
+    waste: [{ parent_id: 1, qty: 3 }],                             // 3 кг обрези того же сырья
+  });
+  const r = await buildPnl(pool, '2026-08');
+  assert.strictEqual(r.cogs_parts.materials, 100000);
+  assert.strictEqual(r.cogs_parts.waste, 30000);
+  assert.strictEqual(r.cogs_total, 130000);
+  assert.strictEqual(r.gross_profit, 1000000 - 130000);
 });
 
 test('всё сходится — проверка молчит', () => {
