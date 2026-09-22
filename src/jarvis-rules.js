@@ -20,6 +20,7 @@ const DEFAULTS = {
   fine_mention: 0,           // штраф за неответ на упоминание, сум
   fine_overdue: 0,           // штраф за просроченную карточку, сум
   fines_enabled: false,      // штрафы включаются после недели одних напоминаний
+  owners: {},                // кто вносит: дело ERP → роль (см. src/todos.js, TODO_KINDS)
   reminders_enabled: false,  // бот пишет людям; выключено — только читает Trello и ведёт журнал
   enabled_at: '',            // когда включили: часы по старым упоминаниям идут с этого момента
 };
@@ -55,6 +56,12 @@ function normalizeRules(raw) {
   out.fine_overdue = Math.round(num(r.fine_overdue, 0, 0, 100000000));
   out.fines_enabled = r.fines_enabled === true || r.fines_enabled === 'true';
   out.reminders_enabled = r.reminders_enabled === true || r.reminders_enabled === 'true';
+  // Кто вносит: ключ дела → id роли ERP. Пусто/0 — по доступу к плитке, как раньше.
+  out.owners = {};
+  for (const [k, v] of Object.entries((r.owners && typeof r.owners === 'object') ? r.owners : {})) {
+    const id = parseInt(v, 10);
+    if (/^[a-z_]{2,30}$/.test(k) && id > 0) out.owners[k] = id;
+  }
   out.enabled_at = out.reminders_enabled && !Number.isNaN(Date.parse(r.enabled_at)) ? String(r.enabled_at) : '';
   return out;
 }

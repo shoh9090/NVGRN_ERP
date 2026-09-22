@@ -110,6 +110,20 @@
     const finesOn = el('input', { type: 'checkbox', checked: r.fines_enabled, disabled: dis });
     const remOn = el('input', { type: 'checkbox', checked: r.reminders_enabled, disabled: dis });
 
+    // Кто вносит: у каждого дела ERP своя ответственная роль.
+    const ownerSel = {};
+    const ownerRows = (s.todo_kinds || []).map((k) => {
+      const sel = el('select', { class: 'jv-inp', disabled: dis }, [el('option', { value: '' }, '— все, у кого есть доступ к плитке —'),
+        ...(s.roles || []).map((ro) => el('option', { value: String(ro.id), selected: String((r.owners || {})[k.key] || '') === String(ro.id) },
+          ro.name + ' — ' + ro.people + ' чел., в боте ' + ro.in_bot))]);
+      ownerSel[k.key] = sel;
+      const chosen = (s.roles || []).find((ro) => String(ro.id) === String((r.owners || {})[k.key] || ''));
+      const warn = chosen && !chosen.tiles.includes(k.tile)
+        ? el('div', { class: 'jv-warn' }, 'У роли «' + chosen.name + '» нет доступа к плитке ' + k.tile + ' — внести не сможет.')
+        : (chosen && !chosen.in_bot ? el('div', { class: 'jv-warn' }, 'Никто из роли не открыл бота — напоминание не дойдёт.') : null);
+      return el('div', {}, [row(k.title, sel), warn]);
+    });
+
     box.append(
       sec('Напоминания', r.reminders_enabled
         ? 'Джарвис пишет людям в Telegram. Включены с ' + new Date(r.enabled_at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
@@ -138,6 +152,8 @@
       sec('Карточка без движения', 'Одно напоминание участникам, без штрафа.', [
         row('Напомнить через', stale, ' дней'),
       ]),
+      sec('Кто вносит', 'Дело ERP приходит ответственной роли, а не всем подряд: цены — закупщику, Кассу — бухгалтеру. '
+        + 'Пока роль не выбрана, дело видят все, у кого есть доступ к плитке (и админ).', ownerRows),
       sec('Штрафы', 'Нарушение уходит руководителю отдела: «Провести» или «Отменить». Без ответа за сутки — проводится само и попадает в зарплату. '
         + 'Включать после недели работы одних напоминаний.', [
         row('Не ответил на упоминание', fM, ' сум'),
@@ -161,6 +177,7 @@
           mention_remind_h: mRem.value, mention_violation_h: mVio.value, overdue_violation_days: oVio.value,
           stale_days: stale.value, fine_mention: fM.value, fine_overdue: fO.value, fines_enabled: finesOn.checked,
           reminders_enabled: remOn.checked, due_required_h: dueH.value, moves_alert: moves.value,
+          owners: Object.fromEntries(Object.entries(ownerSel).map(([k, sel]) => [k, sel.value || 0])),
         });
         toast('Сохранено');
         render();

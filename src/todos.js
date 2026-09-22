@@ -115,15 +115,43 @@ async function unclassified(pool) {
 
 const mln = (v) => (Math.round((Number(v) || 0) / 1e5) / 10).toLocaleString('ru-RU') + ' млн';
 
+// Какие бывают дела и в какой плитке вносятся. Ответственную роль за каждое
+// назначают в плитке «Джарвис» → «Кто вносит» (решение Шоха: цены вносит
+// закупщик, Кассу разносит бухгалтер — пусть Джарвис пишет им, а не всем подряд).
+const TODO_KINDS = [
+  { key: 'noprice', title: 'Цены (с НДС) на принятое и на складе', tile: '/purchase' },
+  { key: 'calc', title: 'Товары из продаж без пары в Калькуляции', tile: '/calculation' },
+  { key: 'unclassified', title: 'Операции Кассы без статьи', tile: '/cash' },
+];
+
+// Кому какое дело: { ключ дела: id роли }. Пусто — как раньше, всем,
+// у кого есть доступ к плитке.
+async function todoOwners() {
+  try {
+    const r = await db.pool.query("SELECT value FROM settings WHERE key = 'jarvis_rules'");
+    const o = JSON.parse((r.rows[0] && r.rows[0].value) || '{}').owners || {};
+    return o && typeof o === 'object' ? o : {};
+  } catch (e) { return {}; }
+}
+
 // Дела человека. user: { id, isAdmin, isFinance } — как req.user.
 // Тем же списком пользуется утренняя сводка Джарвиса в Telegram (src/jarvis-bot.js).
 async function todosFor(user) {
-  const req = { user };
+  const owners = await todoOwners();
+  const myRoles = user && user.id
+    ? (await db.pool.query('SELECT role_id FROM user_roles WHERE user_id = $1', [user.id])).rows.map((x) => Number(x.role_id))
+    : [];
+  // Назначен ответственный — дело только у него (даже у админа: иначе Шоху
+  // приходят чужие напоминания). Не назначен — по доступу к плитке, как раньше.
+  const allowed = async (key, tile) => {
+    const role = Number(owners[key]) || 0;
+    return role ? myRoles.includes(role) : hasTile(user, tile);
+  };
   const items = [];
   const safe = async (fn) => { try { await fn(); } catch (e) { console.warn('[ДЕЛА]', e.message); } };
 
   await safe(async () => {
-    if (!(await hasTile(req.user, '/purchase'))) return;
+    if (!(await allowed('noprice', '/purchase'))) return;
     const rows = await noPriceItems(db.pool);
     const stock = await stockNoPriceItems(db.pool);
     if (!rows.length && !stock.length) return;
@@ -143,7 +171,7 @@ async function todosFor(user) {
   });
 
   await safe(async () => {
-    if (!(await hasTile(req.user, '/calculation'))) return;
+    if (!(await allowed('calc', '/calculation'))) return;
     const rows = await unmatchedSold(db.pool);
     if (!rows.length) return;
     items.push({
@@ -155,7 +183,7 @@ async function todosFor(user) {
   });
 
   await safe(async () => {
-    if (!(await hasTile(req.user, '/cash'))) return;
+    if (!(await allowed('unclassified', '/cash'))) return;
     const u = await unclassified(db.pool);
     if (!u || !u.cnt) return;
     items.push({
@@ -176,6 +204,7 @@ router.get('/api/todos', async (req, res) => {
 
 module.exports = router;
 module.exports.todosFor = todosFor;
+module.exports.TODO_KINDS = TODO_KINDS;
 module.exports.noPriceItems = noPriceItems;
 module.exports.stockNoPriceItems = stockNoPriceItems;
 module.exports.unmatchedSold = unmatchedSold;

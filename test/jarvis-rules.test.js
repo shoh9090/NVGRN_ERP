@@ -134,3 +134,9 @@ test('срок задачи: значения по умолчанию и гра�
   assert.strictEqual(normalizeRules({ due_required_h: 0, moves_alert: 0 }).due_required_h, 0.5);
   assert.strictEqual(normalizeRules({ moves_alert: 99 }).moves_alert, 20);
 });
+
+test('кто вносит: только настоящие роли, «по доступу к плитке» = пусто', () => {
+  const r = normalizeRules({ owners: { noprice: '7', unclassified: 0, calc: 'нет', 'плохой ключ': 3 } });
+  assert.deepStrictEqual(r.owners, { noprice: 7 });
+  assert.deepStrictEqual(normalizeRules({}).owners, {});
+});

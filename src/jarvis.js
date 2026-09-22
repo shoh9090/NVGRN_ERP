@@ -64,7 +64,20 @@ router.get('/api/state', async (req, res) => {
   try {
     const rules = await loadRules();
     const out = { rules, can_edit: !!req.user.isAdmin, bot: await botInfo(), trello: { configured: trello.configured() },
-      sync: require('./jarvis-bot').status };
+      sync: require('./jarvis-bot').status, todo_kinds: require('./todos').TODO_KINDS };
+    // Роли для раздела «Кто вносит»: сколько в роли людей и сколько из них в боте —
+    // видно сразу, дойдёт ли напоминание.
+    out.roles = (await db.pool.query(
+      `SELECT r.id, r.name,
+              COUNT(DISTINCT u.id)::int AS people,
+              COUNT(DISTINCT u.id) FILTER (WHERE u.jv_chat_id IS NOT NULL)::int AS in_bot,
+              COALESCE(array_agg(DISTINCT t.url) FILTER (WHERE t.url IS NOT NULL), '{}') AS tiles
+         FROM roles r
+         LEFT JOIN user_roles ur ON ur.role_id = r.id
+         LEFT JOIN users u ON u.id = ur.user_id AND u.is_active = TRUE
+         LEFT JOIN role_tiles rt ON rt.role_id = r.id
+         LEFT JOIN tiles t ON t.id = rt.tile_id
+        GROUP BY r.id ORDER BY r.name`)).rows;
     if (out.trello.configured) {
       try {
         const me = await trello.me();
@@ -106,6 +119,7 @@ router.post('/api/rules', J, async (req, res) => {
       rules.workspace_name = ws.displayName || ws.name;
     }
     await db.setSetting('jarvis_rules', JSON.stringify(rules));
+    if (b.owners) rules.owners = R.normalizeRules({ owners: b.owners }).owners;
     await db.log(req.user.id, 'jarvis_rules', JSON.stringify({
       ws: rules.workspace_name, on: rules.reminders_enabled, fines: rules.fines_enabled, fm: rules.fine_mention, fo: rules.fine_overdue }));
     res.json({ ok: true, rules });
