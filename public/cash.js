@@ -172,18 +172,18 @@
   // Сами цифры прибыли не меняем — показываем, на сколько они изменились бы.
   function pnlSelfCheck(box, d) {
     const sc = d.self_check;
-    const rows = sc.items.map((c) => el('div', { class: 'cash-chk-row' }, [
-      el('div', { class: 'cash-chk-txt' }, c.text),
-      el('div', { class: 'cash-chk-val' }, c.profit_if === null || c.profit_if === undefined
+    const rows = sc.items.map((c) => el('div', { class: 'cash-audit-row' }, [
+      el('div', { class: 'cash-audit-txt' }, c.text),
+      el('div', { class: 'cash-audit-val' }, c.profit_if === null || c.profit_if === undefined
         ? '' : 'прибыль была бы ' + money(c.profit_if)),
     ]));
-    box.appendChild(el('div', { class: 'cash-chk' }, [
-      el('div', { class: 'cash-chk-h' }, '🔍 Проверка отчёта: прибыль может быть завышена'),
-      el('div', { class: 'cash-chk-sub' }, 'Отчёт складывается из трёх источников — реализация SalesDoctor, '
+    box.appendChild(el('div', { class: 'cash-audit' }, [
+      el('div', { class: 'cash-audit-h' }, '🔍 Проверка отчёта: прибыль может быть завышена'),
+      el('div', { class: 'cash-audit-sub' }, 'Отчёт складывается из трёх источников — реализация SalesDoctor, '
         + 'склад и Касса. Ниже то, что в прибыль сейчас не попало.'),
       ...rows,
       sc.profit_if_all === null || sc.profit_if_all === undefined ? null
-        : el('div', { class: 'cash-chk-total' }, 'Если учесть всё перечисленное: прибыль '
+        : el('div', { class: 'cash-audit-total' }, 'Если учесть всё перечисленное: прибыль '
           + money(sc.profit_if_all) + ' вместо ' + money(d.operating_profit)),
     ]));
   }
