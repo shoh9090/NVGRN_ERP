@@ -25,6 +25,8 @@ async function hasTile(user, url) {
 }
 
 const period = (v) => (/^\d{4}-\d{2}$/.test(String(v || '')) ? String(v) : new Date(Date.now() + 5 * 3600000).toISOString().slice(0, 7));
+const today = () => new Date(Date.now() + 5 * 3600000).toISOString().slice(0, 10);
+const day = (v, def) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : def);
 
 const TOOLS = [
   {
@@ -116,6 +118,59 @@ const TOOLS = [
       const sales = Number(by.get('pnl_sales_' + per)) || 0;
       if (!sales && !top.length) return { месяц: per, итог: 'За этот месяц продажи из SalesDoctor ещё не подтянуты' };
       return { месяц: per, выручка: money(sales), единиц: Math.round(Number(by.get('pnl_units_' + per)) || 0), топ_товаров: top };
+    },
+  },
+  {
+    name: 'prodazhi_po_klientam',
+    tile: ['/cash', '/tgbot'],
+    description: 'Продажи по клиентам за период из нашей копии SalesDoctor: кто сколько взял, в штуках и сумах. Даты в виде 2026-09-01.',
+    schema: { type: 'object', properties: {
+      from: { type: 'string', description: 'с какой даты' },
+      to: { type: 'string', description: 'по какую дату' },
+      client: { type: 'string', description: 'часть названия клиента, если нужен один' },
+      limit: { type: 'number', description: 'сколько клиентов вернуть, по умолчанию 10' },
+    }, additionalProperties: false },
+    run: async (args) => {
+      const sd = require('./sd-sales');
+      const cov = await sd.coverage();
+      const to = day(args.to, cov.last_day || today());
+      const from = day(args.from, to.slice(0, 8) + '01');
+      const p = [from, to];
+      let w = '';
+      if (String(args.client || '').trim()) { p.push('%' + String(args.client).trim() + '%'); w = ` AND client_name ILIKE $${p.length}`; }
+      const n = Math.min(Math.max(parseInt(args.limit, 10) || 10, 1), 30);
+      const rows = (await db.pool.query(
+        `SELECT client_name AS клиент, SUM(qty)::numeric AS штук, SUM(amount - returned)::numeric AS сумма
+           FROM sd_sales WHERE day BETWEEN $1 AND $2${w}
+          GROUP BY client_name ORDER BY 3 DESC LIMIT ${n}`, p)).rows;
+      if (!rows.length) {
+        return { период: `${from} — ${to}`, итог: cov.days ? 'Продаж за этот период нет'
+          : 'Продажи из SalesDoctor ещё не выгружены — идёт первичная заливка' };
+      }
+      return { период: `${from} — ${to}`, выгружено_по: cov.last_day,
+        клиенты: rows.map((r) => ({ клиент: r.клиент, штук: Math.round(Number(r.штук)), сумма: money(r.сумма) })) };
+    },
+  },
+  {
+    name: 'dinamika_klienta',
+    tile: ['/cash', '/tgbot'],
+    description: 'Как менялись закупки клиента по неделям или месяцам: растёт или падает. Нужен кусок названия клиента.',
+    schema: { type: 'object', properties: {
+      client: { type: 'string', description: 'часть названия клиента, например «korzinka»' },
+      weeks: { type: 'number', description: 'сколько недель назад смотреть, по умолчанию 8' },
+    }, additionalProperties: false },
+    run: async (args) => {
+      const q = String(args.client || '').trim();
+      if (!q) return { итог: 'Не указан клиент' };
+      const weeks = Math.min(Math.max(parseInt(args.weeks, 10) || 8, 2), 52);
+      const rows = (await db.pool.query(
+        `SELECT to_char(date_trunc('week', day), 'DD.MM') AS неделя,
+                SUM(qty)::numeric AS штук, SUM(amount - returned)::numeric AS сумма
+           FROM sd_sales
+          WHERE client_name ILIKE $1 AND day > CURRENT_DATE - ($2 * 7)::int
+          GROUP BY date_trunc('week', day) ORDER BY date_trunc('week', day)`, ['%' + q + '%', weeks])).rows;
+      if (!rows.length) return { клиент: q, итог: 'По этому клиенту продаж в выгрузке нет' };
+      return { клиент: q, по_неделям: rows.map((r) => ({ неделя: r.неделя, штук: Math.round(Number(r.штук)), сумма: money(r.сумма) })) };
     },
   },
   {
@@ -268,7 +323,14 @@ const TOOLS = [
 async function toolsFor(user) {
   const out = [];
   for (const t of TOOLS) {
-    if (t.tile && !(await hasTile(user, t.tile))) continue;
+    // У инструмента может быть несколько плиток: продажи по клиентам нужны и
+    // финансам (Касса), и РОПу (Бот HoReCa) — достаточно любой из них.
+    const tiles = t.tile ? [].concat(t.tile) : [];
+    if (tiles.length) {
+      let ok = false;
+      for (const url of tiles) if (await hasTile(user, url)) { ok = true; break; }
+      if (!ok) continue;
+    }
     out.push(t);
   }
   return out;

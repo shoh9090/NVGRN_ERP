@@ -129,6 +129,21 @@ router.post('/api/rules', J, async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
+// Подробные продажи из SalesDoctor: что уже выгружено и запуск заливки истории.
+router.get('/api/sd/sales', async (req, res) => {
+  try { res.json(await require('./sd-sales').coverage()); }
+  catch (e) { res.status(400).json({ error: e.message }); }
+});
+router.post('/api/sd/backfill', J, async (req, res) => {
+  if (onlyAdmin(req, res)) return;
+  try {
+    const months = Math.min(Math.max(parseInt((req.body || {}).months, 10) || 24, 1), 36);
+    const s = await require('./sd-sales').startBackfill(months);
+    await db.log(req.user.id, 'sd_sales_backfill', String(months));
+    res.json({ ok: true, state: s });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 // Проверка ИИ прямо из плитки: тот же код, что в боте, те же инструменты и
 // права — но спрашивает админ со своего рабочего места, не занимая Telegram.
 router.post('/api/ai/ask', J, async (req, res) => {

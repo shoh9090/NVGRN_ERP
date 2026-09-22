@@ -69,7 +69,25 @@
           + ' · досок ' + sy.boards + ', карточек ' + sy.cards + ' · раз в 5 минут'
           : 'Ещё не читал — первый раз через минуту после запуска'),
     ]);
-    box.appendChild(el('div', { class: 'jv-conns' }, [trelloCard, botCard, syncCard]));
+    // Продажи из SalesDoctor: что уже лежит в нашей базе и как идёт заливка истории.
+    const salesCard = el('div', { class: 'jv-conn ok' }, [el('div', { class: 'jv-conn-t' }, 'Продажи из SalesDoctor'), el('div', {}, 'загрузка…')]);
+    api('/sd/sales').then((c) => {
+      const b = c.backfill || {};
+      const body = el('div', {}, c.days
+        ? [c.first_day ? 'Есть дни: ' + c.first_day + ' — ' + c.last_day + ' (' + c.days + ' дн., строк ' + c.rows + ')' : 'пока пусто',
+          b.next_month && !b.finished ? el('div', { class: 'jv-muted' }, 'Заливка истории: загружено месяцев ' + (b.done || 0) + ', сейчас ' + b.next_month + (b.error ? ' · ошибка: ' + b.error : '')) : null]
+        : 'Ещё не выгружали');
+      salesCard.replaceChild(body, salesCard.lastChild);
+      if (isAdmin && !(b.next_month && !b.finished)) {
+        salesCard.appendChild(el('button', { class: 'pur-tbtn', style: 'margin-top:8px', onclick: async (ev) => {
+          if (!confirm('Загрузить историю продаж за 24 месяца? Пойдёт фоном по месяцу за раз, примерно два часа.')) return;
+          ev.target.disabled = true;
+          try { await api('/sd/backfill', { months: 24 }); toast('Заливка запущена — идёт фоном'); }
+          catch (e) { toast(e.message, true); ev.target.disabled = false; }
+        } }, c.days ? 'Перезалить историю за 24 месяца' : 'Загрузить историю за 24 месяца'));
+      }
+    }).catch(() => {});
+    box.appendChild(el('div', { class: 'jv-conns' }, [trelloCard, botCard, syncCard, salesCard]));
 
     const dis = !isAdmin;
     const inp = (val, attrs = {}) => el('input', { class: 'jv-inp', value: String(val), disabled: dis, ...attrs });

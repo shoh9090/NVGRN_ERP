@@ -886,4 +886,5 @@ async function probePayments(from, to) {
   return out;
 }
 
-module.exports = { sdHealth, getMonthlySalesUnits, getPayments, probePayments, getSdConfig, saveSdConfig, testConnection, syncFinishedGoods, syncPrices, diagSD, getHorecaPoints, getAgentCoverage, syncCrmAgents, syncCrmExpeditors, syncClientsToContacts, getSdProducts, syncCashClients, probeContragent };
+// sdRequest и sdLogin нужны подробной выгрузке продаж (src/sd-sales.js): ходим в SD одним кодом.
+module.exports = { sdRequest, sdLogin, sdHealth, getMonthlySalesUnits, getPayments, probePayments, getSdConfig, saveSdConfig, testConnection, syncFinishedGoods, syncPrices, diagSD, getHorecaPoints, getAgentCoverage, syncCrmAgents, syncCrmExpeditors, syncClientsToContacts, getSdProducts, syncCashClients, probeContragent };

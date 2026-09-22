@@ -651,6 +651,31 @@ async function morning(rules, overdueBy, now) {
   }
 }
 
+// ---------- Продажи из SalesDoctor ----------
+// SD тяжёлый, поэтому ходим в него сами и заранее: ночью — свежие дни, днём —
+// по месяцу истории, пока не зальём 24 месяца. Человек в боте всегда получает
+// ответ из нашей таблицы, а не ждёт CRM.
+async function sdSalesTick() {
+  const sd = require('./sd-sales');
+  const st = await sd.backfillState();
+  if (st.next_month && !st.finished) {                 // заливка истории — по месяцу за такт
+    const after = await sd.backfillStep();
+    console.log(`[ПРОДАЖИ SD] история: ${after.last_month || '—'}, загружено месяцев ${after.done || 0}${after.error ? ', ошибка: ' + after.error : ''}`);
+    return;
+  }
+  // Ночная догрузка свежих дней: один раз в сутки, в тихие часы.
+  const hour = ((Date.now() + 5 * 3600000) % 86400000) / 3600000;
+  if (hour < 3 || hour > 6) return;
+  const key = 'sd_sales_last_night';
+  const last = ((await pool.query('SELECT value FROM settings WHERE key = $1', [key])).rows[0] || {}).value || '';
+  const day = R.localDate(Date.now());
+  if (last === day) return;
+  const r = await sd.syncRecent(4);
+  await pool.query(`INSERT INTO settings (key, value) VALUES ($1, $2)
+                    ON CONFLICT (key) DO UPDATE SET value = $2`, [key, day]);
+  console.log(`[ПРОДАЖИ SD] ночью обновлено ${r.from}…${r.to}: строк ${r.rows}`);
+}
+
 // ---------- Такт ----------
 let _running = false;
 async function tick() {
@@ -669,6 +694,7 @@ async function tick() {
       const scan = await scanWorkspace(rules);
       await syncComments(rules, scan, people);
       await remindAll(rules, scan, people, Date.now());
+      await sdSalesTick().catch((e) => console.warn('[ПРОДАЖИ SD]', e.message));
       Object.assign(status, { last_sync: new Date().toISOString(), last_error: null, boards: scan.boards.length, cards: scan.cards.length });
     } finally { await client.query('SELECT pg_advisory_unlock(772031)').catch(() => {}); }
   } catch (e) {
