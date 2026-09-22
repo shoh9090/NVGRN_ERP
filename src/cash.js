@@ -1561,7 +1561,12 @@ router.get('/api/sd-reconcile', async (req, res) => {
         GROUP BY 1`, [from, to])).rows;
     const byDay = new Map();
     const get = (d) => { if (!byDay.has(d)) byDay.set(d, { date: d, crm: 0, erp: 0, crm_n: 0, erp_n: 0 }); return byDay.get(d); };
-    for (const x of sd.items) { if (!x.date) continue; const r = get(x.date); r.crm += x.amount; r.crm_n++; }
+    // Считаем только «живые» оплаты клиентов: transactionType = 3. Проверено
+    // 22.09.2026 — именно их сумма совпадает с отчётом CRM «Поступления за период»
+    // (1 049 399 955,62 за 1–22.09). Остальные направления (у нас это 9) — служебные
+    // разнесения внутри CRM, деньгами в банке они не являются.
+    const PAID = 3;
+    for (const x of sd.items) { if (!x.date || x.kind !== PAID) continue; const r = get(x.date); r.crm += x.amount; r.crm_n++; }
     for (const x of erp) { const r = get(x.d); r.erp += Number(x.s); r.erp_n = x.n; }
     const days = [...byDay.values()].sort((a, b) => a.date.localeCompare(b.date))
       .map((r) => ({ ...r, diff: Math.round((r.crm - r.erp) * 100) / 100 }));
