@@ -1565,8 +1565,19 @@ router.get('/api/sd-reconcile', async (req, res) => {
     for (const x of erp) { const r = get(x.d); r.erp += Number(x.s); r.erp_n = x.n; }
     const days = [...byDay.values()].sort((a, b) => a.date.localeCompare(b.date))
       .map((r) => ({ ...r, diff: Math.round((r.crm - r.erp) * 100) / 100 }));
+    // Разбивка оплат CRM по виду и по направлению: в отчёте CRM видно «наличный /
+    // перечисление / доллар», и надо понимать, что из этого попадает в Кассу.
+    const byType = {}, byKind = {};
+    for (const x of sd.items) {
+      const t = x.type || '—';
+      byType[t] = byType[t] || { sum: 0, n: 0 };
+      byType[t].sum += x.amount; byType[t].n++;
+      const k = x.kind == null ? '—' : String(x.kind);
+      byKind[k] = byKind[k] || { sum: 0, n: 0 };
+      byKind[k].sum += x.amount; byKind[k].n++;
+    }
     const totals = days.reduce((a, r) => ({ crm: a.crm + r.crm, erp: a.erp + r.erp }), { crm: 0, erp: 0 });
-    res.json({ from, to, truncated: sd.truncated, crm_count: sd.count, sample: sd.sample, days, totals: { ...totals, diff: Math.round((totals.crm - totals.erp) * 100) / 100 } });
+    res.json({ from, to, truncated: sd.truncated, crm_count: sd.count, sample: sd.sample, by_type: byType, by_kind: byKind, days, totals: { ...totals, diff: Math.round((totals.crm - totals.erp) * 100) / 100 } });
   } catch (e) {
     console.error('[КАССА] сверка с CRM:', e.message);
     res.status(400).json({ error: e.message });
