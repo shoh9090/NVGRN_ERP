@@ -826,17 +826,21 @@ async function buildPnl(pool, period) {
   if (cogsSource === null) {
     warnings.push('За месяц нет ни принятых заявок в Закупе, ни оплат поставщикам сырья — себестоимость и прибыль посчитать не из чего.');
   }
+  if (mc.raw_source === 'purchase') {
+    const np = (await pool.query(
+      `SELECT COUNT(*)::int AS n FROM purchase_order_items i JOIN purchase_orders po ON po.id = i.order_id
+        WHERE po.status = 'received' AND i.item_kind = 'raw' AND COALESCE(i.fact_qty, 0) > 0
+          AND COALESCE(i.price, 0) = 0 AND po.delivery_date BETWEEN $1 AND $2`, [from, toStr]).catch(() => ({ rows: [] }))).rows[0];
+    if (np && np.n) {
+      warnings.push({
+        text: `В Закупе ${np.n} принятых позиций сырья без цены — сырьё за месяц занижено на их стоимость.`,
+        href: '/purchase#noprice', label: 'Внести цены',
+      });
+    }
+  }
   if (cogsSource === 'paid') {
     warnings.push('В этом месяце в Закупе нет принятых заявок на сырьё — сырьё посчитано по оплатам поставщикам (статья 10). '
       + 'Это приблизительно: оплата и поставка могут приходиться на разные месяцы.');
-  }
-  if (fact.no_price.length) {
-    // Называем позиции поимённо: «не оценено 1» непонятно, что делать.
-    warnings.push({
-      text: `Склад: нет цены прихода у ${fact.no_price.length} позиц. — в контроль склада они не вошли. На прибыль не влияет; проведите приёмку с ценой в Закупе.`,
-      href: '/purchase', label: 'Открыть Закуп',
-      items: fact.no_price.map((x) => x.name),
-    });
   }
   if (cash.unclassified.cnt) {
     warnings.push({
@@ -845,19 +849,6 @@ async function buildPnl(pool, period) {
     });
   }
   if (!units) warnings.push('Количество отгрузок за месяц не подтянуто — плановая себестоимость не посчитана.');
-  if (plan.unmatched_units > 0) {
-    warnings.push({
-      text: `В Калькуляции не найдено ${plan.unmatched.length} товаров из продаж (${Math.round(plan.unmatched_units)} шт). `
-        + 'Связь ищется сама — по штрих-коду и названию; этим товарам ничего не подошло. '
-        + 'На прибыль не влияет — только на сравнение с нормами Калькуляции: добавьте товар в Калькуляцию или впишите ему код SalesDoctor.',
-      href: '/calculation', label: 'Открыть Калькуляцию',
-      items: plan.unmatched.map((x) => `${x.name} — ${Math.round(x.units)} шт (код SD: ${x.sd_id})`),
-    });
-  }
-  if (plan.method === 'average' && plan.total !== null) {
-    warnings.push('Плановая себестоимость посчитана «средней пачкой» по всем товарам Калькуляции: разбивка продаж по товарам за этот месяц не сохранена. '
-      + 'Нажмите «обновить» внизу, чтобы пересчитать по ассортименту.');
-  }
   if (revenueSource === 'cash') {
     warnings.push('Выручка считается по ПОСТУПЛЕНИЮ ДЕНЕГ — реализация из SalesDoctor не подтянута. '
       + 'При отсрочке платежа это занижает выручку и даёт мнимый убыток. Нажмите «обновить» внизу.');

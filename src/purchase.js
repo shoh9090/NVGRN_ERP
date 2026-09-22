@@ -21,6 +21,8 @@ router.use(async (req, res, next) => {
 function purchaseTabOf(req) {
   const p = req.path;
   if (p.startsWith('/api/orders')) return 'orders';
+  // Внесение пропущенной цены у принятой позиции — работа с заявками.
+  if (p.startsWith('/api/noprice') || p.startsWith('/api/items')) return 'orders';
   if (p.startsWith('/api/suppliers') || p.startsWith('/api/supply-advance')) return 'suppliers';
   // Взаиморасчёты и оплаты — один экран: платежи вносят прямо в нём.
   if (p.startsWith('/api/settlements') || p.startsWith('/api/payments')) return 'settlements';
@@ -1190,6 +1192,41 @@ router.get('/api/orders/:id(\\d+)', async (req, res) => {
     [req.params.id]
   );
   res.json({ order: o.rows[0], items: items.rows });
+});
+
+// «Нужно внести»: принятые позиции без цены. Внести цену может любой с доступом к
+// Закупу — это не правка заявки, а заполнение пропуска: цена была 0, и из-за этого
+// долг поставщику и сырьё в P&L занижены. Уже проставленную цену здесь не меняют —
+// для этого есть сверка заявки (право «Правка заявок»).
+router.get('/api/noprice', async (req, res) => {
+  try { res.json({ items: await require('./todos').noPriceItems(db.pool) }); }
+  catch (e) { res.status(400).json({ error: e.message }); }
+});
+router.post('/api/items/:id(\\d+)/price', express.json(), async (req, res) => {
+  const price = Number(req.body && req.body.price);
+  if (!(price > 0) || !isFinite(price)) return res.status(400).json({ error: 'Укажите цену больше нуля' });
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    const it = (await client.query(
+      `SELECT i.id, i.order_id, i.item_kind, i.item_id, po.number, po.status
+         FROM purchase_order_items i JOIN purchase_orders po ON po.id = i.order_id
+        WHERE i.id = $1 FOR UPDATE`, [req.params.id])).rows[0];
+    if (!it) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Позиция не найдена' }); }
+    const upd = await client.query(
+      'UPDATE purchase_order_items SET price = $1, fact_price = $1 WHERE id = $2 AND COALESCE(price, 0) = 0 RETURNING id',
+      [price, it.id]);
+    if (!upd.rows.length) { await client.query('ROLLBACK'); return res.status(409).json({ error: 'Цена уже внесена' }); }
+    // Приход на склад по этой заявке тоже получает цену — иначе склад оценит его нулём.
+    await client.query(
+      `UPDATE stock_movements SET price = $1
+        WHERE ref_type = 'purchase_order' AND ref_id = $2 AND item_kind = $3 AND item_id = $4
+          AND reason = 'receive' AND COALESCE(price, 0) = 0`, [price, it.order_id, it.item_kind, it.item_id]);
+    await client.query('COMMIT');
+    await db.log(req.user.id, 'purchase_price_filled', `${it.number}: позиция ${it.id} = ${price}`);
+    res.json({ ok: true });
+  } catch (e) { await client.query('ROLLBACK').catch(() => {}); res.status(400).json({ error: e.message }); }
+  finally { client.release(); }
 });
 
 // Доступ к правке заявок (сверка/перенос). Даётся ролью «Правка заявок» в админ-панели пользователей.

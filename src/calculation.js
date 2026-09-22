@@ -1910,6 +1910,18 @@ const SKU_TEXT_FIELDS = ['name', 'barcode', 'sd_product_id'];
 const SKU_NUM_FIELDS = ['prod_factor', 'raw_cost', 'net_weight_g', 'raw_price_per_kg', 'labor_cost',
   'defect_pct', 'price', 'price2', 'retro_pct', 'vat_pct', 'profit_tax_pct'];
 
+// «Нужно внести»: товары из продаж SalesDoctor, у которых нет пары в Калькуляции.
+// Рядом — товары Калькуляции без кода SD: к одному из них и привязывают.
+router.get('/api/missing-sold', async (req, res) => {
+  try {
+    const missing = await require('./todos').unmatchedSold(db.pool);
+    const free = (await db.pool.query(
+      `SELECT id, name, sheet, barcode FROM calc_sheet_products
+        WHERE status = 'active' AND COALESCE(sd_product_id, '') = '' ORDER BY name`)).rows;
+    res.json({ missing, free });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 router.post('/api/sheet-product/:id(\\d+)', J, async (req, res) => {
   if (!canEdit(req)) return denyEdit(res);
   const b = req.body || {};

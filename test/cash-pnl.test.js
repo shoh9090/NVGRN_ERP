@@ -118,8 +118,8 @@ test('позиция без цены прихода не занижает себ
   assert.strictEqual(r.cogs.fact.total, 30000000);
   assert.strictEqual(r.cogs.fact.no_price.length, 1);
   assert.strictEqual(r.cogs.fact.no_price[0].name, 'шпинат');
-  assert.ok(r.warnings.some((w) => wtext(w).includes('нет цены прихода') && wtext(w).includes('шпинат')),
-    'предупреждение должно называть позицию по имени: ' + r.warnings.map(wtext).join(' | '));
+  // Склад на прибыль не влияет — подсказки о нём в P&L нет (дело в колокольчике у Закупа).
+  assert.ok(!r.warnings.some((w) => wtext(w).includes('шпинат')), r.warnings.map(wtext).join(' | '));
 });
 
 test('нет ни приёмок, ни оплат за сырьё — прибыль не считается, а не показывается нулём', async () => {
@@ -469,7 +469,8 @@ test('товар продан, но его нет в Калькуляции — 
   assert.strictEqual(r.cogs.plan.total, 40000);
   assert.strictEqual(r.cogs.plan.unmatched_units, 10);
   assert.deepStrictEqual(r.cogs.plan.unmatched.map((x) => x.name), ['Новый салат']);
-  assert.ok(r.warnings.some((w) => wtext(w).includes('Новый салат')), r.warnings.map(wtext).join(' | '));
+  // На прибыль не влияет — подсказки в P&L нет, дело висит в колокольчике у Калькуляции.
+  assert.ok(!r.warnings.some((w) => wtext(w).includes('Новый салат')), r.warnings.map(wtext).join(' | '));
 });
 
 test('разбивки по товарам нет — считаем средней пачкой, но честно говорим об этом', async () => {
@@ -484,7 +485,7 @@ test('разбивки по товарам нет — считаем средн�
   const r = await buildPnl(pool, '2026-08');
   assert.strictEqual(r.cogs.plan.method, 'average');
   assert.strictEqual(r.cogs.plan.total, 600000);
-  assert.ok(r.warnings.some((w) => wtext(w).includes('средней пачкой')));
+  assert.ok(!r.warnings.some((w) => wtext(w).includes('средней пачкой')));   // план — справочно, без подсказки
 });
 
 test('снимок закрытого месяца сохраняется и читается', async () => {

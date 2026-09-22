@@ -822,6 +822,8 @@ app.use('/hr', requireHrAccess, require('./src/hr'));
 // Уведомления (колокольчик) — для всех авторизованных
 const notificationsRouter = require('./src/notifications');
 app.use('/', requireAuth, notificationsRouter);
+// «Нужно внести» — дела ответственных в колокольчике (src/todos.js)
+app.use('/', requireAuth, require('./src/todos'));
 
 // Состояние внешних связей (SalesDoctor, бот) — для индикаторов в шапке.
 const healthRouter = require('./src/health');
