@@ -238,7 +238,7 @@
   const KIND = {
     remind_mention: '🔔 Напоминание: упоминание', violation_mention: '⚠️ Нарушение: нет ответа',
     remind_overdue: '☀️ Утренний список просрочек', violation_overdue: '⚠️ Нарушение: просрочка',
-    remind_stale: '💤 Без движения', reply: '✍️ Ответ из Telegram',
+    remind_stale: '💤 Без движения', reply: '✍️ Ответ из Telegram', morning: '☀️ Утренняя сводка',
   };
   const dt = (v) => v ? new Date(v).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
   const cardLink = (name, url) => url ? el('a', { href: url, target: '_blank', rel: 'noopener' }, name || 'карточка') : (name || '');
@@ -248,7 +248,7 @@
     const n = (k) => (d.counts.find((c) => c.kind === k) || {}).n || 0;
     box.appendChild(el('div', { class: 'pur-kpis' }, [
       ['Ждут ответа сейчас', d.waiting.length],
-      ['Напоминаний за 30 дней', n('remind_mention') + n('remind_overdue') + n('remind_stale')],
+      ['Напоминаний за 30 дней', n('remind_mention') + n('remind_overdue') + n('remind_stale') + n('morning')],
       ['Нарушений за 30 дней', n('violation_mention') + n('violation_overdue')],
       ['Ответов из Telegram', n('reply')],
     ].map(([l, v]) => el('div', { class: 'pur-kpi' }, [el('div', { class: 'pur-kpi-label' }, l), el('div', { class: 'pur-kpi-val' }, String(v))]))));

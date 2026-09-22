@@ -5,7 +5,8 @@
 // Что делает:
 //   • вход — «Поделиться номером»; пускаем только сотрудников Персонала с учёткой ERP;
 //   • упомянули (@) и нет ответа → напоминание, потом нарушение (сроки — в плитке);
-//   • срок карточки прошёл → каждое рабочее утро список; через N дней — нарушение;
+//   • утренняя сводка: просрочки и упоминания в Trello + дела «Нужно внести» из ERP;
+//   • срок карточки прошёл → через N рабочих дней нарушение;
 //   • карточка без движения → одно напоминание;
 //   • «✍️ Ответить» — ответ из Telegram ложится комментарием в карточку.
 // Пока в правилах не включены напоминания — только читаем Trello и ведём журнал.
@@ -319,8 +320,7 @@ async function remindAll(rules, scan, people, now) {
   }
   if (!canSend) return;
 
-  // 2. Просроченные карточки: утренний список каждому + нарушение через N рабочих дней.
-  const today = R.localDate(now);
+  // 2. Просроченные карточки: нарушение через N рабочих дней; список — в утренней сводке.
   const overdueBy = new Map();
   for (const c of scan.cards) {
     if (!isOverdue(c, scan, now)) continue;
@@ -340,16 +340,7 @@ async function remindAll(rules, scan, people, now) {
       }
     }
   }
-  for (const [empId, cards] of overdueBy) {
-    const key = `ro:${empId}:${today}`;
-    const exists = (await pool.query('SELECT 1 FROM jarvis_log WHERE dedup_key = $1', [key])).rows.length;
-    if (exists) continue;
-    const p = byEmp.get(empId);
-    const ok = await deliver(p, `☀️ Доброе утро! Просроченные карточки (${cards.length}):\n`
-      + cards.slice(0, 15).map((c) => `• ${esc(c.name)} — срок ${dateRu(c.due)}`).join('\n')
-      + `\n\nОтметьте выполненными или напишите, что мешает. «${MENU_MY}» — список с кнопками.`, menu);
-    await log('remind_overdue', empId, null, cards.map((c) => c.name).slice(0, 15).join('; '), ok, key);
-  }
+  await morning(rules, overdueBy, now);
 
   // 3. Карточки без движения N дней — одно напоминание участникам.
   const staleMs = rules.stale_days * 86400000;
@@ -367,6 +358,61 @@ async function remindAll(rules, scan, people, now) {
         cardButtons(c.id, c.shortUrl));
       await log('remind_stale', p.employee_id, { id: c.id, name: c.name, url: c.shortUrl }, `Без движения с ${dateRu(c.dateLastActivity)}`, ok, key);
     }
+  }
+}
+
+// ---------- Утренняя сводка ----------
+// Раз в рабочее утро каждому, кто в боте: его просрочки и упоминания в Trello
+// и дела «Нужно внести» из ERP (те же, что в колокольчике, по правам его роли).
+// Нечего сказать — не пишем. Сервер перезапустился днём — «доброе утро» не шлём:
+// окно — первые 3 часа рабочего дня.
+const morningChecked = new Set();
+const hubUrl = (link) => 'https://' + process.env.RAILWAY_PUBLIC_DOMAIN + link;
+async function morning(rules, overdueBy, now) {
+  const hour = ((now + 5 * 3600000) % 86400000) / 3600000;
+  if (hour >= rules.work_from + 3) return;
+  const today = R.localDate(now);
+  const people = (await pool.query(
+    `SELECT u.id, u.jv_chat_id, e.id AS employee_id, e.full_name,
+            BOOL_OR(COALESCE(r.is_admin, FALSE)) AS is_admin, BOOL_OR(COALESCE(r.is_finance, FALSE)) AS is_finance
+       FROM users u JOIN hr_employees e ON e.erp_user_id = u.id
+       LEFT JOIN user_roles ur ON ur.user_id = u.id LEFT JOIN roles r ON r.id = ur.role_id
+      WHERE u.is_active = TRUE AND e.status = 'active' AND u.jv_chat_id IS NOT NULL
+      GROUP BY u.id, e.id`)).rows;
+  const { todosFor } = require('./todos');
+  for (const p of people) {
+    const key = `am:${p.employee_id}:${today}`;
+    if (morningChecked.has(key)) continue;
+    morningChecked.add(key);
+    if ((await pool.query('SELECT 1 FROM jarvis_log WHERE dedup_key = $1', [key])).rows.length) continue;
+    const overdue = overdueBy.get(p.employee_id) || [];
+    const waiting = (await pool.query(
+      'SELECT count(*)::int AS n FROM jarvis_mentions WHERE employee_id = $1 AND answered_at IS NULL', [p.employee_id])).rows[0].n;
+    let todos = [];
+    try { todos = await todosFor({ id: p.id, isAdmin: p.is_admin, isFinance: p.is_finance }); } catch (e) { todos = []; }
+    if (!overdue.length && !waiting && !todos.length) continue;
+    const name = String(p.full_name).split(/\s+/)[1] || p.full_name;
+    const parts = [`☀️ Доброе утро, ${esc(name)}!`];
+    if (overdue.length || waiting) {
+      parts.push('\n<b>Trello</b>');
+      if (overdue.length) {
+        parts.push(`⏰ Просрочены (${overdue.length}):`);
+        overdue.slice(0, 10).forEach((c) => parts.push(`• ${esc(c.name)} — срок ${dateRu(c.due)}`));
+      }
+      if (waiting) parts.push(`💬 Ждут вашего ответа: ${waiting}`);
+      parts.push(`Список с кнопками — «${MENU_MY}».`);
+    }
+    if (todos.length) {
+      parts.push('\n<b>ERP — нужно внести</b>');
+      todos.forEach((t) => parts.push(`• <b>${esc(t.title)}</b>\n  ${esc(t.body)}`));
+    }
+    // Кнопки ведут прямо в окно ERP, где это вносится.
+    const buttons = process.env.RAILWAY_PUBLIC_DOMAIN
+      ? todos.filter((t) => t.link).slice(0, 4).map((t) => [{ text: '➡️ ' + t.title.slice(0, 40), url: hubUrl(t.link) }]) : [];
+    const ok = !!(await send(p.jv_chat_id, parts.join('\n'), buttons.length ? { reply_markup: { inline_keyboard: buttons } } : menu));
+    await log('morning', p.employee_id, null,
+      [overdue.length ? 'просрочено ' + overdue.length : '', waiting ? 'ждут ответа ' + waiting : '',
+        ...todos.map((t) => t.title)].filter(Boolean).join('; '), ok, key);
   }
 }
 

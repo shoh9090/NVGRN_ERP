@@ -115,9 +115,10 @@ async function unclassified(pool) {
 
 const mln = (v) => (Math.round((Number(v) || 0) / 1e5) / 10).toLocaleString('ru-RU') + ' млн';
 
-router.get('/api/todos', async (req, res) => {
-  // Дела меняются, как только их сделали — браузер не должен показывать старый список.
-  res.set('Cache-Control', 'no-store');
+// Дела человека. user: { id, isAdmin, isFinance } — как req.user.
+// Тем же списком пользуется утренняя сводка Джарвиса в Telegram (src/jarvis-bot.js).
+async function todosFor(user) {
+  const req = { user };
   const items = [];
   const safe = async (fn) => { try { await fn(); } catch (e) { console.warn('[ДЕЛА]', e.message); } };
 
@@ -164,10 +165,17 @@ router.get('/api/todos', async (req, res) => {
     });
   });
 
-  res.json({ items });
+  return items;
+}
+
+router.get('/api/todos', async (req, res) => {
+  // Дела меняются, как только их сделали — браузер не должен показывать старый список.
+  res.set('Cache-Control', 'no-store');
+  res.json({ items: await todosFor(req.user) });
 });
 
 module.exports = router;
+module.exports.todosFor = todosFor;
 module.exports.noPriceItems = noPriceItems;
 module.exports.stockNoPriceItems = stockNoPriceItems;
 module.exports.unmatchedSold = unmatchedSold;
