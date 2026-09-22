@@ -116,6 +116,8 @@ async function unclassified(pool) {
 const mln = (v) => (Math.round((Number(v) || 0) / 1e5) / 10).toLocaleString('ru-RU') + ' млн';
 
 router.get('/api/todos', async (req, res) => {
+  // Дела меняются, как только их сделали — браузер не должен показывать старый список.
+  res.set('Cache-Control', 'no-store');
   const items = [];
   const safe = async (fn) => { try { await fn(); } catch (e) { console.warn('[ДЕЛА]', e.message); } };
 

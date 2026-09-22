@@ -1913,6 +1913,7 @@ const SKU_NUM_FIELDS = ['prod_factor', 'raw_cost', 'net_weight_g', 'raw_price_pe
 // «Нужно внести»: товары из продаж SalesDoctor, у которых нет пары в Калькуляции.
 // Рядом — товары Калькуляции без кода SD: к одному из них и привязывают.
 router.get('/api/missing-sold', async (req, res) => {
+  res.set('Cache-Control', 'no-store');
   try {
     const missing = await require('./todos').unmatchedSold(db.pool);
     const free = (await db.pool.query(

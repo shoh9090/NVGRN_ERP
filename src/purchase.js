@@ -1199,6 +1199,7 @@ router.get('/api/orders/:id(\\d+)', async (req, res) => {
 // долг поставщику и сырьё в P&L занижены. Уже проставленную цену здесь не меняют —
 // для этого есть сверка заявки (право «Правка заявок»).
 router.get('/api/noprice', async (req, res) => {
+  res.set('Cache-Control', 'no-store');
   try {
     const t = require('./todos');
     res.json({ items: await t.noPriceItems(db.pool), stock: await t.stockNoPriceItems(db.pool) });
