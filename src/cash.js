@@ -1562,21 +1562,58 @@ router.get('/api/pnl/trend', async (req, res) => {
 
 // Количество отгрузок за месяц из SalesDoctor — ТОЛЬКО по кнопке.
 // Внешний сервис отвечает медленно, поэтому при открытии вкладки не трогаем.
+// Подтянуть продажи месяца из SalesDoctor и сохранить. Одна функция для кнопки
+// и для ночного обновления. Неполную выгрузку (упёрлись в предел времени или
+// страниц) НЕ сохраняем: иначе она затёрла бы полную цифру прошлой загрузки
+// и выручка месяца молча уменьшилась бы (аудит A09).
+async function refreshSales(period, userId, opts = {}) {
+  const r = await integrations.getMonthlySalesUnits(period, { maxMs: opts.maxMs || 20000, maxPages: opts.maxPages || 20 });
+  if (r.truncated) {
+    const err = new Error('SalesDoctor отдал продажи не полностью (не уложились в предел времени) — цифры не сохранены, прежние остались. Попробуйте ещё раз.');
+    err.truncated = true;
+    throw err;
+  }
+  await db.setSetting(UNITS_KEY(period), String(Math.round(r.units || 0)));
+  // Сумма реализации — основа выручки в P&L (отгружено, а не оплачено)
+  await db.setSetting(SALES_KEY(period), String(Math.round(r.net_amount || 0)));
+  // Разбивка по товарам — для сравнения с Калькуляцией.
+  await db.setSetting(SKU_KEY(period), JSON.stringify((r.by_product || []).map((x) => [x.id, Math.round(x.units), x.name])));
+  await db.setSetting(UNITS_KEY(period) + '_at', new Date().toISOString().slice(0, 16).replace('T', ' '));
+  await db.log(userId || null, 'pnl_units_refresh', { period, units: r.units, orders: r.orders, auto: !!opts.auto });
+  return r;
+}
+
+// Ночное обновление: каждую ночь около 3:00 по Ташкенту подтягиваем продажи
+// прошлого и текущего месяца — без кнопки. Раньше выручка месяца зависела от
+// того, нажал ли кто-то «обновить», и в сентябре сохранился случайный ноль.
+// Отметка дня в настройках — чтобы при нескольких перезапусках не гонять дважды.
+async function salesAutoTick() {
+  const now = new Date(Date.now() + 5 * 3600000);                 // Ташкент
+  if (now.getUTCHours() !== 3) return;
+  const day = now.toISOString().slice(0, 10);
+  const done = ((await db.pool.query("SELECT value FROM settings WHERE key = 'pnl_sales_auto_day'")).rows[0] || {}).value;
+  if (done === day) return;
+  await db.setSetting('pnl_sales_auto_day', day);
+  const cur = day.slice(0, 7);
+  const prev = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1)).toISOString().slice(0, 7);
+  for (const period of [prev, cur]) {
+    try {
+      const r = await refreshSales(period, null, { auto: true, maxMs: 60000, maxPages: 60 });
+      console.log(`[КАССА] продажи ${period} из SD обновлены: ${Math.round(r.net_amount || 0)} сум, ${r.orders} заказов`);
+    } catch (e) { console.warn(`[КАССА] продажи ${period} из SD не обновлены:`, e.message); }
+  }
+}
+setInterval(() => { salesAutoTick().catch((e) => console.warn('[КАССА] автообновление продаж:', e.message)); }, 15 * 60 * 1000).unref();
+
 router.post('/api/pnl/units', express.json(), async (req, res) => {
   const period = /^\d{4}-\d{2}$/.test((req.body || {}).period || '')
     ? req.body.period : new Date().toISOString().slice(0, 7);
   try {
-    const r = await integrations.getMonthlySalesUnits(period, { maxMs: 20000, maxPages: 20 });
-    await db.setSetting(UNITS_KEY(period), String(Math.round(r.units || 0)));
-    // Сумма реализации — основа выручки в P&L (отгружено, а не оплачено)
-    await db.setSetting(SALES_KEY(period), String(Math.round(r.net_amount || 0)));
-    // Разбивка по товарам — для плановой себестоимости по ассортименту.
-    await db.setSetting(SKU_KEY(period), JSON.stringify((r.by_product || []).map((x) => [x.id, Math.round(x.units), x.name])));
-    await db.setSetting(UNITS_KEY(period) + '_at', new Date().toISOString().slice(0, 16).replace('T', ' '));
-    await db.log(req.user.id, 'pnl_units_refresh', { period, units: r.units, truncated: r.truncated });
+    const r = await refreshSales(period, req.user.id);
     res.json({ ok: true, units: r.units, amount: r.net_amount, returned: r.returned,
-      orders: r.orders, truncated: r.truncated, took_ms: r.took_ms });
+      orders: r.orders, truncated: false, took_ms: r.took_ms });
   } catch (e) {
+    if (e.truncated) return res.status(400).json({ error: e.message });
     console.error('[КАССА] отгрузки из SD:', e.message);
     res.status(400).json({ error: 'Не удалось получить отгрузки из SalesDoctor: ' + e.message });
   }
