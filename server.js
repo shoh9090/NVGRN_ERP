@@ -689,6 +689,24 @@ admin.post('/api/files/offload-videos', express.json(), async (req, res) => {
   res.json(out);
 });
 
+// Разведка по товару SalesDoctor: есть ли он в справочнике готовой продукции и
+// в каких прайс-листах у него цена. Нужна, когда «Цена в SalesDoctor» пустая.
+admin.get('/api/sd-good', async (req, res) => {
+  const sd = String(req.query.sd || '').trim();
+  const name = String(req.query.name || '').trim();
+  try {
+    const goods = (await db.pool.query(
+      `SELECT id, name, barcode, COALESCE(sd_sd_id, '') AS sd_id, status FROM ref_finished_goods
+        WHERE ($1 <> '' AND sd_sd_id = $1) OR ($2 <> '' AND name ILIKE '%' || $2 || '%') LIMIT 20`, [sd, name])).rows;
+    const ids = goods.map((g) => g.id);
+    const prices = ids.length ? (await db.pool.query(
+      `SELECT p.product_id, t.name AS price_type, p.price, to_char(p.last_sync_at, 'DD.MM.YYYY') AS at
+         FROM ref_prices p JOIN ref_price_types t ON t.id = p.price_type_id
+        WHERE p.product_id = ANY($1) ORDER BY t.name`, [ids])).rows : [];
+    res.json({ goods, prices });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 // Сколько места занимает база: таблицы по размеру. Только чтение, только админ.
 // Нужно, когда Railway предупреждает, что диск базы заполняется.
 admin.get('/api/db-size', async (req, res) => {
