@@ -44,8 +44,13 @@ const send = (chatId, html, extra = {}) => tg('sendMessage', { chat_id: chatId, 
 // Кнопок внизу нет: Джарвис отвечает на любой вопрос словами, а кнопка
 // «Мои карточки» вводила в заблуждение — казалось, что больше он ничего не умеет.
 // Сама фраза остаётся рабочей: кто привык, пишет её текстом.
+// Кнопки внизу — частые вопросы одним нажатием. Они идут МИМО ИИ: читают базу
+// напрямую, отвечают мгновенно и ничего не стоят. Решение Шоха: кликать проще,
+// чем печатать, а ИИ нужен для того, что кнопкой не выразишь.
 const MENU_MY = '📋 Мои карточки';
-const menu = { reply_markup: { remove_keyboard: true } };
+const MENU_TODO = '📌 Мои дела';
+const MENU_PAY = '💰 Моя зарплата';
+const menu = { reply_markup: { keyboard: [[{ text: MENU_MY }, { text: MENU_TODO }], [{ text: MENU_PAY }]], resize_keyboard: true } };
 const askContact = { reply_markup: { keyboard: [[{ text: '📱 Поделиться номером', request_contact: true }]], resize_keyboard: true, one_time_keyboard: true } };
 // Кнопки под сообщением о карточке: ответить и открыть.
 function cardButtons(cardId, url, mentionId) {
@@ -100,7 +105,7 @@ async function handleUpdate(u) {
   const text = String(m.text || '').trim();
   if (text === '/cancel') { pending.delete(chatId); return send(chatId, 'Отменено.', menu); }
   const p = pending.get(chatId);
-  if (p && text && !text.startsWith('/') && text !== MENU_MY) {
+  if (p && text && !text.startsWith('/') && ![MENU_MY, MENU_TODO, MENU_PAY].includes(text)) {
     if (Date.now() > p.until) { pending.delete(chatId); return send(chatId, 'Время вышло — нажмите кнопку ещё раз.', menu); }
     if (p.kind === 'due') {
       const due = R.parseDueDate(text, Date.now(), await loadRules());
@@ -112,11 +117,33 @@ async function handleUpdate(u) {
     return postReply(chatId, me, p, text);
   }
   if (text === MENU_MY || text === '/my' || /^мои карточки$/i.test(text)) return myCards(chatId, me);
+  if (text === MENU_TODO) return myTodos(chatId, me);
+  if (text === MENU_PAY) return mySalary(chatId, me);
   if (text) {
     const rules = await loadRules();
     if (rules.ai_enabled) return aiAnswer(chatId, me, text, rules);
   }
   return send(chatId, `${esc(me.full_name)}, спросите словами: «мои дела», «мои карточки», «остатки склада».`, menu);
+}
+
+// Кнопки: те же данные, что у ИИ-инструментов, но без модели — быстро и бесплатно.
+const toolRun = async (name, me, args = {}) => {
+  const t = require('./ai-tools').TOOLS.find((x) => x.name === name);
+  const user = await erpUser(me.user_id);
+  return t.run(args, { user, employee_id: me.employee_id, full_name: me.full_name });
+};
+async function myTodos(chatId, me) {
+  const out = await toolRun('moi_dela', me);
+  if (!Array.isArray(out)) return send(chatId, '👍 Дел нет — всё внесено.', menu);
+  const lines = out.map((i) => `• <b>${esc(i.дело)}</b>\n  ${esc(i.подробно)}`);
+  return send(chatId, '<b>Нужно внести:</b>\n' + lines.join('\n'), menu);
+}
+async function mySalary(chatId, me) {
+  const r = await toolRun('moya_zarplata', me);
+  if (r.итог) return send(chatId, esc(r.итог), menu);
+  const n = (v) => Number(v || 0).toLocaleString('ru-RU');
+  return send(chatId, `<b>Зарплата за ${esc(r.месяц)}</b>\nНачислено: ${n(r.начислено)}\nУдержано: ${n(r.удержано)}`
+    + (r.штрафы ? `\nШтрафы: ${n(r.штрафы)}` : '') + `\nВыплачено: ${n(r.выплачено)}`, menu);
 }
 
 // ---------- Вопрос словами (ИИ) ----------
