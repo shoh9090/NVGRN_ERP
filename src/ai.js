@@ -30,7 +30,11 @@ async function post(url, headers, body) {
 // --- Claude (Messages API) ---
 async function askClaude({ model, system, messages, tools, runTool, onStep }) {
   const url = 'https://api.anthropic.com/v1/messages';
+  // Ключ служебной учётки не привязан к рабочему пространству — Anthropic
+  // требует назвать его отдельным заголовком (ANTHROPIC_WORKSPACE_ID в Railway).
+  // Ключ, созданный внутри пространства, работает и без него.
   const headers = { 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' };
+  if (process.env.ANTHROPIC_WORKSPACE_ID) headers['anthropic-workspace-id'] = process.env.ANTHROPIC_WORKSPACE_ID;
   const defs = tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.schema }));
   const msgs = messages.slice();
   const used = [];
