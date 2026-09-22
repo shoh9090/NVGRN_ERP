@@ -24,6 +24,7 @@ const DEFAULTS = {
   reminders_enabled: false,  // бот пишет людям; выключено — только читает Trello и ведёт журнал
   ai_enabled: false,         // можно ли спрашивать Джарвиса словами
   ai_provider: 'claude',     // claude | openai — ключ берётся из Railway
+  done_lists: [],            // свои колонки Trello, которые тоже считаются закрытыми
   ai_model: '',              // пусто = модель поставщика по умолчанию
   enabled_at: '',            // когда включили: часы по старым упоминаниям идут с этого момента
 };
@@ -79,6 +80,9 @@ function normalizeRules(raw) {
   out.ai_enabled = r.ai_enabled === true || r.ai_enabled === 'true';
   out.ai_provider = r.ai_provider === 'openai' ? 'openai' : 'claude';
   out.ai_model = String(r.ai_model || '').trim().slice(0, 60);
+  // Свои названия колонок, которые тоже считаются закрытыми.
+  out.done_lists = (Array.isArray(r.done_lists) ? r.done_lists : String(r.done_lists || '').split(','))
+    .map((x) => String(x || '').trim()).filter(Boolean).slice(0, 30);
   return out;
 }
 
@@ -138,8 +142,17 @@ function parseMentions(text) {
   }
   return [...out];
 }
-// Колонка «Готово» — карточки в ней не просрочены и не «забыты».
-const isDoneList = (name) => /готов|выполн|сделан|закрыт|архив|done|complete|finished/i.test(String(name || ''));
+// Колонка, в которой карточка считается закрытой: не просрочена и ответа не ждёт.
+// Кроме «сделано» это и «не актуально», «отменено», «заморожено» — работа по ним
+// не ведётся, дёргать людей не за что (случай Шоха: карточки 2025 года из
+// колонки «не актуально» приходили как просроченные).
+// extra — дополнительные названия колонок из правил плитки.
+function isDoneList(name, extra) {
+  const s = String(name || '').trim().toLowerCase();
+  if (!s) return false;
+  if (/готов|выполн|сделан|закрыт|архив|не\s*актуал|неактуал|отмен|заморож|отложен|done|complete|finished|cancel/i.test(s)) return true;
+  return Array.isArray(extra) && extra.some((x) => String(x || '').trim().toLowerCase() === s);
+}
 // Ответ, отправленный из Telegram, лежит в Trello от учётки владельца токена
 // с подписью «Имя (через Джарвис): …» — узнаём его, чтобы не приписать владельцу.
 const VIA = ' (через Джарвис): ';

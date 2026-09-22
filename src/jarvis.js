@@ -96,7 +96,7 @@ router.get('/api/state', async (req, res) => {
           // ни ожидания ответа. Показываем их, чтобы было видно, что Джарвис так понял.
           const done = new Set();
           for (const b of boards) {
-            for (const l of await trello.lists(b.id)) if (R.isDoneList(l.name)) done.add(l.name.trim());
+            for (const l of await trello.lists(b.id)) if (R.isDoneList(l.name, rules.done_lists)) done.add(l.name.trim());
           }
           out.trello.done_lists = [...done].sort((a, b) => a.localeCompare(b, 'ru'));
           out.trello.boards = boards.map((b) => ({ name: b.name, url: b.url }))

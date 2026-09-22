@@ -349,7 +349,7 @@ async function scanWorkspace(rules) {
     for (const l of await trello.lists(b.id)) listName.set(l.id, l.name);
     for (const c of await trello.cards(b.id)) cards.push(c);
   }
-  _scan = { at: Date.now(), boards, cards, listName, boardName };
+  _scan = { at: Date.now(), boards, cards, listName, boardName, doneExtra: rules.done_lists || [] };
   return _scan;
 }
 async function scanCached() {
@@ -358,7 +358,7 @@ async function scanCached() {
   if (!rules.workspace_id || !trello.configured()) return null;
   try { return await scanWorkspace(rules); } catch (e) { return _scan; }
 }
-const isDone = (c, scan) => c.dueComplete || R.isDoneList(scan.listName.get(c.idList));
+const isDone = (c, scan) => c.dueComplete || R.isDoneList(scan.listName.get(c.idList), scan.doneExtra);
 const isOverdue = (c, scan, now) => c.due && !isDone(c, scan) && Date.parse(c.due) < now;
 
 // Новые комментарии → упоминания и ответы. Каждый комментарий по порядку:

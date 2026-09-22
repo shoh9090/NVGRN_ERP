@@ -104,6 +104,7 @@
       wsRows.push(el('div', { class: 'jv-boards' }, boards.length
         ? ['Контролируем все доски (' + boards.length + '): ', ...boards.map((x, i) => [i ? ', ' : '', el('a', { href: x.url, target: '_blank', rel: 'noopener' }, x.name)]).flat()]
         : 'В пространстве нет открытых досок.'));
+      wsRows.push(row('Ещё считать закрытыми', doneExtra));
       wsRows.push(el('div', { class: 'jv-boards' }, (tr.done_lists || []).length
         ? 'Карточка считается закрытой в колонках: ' + tr.done_lists.join(', ')
           + '. В таких карточках Джарвис не ждёт ответа и не считает просрочку.'
@@ -117,6 +118,7 @@
     const dayBoxes = DAYS.map((d, i) => el('label', { class: 'jv-day' }, [
       el('input', { type: 'checkbox', value: String(i + 1), checked: r.work_days.includes(i + 1), disabled: dis }), ' ' + d]));
 
+    const doneExtra = inp((r.done_lists || []).join(', '), { placeholder: 'например: на паузе, идеи', style: 'min-width:280px' });
     const mRem = numInp(r.mention_remind_h, { step: '0.5' });
     const mVio = numInp(r.mention_violation_h, { step: '0.5' });
     const oVio = numInp(r.overdue_violation_days);
@@ -228,6 +230,7 @@
           stale_days: stale.value, fine_mention: fM.value, fine_overdue: fO.value, fines_enabled: finesOn.checked,
           reminders_enabled: remOn.checked, due_required_h: dueH.value, moves_alert: moves.value,
           ai_enabled: aiOn.checked, ai_provider: aiProv.value, ai_model: aiModel.value,
+          done_lists: doneExtra.value,
           owners: Object.fromEntries(Object.entries(ownerChain).map(([k, c]) => [k,
             [c.first.value ? { role: c.first.value, after_h: 0 } : null,
               c.second.value ? { role: c.second.value, after_h: c.after.value } : null].filter(Boolean)])),

@@ -155,3 +155,14 @@ test('эскалация ждёт, пока дело двигается: час�
   assert.strictEqual(workHours(start, T('2026-09-24T20:00'), RULES6), 33);
   assert.ok(workHours(start, T('2026-09-24T17:00'), RULES6) < 33);
 });
+
+test('колонка «не актуально» — карточка закрыта, ответа не ждём', () => {
+  const { isDoneList } = require('../src/jarvis-rules');
+  assert.ok(isDoneList('не актуально'));      // случай Шоха: карточки 2025 года приходили как просроченные
+  assert.ok(isDoneList('Отменено'));
+  assert.ok(isDoneList('сделано 2025'));
+  assert.ok(!isDoneList('Нужно сделать'));
+  assert.ok(!isDoneList('запланировано'));
+  assert.ok(isDoneList('Идеи', ['идеи']));    // своя колонка из правил плитки
+  assert.deepStrictEqual(normalizeRules({ done_lists: 'идеи,  на паузе , ' }).done_lists, ['идеи', 'на паузе']);
+});
