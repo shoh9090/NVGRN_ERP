@@ -3808,3 +3808,5 @@ router.post('/api/reimbursements/:id(\\d+)/delete', async (req, res) => {
 module.exports = router;
 // Открыто для тестов: по этой примете возврат банка отличается от выручки.
 module.exports.looksLikeBankReturn = looksLikeBankReturn;
+// Остатки кошельков нужны и Джарвису (инструмент «остатки денег»): цифра одна, код один.
+module.exports.walletBalances = walletBalances;

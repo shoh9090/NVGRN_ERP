@@ -65,6 +65,10 @@ router.get('/api/state', async (req, res) => {
     const rules = await loadRules();
     const out = { rules, can_edit: !!req.user.isAdmin, bot: await botInfo(), trello: { configured: trello.configured() },
       sync: require('./jarvis-bot').status, todo_kinds: require('./todos').TODO_KINDS };
+    // ИИ: какие ключи реально лежат в Railway (сами ключи наружу не отдаём).
+    const ai = require('./ai');
+    out.ai = { claude: ai.hasKey('claude'), openai: ai.hasKey('openai'),
+      tools: require('./ai-tools').TOOLS.map((t) => ({ name: t.name, tile: t.tile, description: t.description })) };
     // Роли для раздела «Кто вносит»: сколько в роли людей и сколько из них в боте —
     // видно сразу, дойдёт ли напоминание.
     out.roles = (await db.pool.query(
@@ -119,7 +123,6 @@ router.post('/api/rules', J, async (req, res) => {
       rules.workspace_name = ws.displayName || ws.name;
     }
     await db.setSetting('jarvis_rules', JSON.stringify(rules));
-    if (b.owners) rules.owners = R.normalizeRules({ owners: b.owners }).owners;
     await db.log(req.user.id, 'jarvis_rules', JSON.stringify({
       ws: rules.workspace_name, on: rules.reminders_enabled, fines: rules.fines_enabled, fm: rules.fine_mention, fo: rules.fine_overdue }));
     res.json({ ok: true, rules });
@@ -212,7 +215,7 @@ router.post('/api/people/unlink', J, async (req, res) => {
 
 // ---------- Журнал ----------
 // Что Джарвис напомнил и какие нарушения записал; сверху — что сейчас ждёт ответа.
-const LOG_KINDS = ['morning', 'remind_no_due', 'violation_no_due', 'due_set', 'due_moved', 'remind_mention', 'violation_mention', 'remind_overdue', 'violation_overdue', 'remind_stale', 'reply'];
+const LOG_KINDS = ['ai', 'morning', 'remind_no_due', 'violation_no_due', 'due_set', 'due_moved', 'remind_mention', 'violation_mention', 'remind_overdue', 'violation_overdue', 'remind_stale', 'reply'];
 router.get('/api/log', async (req, res) => {
   try {
     await ensureSchema();

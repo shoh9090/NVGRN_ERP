@@ -108,8 +108,69 @@ async function handleUpdate(u) {
     return postReply(chatId, me, p, text);
   }
   if (text === MENU_MY || text === '/my') return myCards(chatId, me);
+  if (text) {
+    const rules = await loadRules();
+    if (rules.ai_enabled) return aiAnswer(chatId, me, text, rules);
+  }
   return send(chatId, `${esc(me.full_name)}, я напоминаю про карточки Trello и публикую ваши ответы.\n`
     + `Нажмите «${MENU_MY}», чтобы увидеть, что ждёт вашего ответа.`, menu);
+}
+
+// ---------- Вопрос словами (ИИ) ----------
+// Модель не считает и не помнит цифры — она вызывает наши инструменты
+// (src/ai-tools.js), а те читают базу с правами роли человека. Чего роль не
+// видит в ERP, того нет и в ответе бота.
+const SYSTEM = [
+  'Ты Джарвис — помощник сотрудников компании Novagreen Foods (Ташкент, производство свежей зелени и салатов).',
+  'Отвечай коротко и по-человечески, на языке вопроса: по-русски на русский, o‘zbekcha o‘zbek tiliga.',
+  'ГЛАВНОЕ: все цифры бери только из инструментов. Никогда не придумывай и не оценивай числа сам.',
+  'Нет инструмента или данных — так и скажи: «таких данных у меня нет». Не уверен, о чём вопрос — переспроси.',
+  'Не пересказывай, каким инструментом воспользовался. Суммы — в сумах, разряды через пробел.',
+  'Ты видишь только то, что человеку открыто по его роли в ERP. Чужие зарплаты и закрытые данные не обсуждай.',
+].join(' ');
+
+async function aiAnswer(chatId, me, question, rules) {
+  const ai = require('./ai');
+  const provider = rules.ai_provider === 'openai' ? 'openai' : 'claude';
+  if (!ai.hasKey(provider)) {
+    return send(chatId, 'ИИ включён, но ключ не задан в Railway. Скажите администратору.');
+  }
+  tg('sendChatAction', { chat_id: chatId, action: 'typing' });
+  const user = await erpUser(me.user_id);
+  const ctx = { user, employee_id: me.employee_id, full_name: me.full_name };
+  const tools = await require('./ai-tools').toolsFor(user);
+  const runTool = async (name, args) => {
+    const t = tools.find((x) => x.name === name);
+    if (!t) return { ошибка: 'Нет такого инструмента или нет прав' };
+    try { return await t.run(args || {}, ctx); }
+    catch (e) { console.warn('[ДЖАРВИС] инструмент ' + name + ':', e.message); return { ошибка: 'Не удалось получить данные' }; }
+  };
+  try {
+    const started = Date.now();
+    const out = await ai.ask(provider, {
+      model: rules.ai_model, system: SYSTEM + ` Сегодня ${R.localDate(Date.now())}. Спрашивает: ${me.full_name}.`,
+      messages: [{ role: 'user', content: question.slice(0, 2000) }],
+      tools, runTool,
+      onStep: () => tg('sendChatAction', { chat_id: chatId, action: 'typing' }),
+    });
+    const text = out.text || 'Не понял вопрос. Спросите иначе.';
+    await send(chatId, esc(text), menu);
+    await log('ai', me.employee_id, null,
+      `${question.slice(0, 200)} → ${text.slice(0, 300)} [${provider}, ${out.used.join(', ') || 'без инструментов'}, ${Math.round((Date.now() - started) / 100) / 10} с]`,
+      true, null);
+  } catch (e) {
+    await send(chatId, 'Не получилось ответить: ' + esc(e.message));
+    await log('ai', me.employee_id, null, `${question.slice(0, 200)} → ошибка: ${e.message}`, false, null);
+  }
+}
+
+// Права человека в ERP — как у него же на сайте (роли, админ, финансы).
+async function erpUser(userId) {
+  const r = (await pool.query(
+    `SELECT u.id, BOOL_OR(COALESCE(ro.is_admin, FALSE)) AS is_admin, BOOL_OR(COALESCE(ro.is_finance, FALSE)) AS is_finance
+       FROM users u LEFT JOIN user_roles ur ON ur.user_id = u.id LEFT JOIN roles ro ON ro.id = ur.role_id
+      WHERE u.id = $1 GROUP BY u.id`, [userId])).rows[0];
+  return { id: userId, isAdmin: !!(r && r.is_admin), isFinance: !!(r && r.is_finance) };
 }
 
 async function onContact(m) {

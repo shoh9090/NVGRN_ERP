@@ -109,6 +109,12 @@
     const fO = numInp(r.fine_overdue, { step: '1000' });
     const finesOn = el('input', { type: 'checkbox', checked: r.fines_enabled, disabled: dis });
     const remOn = el('input', { type: 'checkbox', checked: r.reminders_enabled, disabled: dis });
+    const aiOn = el('input', { type: 'checkbox', checked: r.ai_enabled, disabled: dis });
+    const aiProv = el('select', { class: 'jv-inp', disabled: dis }, [
+      el('option', { value: 'claude', selected: r.ai_provider !== 'openai' }, 'Claude' + ((s.ai || {}).claude ? ' — ключ есть ✓' : ' — ключа нет')),
+      el('option', { value: 'openai', selected: r.ai_provider === 'openai' }, 'GPT (OpenAI)' + ((s.ai || {}).openai ? ' — ключ есть ✓' : ' — ключа нет')),
+    ]);
+    const aiModel = inp(r.ai_model, { placeholder: 'по умолчанию: claude-sonnet-5', style: 'min-width:260px' });
 
     // Кто вносит: у дела цепочка ответственных — кто первый и кто подхватывает.
     const ownerChain = {};
@@ -168,6 +174,15 @@
       sec('Карточка без движения', 'Одно напоминание участникам, без штрафа.', [
         row('Напомнить через', stale, ' дней'),
       ]),
+      sec('ИИ-помощник', 'Сотрудник пишет Джарвису вопрос словами — по-русски или по-узбекски — и получает ответ по данным ERP. '
+        + 'Цифры берутся инструментами из базы по правам его роли: модель ничего не считает и не выдумывает. '
+        + 'Ключи хранятся в Railway (ANTHROPIC_API_KEY или OPENAI_API_KEY), в ERP их не видно.', [
+        row('Вопросы словами', el('label', { class: 'jv-day' }, [aiOn, ' включены'])),
+        row('Кто отвечает', aiProv),
+        row('Модель', aiModel),
+        el('div', { class: 'jv-muted' }, 'Инструменты, доступные ИИ: '
+          + ((s.ai || {}).tools || []).map((t) => t.name + (t.tile ? ' (' + t.tile + ')' : ' (личное)')).join(', ')),
+      ]),
       sec('Кто вносит', 'У дела ERP есть ответственный и, если нужно, второй. Второй подключается, только если работа встала: пока число уменьшается, часы считаются заново. '
         + 'Второму Джарвис пишет прямо: «это с такого-то числа у роли …, не сделано — поправьте сами или напомните». '
         + 'Пока никто не выбран, дело видят все, у кого есть доступ к плитке (и админ).', ownerRows),
@@ -194,6 +209,7 @@
           mention_remind_h: mRem.value, mention_violation_h: mVio.value, overdue_violation_days: oVio.value,
           stale_days: stale.value, fine_mention: fM.value, fine_overdue: fO.value, fines_enabled: finesOn.checked,
           reminders_enabled: remOn.checked, due_required_h: dueH.value, moves_alert: moves.value,
+          ai_enabled: aiOn.checked, ai_provider: aiProv.value, ai_model: aiModel.value,
           owners: Object.fromEntries(Object.entries(ownerChain).map(([k, c]) => [k,
             [c.first.value ? { role: c.first.value, after_h: 0 } : null,
               c.second.value ? { role: c.second.value, after_h: c.after.value } : null].filter(Boolean)])),
@@ -287,7 +303,7 @@
     remind_mention: '🔔 Напоминание: упоминание', violation_mention: '⚠️ Нарушение: нет ответа',
     remind_overdue: '☀️ Утренний список просрочек', violation_overdue: '⚠️ Нарушение: просрочка',
     remind_stale: '💤 Без движения', remind_no_due: '📅 Спросили срок', violation_no_due: '⚠️ Нарушение: нет срока',
-    due_set: '📅 Срок поставлен', due_moved: '🔁 Срок перенесён', reply: '✍️ Ответ из Telegram', morning: '☀️ Утренняя сводка',
+    due_set: '📅 Срок поставлен', due_moved: '🔁 Срок перенесён', ai: '🤖 Вопрос Джарвису', reply: '✍️ Ответ из Telegram', morning: '☀️ Утренняя сводка',
   };
   const dt = (v) => v ? new Date(v).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
   const cardLink = (name, url) => url ? el('a', { href: url, target: '_blank', rel: 'noopener' }, name || 'карточка') : (name || '');

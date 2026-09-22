@@ -22,6 +22,9 @@ const DEFAULTS = {
   fines_enabled: false,      // штрафы включаются после недели одних напоминаний
   owners: {},                // кто вносит: дело ERP → роль (см. src/todos.js, TODO_KINDS)
   reminders_enabled: false,  // бот пишет людям; выключено — только читает Trello и ведёт журнал
+  ai_enabled: false,         // можно ли спрашивать Джарвиса словами
+  ai_provider: 'claude',     // claude | openai — ключ берётся из Railway
+  ai_model: '',              // пусто = модель поставщика по умолчанию
   enabled_at: '',            // когда включили: часы по старым упоминаниям идут с этого момента
 };
 
@@ -73,6 +76,9 @@ function normalizeRules(raw) {
     if (steps.length) { steps[0].after_h = 0; out.owners[k] = steps; }
   }
   out.enabled_at = out.reminders_enabled && !Number.isNaN(Date.parse(r.enabled_at)) ? String(r.enabled_at) : '';
+  out.ai_enabled = r.ai_enabled === true || r.ai_enabled === 'true';
+  out.ai_provider = r.ai_provider === 'openai' ? 'openai' : 'claude';
+  out.ai_model = String(r.ai_model || '').trim().slice(0, 60);
   return out;
 }
 
