@@ -119,6 +119,128 @@ const TOOLS = [
     },
   },
   {
+    name: 'pribyl_za_mesyats',
+    tile: '/cash',
+    description: 'Итоги месяца из P&L: выручка, себестоимость, операционные расходы, валовая и чистая прибыль. Месяц в виде 2026-09.',
+    schema: { type: 'object', properties: { month: { type: 'string', description: 'месяц в виде 2026-09' } }, additionalProperties: false },
+    run: async (args) => {
+      const per = period(args.month);
+      const p = await require('./cash-pnl').buildPnl(db.pool, per);
+      const n = (v) => (v === null || v === undefined ? null : money(v));
+      return {
+        месяц: per,
+        выручка: n(p.revenue && p.revenue.total),
+        себестоимость: n(p.cogs && p.cogs.fact && p.cogs.fact.total),
+        валовая_прибыль: n(p.gross_profit),
+        операционная_прибыль: n(p.operating_profit),
+        чистая_прибыль: n(p.net_profit),
+        маржа_валовая_процент: p.gross_margin_pct === null ? null : Math.round(p.gross_margin_pct),
+        примечание: p.net_profit === null ? 'Прибыль не считается: не хватает данных за месяц' : undefined,
+      };
+    },
+  },
+  {
+    name: 'pretenzii',
+    tile: '/complaints',
+    description: 'Претензии клиентов за период: сколько всего, сколько не закрыто, по каким товарам и типам, топ точек. Даты в виде 2026-09-01.',
+    schema: { type: 'object', properties: {
+      from: { type: 'string', description: 'с какой даты, 2026-09-01' },
+      to: { type: 'string', description: 'по какую дату, 2026-09-30' },
+    }, additionalProperties: false },
+    run: async (args) => {
+      const d = (v, def) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : def);
+      const to = d(args.to, new Date(Date.now() + 5 * 3600000).toISOString().slice(0, 10));
+      const from = d(args.from, to.slice(0, 8) + '01');
+      const rows = (await db.pool.query(
+        `SELECT c.complaint_type, c.product_name, c.point_name, c.status, c.link_code,
+                COALESCE(t.label_ru, c.complaint_type) AS тип
+           FROM tgbot.complaints c
+           LEFT JOIN tgbot.complaint_dicts t ON t.kind = 'type' AND t.code = c.complaint_type
+          WHERE c.created_at::date BETWEEN $1 AND $2`, [from, to])).rows;
+      if (!rows.length) return { период: `${from} — ${to}`, итог: 'Претензий за этот период нет' };
+      const top = (field) => {
+        const m = new Map();
+        rows.forEach((r) => { const k = r[field] || '—'; m.set(k, (m.get(k) || 0) + 1); });
+        return [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([k, n]) => ({ что: k, сколько: n }));
+      };
+      return {
+        период: `${from} — ${to}`,
+        всего: rows.length,
+        не_закрыто: rows.filter((r) => r.status !== 'resolved').length,
+        по_типам: top('тип'),
+        по_товарам: top('product_name'),
+        по_точкам: top('point_name'),
+      };
+    },
+  },
+  {
+    name: 'zayavki_zakupa',
+    tile: '/purchase',
+    description: 'Заявки в Закупе: что заказано и ещё не принято, ближайшие поставки, сколько принято за последние дни.',
+    schema: { type: 'object', properties: { days: { type: 'number', description: 'за сколько дней смотреть приёмки, по умолчанию 7' } }, additionalProperties: false },
+    run: async (args) => {
+      const days = Math.min(Math.max(parseInt(args.days, 10) || 7, 1), 60);
+      const open = (await db.pool.query(
+        `SELECT po.number, c.name AS поставщик, to_char(po.delivery_date, 'DD.MM') AS поставка,
+                COALESCE(SUM(i.qty * i.price), 0) AS сумма
+           FROM purchase_orders po JOIN ref_counterparties c ON c.id = po.supplier_id
+           LEFT JOIN purchase_order_items i ON i.order_id = po.id
+          WHERE po.status = 'ordered'
+          GROUP BY po.id, c.name ORDER BY po.delivery_date LIMIT 20`)).rows;
+      const got = (await db.pool.query(
+        `SELECT COUNT(DISTINCT po.id)::int AS заявок, COALESCE(SUM(i.fact_qty * i.price), 0) AS сумма
+           FROM purchase_orders po JOIN purchase_order_items i ON i.order_id = po.id
+          WHERE po.status = 'received' AND po.delivery_date >= CURRENT_DATE - $1::int`, [days])).rows[0];
+      return {
+        заказано_ждём_приёмки: open.map((r) => ({ ...r, сумма: money(r.сумма) })),
+        принято_за_дней: days,
+        принято_заявок: got.заявок,
+        принято_на_сумму: money(got.сумма),
+      };
+    },
+  },
+  {
+    name: 'moy_tabel',
+    tile: null,
+    description: 'Табель САМОГО спрашивающего за месяц: сколько отработано дней и часов, отпуска и больничные.',
+    schema: { type: 'object', properties: { month: { type: 'string', description: 'месяц в виде 2026-09' } }, additionalProperties: false },
+    run: async (args, ctx) => {
+      if (!ctx.employee_id) return { итог: 'Человек не найден в Персонале' };
+      const per = period(args.month);
+      const rows = (await db.pool.query(
+        `SELECT mark, COUNT(*)::int AS дней, COALESCE(SUM(hours), 0) AS часов
+           FROM hr_timesheet WHERE employee_id = $1 AND to_char(work_date, 'YYYY-MM') = $2
+          GROUP BY mark`, [ctx.employee_id, per])).rows;
+      if (!rows.length) return { месяц: per, итог: 'За этот месяц отметок в табеле нет' };
+      const NAME = { work: 'работал', off: 'выходной', vacation: 'отпуск', sick: 'больничный', absent: 'прогул' };
+      return { месяц: per, строки: rows.map((r) => ({ что: NAME[r.mark] || r.mark, дней: r.дней, часов: Number(r.часов) })) };
+    },
+  },
+  {
+    name: 'moi_narusheniya',
+    tile: null,
+    description: 'Что Джарвис записал САМОМУ спрашивающему: напоминания и нарушения по Trello за период.',
+    schema: { type: 'object', properties: { days: { type: 'number', description: 'за сколько дней, по умолчанию 30' } }, additionalProperties: false },
+    run: async (args, ctx) => {
+      if (!ctx.employee_id) return { итог: 'Человек не найден в Персонале' };
+      const days = Math.min(Math.max(parseInt(args.days, 10) || 30, 1), 180);
+      const rows = (await db.pool.query(
+        `SELECT kind, card_name, text, to_char(created_at, 'DD.MM') AS когда FROM jarvis_log
+          WHERE employee_id = $1 AND created_at > now() - ($2 || ' days')::interval
+            AND kind IN ('violation_mention', 'violation_overdue', 'violation_no_due', 'remind_mention', 'remind_no_due')
+          ORDER BY created_at DESC LIMIT 30`, [ctx.employee_id, String(days)])).rows;
+      const NAME = { violation_mention: 'нарушение: не ответил', violation_overdue: 'нарушение: просрочка',
+        violation_no_due: 'нарушение: нет срока', remind_mention: 'напоминание об упоминании', remind_no_due: 'спросили срок' };
+      return {
+        за_дней: days,
+        нарушений: rows.filter((r) => r.kind.startsWith('violation')).length,
+        напоминаний: rows.filter((r) => r.kind.startsWith('remind')).length,
+        список: rows.map((r) => ({ что: NAME[r.kind] || r.kind, карточка: r.card_name, когда: r.когда })),
+        примечание: 'Штрафы пока не начисляются',
+      };
+    },
+  },
+  {
     name: 'moya_zarplata',
     tile: null,
     description: 'Зарплата САМОГО спрашивающего за месяц: начислено, удержано, выплачено. Чужие зарплаты этот инструмент не показывает.',
