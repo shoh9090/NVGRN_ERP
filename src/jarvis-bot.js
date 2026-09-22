@@ -41,8 +41,11 @@ async function tg(method, body) {
 }
 const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const send = (chatId, html, extra = {}) => tg('sendMessage', { chat_id: chatId, text: html, parse_mode: 'HTML', disable_web_page_preview: true, ...extra });
+// Кнопок внизу нет: Джарвис отвечает на любой вопрос словами, а кнопка
+// «Мои карточки» вводила в заблуждение — казалось, что больше он ничего не умеет.
+// Сама фраза остаётся рабочей: кто привык, пишет её текстом.
 const MENU_MY = '📋 Мои карточки';
-const menu = { reply_markup: { keyboard: [[{ text: MENU_MY }]], resize_keyboard: true } };
+const menu = { reply_markup: { remove_keyboard: true } };
 const askContact = { reply_markup: { keyboard: [[{ text: '📱 Поделиться номером', request_contact: true }]], resize_keyboard: true, one_time_keyboard: true } };
 // Кнопки под сообщением о карточке: ответить и открыть.
 function cardButtons(cardId, url, mentionId) {
@@ -90,8 +93,9 @@ async function handleUpdate(u) {
   if (m.contact) return onContact(m);
   const me = await personByChat(chatId);
   if (!me) {
-    return send(chatId, 'Здравствуйте! Это Джарвис — внутренний бот Novagreen.\n'
-      + 'Чтобы я вас узнал, нажмите «📱 Поделиться номером» внизу.', askContact);
+    return send(chatId, 'Здравствуйте! Это Джарвис — внутренний помощник Novagreen на основе ИИ, программа, а не человек.\n'
+      + 'Чтобы я вас узнал, нажмите «📱 Поделиться номером» внизу.\n\n'
+      + 'Salom! Men Jarvis — Novagreen ichki yordamchi dasturiman. Meni tanishim uchun pastdagi tugmani bosing.', askContact);
   }
   const text = String(m.text || '').trim();
   if (text === '/cancel') { pending.delete(chatId); return send(chatId, 'Отменено.', menu); }
@@ -107,13 +111,12 @@ async function handleUpdate(u) {
     pending.delete(chatId);
     return postReply(chatId, me, p, text);
   }
-  if (text === MENU_MY || text === '/my') return myCards(chatId, me);
+  if (text === MENU_MY || text === '/my' || /^мои карточки$/i.test(text)) return myCards(chatId, me);
   if (text) {
     const rules = await loadRules();
     if (rules.ai_enabled) return aiAnswer(chatId, me, text, rules);
   }
-  return send(chatId, `${esc(me.full_name)}, я напоминаю про карточки Trello и публикую ваши ответы.\n`
-    + `Нажмите «${MENU_MY}», чтобы увидеть, что ждёт вашего ответа.`, menu);
+  return send(chatId, `${esc(me.full_name)}, спросите словами: «мои дела», «мои карточки», «остатки склада».`, menu);
 }
 
 // ---------- Вопрос словами (ИИ) ----------
@@ -127,6 +130,9 @@ const SYSTEM = [
   'Нет инструмента или данных — так и скажи: «таких данных у меня нет». Не уверен, о чём вопрос — переспроси.',
   'Не пересказывай, каким инструментом воспользовался. Суммы — в сумах, разряды через пробел.',
   'Ты видишь только то, что человеку открыто по его роли в ERP. Чужие зарплаты и закрытые данные не обсуждай.',
+  'Спросят, кто ты — отвечай честно: Джарвис, программа-помощник Novagreen на основе ИИ, не человек.',
+  'Язык держи по последнему сообщению человека: перешёл на узбекский — переходи и ты, вернулся на русский — возвращайся.',
+  'Названия товаров и имена людей пиши так, как они записаны в системе, не переводи их.',
 ].join(' ');
 
 async function aiAnswer(chatId, me, question, rules) {
@@ -191,9 +197,12 @@ async function onContact(m) {
   }
   await pool.query('UPDATE users SET jv_chat_id = NULL WHERE jv_chat_id = $1 AND id <> $2', [chatId, rows[0].id]);
   await pool.query('UPDATE users SET jv_chat_id = $1 WHERE id = $2', [chatId, rows[0].id]);
-  return send(chatId, `Готово, ${esc(rows[0].full_name)}! Теперь я буду напоминать вам про карточки Trello: `
-    + 'упоминания без ответа, просроченные сроки и забытые карточки. '
-    + 'Ответить можно прямо здесь — кнопкой «✍️ Ответить».', menu);
+  return send(chatId, `Готово, ${esc(rows[0].full_name)}!\n\n`
+    + '🤖 Я Джарвис — программа-помощник Novagreen на основе ИИ, не человек. '
+    + 'Отвечаю по данным ERP и только в пределах ваших прав.\n'
+    + 'Напоминаю про карточки Trello и отвечаю на вопросы обычными словами: «мои дела», «остатки склада», «мои карточки».\n\n'
+    + '🤖 Men Jarvisman — Novagreen yordamchi dasturi, odam emasman. '
+    + 'Savollarga oddiy so‘zlar bilan javob beraman. O‘zbekcha yozing — o‘zbekcha javob beraman.', menu);
 }
 
 async function onCallback(cq) {
