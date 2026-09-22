@@ -374,6 +374,41 @@
     let d; try { d = await api('/report?from=' + repState.from + '&to=' + repState.to + wq); } catch (e) { c.innerHTML = ''; c.appendChild(el('div', { class: 'cash-empty' }, 'Ошибка: ' + e.message)); return; }
     c.innerHTML = '';
     renderCashflow(c, d.rows || [], d.groups || [], d.a2a || { inc: 0, exp: 0 }, d.internal || [], d.obnal || { received: 0, commission: 0, sent: 0 });
+    crmReconcile(c);
+  }
+
+  // Сверка с CRM: оплаты клиентов в SalesDoctor против поступлений в Кассе, по дням.
+  // Шох: «в CRM и в ERP разные суммы поступлений — так быть не должно». Чаще всего
+  // расхождение — это день, за который ещё не загрузили выписку, либо перенос на
+  // соседний день: в CRM оплату отметили вечером, в банк она попала утром.
+  function crmReconcile(box) {
+    const wrap = el('div', {});
+    box.appendChild(wrap);
+    const period = ' за ' + repState.from.split('-').reverse().join('.') + ' — ' + repState.to.split('-').reverse().join('.');
+    wrap.appendChild(el('div', { class: 'cash-ready cash-ready-sub' }, 'Сверка с CRM' + period + ' — считаю…'));
+    api('/sd-reconcile?from=' + repState.from + '&to=' + repState.to).then((d) => {
+      const diff = d.totals.diff;
+      const head = [el('b', {}, 'Сверка с CRM: '), el('span', { class: 'cash-ready-n' },
+        'CRM ' + money(d.totals.crm) + ' · Касса ' + money(d.totals.erp)
+        + (Math.abs(diff) < 1000 ? ' · сходится ✓' : ' · разница ' + money(diff)))];
+      const rows = d.days.map((x) => el('tr', { class: Math.abs(x.diff) > 1000000 ? 'cash-ready-v' : '' }, [
+        el('td', {}, x.date.split('-').reverse().join('.')),
+        el('td', { class: 'tnum' }, money(x.crm)),
+        el('td', { class: 'tnum' }, money(x.erp)),
+        el('td', { class: 'tnum' }, Math.abs(x.diff) < 1000 ? '✓' : money(x.diff)),
+      ]));
+      wrap.innerHTML = '';
+      wrap.appendChild(pnlFold('crm', 'cash-ready', head, [
+        el('div', { class: 'cash-ready-sub' },
+          'Слева — оплаты клиентов в CRM, справа — поступления в Кассе по статье «Выручка от продаж». '
+          + 'Разница в один день обычно означает, что выписка за этот день ещё не загружена, '
+          + 'а «плюс сегодня и минус вчера» — оплату отметили в CRM вечером, а в банк она попала утром.'),
+        el('div', { class: 'cash-ready-scroll' }, el('table', { class: 'cash-ready-t' }, [
+          el('thead', {}, el('tr', {}, ['День', 'CRM', 'Касса', 'Разница'].map((h) => el('th', {}, h)))),
+          el('tbody', {}, rows),
+        ])),
+      ]));
+    }).catch((e) => { wrap.innerHTML = ''; wrap.appendChild(el('div', { class: 'cash-ready cash-ready-sub' }, 'Сверка с CRM не получилась: ' + e.message)); });
   }
 
   function kpiBar(items) {
