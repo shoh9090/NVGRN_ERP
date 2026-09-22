@@ -118,7 +118,7 @@ test('позиция без цены прихода не занижает себ
   assert.strictEqual(r.cogs.fact.total, 30000000);
   assert.strictEqual(r.cogs.fact.no_price.length, 1);
   assert.strictEqual(r.cogs.fact.no_price[0].name, 'шпинат');
-  assert.ok(r.warnings.some((w) => wtext(w).includes('Нет цены прихода') && wtext(w).includes('шпинат')),
+  assert.ok(r.warnings.some((w) => wtext(w).includes('нет цены прихода') && wtext(w).includes('шпинат')),
     'предупреждение должно называть позицию по имени: ' + r.warnings.map(wtext).join(' | '));
 });
 
