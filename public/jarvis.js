@@ -96,6 +96,7 @@
     const sec = (title, note, rows) => el('section', { class: 'jv-sec' }, [el('h3', {}, title), note ? el('div', { class: 'jv-muted' }, note) : null, ...rows]);
 
     // Пространство Trello
+    const doneExtra = inp((r.done_lists || []).join(', '), { placeholder: 'например: на паузе, идеи', style: 'min-width:280px' });
     const wsSel = el('select', { class: 'jv-inp', disabled: dis || !tr.ok }, [el('option', { value: '' }, '— выберите пространство —'),
       ...(tr.workspaces || []).map((w) => el('option', { value: w.id, selected: w.id === r.workspace_id }, w.name))]);
     const boards = (tr.boards || []);
@@ -118,7 +119,6 @@
     const dayBoxes = DAYS.map((d, i) => el('label', { class: 'jv-day' }, [
       el('input', { type: 'checkbox', value: String(i + 1), checked: r.work_days.includes(i + 1), disabled: dis }), ' ' + d]));
 
-    const doneExtra = inp((r.done_lists || []).join(', '), { placeholder: 'например: на паузе, идеи', style: 'min-width:280px' });
     const mRem = numInp(r.mention_remind_h, { step: '0.5' });
     const mVio = numInp(r.mention_violation_h, { step: '0.5' });
     const oVio = numInp(r.overdue_violation_days);
