@@ -52,6 +52,29 @@ async function lockError(...dates) {
 
 // Подбор статьи по ключевым словам для одной строки текста (Наличная касса, ввод в реальном времени) —
 // та же семантика фраз, что и в пакетном авто-разборе runRelink(), но синхронно для одного текста.
+// Банк вернул наш платёж — это НЕ выручка. Такой приход приходит от самого банка
+// с пометкой вроде «Qabul qiluvchi ma'lumotlari yozilmaganligi sababli qaytarilmoqda»
+// («возвращается, т.к. не указаны данные получателя»). Раньше любой приход на
+// расчётный счёт становился «200 Выручка от продаж», и 20 млн возврата 16.09.2026
+// раздули сентябрьскую выручку — ERP разошёлся с CRM ровно на эту сумму.
+const RETURN_MARKERS = /qaytar|qaytarilmoqda|возврат[аеуы]?\s|возвращ|vozvrat|vozvrash|refund/i;
+function looksLikeBankReturn(text) {
+  return RETURN_MARKERS.test(String(text || ''));
+}
+
+// Статья парного исходящего платежа: та же сумма, тот же кошелёк, за последние 14
+// дней до возврата. Нашли ровно один — берём его статью, и возврат уменьшает тот же
+// расход. Нашли несколько или ни одного — оставляем «не разобрано».
+async function returnCategoryOf(walletId, amount, date) {
+  try {
+    const r = await db.pool.query(
+      `SELECT DISTINCT category_id FROM cash_transactions
+        WHERE wallet_id = $1 AND tx_type = 'out' AND amount = $2 AND category_id IS NOT NULL
+          AND tx_date BETWEEN $3::date - 14 AND $3::date`, [walletId, amount, date]);
+    return r.rows.length === 1 ? r.rows[0].category_id : null;
+  } catch (e) { return null; }
+}
+
 async function guessCategoryByKeyword(text) {
   if (!text) return null;
   const lower = String(text).toLowerCase();
@@ -2168,6 +2191,14 @@ router.post('/api/import/preview', upload.single('file'), async (req, res) => {
         r.category_id = xferCat ? xferCat.id : null;
         r.cat_label = xferCat ? (xferCat.code + ' ' + xferCat.name) : null;
         r.is_classified = !!xferCat; r.flag = 'transfer'; r.inn = ''; r.payer = '';
+      } else if (r.tx_type === 'in' && looksLikeBankReturn(r.purpose)) {
+        // Банк вернул наш платёж — не выручка. Ставим статью исходного платежа
+        // (тогда возврат уменьшит тот же расход), а если пары нет — «не разобрано».
+        const catId = await returnCategoryOf(wallet_id, r.amount, r.tx_date);
+        const cat = catId ? catById[catId] : null;
+        r.category_id = catId;
+        r.cat_label = cat ? (cat.code + ' ' + cat.name) : null;
+        r.is_classified = !!catId; r.flag = 'return'; r.inn = ''; r.payer = '';
       } else if (r.tx_type === 'in') {
         // Приход на карту — пополнение (111), не выручка; контрагента не вешаем (см. import/run).
         const useCat = isCard ? topupCat : incomeCat;
@@ -3723,3 +3754,5 @@ router.post('/api/reimbursements/:id(\\d+)/delete', async (req, res) => {
 });
 
 module.exports = router;
+// Открыто для тестов: по этой примете возврат банка отличается от выручки.
+module.exports.looksLikeBankReturn = looksLikeBankReturn;
