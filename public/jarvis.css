@@ -1,0 +1,38 @@
+/* jarvis.css — плитка «Джарвис» в дизайн-системе Novagreen */
+
+.jv-conns{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+.jv-conn{flex:1 1 280px;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:12px 16px;box-shadow:var(--shadow);font-size:14px}
+.jv-conn.ok{border-left:4px solid var(--lime)}
+.jv-conn.bad{border-left:4px solid var(--red)}
+.jv-conn-t{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-faint);margin-bottom:4px}
+.jv-conn a{color:var(--forest);font-weight:700}
+
+.jv-sec{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:14px 18px;margin-bottom:12px;box-shadow:var(--shadow)}
+.jv-sec h3{margin:0 0 4px;font-family:'Lora',serif;font-weight:600;font-size:17px;color:var(--ink)}
+.jv-row{display:flex;align-items:center;gap:12px;padding:6px 0;flex-wrap:wrap}
+.jv-lab{width:230px;font-weight:700;font-size:13.5px;color:var(--ink-soft)}
+.jv-ctl{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:13.5px}
+.jv-inp{min-height:36px;border:1px solid #cdd6cc;border-radius:9px;padding:6px 10px;font:inherit;background:#fff;color:var(--ink)}
+input.jv-inp[type=number]{width:96px}
+select.jv-inp{min-width:240px;max-width:100%}
+.jv-inp:disabled{background:var(--surface-2);color:var(--ink-soft)}
+.jv-days{display:flex;gap:10px;flex-wrap:wrap}
+.jv-day{display:inline-flex;align-items:center;gap:4px;font-weight:600;cursor:pointer}
+.jv-boards{font-size:13px;color:var(--ink-soft);margin-top:6px;line-height:1.6}
+.jv-boards a{color:var(--forest);font-weight:600}
+.jv-actions{position:sticky;bottom:0;padding:12px 0;background:linear-gradient(transparent,var(--paper) 30%)}
+
+.jv-muted{color:var(--ink-faint);font-size:12.5px;margin:2px 0 6px}
+.jv-warn{color:var(--amber, #b26a00);font-size:12.5px;font-weight:600}
+.jv-err{color:var(--red);font-weight:700;padding:12px 0}
+.jv-b{font-weight:700}
+.jv-table td{vertical-align:top}
+.jv-table tbody tr{cursor:default}
+.jv-table select.jv-inp{min-width:260px}
+.pur-content + .jv-sec{margin-top:14px}
+.jv-list{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:13px}
+
+@media (max-width:640px){
+  .jv-lab{width:100%}
+  select.jv-inp,.jv-table select.jv-inp{min-width:0;width:100%}
+}

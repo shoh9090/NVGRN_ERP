@@ -60,6 +60,9 @@ async function ensureSchema() {
   await q("UPDATE hr_employees SET schedule_type='shift22' WHERE schedule_type IN ('production','shift')");
   await q(`CREATE INDEX IF NOT EXISTS idx_hr_emp_status ON hr_employees (status)`);
   await q(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS card_number TEXT`); // для чтения выплат из выписки по номеру карты
+  // Trello человека — сопоставляется в плитке «Джарвис» (src/jarvis.js), здесь только показывается.
+  await q(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS trello_member_id TEXT`);
+  await q(`ALTER TABLE hr_employees ADD COLUMN IF NOT EXISTS trello_username TEXT`);
   // Начисление зарплаты сотруднику за месяц (одна строка = сотрудник × период).
   await q(`CREATE TABLE IF NOT EXISTS hr_payroll (
     id SERIAL PRIMARY KEY,

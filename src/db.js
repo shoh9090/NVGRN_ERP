@@ -849,6 +849,15 @@ async function seed() {
   await pool.query("UPDATE tiles SET is_visible = TRUE WHERE url = '/hr' AND is_visible IS DISTINCT FROM TRUE").catch(() => {});
   console.log('[SEED] Плитка /hr обеспечена');
 
+  // Плитка «Джарвис» — правила внутреннего бота (Trello, сроки, штрафы), docs/plan-jarvis.md
+  const jvt = await pool.query("SELECT id FROM tiles WHERE url = '/jarvis' LIMIT 1");
+  if (jvt.rows.length === 0) {
+    await pool.query(
+      `INSERT INTO tiles (title, description, icon, url, open_new_tab, sort_order)
+       VALUES ('Джарвис', 'Внутренний бот: Trello, сроки, штрафы', '🤖', '/jarvis', FALSE, 58)`
+    );
+  }
+
   // Первая плитка — Счета-фактуры (адрес меняется в админке)
   const t = await pool.query('SELECT id FROM tiles LIMIT 1');
   if (t.rows.length === 0) {
@@ -873,6 +882,7 @@ async function seed() {
     ['/cash', 'Финансы'],
     ['/calculation', 'Финансы'],
     ['/hr', 'Финансы'],
+    ['/jarvis', 'Справочники и настройки'],
   ];
   for (const [u, sec] of tileSections) {
     await pool.query("UPDATE tiles SET section = $1 WHERE url = $2 AND (section IS NULL OR section = '')", [sec, u]);
