@@ -817,6 +817,7 @@ async function getPayments(from, to, opts = {}) {
   const maxMs = opts.maxMs || 60000;
   const started = Date.now();
   const rows = [];
+  const seen = new Set();
   let page = 1, truncated = false, raw0 = null;
   for (;;) {
     if (Date.now() - started > maxMs || page > maxPages) { truncated = true; break; }
@@ -827,13 +828,18 @@ async function getPayments(from, to, opts = {}) {
     });
     const list = (data.result && (data.result.payment || data.result.payments)) || [];
     if (!raw0) raw0 = list[0] || null;
-    rows.push(...list);
-    // Листаем, пока страница приходит полной. На total полагаться нельзя: если
-    // SD его не прислал, прежнее условие обрывало выгрузку после первой страницы,
-    // и сверка видела оплаты только за начало месяца.
+    // SD сам решает, сколько записей класть на страницу (проверено 22.09.2026:
+    // с фильтром периода — 227, без него — 30), а `limit` игнорирует. Поэтому
+    // листаем, пока приходят НОВЫЕ записи, и опираемся на pagination.total.
+    let added = 0;
+    for (const x of list) {
+      const key = String(x.SD_id || x.CS_id || '') || JSON.stringify(x).slice(0, 80);
+      if (seen.has(key)) continue;
+      seen.add(key); rows.push(x); added++;
+    }
     const total = data.pagination ? Number(data.pagination.total) || 0 : 0;
-    if (!list.length || list.length < limit) break;
-    if (total && page * limit >= total) break;
+    if (!list.length || !added) break;
+    if (total && rows.length >= total) break;
     page++;
   }
   const num = (v) => Number(String(v == null ? 0 : v).replace(/\s/g, '').replace(',', '.')) || 0;
