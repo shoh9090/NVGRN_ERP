@@ -627,7 +627,20 @@ admin.get('/api/db-size', async (req, res) => {
          FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
         WHERE c.relkind = 'r' AND n.nspname NOT IN ('pg_catalog', 'information_schema')
         ORDER BY pg_total_relation_size(c.oid) DESC LIMIT 25`)).rows;
-    res.json({ total: Number(total), tables: tables.map((t) => ({ ...t, total: Number(t.total), data: Number(t.data), rows_est: Number(t.rows_est) })) });
+    // Файлы (фото/видео) — по виду и по тому, кому принадлежат: обычно место съедают они.
+    const safeQ = async (sql) => { try { return (await db.pool.query(sql)).rows; } catch (e) { return [{ error: e.message }]; } };
+    const files_by_mime = await safeQ(
+      `SELECT mime, COUNT(*)::int AS n, SUM(octet_length(data))::bigint AS bytes FROM files GROUP BY mime ORDER BY bytes DESC`);
+    const files_by_owner = await safeQ(
+      `SELECT CASE
+                WHEN EXISTS (SELECT 1 FROM tgbot.complaint_files cf WHERE cf.file_ref = f.id) THEN 'претензии'
+                WHEN EXISTS (SELECT 1 FROM stock_writeoff_files wf WHERE wf.file_ref = f.id) THEN 'списания склада'
+                ELSE 'прочее' END AS owner,
+              COUNT(*)::int AS n, SUM(octet_length(f.data))::bigint AS bytes,
+              to_char(MIN(f.created_at), 'YYYY-MM-DD') AS first, to_char(MAX(f.created_at), 'YYYY-MM-DD') AS last
+         FROM files f GROUP BY 1 ORDER BY bytes DESC`);
+    res.json({ total: Number(total), tables: tables.map((t) => ({ ...t, total: Number(t.total), data: Number(t.data), rows_est: Number(t.rows_est) })),
+      files_by_mime, files_by_owner });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
