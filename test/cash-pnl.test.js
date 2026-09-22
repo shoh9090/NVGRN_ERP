@@ -692,3 +692,14 @@ test('готовность месяца: один и тот же светофо�
   const f = monthReadiness(full);
   assert.strictEqual(f.verdict, 'ok', JSON.stringify(f.checks));
 });
+
+test('готовность: продажи SD сохранены нулём, а деньги пришли — красный', () => {
+  const { monthReadiness } = require('../src/cash-pnl');
+  const m = monthReadiness({
+    period: '2026-09', revenue: { source: 'shipped', total: 0, cash_in: 1000000 },
+    cogs_parts: { raw_source: 'purchase', raw: 1, raw_orders: 1 }, self_check: { items: [] },
+    excluded: { unclassified: { cnt: 0 } }, stock_control: {}, cogs: { fact: { no_price: [] }, plan: {} },
+  });
+  assert.strictEqual(m.checks.find((c) => c.key === 'sales').level, 'bad');
+  assert.strictEqual(m.verdict, 'bad');
+});

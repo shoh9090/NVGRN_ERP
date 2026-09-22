@@ -713,7 +713,9 @@ function monthReadiness(r) {
   const mln = (v) => Math.round((Number(v) || 0) / 1e6) + ' млн';
 
   // 1. Продажи из SalesDoctor.
-  if (r.revenue.source === 'shipped') add('sales', 'Продажи из SalesDoctor', 'ok', mln(r.revenue.total));
+  if (r.revenue.source === 'shipped' && !(r.revenue.total > 0) && r.revenue.cash_in > 0) {
+    add('sales', 'Продажи из SalesDoctor', 'bad', 'сохранён ноль, хотя деньги от клиентов пришли — обновится ночью или кнопкой');
+  } else if (r.revenue.source === 'shipped') add('sales', 'Продажи из SalesDoctor', 'ok', mln(r.revenue.total));
   else add('sales', 'Продажи из SalesDoctor', 'bad', 'не подтянуты — выручка взята по деньгам');
 
   // 2. Сырьё: из Закупа (точно) или по оплатам (приблизительно).
@@ -825,7 +827,7 @@ async function buildPnl(pool, period) {
   if (fact.no_price.length) {
     // Называем позиции поимённо: «не оценено 1» непонятно, что делать.
     warnings.push({
-      text: `Нет цены прихода у ${fact.no_price.length} позиц. В себестоимость они не вошли — проведите приёмку с ценой в Закупе.`,
+      text: `Склад: нет цены прихода у ${fact.no_price.length} позиц. — в контроль склада они не вошли. На прибыль не влияет; проведите приёмку с ценой в Закупе.`,
       href: '/purchase', label: 'Открыть Закуп',
       items: fact.no_price.map((x) => x.name),
     });
@@ -841,7 +843,7 @@ async function buildPnl(pool, period) {
     warnings.push({
       text: `В Калькуляции не найдено ${plan.unmatched.length} товаров из продаж (${Math.round(plan.unmatched_units)} шт). `
         + 'Связь ищется сама — по штрих-коду и названию; этим товарам ничего не подошло. '
-        + 'В плановую себестоимость они не вошли: добавьте товар в Калькуляцию или впишите ему код SalesDoctor.',
+        + 'На прибыль не влияет — только на сравнение с нормами Калькуляции: добавьте товар в Калькуляцию или впишите ему код SalesDoctor.',
       href: '/calculation', label: 'Открыть Калькуляцию',
       items: plan.unmatched.map((x) => `${x.name} — ${Math.round(x.units)} шт (код SD: ${x.sd_id})`),
     });
