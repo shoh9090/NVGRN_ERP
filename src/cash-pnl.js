@@ -712,6 +712,12 @@ function monthReadiness(r) {
   const add = (key, label, level, note) => checks.push({ key, label, level, note });
   const mln = (v) => Math.round((Number(v) || 0) / 1e6) + ' млн';
 
+  // 0. Месяц ещё идёт: зарплату за него платят в следующем, часть расходов
+  // ещё впереди — прибыль текущего месяца всегда выглядит лучше настоящей.
+  const nowMonth = new Date(Date.now() + 5 * 3600000).toISOString().slice(0, 7);
+  if (r.period >= nowMonth) add('open', 'Месяц закончился', 'warn', 'ещё идёт — зарплата и часть расходов будут позже, прибыль завышена');
+  else add('open', 'Месяц закончился', 'ok', 'да');
+
   // 1. Продажи из SalesDoctor.
   if (r.revenue.source === 'shipped' && !(r.revenue.total > 0) && r.revenue.cash_in > 0) {
     add('sales', 'Продажи из SalesDoctor', 'bad', 'сохранён ноль, хотя деньги от клиентов пришли — обновится ночью или кнопкой');

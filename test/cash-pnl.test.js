@@ -703,3 +703,12 @@ test('готовность: продажи SD сохранены нулём, а 
   assert.strictEqual(m.checks.find((c) => c.key === 'sales').level, 'bad');
   assert.strictEqual(m.verdict, 'bad');
 });
+
+test('готовность: текущий месяц помечен как незаконченный', () => {
+  const { monthReadiness } = require('../src/cash-pnl');
+  const now = new Date(Date.now() + 5 * 3600000).toISOString().slice(0, 7);
+  const base = { revenue: { source: 'shipped', total: 1, cash_in: 1 }, cogs_parts: { raw_source: 'purchase', raw: 1, raw_orders: 1 },
+    self_check: { items: [] }, excluded: { unclassified: { cnt: 0 } }, stock_control: {}, cogs: { fact: { no_price: [] }, plan: {} } };
+  assert.strictEqual(monthReadiness({ ...base, period: now }).checks.find((c) => c.key === 'open').level, 'warn');
+  assert.strictEqual(monthReadiness({ ...base, period: '2020-01' }).checks.find((c) => c.key === 'open').level, 'ok');
+});
