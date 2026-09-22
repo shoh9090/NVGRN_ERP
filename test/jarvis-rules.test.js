@@ -33,6 +33,11 @@ test('кириллица в Персонале ↔ латиница в Trello', 
   assert.deepStrictEqual(nameMatch('Lola Xidayeva', 'Хидаева Лола'), { hits: 2, full: true });
   assert.strictEqual(nameMatch('Aziza', 'Мурадова Азиза').hits, 1);
   assert.strictEqual(nameMatch('Bobur Karimov', 'Азиза Мурадова').hits, 0);
+  // живые случаи из Trello Novagreen, 22.09.2026
+  assert.deepStrictEqual(nameMatch('Mahmudova Lobar lobarchic', 'Махмудова Лобархон'), { hits: 2, full: true });
+  assert.deepStrictEqual(nameMatch('Abdushukur747 abdushukur', 'Каримов Абдушукур'), { hits: 1, full: false });
+  assert.deepStrictEqual(nameMatch('Kamoliddin Nasrullayev', 'Насруллаев Камоллиддин'), { hits: 2, full: true });
+  assert.deepStrictEqual(nameMatch('Shakhobiddin Muradov', 'Мурадова Азиза'), { hits: 1, full: false });
 });
 
 test('предлагаем только однозначную пару, уволенных тоже узнаём, связанных не трогаем', () => {

@@ -183,9 +183,12 @@
         emp = el('td', {}, [el('div', {}, m.suggestion.full_name),
           el('div', { class: 'jv-warn' }, 'уволен(а) в Персонале — Джарвис не контролирует; уберите из пространства Trello')]);
       } else {
-        const sel = empSelect(m.suggestion ? m.suggestion.id : null);
-        const hint = m.suggestion
-          ? (m.suggestion.strength === 'full' ? 'Предлагаем — имя и фамилия совпали' : 'Предлагаем — совпало только одно слово, проверьте')
+        // Сами подставляем только полное совпадение: по одному слову легко ошибиться
+        // (Muradov ↔ Мурадова) — такое только подсказываем.
+        const full = m.suggestion && m.suggestion.strength === 'full';
+        const sel = empSelect(full ? m.suggestion.id : null);
+        const hint = full ? 'Предлагаем — имя и фамилия совпали'
+          : m.suggestion ? 'Возможно: ' + empName(m.suggestion) + ' — совпало одно слово, проверьте'
           : (m.ambiguous ? 'Похожих несколько — выберите сами' : 'Не нашли похожего — выберите сами');
         emp = el('td', {}, [sel, el('div', { class: 'jv-muted' }, hint)]);
         if (!isAdmin) sel.disabled = true;
@@ -194,7 +197,7 @@
           ev.target.disabled = true;
           try { await link(m.id, Number(sel.value)); toast('Сопоставлено'); render(); }
           catch (e) { toast(e.message, true); ev.target.disabled = false; }
-        } }, m.suggestion ? '✓ Верно' : 'Связать'));
+        } }, full ? '✓ Верно' : 'Связать'));
       }
       return el('tr', {}, [who, emp, act]);
     });

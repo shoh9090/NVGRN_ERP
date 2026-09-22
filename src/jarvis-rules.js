@@ -73,7 +73,8 @@ function toLatin(s) {
 // Слова имени: латиница, от 3 букв (инициалы и «оглы» не в счёт).
 const SKIP = new Set(['ogli', 'oglu', 'kizi', 'ugli']);
 function nameWords(s) {
-  return toLatin(s).replace(/[^a-z]+/g, ' ').split(' ').filter((w) => w.length >= 3 && !SKIP.has(w));
+  const words = toLatin(s).replace(/[^a-z]+/g, ' ').split(' ').filter((w) => w.length >= 3 && !SKIP.has(w));
+  return [...new Set(words)]; // «Abdushukur747 @abdushukur» — одно слово, а не два
 }
 function lev(a, b) {
   if (Math.abs(a.length - b.length) > 1) return 2;
@@ -87,8 +88,12 @@ function lev(a, b) {
   return d[a.length][b.length];
 }
 // Одно слово похоже на другое: совпало или отличается одной буквой
-// (Шахобиддин/Shakhobiddin/Shahobiddin, Мурадова/Muradova).
-const wordLike = (a, b) => a === b || (Math.min(a.length, b.length) >= 5 && lev(a, b) <= 1);
+// (Шахобиддин/Shakhobiddin/Shahobiddin, Камоллиддин/Kamoliddin) или короткая форма
+// полного имени (Lobar/Лобархон). Мурадов/Мурадова тоже «похожи» — поэтому
+// совпадение по одному слову только подсказка, пару не подставляем.
+const wordLike = (a, b) => a === b
+  || (Math.min(a.length, b.length) >= 5 && lev(a, b) <= 1)
+  || (Math.min(a.length, b.length) >= 4 && (a.startsWith(b) || b.startsWith(a)));
 
 // Сколько слов меньшего имени нашлись в большем. 0 — не похожи.
 function nameMatch(a, b) {
