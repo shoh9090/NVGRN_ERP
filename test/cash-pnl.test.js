@@ -30,7 +30,7 @@ function makePool(opts) {
       if (/AND t\.category_id IS NULL/.test(q)) return { rows: [o.unclassified || { inc: 0, exp: 0, cnt: 0 }] };
       if (/direction_hint = 'transfer'/.test(q)) return { rows: [{ inc: o.transfersIn || 0 }] };
       if (/reason = 'production'/.test(q)) return { rows: o.used || [] };
-      if (/reason = 'receive'/.test(q)) return { rows: o.prices || [] };
+      if (/reason = 'receive'|reason IN \('receive'/.test(q)) return { rows: o.prices || [] };
       if (/reason = 'adjust'/.test(q)) return { rows: [o.adjust || { qty: 0, cnt: 0 }] };
       if (/receive_waste/.test(q)) return { rows: o.waste || [] };
       if (/FROM ref_raw_materials WHERE id = ANY/.test(q)) return { rows: o.rawNames || [] };

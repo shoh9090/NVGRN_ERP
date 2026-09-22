@@ -22,7 +22,7 @@ function purchaseTabOf(req) {
   const p = req.path;
   if (p.startsWith('/api/orders')) return 'orders';
   // Внесение пропущенной цены у принятой позиции — работа с заявками.
-  if (p.startsWith('/api/noprice') || p.startsWith('/api/items')) return 'orders';
+  if (p.startsWith('/api/noprice') || p.startsWith('/api/items') || p.startsWith('/api/stock-price')) return 'orders';
   if (p.startsWith('/api/suppliers') || p.startsWith('/api/supply-advance')) return 'suppliers';
   // Взаиморасчёты и оплаты — один экран: платежи вносят прямо в нём.
   if (p.startsWith('/api/settlements') || p.startsWith('/api/payments')) return 'settlements';
@@ -1199,7 +1199,10 @@ router.get('/api/orders/:id(\\d+)', async (req, res) => {
 // долг поставщику и сырьё в P&L занижены. Уже проставленную цену здесь не меняют —
 // для этого есть сверка заявки (право «Правка заявок»).
 router.get('/api/noprice', async (req, res) => {
-  try { res.json({ items: await require('./todos').noPriceItems(db.pool) }); }
+  try {
+    const t = require('./todos');
+    res.json({ items: await t.noPriceItems(db.pool), stock: await t.stockNoPriceItems(db.pool) });
+  }
   catch (e) { res.status(400).json({ error: e.message }); }
 });
 router.post('/api/items/:id(\\d+)/price', express.json(), async (req, res) => {
@@ -1227,6 +1230,23 @@ router.post('/api/items/:id(\\d+)/price', express.json(), async (req, res) => {
     res.json({ ok: true });
   } catch (e) { await client.query('ROLLBACK').catch(() => {}); res.status(400).json({ error: e.message }); }
   finally { client.release(); }
+});
+
+// Цена позиции склада, пришедшей не через Закуп (начальный остаток, плюс при
+// инвентаризации). Ставим её всем приходам этой позиции, где цены не было —
+// уже оценённые движения не трогаем.
+router.post('/api/stock-price/:kind(raw|packaging)/:id(\\d+)', express.json(), async (req, res) => {
+  const price = Number(req.body && req.body.price);
+  if (!(price > 0) || !isFinite(price)) return res.status(400).json({ error: 'Укажите цену больше нуля' });
+  try {
+    const r = await db.pool.query(
+      `UPDATE stock_movements SET price = $1
+        WHERE item_kind = $2 AND item_id = $3 AND qty > 0 AND COALESCE(price, 0) = 0
+          AND reason IN ('opening', 'adjust', 'receive') RETURNING id`, [price, req.params.kind, req.params.id]);
+    if (!r.rows.length) return res.status(409).json({ error: 'У этой позиции уже есть цена' });
+    await db.log(req.user.id, 'stock_price_filled', `${req.params.kind}#${req.params.id} = ${price} (${r.rows.length} движ.)`);
+    res.json({ ok: true, updated: r.rows.length });
+  } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 // Доступ к правке заявок (сверка/перенос). Даётся ролью «Правка заявок» в админ-панели пользователей.

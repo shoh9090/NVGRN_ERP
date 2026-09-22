@@ -1897,10 +1897,11 @@
     let d;
     try { d = await api('/noprice'); } catch (e) { toast(e.message, true); return; }
     const rows = d.items || [];
-    if (!rows.length) { toast('Позиций без цены нет — всё внесено'); return; }
+    const stockRows = d.stock || [];
+    if (!rows.length && !stockRows.length) { toast('Позиций без цены нет — всё внесено'); return; }
     const left = el('div', { class: 'muted', style: 'margin-bottom:8px' });
-    let n = rows.length;
-    const paint = () => { left.textContent = 'Осталось внести: ' + n + '. Цена — за единицу, как в заявке.'; };
+    let n = rows.length + stockRows.length;
+    const paint = () => { left.textContent = 'Осталось внести: ' + n + '. Цена — за единицу, С НДС.'; };
     paint();
     const tbody = el('tbody', {}, rows.map((r) => {
       const inp = el('input', { type: 'number', min: '0', step: 'any', class: 'form-input', style: 'width:130px', placeholder: 'цена' });
@@ -1923,12 +1924,39 @@
         el('td', {}, inp), el('td', {}, btn)].forEach((c) => tr.appendChild(c));
       return tr;
     }));
-    const m = modal('Внести цены: принятые позиции без цены', el('div', {}, [
+    // Позиции склада без цены — пришли не через Закуп (начальный остаток, плюс при инвентаризации).
+    const stockBody = el('tbody', {}, stockRows.map((r) => {
+      const inp = el('input', { type: 'number', min: '0', step: 'any', class: 'form-input', style: 'width:130px', placeholder: 'цена с НДС' });
+      const tr = el('tr', {});
+      const btn = el('button', { class: 'btn-primary', onclick: async () => {
+        const price = Number(inp.value);
+        if (!(price > 0)) { toast('Введите цену больше нуля', true); inp.focus(); return; }
+        btn.disabled = true;
+        try {
+          await api('/stock-price/' + r.item_kind + '/' + r.item_id, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ price }) });
+          tr.remove(); n--; paint();
+          if (!n) { m.close(); toast('Все цены внесены'); }
+        } catch (e) { toast(e.message, true); btn.disabled = false; }
+      } }, 'Сохранить');
+      inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') btn.click(); });
+      [el('td', {}, r.first_at ? r.first_at.split('-').reverse().join('.') : ''),
+        el('td', {}, r.item_name + (r.item_kind === 'packaging' ? ' 📦' : '')),
+        el('td', { class: 'tnum' }, fmt.format(Number(r.qty_in) || 0) + ' ' + (r.unit || '')),
+        el('td', {}, inp), el('td', {}, btn)].forEach((c) => tr.appendChild(c));
+      return tr;
+    }));
+    const m = modal('Внести цены (с НДС)', el('div', {}, [
       left,
-      el('table', { class: 'dict-table' }, [
+      rows.length ? el('h3', { class: 'pur-h3' }, 'Принятые заявки без цены') : null,
+      rows.length ? el('table', { class: 'dict-table' }, [
         el('thead', {}, el('tr', {}, ['Поставка', 'Заявка', 'Позиция', 'Принято', 'Цена', ''].map((h) => el('th', {}, h)))),
         tbody,
-      ]),
+      ]) : null,
+      stockRows.length ? el('h3', { class: 'pur-h3', style: 'margin-top:14px' }, 'На складе без цены — начальный остаток и инвентаризация') : null,
+      stockRows.length ? el('table', { class: 'dict-table' }, [
+        el('thead', {}, el('tr', {}, ['С какой даты', 'Позиция', 'Пришло', 'Цена', ''].map((h) => el('th', {}, h)))),
+        stockBody,
+      ]) : null,
     ]), [el('button', { class: 'btn-primary', onclick: () => m.close() }, 'Готово')], { wide: true });
   }
 

@@ -365,7 +365,7 @@ async function monthlyPriceMaps(pool, fromMonth, toMonth) {
     `SELECT to_char(moved_at, 'YYYY-MM') AS m, item_kind, item_id,
             SUM(qty * price) / NULLIF(SUM(qty), 0) AS avg_price
        FROM stock_movements
-      WHERE reason = 'receive' AND price > 0 AND qty > 0 AND moved_at <= $1
+      WHERE reason IN ('receive', 'opening', 'adjust') AND price > 0 AND qty > 0 AND moved_at <= $1
       GROUP BY 1, 2, 3
       ORDER BY 1`, [monthEnd(toMonth)])).rows;
   const carry = new Map();                  // последняя известная цена позиции

@@ -44,6 +44,34 @@ async function noPriceItems(pool) {
       ORDER BY po.delivery_date DESC, po.number, i.id`, [DAYS_BACK])).rows;
 }
 
+// Позиции склада, у которых вообще нет цены: пришли не через Закуп — начальным
+// остатком или плюсом при инвентаризации. Шох: «даже если через начальный
+// остаток — это задача закупщика: ставить цены с НДС». Без цены склад оценивает
+// их выдачи и списания нулём.
+async function stockNoPriceItems(pool) {
+  return (await pool.query(
+    `WITH moved AS (
+       SELECT item_kind, item_id, SUM(qty) FILTER (WHERE qty > 0) AS qty_in,
+              to_char(MIN(moved_at), 'YYYY-MM-DD') AS first_at
+         FROM stock_movements
+        WHERE moved_at >= CURRENT_DATE - $1::int OR reason = 'opening'
+        GROUP BY item_kind, item_id),
+     priced AS (
+       SELECT DISTINCT item_kind, item_id FROM stock_movements
+        WHERE qty > 0 AND COALESCE(price, 0) > 0)
+     SELECT m.item_kind, m.item_id, COALESCE(rm.name, pk.name) AS item_name,
+            COALESCE(u1.short_name, u2.short_name) AS unit, m.qty_in, m.first_at
+       FROM moved m
+       LEFT JOIN priced p ON p.item_kind = m.item_kind AND p.item_id = m.item_id
+       LEFT JOIN ref_raw_materials rm ON m.item_kind = 'raw' AND rm.id = m.item_id
+       LEFT JOIN ref_packaging pk ON m.item_kind = 'packaging' AND pk.id = m.item_id
+       LEFT JOIN ref_units u1 ON u1.id = rm.unit_id
+       LEFT JOIN ref_units u2 ON u2.id = pk.unit_id
+      WHERE p.item_id IS NULL AND COALESCE(m.qty_in, 0) > 0
+        AND NOT COALESCE(rm.is_waste, false)            -- отход бесплатный по определению
+      ORDER BY item_name`, [DAYS_BACK])).rows;
+}
+
 // Товары, которые продавались в прошлом и текущем месяце, но не нашли себе пары
 // в Калькуляции (ни по коду SD, ни по штрих-коду, ни по названию).
 async function unmatchedSold(pool) {
@@ -94,13 +122,20 @@ router.get('/api/todos', async (req, res) => {
   await safe(async () => {
     if (!(await hasTile(req.user, '/purchase'))) return;
     const rows = await noPriceItems(db.pool);
-    if (!rows.length) return;
-    const orders = new Set(rows.map((r) => r.order_id));
-    const sup = [...new Set(rows.map((r) => r.supplier_name))].slice(0, 3).join(', ');
+    const stock = await stockNoPriceItems(db.pool);
+    if (!rows.length && !stock.length) return;
+    const parts = [];
+    if (rows.length) {
+      const orders = new Set(rows.map((r) => r.order_id));
+      parts.push(`${rows.length} поз. в ${orders.size} принятых заявках — сырьё в P&L и долг поставщику занижены`);
+    }
+    if (stock.length) {
+      parts.push(`${stock.length} поз. на складе без цены (${stock.slice(0, 3).map((r) => r.item_name).join(', ')}${stock.length > 3 ? '…' : ''})`);
+    }
     items.push({
-      key: 'noprice', title: `Внести цены в Закупе: ${rows.length} поз. без цены`,
-      body: `${orders.size} принятых заявок (${sup}${orders.size > 3 ? '…' : ''}). Пока цены нет, сырьё в P&L и долг поставщику занижены.`,
-      link: '/purchase#noprice', count: rows.length,
+      key: 'noprice', title: `Внести цены (с НДС): ${rows.length + stock.length} поз.`,
+      body: parts.join('; ') + '.',
+      link: '/purchase#noprice', count: rows.length + stock.length,
     });
   });
 
@@ -132,4 +167,5 @@ router.get('/api/todos', async (req, res) => {
 
 module.exports = router;
 module.exports.noPriceItems = noPriceItems;
+module.exports.stockNoPriceItems = stockNoPriceItems;
 module.exports.unmatchedSold = unmatchedSold;
