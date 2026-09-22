@@ -26,6 +26,10 @@ app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'src', 'views'));
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
+// Заголовки безопасности и ограничение попыток входа (см. src/guard.js, аудит A-безопасность).
+const guard = require('./src/guard');
+app.use(guard.securityHeaders(IS_PROD));
+const loginLimiter = guard.createLoginLimiter();
 // Версия статики: меняется при каждом деплое, поэтому браузер сам подхватывает новые
 // js/css и не нужно жать Ctrl+Shift+R. В шаблонах адреса пишем как /static/x.js?v=<%= V %>.
 const ASSET_V = process.env.RAILWAY_GIT_COMMIT_SHA
@@ -83,15 +87,28 @@ app.get('/login', async (req, res) => {
 app.post('/login', async (req, res) => {
   const settings = await db.getSettings();
   const { login, password } = req.body;
+  // Подбор пароля: после нескольких неудач с одного адреса вход временно закрыт.
+  const ip = req.ip || req.connection.remoteAddress || '';
+  const gate = loginLimiter.check(ip, login);
+  if (!gate.ok) {
+    const min = Math.ceil(gate.retryAfterSec / 60);
+    return res.status(429).render('login', { settings,
+      error: `Слишком много попыток входа. Попробуйте через ${min} мин. Если забыли пароль — попросите администратора сбросить его.` });
+  }
   const r = await db.pool.query('SELECT * FROM users WHERE login = $1 AND is_active = TRUE', [login]);
   if (r.rows.length === 0) {
+    loginLimiter.fail(ip, login);
+    await db.log(null, 'login_failed', `логин «${String(login || '').slice(0, 40)}» — нет такого`).catch(() => {});
     return res.render('login', { settings, error: 'Неверный логин или пароль' });
   }
   const user = r.rows[0];
   const ok = await bcrypt.compare(password || '', user.password_hash);
   if (!ok) {
+    loginLimiter.fail(ip, login);
+    await db.log(user.id, 'login_failed', 'неверный пароль').catch(() => {});
     return res.render('login', { settings, error: 'Неверный логин или пароль' });
   }
+  loginLimiter.success(ip, login);
   const denied = webAccess.loginVerdict(user);
   if (denied) return res.render('login', { settings, error: denied });
   const rolesQ = await db.pool.query(
