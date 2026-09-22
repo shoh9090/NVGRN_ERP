@@ -254,6 +254,12 @@ async function adminContext(section) {
 admin.get('/users', async (req, res) => {
   // Кто подключён к боту как Telegram-сотрудник — отмечаем «в боте» и здесь (см. staff-link.js).
   await require('./src/staff-link').linkStaffChats(db.pool).catch(() => {});
+  // Кто из пользователей — сотрудник Персонала: у таких телефон ведётся в карточке сотрудника.
+  const empOf = new Map();
+  try {
+    (await db.pool.query('SELECT id, full_name, erp_user_id FROM hr_employees WHERE erp_user_id IS NOT NULL')).rows
+      .forEach((x) => empOf.set(Number(x.erp_user_id), x));
+  } catch (e) { /* Кадры ещё не открывали — таблицы нет */ }
   const users = await db.pool.query(
     `SELECT u.*, COALESCE(string_agg(r.name, ', ' ORDER BY r.name), '—') AS role_names,
             COALESCE(array_agg(r.id) FILTER (WHERE r.id IS NOT NULL), '{}') AS role_ids,
@@ -264,6 +270,7 @@ admin.get('/users', async (req, res) => {
      GROUP BY u.id ORDER BY u.id`
   );
   const roles = await db.pool.query('SELECT * FROM roles ORDER BY id');
+  users.rows.forEach((u) => { u.employee = empOf.get(Number(u.id)) || null; });
   res.render('admin/users', { ...(await adminContext('users')), user: req.user, users: users.rows, roles: roles.rows, msg: req.query.msg || '' });
 });
 
@@ -346,6 +353,12 @@ admin.post('/users/:id/delete', async (req, res) => {
 
 admin.post('/users/:id/phone', async (req, res) => {
   const targetId = parseInt(req.params.id, 10);
+  // Телефон сотрудника ведётся в его карточке в Персонале — второе место правки
+  // разводило бы номера. Здесь правим только служебные учётки.
+  try {
+    const emp = (await db.pool.query('SELECT 1 FROM hr_employees WHERE erp_user_id = $1 LIMIT 1', [targetId])).rows[0];
+    if (emp) return res.redirect('/admin/users?msg=phone_in_hr');
+  } catch (e) { /* Кадры ещё не открывали */ }
   const phone = tgPhoneDigits(req.body.tg_phone);
   if (phone && phone.length < 9) return res.redirect('/admin/users?msg=phone_bad');
   const taken = await tgPhoneTaken(phone, targetId);

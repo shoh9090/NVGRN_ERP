@@ -226,6 +226,12 @@ async function ensureSchema() {
            SELECT id, 'fire', fire_date FROM hr_employees e
             WHERE fire_date IS NOT NULL AND status='fired' AND NOT EXISTS (SELECT 1 FROM hr_events v WHERE v.employee_id=e.id AND v.event_type='fire')`).catch(() => {});
   await seedDepartments();
+  // Сотрудник ↔ учётка ERP по телефону: связываем однозначные пары, пустые связи
+  // только заполняем (см. src/person-link.js). Раз за запуск — дёшево и безопасно.
+  try {
+    const n = await require('./person-link').autoLinkByPhone(db.pool);
+    if (n) console.log(`[КАДРЫ] связано с учётками ERP по телефону: ${n}`);
+  } catch (e) { console.warn('[КАДРЫ] связь с учётками:', e.message); }
   _ready = true;
 }
 const EVENT_TYPES = ['hire', 'fire', 'vacation', 'sick', 'transfer', 'position', 'salary', 'schedule', 'other'];
@@ -556,6 +562,8 @@ const SCOPED_WRITES = [
 // чтобы решение «своим можно / только кадрам» принималось осознанно.
 // Это и проверяет npm run check.
 const COMPANY_WRITES = [
+  // выдача доступа в ERP — только администратор
+  /^\/api\/employee\/\d+\/access\/(link|unlink|create)$/,
   /^\/api\/period-lock$/,
   /^\/api\/payroll\/apply-recurring$/,
   /^\/api\/payroll\/import$/,
@@ -794,8 +802,13 @@ router.post('/api/employee', J, async (req, res) => {
   const prev = b.id ? (await db.pool.query("SELECT status, to_char(fire_date,'YYYY-MM-DD') AS fire_date FROM hr_employees WHERE id=$1", [b.id])).rows[0] : null;
   const status = STATUSES.includes(b.status) ? b.status : (prev ? prev.status : 'active');
   const fireDate = (b.fire_date !== undefined) ? (b.fire_date || null) : (prev ? prev.fire_date : null);
+  // Telegram ID больше не вводится руками: Telegram человека берётся из его учётки
+  // по телефону. Если форма его не прислала — сохраняем прежнее значение.
+  const prevTg = b.id && b.telegram_id === undefined
+    ? ((await db.pool.query('SELECT telegram_id FROM hr_employees WHERE id=$1', [b.id])).rows[0] || {}).telegram_id : null;
   const args = [name, intOrNull(b.department_id), b.position || null, sched, b.hire_date || null, fireDate, status,
-    numOrNull(b.base_salary), numOrNull(b.salary_official), numOrNull(b.salary_unofficial), b.phone || null, b.telegram_id || null, intOrNull(b.erp_user_id), b.comment || null,
+    numOrNull(b.base_salary), numOrNull(b.salary_official), numOrNull(b.salary_unofficial), b.phone || null,
+    b.telegram_id !== undefined ? (b.telegram_id || null) : (prevTg || null), intOrNull(b.erp_user_id), b.comment || null,
     b.card_number || null, !!b.full_month];
   const today = new Date().toISOString().slice(0, 10);
   try {
@@ -803,7 +816,10 @@ router.post('/api/employee', J, async (req, res) => {
       const old = (await db.pool.query('SELECT department_id, position, schedule_type, base_salary, status FROM hr_employees WHERE id=$1', [b.id])).rows[0];
       await db.pool.query(
         `UPDATE hr_employees SET full_name=$1, department_id=$2, position=$3, schedule_type=$4, hire_date=$5, fire_date=$6, status=$7,
-          base_salary=$8, salary_official=$9, salary_unofficial=$10, phone=$11, telegram_id=$12, erp_user_id=$13, comment=$14, card_number=$15, full_month=$16, updated_at=now() WHERE id=$17`,
+          base_salary=$8, salary_official=$9, salary_unofficial=$10, phone=$11, telegram_id=$12,
+          -- Связь с учёткой ERP меняется только кнопками «Доступ в ERP»; обычное
+          -- сохранение карточки её не трогает (раньше форма её молча стирала).
+          erp_user_id=COALESCE($13, erp_user_id), comment=$14, card_number=$15, full_month=$16, updated_at=now() WHERE id=$17`,
         [...args, b.id]);
       // Авто-логирование изменений в кадровую историю.
       if (old) {
@@ -848,8 +864,94 @@ router.post('/api/employee', J, async (req, res) => {
           numOrNull(b.base_salary) ? 'оклад ' + fmtSum(numOrNull(b.base_salary)) : null].filter(Boolean).join(' · '));
     }
     await db.log(req.user.id, 'hr_employee_save', name);
-    res.json({ ok: true });
+    // Телефон ведётся здесь, в карточке сотрудника, — переносим его в учётку ERP,
+    // по нему человека узнают боты. Не получилось (номер занят) — говорим, но
+    // карточку всё равно сохраняем.
+    let phoneNote = null;
+    if (b.id) {
+      try { const r = await require('./person-link').syncUserPhone(db.pool, b.id); if (!r.ok) phoneNote = r.note; }
+      catch (e) { phoneNote = 'Телефон в учётку не перенесён: ' + e.message; }
+    }
+    res.json({ ok: true, phoneNote });
   } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// ===== Доступ в ERP из карточки сотрудника =====
+// Человек заводится один раз — здесь. Вход в ERP выдаётся из его карточки:
+// создать учётку (логин, пароль, роль) или привязать уже существующую.
+// Управляет только администратор: это выдача прав, а не кадровый учёт.
+const onlyAdmin = (req, res) => { if (req.user && req.user.isAdmin) return false; res.status(403).json({ error: 'Доступ в ERP выдаёт только администратор' }); return true; };
+router.get('/api/employee/:id(\\d+)/access', async (req, res) => {
+  { const _e = await scopeGuardEmp(req, req.params.id); if (_e) return res.status(403).json({ error: _e }); }
+  const e = (await db.pool.query('SELECT id, full_name, phone, erp_user_id FROM hr_employees WHERE id=$1', [req.params.id])).rows[0];
+  if (!e) return res.status(404).json({ error: 'Сотрудник не найден' });
+  let user = null;
+  if (e.erp_user_id) {
+    user = (await db.pool.query(
+      `SELECT u.id, u.login, u.full_name, u.is_active, u.tg_phone, (u.tg_chat_id IS NOT NULL) AS in_bot,
+              COALESCE(string_agg(r.name, ', ' ORDER BY r.name), '') AS roles
+         FROM users u LEFT JOIN user_roles ur ON ur.user_id = u.id LEFT JOIN roles r ON r.id = ur.role_id
+        WHERE u.id = $1 GROUP BY u.id`, [e.erp_user_id])).rows[0] || null;
+  }
+  const out = { user, can_manage: !!req.user.isAdmin };
+  if (req.user.isAdmin) {
+    out.free_users = (await db.pool.query(
+      `SELECT u.id, u.login, u.full_name FROM users u
+        WHERE NOT EXISTS (SELECT 1 FROM hr_employees e WHERE e.erp_user_id = u.id) ORDER BY u.full_name`)).rows;
+    out.roles = (await db.pool.query('SELECT id, name FROM roles ORDER BY name')).rows;
+  }
+  res.json(out);
+});
+router.post('/api/employee/:id(\\d+)/access/link', J, async (req, res) => {
+  if (onlyAdmin(req, res)) return;
+  const uid = intOrNull((req.body || {}).user_id);
+  if (!uid) return res.status(400).json({ error: 'Выберите пользователя' });
+  const busy = (await db.pool.query('SELECT full_name FROM hr_employees WHERE erp_user_id=$1 AND id<>$2', [uid, req.params.id])).rows[0];
+  if (busy) return res.status(409).json({ error: `Эта учётка уже привязана к сотруднику «${busy.full_name}»` });
+  await db.pool.query('UPDATE hr_employees SET erp_user_id=$1, updated_at=now() WHERE id=$2', [uid, req.params.id]);
+  const r = await require('./person-link').syncUserPhone(db.pool, req.params.id);
+  await db.log(req.user.id, 'hr_access_link', `сотрудник ${req.params.id} ↔ пользователь ${uid}`);
+  res.json({ ok: true, phoneNote: r.ok ? null : r.note });
+});
+router.post('/api/employee/:id(\\d+)/access/unlink', J, async (req, res) => {
+  if (onlyAdmin(req, res)) return;
+  await db.pool.query('UPDATE hr_employees SET erp_user_id=NULL, updated_at=now() WHERE id=$1', [req.params.id]);
+  await db.log(req.user.id, 'hr_access_unlink', `сотрудник ${req.params.id}`);
+  res.json({ ok: true });
+});
+router.post('/api/employee/:id(\\d+)/access/create', J, async (req, res) => {
+  if (onlyAdmin(req, res)) return;
+  const b = req.body || {};
+  const login = String(b.login || '').trim();
+  const password = String(b.password || '');
+  const roleIds = (Array.isArray(b.role_ids) ? b.role_ids : [b.role_ids]).map(intOrNull).filter(Boolean);
+  if (!login) return res.status(400).json({ error: 'Укажите логин' });
+  if (password.length < 6) return res.status(400).json({ error: 'Пароль — не короче 6 символов' });
+  if (!roleIds.length) return res.status(400).json({ error: 'Выберите роль: от неё зависит, что человек видит в ERP и в боте' });
+  const e = (await db.pool.query('SELECT id, full_name, phone, erp_user_id FROM hr_employees WHERE id=$1', [req.params.id])).rows[0];
+  if (!e) return res.status(404).json({ error: 'Сотрудник не найден' });
+  if (e.erp_user_id) return res.status(409).json({ error: 'У сотрудника уже есть доступ' });
+  if ((await db.pool.query('SELECT 1 FROM users WHERE lower(login)=lower($1)', [login])).rows.length) {
+    return res.status(409).json({ error: 'Такой логин уже занят' });
+  }
+  const bcrypt = require('bcryptjs');
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    const u = (await client.query(
+      "INSERT INTO users (login, full_name, password_hash, source) VALUES ($1,$2,$3,'hr') RETURNING id",
+      [login, e.full_name, await bcrypt.hash(password, 10)])).rows[0];
+    for (const rid of roleIds) await client.query('INSERT INTO user_roles (user_id, role_id) VALUES ($1,$2) ON CONFLICT DO NOTHING', [u.id, rid]);
+    await client.query('UPDATE hr_employees SET erp_user_id=$1, updated_at=now() WHERE id=$2', [u.id, e.id]);
+    await client.query('COMMIT');
+    const r = await require('./person-link').syncUserPhone(db.pool, e.id);
+    try { await require('./web-access').refresh(); } catch (err) { /* снимок обновится сам через минуту */ }
+    await db.log(req.user.id, 'hr_access_create', `${e.full_name} → ${login}`);
+    res.json({ ok: true, phoneNote: r.ok ? null : r.note });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    res.status(400).json({ error: err.message });
+  } finally { client.release(); }
 });
 
 // ===== Постоянные надбавки/удержания сотрудника (закреплены в карточке) =====

@@ -1094,15 +1094,24 @@
     unoff.addEventListener('input', recalcBase);
     const phone = finp(e.phone, { placeholder: '998…' });
     const card = finp(e.card_number, { placeholder: 'Номер пластиковой карты' });
-    const tg = finp(e.telegram_id, { placeholder: 'Telegram ID (если есть)' });
     const comment = finp(e.comment, { placeholder: 'Комментарий' });
     const body = el('div', { class: 'hrf' }, [
       frow('ФИО *', name), frow('Отдел', dept), frow('Должность', pos), frow('График', sched), fullMonthRow, frow('Дата приёма', hire), fireRow,
       el('div', { class: 'hrf-sec' }, 'Зарплата'),
       frow('Оклад / ставка', base), frow('Официальная часть', off), frow('Неофициальная часть', unoff),
       el('div', { class: 'hrf-sec' }, 'Контакты'),
-      frow('Телефон', phone), frow('Номер карты', card), frow('Telegram ID', tg), frow('Комментарий', comment),
+      frow('Телефон', phone), frow('Номер карты', card), frow('Комментарий', comment),
+      el('div', { class: 'hr-sub', style: 'margin:-2px 0 6px' },
+        'По этому телефону человека узнают боты. Telegram отдельно указывать не нужно.'),
     ]);
+    // Доступ в ERP — у сохранённого сотрудника. Человек заводится один раз, здесь;
+    // вход в ERP и бот берутся отсюда же.
+    if (e.id) {
+      body.appendChild(el('div', { class: 'hrf-sec' }, 'Доступ в ERP'));
+      const accessBox = el('div', { id: 'hr-access-box' });
+      body.appendChild(accessBox);
+      loadAccess(e.id, accessBox);
+    }
     // Постоянные надбавки/удержания — только у сохранённого сотрудника (нужен id).
     if (e.id) {
       body.appendChild(el('div', { class: 'hrf-sec' }, 'Постоянные надбавки и удержания'));
@@ -1114,12 +1123,13 @@
     }
     async function doSave(dupOk) {
       try {
-        const payload = { id: e.id, full_name: name.value, department_id: dept.value, position: pos.value, schedule_type: sched.value, hire_date: hire.value, base_salary: mval(base), salary_official: mval(off), salary_unofficial: mval(unoff), phone: phone.value, card_number: card.value, telegram_id: tg.value, comment: comment.value, full_month: fullMonth.checked };
+        const payload = { id: e.id, full_name: name.value, department_id: dept.value, position: pos.value, schedule_type: sched.value, hire_date: hire.value, base_salary: mval(base), salary_official: mval(off), salary_unofficial: mval(unoff), phone: phone.value, card_number: card.value, comment: comment.value, full_month: fullMonth.checked };
         // Дату увольнения шлём только у уволенных — у активных поле скрыто и трогать его нечего.
         if (e.status === 'fired') payload.fire_date = fire.value || null;
         if (dupOk) payload.dup_ok = true;          // «да, это новый человек» — уже переспросили
-        await post('/employee', payload);
-        toast('Сохранено'); closeModal(); await reloadDicts(); render();
+        const res = await post('/employee', payload);
+        toast(res && res.phoneNote ? 'Сохранено. ' + res.phoneNote : 'Сохранено', !!(res && res.phoneNote));
+        closeModal(); await reloadDicts(); render();
       } catch (err) {
         // Новая карточка похожа на существующую — не создаём молча, спрашиваем.
         if (err.status === 409 && err.data && err.data.matches) return askDuplicate(err.data.matches, name.value);
@@ -1155,6 +1165,72 @@
     modal(e.id ? '✏️ ' + e.full_name : '+ Новый сотрудник', body, acts);
   }
   // Список постоянных надбавок/удержаний внутри карточки сотрудника.
+  // Блок «Доступ в ERP» в карточке сотрудника. Выдаёт и отбирает доступ только
+  // администратор; остальные видят, есть ли у человека вход и подключён ли бот.
+  async function loadAccess(empId, box) {
+    box.innerHTML = '';
+    let d;
+    try { d = await api('/employee/' + empId + '/access'); }
+    catch (err) { box.appendChild(el('div', { class: 'hr-sub' }, 'Не удалось загрузить: ' + err.message)); return; }
+    const u = d.user;
+    if (u) {
+      const bot = !u.tg_phone ? 'телефон не указан — бот его не узнает'
+        : (u.in_bot ? 'Telegram подключён ✓' : 'ждём в боте: человеку нужно открыть бота и нажать «Поделиться номером»');
+      box.appendChild(el('div', { class: 'hr-access-card' }, [
+        el('div', {}, [el('b', {}, u.login), u.is_active ? '' : ' · отключён', u.roles ? ' · ' + u.roles : ' · без роли']),
+        el('div', { class: 'hr-sub' }, bot),
+      ]));
+      if (d.can_manage) {
+        box.appendChild(el('button', { class: 'btn-danger-link', type: 'button', onclick: async () => {
+          if (!confirm('Отвязать учётку «' + u.login + '» от сотрудника? Сама учётка останется в Админ-панели.')) return;
+          try { await post('/employee/' + empId + '/access/unlink'); toast('Отвязано'); loadAccess(empId, box); }
+          catch (err) { toast(err.message, true); }
+        } }, 'Отвязать учётку'));
+      }
+      return;
+    }
+    if (!d.can_manage) {
+      box.appendChild(el('div', { class: 'hr-sub' }, 'Входа в ERP нет. Выдаёт администратор.'));
+      return;
+    }
+    // Администратор: выдать новый доступ или привязать уже существующую учётку.
+    const login = finp('', { placeholder: 'логин, например log01' });
+    const pass = finp('', { placeholder: 'пароль, не короче 6 символов' });
+    const roleBox = el('div', { class: 'hr-access-roles' }, (d.roles || []).map((r) =>
+      el('label', {}, [el('input', { type: 'checkbox', value: String(r.id) }), ' ' + r.name])));
+    const give = el('button', { class: 'btn-primary', type: 'button', onclick: async () => {
+      const role_ids = [...roleBox.querySelectorAll('input:checked')].map((x) => x.value);
+      give.disabled = true;
+      try {
+        const r = await post('/employee/' + empId + '/access/create', { login: login.value, password: pass.value, role_ids });
+        toast(r.phoneNote ? 'Доступ выдан. ' + r.phoneNote : 'Доступ выдан', !!r.phoneNote);
+        loadAccess(empId, box);
+      } catch (err) { toast(err.message, true); give.disabled = false; }
+    } }, 'Выдать доступ');
+    box.appendChild(el('div', { class: 'hr-sub' }, 'Входа в ERP нет. Выдайте доступ — логин создастся сам, телефон возьмётся из карточки.'));
+    box.appendChild(frow('Логин', login));
+    box.appendChild(frow('Пароль', pass));
+    // Не через frow: там <label>, а внутри — свои галочки; вложенные label путают клики.
+    box.appendChild(el('div', { class: 'hrf-row' }, [el('span', {}, 'Роль'), roleBox]));
+    box.appendChild(give);
+    if ((d.free_users || []).length) {
+      const sel = el('select', { class: 'hrf-inp' }, [el('option', { value: '' }, '— выберите учётку —'),
+        ...d.free_users.map((x) => el('option', { value: String(x.id) }, x.full_name + ' (' + x.login + ')'))]);
+      const link = el('button', { class: 'btn-primary', type: 'button', onclick: async () => {
+        if (!sel.value) { toast('Выберите учётку', true); return; }
+        link.disabled = true;
+        try {
+          const r = await post('/employee/' + empId + '/access/link', { user_id: sel.value });
+          toast(r.phoneNote ? 'Привязано. ' + r.phoneNote : 'Привязано', !!r.phoneNote);
+          loadAccess(empId, box);
+        } catch (err) { toast(err.message, true); link.disabled = false; }
+      } }, 'Привязать');
+      box.appendChild(el('div', { class: 'hr-sub', style: 'margin-top:12px' }, 'Или у человека уже есть учётка в Админ-панели — привяжите её:'));
+      box.appendChild(frow('Учётка', sel));
+      box.appendChild(link);
+    }
+  }
+
   async function loadRecurring(empId, box) {
     box.innerHTML = '';
     let d;
