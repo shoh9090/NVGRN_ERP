@@ -176,7 +176,7 @@
     api('/pnl/readiness?months=6&period=' + encodeURIComponent(PNL_PERIOD)).then((r) => {
       const months = r.months || [];
       if (!months.length) { wrap.remove(); return; }
-      const dot = { ok: '🟢', warn: '🟡', bad: '🔴' };
+      const dot = { ok: '🟢', warn: '🟡', bad: '🔴', info: '⚪' };
       const labels = months[0].checks.map((c) => [c.key, c.label]);
       const head = el('tr', {}, [el('th', {}, 'Проверка'), ...months.map((m) => el('th', {},
         el('button', { class: 'cash-ready-m' + (m.period === PNL_PERIOD ? ' on' : ''), title: 'Открыть месяц',
@@ -193,7 +193,8 @@
       wrap.appendChild(el('div', { class: 'cash-ready-h' }, 'Готовность данных по месяцам'));
       wrap.appendChild(el('div', { class: 'cash-ready-sub' },
         'Формула прибыли одна для всех месяцев. Разница — в полноте данных: 🟢 всё заведено, '
-        + '🟡 прибыль приблизительная, 🔴 прибыли верить нельзя. Нажмите на месяц, чтобы открыть его.'));
+        + '🟡 прибыль приблизительная, 🔴 прибыли верить нельзя, ⚪ контроль — на прибыль не влияет. '
+        + 'Нажмите на месяц, чтобы открыть его.'));
       wrap.appendChild(el('div', { class: 'cash-ready-scroll' },
         el('table', { class: 'cash-ready-t' }, [el('thead', {}, head), el('tbody', {}, [verdictRow, ...rows])])));
     }).catch((e) => { wrap.innerHTML = ''; wrap.appendChild(el('div', { class: 'cash-ready-sub' }, 'Готовность данных посчитать не удалось: ' + e.message)); });
@@ -634,7 +635,7 @@
     if (!(rev > 0) || cogs === null || profit === null) return null;
 
     const parts = [
-      { label: 'Товар', value: cogs, color: CH.green, note: d.cogs_source === 'plan' ? 'по калькуляции + отход и потери' : 'сырьё, упаковка, отход и потери со склада' },
+      { label: 'Товар', value: cogs, color: CH.green, note: d.cogs_source === 'paid' ? 'сырьё по оплатам + упаковка' : 'сырьё из Закупа + упаковка' },
       { label: 'Работа компании', value: opex, color: CH.blue, note: 'зарплата, аренда, логистика' },
       { label: profit >= 0 ? 'Прибыль' : 'Убыток', value: Math.abs(profit), color: profit >= 0 ? CH.amber : CH.loss, note: profit >= 0 ? 'то, что осталось' : 'месяц в минусе' },
     ];
@@ -894,7 +895,7 @@
         d.revenue.source === 'shipped'
           ? 'реализация по SalesDoctor'
           : 'по поступлению денег — реализация не подтянута'),
-      card('Товар обошёлся в', cogs, d.cogs_source === 'plan' ? 'по калькуляции — склад не вёлся' : 'сырьё, упаковка, отход и потери'),
+      card('Товар обошёлся в', cogs, d.cogs_source === 'paid' ? 'сырьё по оплатам поставщикам + упаковка' : 'сырьё из Закупа + упаковка'),
       card('Работа компании', opex, 'зарплата, аренда, логистика, налоги'),
       card('Осталось прибыли', profit,
         profit === null ? 'не хватает данных'
@@ -1075,53 +1076,46 @@
 
     gap();
 
-    const byPlan = d.cogs_source === 'plan';
     const parts = d.cogs_parts || {};
-    row('Себестоимость' + (byPlan ? ' — материалы по плану' : ''), pnlMoney(d.cogs_total), {
+    const sc = d.stock_control || {};
+    row('Себестоимость', pnlMoney(d.cogs_total), {
       cls: 'cash-pnl-head',
-      hint: 'Материалы + отход + потери со склада. За отход и потери заплачено, поэтому они часть себестоимости.',
+      hint: 'Сырьё, принятое за месяц в Закупе, + упаковка, оплаченная за месяц. Зелень не хранится: что приняли, то и ушло — в продукт или в отход.',
     });
-    row('   материалы в производство', pnlMoney(parts.materials === undefined ? null : parts.materials), {
+    row(parts.raw_source === 'paid' ? '   сырьё — по оплатам поставщикам' : '   сырьё — принято в Закупе', money(parts.raw || 0), {
       cls: 'cash-pnl-sub',
-      hint: byPlan
-        ? 'По Калькуляции: за месяц нет выдач сырья со склада.'
-        : 'Сырьё и упаковка, выданные в производство, по средней цене закупки месяца.',
+      hint: parts.raw_source === 'paid'
+        ? 'В этом месяце приёмок в Закупе нет — взята оплата поставщикам сырья (статья 10). Приблизительно.'
+        : ('Принятые заявки на сырьё за месяц: ' + (parts.raw_orders || 0) + ' шт, факт × цена — так же, как долг поставщику.'),
     });
-    row('   отход (обрезь)', money(parts.waste || 0), { cls: 'cash-pnl-sub', hint: 'По цене сырья, из которого получен.' });
-    row('   потери со склада', money(parts.writeoff || 0), { cls: 'cash-pnl-sub', hint: 'Списания по нашей вине. Брак поставщика сюда не входит.' });
-    row('   факт: списано со склада', pnlMoney(d.cogs.fact.has_data ? d.cogs.fact.total : null), {
-      cls: 'cash-pnl-sub',
-      hint: d.cogs.fact.has_data
-        ? ('зелень ' + money(d.cogs.fact.raw) + ' + упаковка ' + money(d.cogs.fact.packaging))
-        : 'Выдач сырья в производство за этот месяц не отмечено',
+    row('   упаковка — оплачено за месяц', money(parts.packaging || 0), {
+      cls: 'cash-pnl-sub', hint: 'Касса, статья 11. Упаковка хранится долго и со склада не выдаётся.',
     });
+
+    gap();
+    row('Контроль склада (на прибыль не влияет)', '', {
+      cls: 'cash-pnl-head',
+      hint: 'Сколько из принятого сырья склад отметил. Если мало — кладовщики отмечают не всё.',
+    });
+    row('   выдано в производство', money(sc.issued_raw || 0), { cls: 'cash-pnl-sub' });
+    row('   отход (обрезь)', money(sc.waste || 0), { cls: 'cash-pnl-sub' });
+    row('   потери со склада', money(sc.writeoff || 0), { cls: 'cash-pnl-sub' });
+    if (sc.received > 0) {
+      const covered = (sc.issued_raw || 0) + (sc.waste || 0) + (sc.writeoff || 0);
+      row('   отмечено из принятого', Math.round((covered / sc.received) * 100) + '%', {
+        cls: 'cash-pnl-sub' + (covered < sc.received * 0.7 ? ' cash-pnl-bad' : ''),
+      });
+    }
     row('   план по Калькуляции', pnlMoney(d.cogs.plan.total), {
       cls: 'cash-pnl-sub',
-      hint: d.cogs.plan.reason || (d.cogs.plan.method === 'assortment'
-        ? 'По ассортименту: штуки каждого товара из SalesDoctor × его зелень и упаковка из Калькуляции'
-        : (money(d.cogs.plan.units) + ' шт × ' + money(d.cogs.plan.unit_cost) + ' (средняя пачка — грубая оценка)')),
+      hint: 'Сколько сырья и упаковки должно было уйти на проданное — по нормам Калькуляции.',
     });
-    // Товары, которых нет в Калькуляции, в план не попали. Молчать об этом нельзя:
-    // иначе неполная сумма выглядит полной.
-    if (d.cogs.plan.unmatched_units > 0) {
-      row('   не оценено (нет в Калькуляции)', money(d.cogs.plan.unmatched_units) + ' шт', {
-        cls: 'cash-pnl-sub cash-pnl-bad',
-        hint: 'В плане не учтены: ' + (d.cogs.plan.unmatched || []).slice(0, 8).map((x) => x.name + ' — ' + money(x.units) + ' шт').join('; ')
-          + '. Впишите код товара SalesDoctor в Калькуляции, и они попадут в расчёт.',
-      });
-    }
-    if (d.cogs.diff !== null) {
-      row('   расхождение факт − план', money(d.cogs.diff) + ' · ' + pnlPct(d.cogs.diff_pct), {
-        cls: 'cash-pnl-sub' + (d.cogs.diff > 0 ? ' cash-pnl-bad' : ''),
-        hint: d.cogs.diff > 0 ? 'Списали больше, чем должны были по калькуляции' : 'Списали меньше плана',
-      });
-    }
 
     gap();
     row('Валовая прибыль', pnlMoney(d.gross_profit), {
       cls: 'cash-pnl-total',
-      hint: d.cogs_source === 'plan' ? 'Посчитана по плановой себестоимости — факта за месяц нет.'
-        : (d.cogs_source === 'fact' ? 'Выручка минус фактическая себестоимость со склада.' : null),
+      hint: d.cogs_source === 'paid' ? 'Сырьё взято по оплатам поставщикам — приёмок в Закупе за месяц нет.'
+        : (d.cogs_source === 'purchase' ? 'Выручка минус сырьё из Закупа и упаковка.' : null),
     });
     row('Валовая маржа', pnlPct(d.gross_margin_pct), { cls: 'cash-pnl-sub' });
 
@@ -1260,34 +1254,21 @@
 
     // --- 2. Себестоимость ---
     head('2. Себестоимость — сколько стоил проданный товар');
-    if (d.cogs.fact.has_data) {
-      line('Зелень и сырьё, списанные со склада', 'Склад → выдачи в производство за месяц × средняя цена приёмки этой позиции', d.cogs.fact.raw);
-      line('Упаковка, списанная со склада', 'Там же, позиции с видом «упаковка»', d.cogs.fact.packaging);
-      if (d.cogs.fact.no_price.length) {
-        line('Не оценено (нет цены приёмки)', 'Позиции: ' + d.cogs.fact.no_price.map((x) => x.name).join(', ')
-          + '. В себестоимость НЕ вошли — цифра занижена на их стоимость', null, 'cash-src-warn');
+    {
+      const parts = d.cogs_parts || {};
+      const sc = d.stock_control || {};
+      if (parts.raw_source === 'paid') {
+        line('Сырьё — по оплатам поставщикам', 'Касса → статья 10. Приёмок в Закупе за месяц нет, поэтому приблизительно', parts.raw, 'cash-src-warn');
+      } else {
+        line('Сырьё — принято в Закупе', 'Закуп → принятые заявки на сырьё по дате поставки: факт × цена. Заявок: ' + (parts.raw_orders || 0), parts.raw || 0);
       }
-    } else {
-      line('Списано со склада', 'Выдач сырья в производство за месяц не отмечено — факта нет', null, 'cash-src-warn');
+      line('Упаковка — оплачено за месяц', 'Касса → статья 11', parts.packaging || 0);
+      line('Себестоимость в расчёте', 'Сырьё + упаковка. Отход и потери уже внутри купленного веса — отдельно не прибавляются',
+        d.cogs_total === undefined ? null : d.cogs_total, 'cash-src-total');
+      line('Для контроля: выдано со склада', 'Склад → выдачи в производство. На прибыль не влияет', sc.issued_raw || 0);
+      line('Для контроля: отход и потери', 'Склад → отход при приёмке и списания. На прибыль не влияет', (sc.waste || 0) + (sc.writeoff || 0));
+      line('Для контроля: оплачено поставщикам сырья', 'Касса → статья 10. На прибыль не влияет — сырьё берётся из Закупа', parts.raw_paid || 0);
     }
-    line('План по Калькуляции', d.cogs.plan.reason
-      ? d.cogs.plan.reason
-      : (d.cogs.plan.method === 'assortment'
-        ? ('По ассортименту: оценено ' + money(d.cogs.plan.matched_units) + ' шт'
-          + (d.cogs.plan.unmatched_units > 0 ? ', не оценено ' + money(d.cogs.plan.unmatched_units) + ' шт (нет в Калькуляции)' : '')
-          + (d.cogs.plan.linked_by ? '. Товары сшиты с SalesDoctor сами: по коду '
-            + d.cogs.plan.linked_by.code + ', по справочнику ' + d.cogs.plan.linked_by.good
-            + ', по штрих-коду ' + d.cogs.plan.linked_by.barcode + ', по названию ' + d.cogs.plan.linked_by.name : ''))
-        : ('Отгружено ' + money(d.cogs.plan.units) + ' шт × ' + money(d.cogs.plan.unit_cost)
-          + ' — средняя пачка по ' + d.cogs.plan.products + ' товарам Калькуляции (грубая оценка)')),
-    d.cogs.plan.total, d.cogs.plan.unmatched_units > 0 ? 'cash-src-warn' : null);
-    line('Отход (обрезь)', 'Склад → отход при приёмке, по цене сырья, из которого получен', (d.cogs_parts || {}).waste || 0);
-    line('Потери со склада', 'Склад → списания по нашей вине (брак поставщика не входит)', (d.cogs_parts || {}).writeoff || 0);
-    line('Себестоимость в расчёте', (d.cogs_source === 'fact'
-      ? 'ФАКТ со склада'
-      : (d.cogs_source === 'plan' ? 'ПЛАН: склад за месяц не вёлся' : 'Считать не из чего'))
-      + ' + отход + потери',
-    d.cogs_total === undefined ? null : d.cogs_total, 'cash-src-total');
 
     // --- 3. Валовая прибыль ---
     head('3. Валовая прибыль');
@@ -1322,8 +1303,8 @@
         + ', а товар и работа компании стоили ' + mlrd(cogs + d.opex.total)
         + ' — это на ' + mlrd(Math.abs(d.operating_profit)) + ' больше.'
         + (top ? ' Самая крупная статья расходов: ' + top.group_name + ' — ' + mlrd(top.amount) + '.' : '')
-        + (d.cogs_source === 'plan'
-          ? ' Себестоимость взята ПЛАНОВАЯ (склад не вёлся): если план завышен, завышен и убыток.'
+        + (d.cogs_source === 'paid'
+          ? ' Сырьё взято по оплатам поставщикам (приёмок в Закупе нет): если в месяце гасили старые долги, себестоимость завышена.'
           : '')
         + (d.revenue.source === 'cash'
           ? ' ВНИМАНИЕ: реализация из SalesDoctor не подтянута, выручка взята по поступлению денег.'

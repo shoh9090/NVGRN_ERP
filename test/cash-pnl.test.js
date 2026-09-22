@@ -38,6 +38,7 @@ function makePool(opts) {
       if (/FROM calc_sheet_products/.test(q)) return { rows: o.products || [] };
       if (/FROM calc_pack_templates/.test(q)) return { rows: o.templates || [] };
       if (/FROM calc_mix_items/.test(q)) return { rows: o.recipes || [] };
+      if (/FROM purchase_orders po/.test(q)) return { rows: o.received || [] };
       return { rows: [] };
     },
   };
@@ -52,24 +53,44 @@ const CASH = [
   { code: '70', name: 'Оборудование', group_name: '7. Капекс (инвестиции)', flow_type: 'investing', inc: 0, exp: 15000000, cnt: 1 },
 ];
 
-test('оплата поставщикам за сырьё не считается расходом дважды', async () => {
+test('сырьё — принятое за месяц в Закупе; оплата поставщику расходом второй раз не считается', async () => {
   const pool = makePool({
-    cash: CASH,
-    used: [{ item_kind: 'raw', item_id: 1, qty: 1000 }],
+    cash: CASH,                                                  // в Кассе оплата за сырьё 40 млн
+    received: [{ m: '2026-08', orders: 12, total: 35000000 }],   // принято в Закупе на 35 млн
+    used: [{ item_kind: 'raw', item_id: 1, qty: 1000 }],         // склад отметил выдачу на 30 млн
     prices: [{ item_kind: 'raw', item_id: 1, avg_price: 30000 }],
     rawNames: [{ id: 1, name: 'рукола' }],
   });
   const r = await buildPnl(pool, '2026-08');
 
-  // Себестоимость — со склада (1000 кг × 30 000), а не 40 млн оплаты поставщику
-  assert.strictEqual(r.cogs.fact.total, 30000000);
+  // Себестоимость — принятое в Закупе, а не выдачи склада и не оплата поставщику
+  assert.strictEqual(r.cogs_source, 'purchase');
+  assert.strictEqual(r.cogs_parts.raw, 35000000);
+  assert.strictEqual(r.cogs_total, 35000000);                 // упаковки в CASH нет
+  assert.strictEqual(r.stock_control.issued, 30000000);       // склад — только контроль
   // Оплата поставщикам ушла в справочный блок, а не в операционные расходы
   assert.strictEqual(r.excluded.materials_paid.total, 40000000);
-  // В расходах остались только производственные и логистика
   assert.strictEqual(r.opex.total, 8000000);
-  assert.strictEqual(r.cogs_source, 'fact');
-  assert.strictEqual(r.gross_profit, 70000000);
-  assert.strictEqual(r.operating_profit, 62000000);
+  assert.strictEqual(r.gross_profit, 65000000);
+  assert.strictEqual(r.operating_profit, 57000000);
+});
+
+test('Закупа в месяце нет — сырьё по оплатам поставщикам, с предупреждением', async () => {
+  const r = await buildPnl(makePool({ cash: CASH }), '2026-08');
+  assert.strictEqual(r.cogs_source, 'paid');
+  assert.strictEqual(r.cogs_total, 40000000);
+  assert.ok(r.warnings.some((w) => wtext(w).includes('по оплатам поставщикам')));
+});
+
+test('упаковка — оплаченная за месяц, а не выданная со склада', async () => {
+  const r = await buildPnl(makePool({
+    cash: [{ code: '200', name: 'Выручка', group_name: 'Доходы и поступления', flow_type: 'operating', inc: 1000000, exp: 0, cnt: 1 },
+      { code: '11', name: 'Упаковка', group_name: '1. Сырьё и переменные затраты', flow_type: 'operating', inc: 0, exp: 80000, cnt: 1 }],
+    received: [{ m: '2026-08', orders: 1, total: 300000 }],
+  }), '2026-08');
+  assert.strictEqual(r.cogs_parts.packaging, 80000);
+  assert.strictEqual(r.cogs_total, 380000);
+  assert.strictEqual(r.opex.total, 0);                        // упаковка не задвоилась в расходах
 });
 
 test('кредит и капекс в прибыль не попадают', async () => {
@@ -101,10 +122,10 @@ test('позиция без цены прихода не занижает себ
     'предупреждение должно называть позицию по имени: ' + r.warnings.map(wtext).join(' | '));
 });
 
-test('нет ни списаний, ни отгрузок — прибыль не считается, а не показывается нулём', async () => {
-  const pool = makePool({ cash: CASH, used: [] });
+test('нет ни приёмок, ни оплат за сырьё — прибыль не считается, а не показывается нулём', async () => {
+  const pool = makePool({ cash: CASH.filter((x) => x.code !== '10'), used: [] });
   const r = await buildPnl(pool, '2026-08');
-  assert.strictEqual(r.cogs.fact.has_data, false);
+  assert.strictEqual(r.cogs_total, null);
   assert.strictEqual(r.cogs_source, null);
   assert.strictEqual(r.gross_profit, null);
   assert.strictEqual(r.operating_profit, null);
@@ -112,20 +133,16 @@ test('нет ни списаний, ни отгрузок — прибыль н�
   assert.ok(r.warnings.some((w) => wtext(w).includes('посчитать не из чего')));
 });
 
-test('склад не вёлся — прибыль считается по плану, и это видно', async () => {
+test('склад не вёлся — на прибыль это больше не влияет', async () => {
   const pool = makePool({
     cash: CASH,
     used: [],                                        // выдач со склада нет
-    settings: [{ key: 'pnl_units_2026-08', value: '1000' }],
-    products: [{ net_weight_g: 100, raw_price_per_kg: 30000, raw_cost: null, pack_template_id: 1, recipe_id: null }],
-    templates: [{ id: 1, total: 1000 }],
+    received: [{ m: '2026-08', orders: 3, total: 4000000 }],
   });
   const r = await buildPnl(pool, '2026-08');
-  // Источник назван явно — подмена факта планом не должна быть незаметной
-  assert.strictEqual(r.cogs_source, 'plan');
-  assert.strictEqual(r.cogs.plan.total, 4000000);
+  assert.strictEqual(r.cogs_source, 'purchase');
   assert.strictEqual(r.gross_profit, 100000000 - 4000000);
-  assert.ok(r.warnings.some((w) => wtext(w).includes('по плану')));
+  assert.strictEqual(r.stock_control.issued, 0);
 });
 
 test('неразнесённые операции попадают в предупреждения', async () => {
@@ -311,6 +328,7 @@ test('отходы оцениваются по цене сырья, из кот�
     prices: [{ item_kind: 'raw', item_id: 1, avg_price: 30000 }],
     rawNames: [{ id: 1, name: 'рукола' }],
     waste: [{ parent_id: 1, qty: 2000 }],
+    received: [{ m: '2026-07', orders: 5, total: 360000000 }],
   });
   const r = await buildPnl(pool, '2026-07');
 
@@ -318,8 +336,9 @@ test('отходы оцениваются по цене сырья, из кот�
   assert.strictEqual(r.waste.amount, 60000000);          // 2000 × 30 000
   assert.strictEqual(r.waste.no_price, 0);
   assert.strictEqual(Math.round(r.ratios.waste_pct * 10) / 10, 6);   // 60 млн / 1 млрд
-  // Сырьевая нагрузка = (списанное сырьё + отходы) / выручка от продаж
+  // Сырьевая нагрузка = принятое сырьё / выручка; отход уже внутри купленного веса
   assert.strictEqual(Math.round(r.ratios.raw_load_pct * 10) / 10, 36);
+  assert.strictEqual(r.cogs_total, 360000000);            // отход НЕ прибавлен второй раз
 });
 
 test('отход без цены родителя не занижает показатель молча', async () => {
@@ -343,9 +362,7 @@ test('выручка в P&L — это реализация, а не посту�
   const pool = makePool({
     cash: [{ code: '200', name: 'Выручка от продаж', group_name: 'Доходы и поступления', flow_type: 'operating', inc: 1200000000, exp: 0, cnt: 400 }],
     settings: [{ key: 'pnl_sales_2026-08', value: '1750000000' }],
-    used: [{ item_kind: 'raw', item_id: 1, qty: 10000 }],
-    prices: [{ item_kind: 'raw', item_id: 1, avg_price: 30000 }],
-    rawNames: [{ id: 1, name: 'рукола' }],
+    received: [{ m: '2026-08', orders: 40, total: 300000000 }],
   });
   const r = await buildPnl(pool, '2026-08');
 
@@ -586,12 +603,10 @@ test('проверка отчёта: склад против оплат, пла�
   });
   const by = Object.fromEntries(sc.items.map((x) => [x.key, x]));
   assert.ok(!by.taxes && !by.losses, 'налоги и отход теперь в самой формуле — в проверке их нет');
-  assert.strictEqual(by.stock_vs_paid.amount, 300_000_000);  // оплачено минус списано
-  assert.ok(by.fact_vs_plan);                                // факт меньше плана
+  assert.ok(!by.stock_vs_paid && !by.fact_vs_plan, 'склад на прибыль больше не влияет');
   assert.ok(by.no_salary);                                   // зарплаты в месяце нет
   assert.strictEqual(by.unclassified.amount, 5_000_000);
-  // Склад-против-оплат и факт-против-плана меряют одно и то же — берём большую, не обе.
-  assert.strictEqual(sc.total_gap, 5_000_000 + 300_000_000);
+  assert.strictEqual(sc.total_gap, 5_000_000);
   assert.strictEqual(sc.profit_if_all, 500_000_000 - sc.total_gap);
 });
 
@@ -606,8 +621,7 @@ test('налоги и комиссии банка — расход; налог �
       { code: '67', name: 'Налог на прибыль', group_name: '6. Финансы', flow_type: 'financing', inc: 0, exp: 40000, cnt: 1 },
       { code: '61', name: 'Возврат кредитов', group_name: '6. Финансы', flow_type: 'financing', inc: 0, exp: 99000, cnt: 1 },
     ],
-    used: [{ item_kind: 'raw', item_id: 1, qty: 10 }],
-    prices: [{ item_kind: 'raw', item_id: 1, avg_price: 10000 }],
+    received: [{ m: '2026-08', orders: 1, total: 100000 }],
   });
   const r = await buildPnl(pool, '2026-08');
   const taxes = r.opex.groups.find((g) => g.group_name === 'Налоги и комиссии банка');
@@ -619,17 +633,17 @@ test('налоги и комиссии банка — расход; налог �
   assert.strictEqual(r.excluded.finance.out, 99000);             // кредит — справочно, вне прибыли
 });
 
-test('отход и потери со склада входят в себестоимость', async () => {
+test('отход не прибавляется к себестоимости — он уже внутри купленного веса', async () => {
   const pool = makePool({
     cash: [{ code: '200', name: 'Выручка', group_name: 'Доходы и поступления', flow_type: 'operating', inc: 1000000, exp: 0, cnt: 1 }],
+    received: [{ m: '2026-08', orders: 1, total: 130000 }],
     used: [{ item_kind: 'raw', item_id: 1, qty: 10 }],
     prices: [{ item_kind: 'raw', item_id: 1, avg_price: 10000 }],
-    waste: [{ parent_id: 1, qty: 3 }],                             // 3 кг обрези того же сырья
+    waste: [{ parent_id: 1, qty: 3 }],
   });
   const r = await buildPnl(pool, '2026-08');
-  assert.strictEqual(r.cogs_parts.materials, 100000);
-  assert.strictEqual(r.cogs_parts.waste, 30000);
   assert.strictEqual(r.cogs_total, 130000);
+  assert.strictEqual(r.stock_control.waste, 30000);          // видно как контроль
   assert.strictEqual(r.gross_profit, 1000000 - 130000);
 });
 
@@ -659,8 +673,8 @@ test('готовность месяца: один и тот же светофо�
   assert.strictEqual(e.verdict, 'bad');
   const lv = Object.fromEntries(e.checks.map((c) => [c.key, c.level]));
   assert.strictEqual(lv.sales, 'bad');
-  assert.strictEqual(lv.stock, 'bad');
   assert.strictEqual(lv.salary, 'bad');
+  assert.strictEqual(lv.stock, 'info');                      // склад — контроль, на итог не влияет
 
   // Всё заведено — зелёный.
   const full = await buildPnl(makePool({
@@ -672,6 +686,7 @@ test('готовность месяца: один и тот же светофо�
     used: [{ item_kind: 'raw', item_id: 1, qty: 10 }],
     prices: [{ item_kind: 'raw', item_id: 1, avg_price: 10000 }],
     waste: [{ parent_id: 1, qty: 1 }],
+    received: [{ m: '2026-08', orders: 2, total: 100000 }],
     products: [{ name: 'Руккола', sd_product_id: 'SD1', net_weight_g: 100, raw_price_per_kg: 20000, pack_template_id: null, recipe_id: null, raw_cost: null }],
   }), '2026-08');
   const f = monthReadiness(full);

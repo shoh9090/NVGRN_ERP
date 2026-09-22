@@ -425,6 +425,58 @@ async function factCogs(pool, from, to, priceOf) {
 }
 
 // ---------------------------------------------------------------------------
+// Себестоимость: сырьё — принятое за месяц в Закупе, упаковка — оплаченная
+// ---------------------------------------------------------------------------
+// Решение Шоха (сентябрь 2026) после разбора августа. Раньше сырьё бралось со
+// склада («выдано в производство»), а склад вёлся неполно: в августе принято
+// зелени на 651 млн, выдано отмечено на 374, на складе «лежало» 10,7 т свежей
+// зелени, упаковку не выдавали ни разу. Прибыль вышла завышенной на ~360 млн.
+//
+// Зелень не хранится: что приняли в месяце, то в месяце и ушло — в продукт или
+// в отход. Поэтому сырьё = всё принятое за месяц в Закупе (факт × цена, так же,
+// как считается долг поставщику). Отход и потери уже внутри купленного веса,
+// отдельно их к себестоимости НЕ прибавляем — иначе посчитаем дважды.
+// Упаковка хранится долго и со склада не выдаётся — берём оплаченное за месяц
+// (Касса, статья 11). Месяцы до запуска Закупа — сырьё по оплатам (статья 10).
+// Склад перестал влиять на прибыль: выдачи, отход и остаток — контроль.
+const CODE_RAW_PAID = '10';
+const CODE_PACK_PAID = '11';
+
+// Сырьё, принятое в Закупе, по месяцам: Map 'ГГГГ-ММ' → { total, orders }.
+async function rawReceivedByMonth(pool, from, to) {
+  const rows = (await pool.query(
+    `SELECT to_char(po.delivery_date, 'YYYY-MM') AS m,
+            COUNT(DISTINCT po.id) AS orders,
+            COALESCE(SUM(COALESCE(i.fact_qty, 0) * i.price), 0) AS total
+       FROM purchase_orders po
+       JOIN purchase_order_items i ON i.order_id = po.id
+      WHERE po.status = 'received' AND i.item_kind = 'raw'
+        AND po.delivery_date BETWEEN $1 AND $2
+      GROUP BY 1`, [from, to])).rows;
+  return new Map(rows.filter((r) => r.m).map((r) => [r.m, { total: num(r.total), orders: Number(r.orders) || 0 }]));
+}
+
+// Себестоимость месяца из двух источников. Чистая функция — проверяется тестом.
+// received — { total, orders } из Закупа или undefined; materials — оплаты по
+// статьям 10/11 (classifyRows().materials).
+function materialsCost(received, materials) {
+  const paidBy = (code) => (materials || []).filter((x) => String(x.code) === code).reduce((a, x) => a + num(x.exp), 0);
+  const fromPurchase = !!(received && received.orders > 0);
+  const rawPaid = paidBy(CODE_RAW_PAID);
+  const raw = fromPurchase ? received.total : rawPaid;
+  const packaging = paidBy(CODE_PACK_PAID);
+  // Ни приёмок, ни оплат за сырьё — себестоимость посчитать не из чего. Ноль тут
+  // был бы враньём: прибыль вышла бы равной выручке минус расходы.
+  const nothing = !fromPurchase && rawPaid <= 0;
+  return {
+    raw, packaging, total: nothing ? null : raw + packaging,
+    raw_source: fromPurchase ? 'purchase' : (nothing ? null : 'paid'),
+    raw_orders: fromPurchase ? received.orders : 0,
+    raw_paid: rawPaid,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Какой товар Калькуляции какому товару SalesDoctor соответствует
 // ---------------------------------------------------------------------------
 // Шох: «нельзя чтобы всё само било? может по штрих-коду?». Да: руками код
@@ -618,22 +670,9 @@ function selfCheck({ revenue, cogs, opexTotal, operating, fact, plan, waste, wri
   // Налоги, комиссии банка, отход и списания раньше тоже были здесь — теперь они
   // в самой формуле прибыли (решение Шоха), проверять их отдельно не нужно.
 
-  // 3. Склад списал заметно меньше, чем оплачено поставщикам за сырьё и упаковку.
-  const paid = num(cash.materials_paid && cash.materials_paid.total);
-  if (paid > 0 && cogs !== null && cogs < paid * 0.7) {
-    add('stock_vs_paid', `Со склада списано ${Math.round(cogs / 1e6)} млн, а поставщикам за сырьё и упаковку `
-      + `заплачено ${Math.round(paid / 1e6)} млн. Оплаты в расходы не берём (себестоимость считается по складу), `
-      + 'поэтому если выдачи в производство отмечены не все — прибыль завышена.',
-    paid - cogs, operating === null ? null : operating - (paid - cogs));
-  }
-
-  // 4. Факт со склада сильно меньше плана по Калькуляции.
-  if (fact && fact.has_data && plan && plan.total > 0 && fact.total < plan.total * 0.8 && operating !== null) {
-    const gap = plan.total - fact.total;
-    add('fact_vs_plan', `По Калькуляции на проданное должно было уйти ${Math.round(plan.total / 1e6)} млн сырья и упаковки, `
-      + `а со склада списано ${Math.round(fact.total / 1e6)} млн. Похоже, часть выдач в производство не отмечена.`,
-    gap, operating - gap);
-  }
+  // Склад и Калькуляция на прибыль больше не влияют (сырьё берётся из Закупа) —
+  // их полнота видна в таблице «Готовность данных», а здесь только то, что
+  // действительно меняет прибыль.
 
   // 5. В расходах месяца нет зарплаты — значит, месяц неполный.
   const opexItems = [].concat(...((cash.opex && cash.opex.groups) || []).map((g) => g.items || []));
@@ -650,12 +689,9 @@ function selfCheck({ revenue, cogs, opexTotal, operating, fact, plan, waste, wri
       un, operating - un);
   }
 
-  // Итог «если учесть всё»: складываем только денежные поправки, без повторов —
-  // склад-против-оплат и факт-против-плана меряют одно и то же, берём большую.
+  // Итог «если учесть всё»: пока это только расходы без статьи.
   const byKey = Object.fromEntries(checks.map((c) => [c.key, c]));
-  const stockGap = Math.max(byKey.stock_vs_paid ? byKey.stock_vs_paid.amount : 0,
-    byKey.fact_vs_plan ? byKey.fact_vs_plan.amount : 0);
-  const totalGap = (byKey.unclassified ? byKey.unclassified.amount : 0) + stockGap;
+  const totalGap = byKey.unclassified ? byKey.unclassified.amount : 0;
   return {
     items: checks,
     total_gap: totalGap,
@@ -680,22 +716,10 @@ function monthReadiness(r) {
   if (r.revenue.source === 'shipped') add('sales', 'Продажи из SalesDoctor', 'ok', mln(r.revenue.total));
   else add('sales', 'Продажи из SalesDoctor', 'bad', 'не подтянуты — выручка взята по деньгам');
 
-  // 2. Склад: отмечены ли выдачи в производство, и сколько по сравнению с оплатами.
-  const paid = Number(r.excluded && r.excluded.materials_paid && r.excluded.materials_paid.total) || 0;
-  const mat = r.cogs_parts ? Number(r.cogs_parts.materials) || 0 : 0;
-  if (!r.cogs.fact.has_data) add('stock', 'Выдачи сырья в производство', 'bad', 'не отмечены — себестоимость по плану');
-  else if (paid > 0 && mat < paid * 0.7) {
-    add('stock', 'Выдачи сырья в производство', 'warn',
-      `списано ${mln(mat)} при оплатах поставщикам ${mln(paid)} — отмечено не всё`);
-  } else add('stock', 'Выдачи сырья в производство', 'ok', `${mln(mat)}${paid ? ' (оплачено ' + mln(paid) + ')' : ''}`);
-
-  // 3. Цены прихода у всего, что выдали.
-  const noPrice = (r.cogs.fact.no_price || []).length;
-  add('prices', 'Цены закупки', noPrice ? 'warn' : 'ok', noPrice ? `нет цены у ${noPrice} позиц.` : 'у всех позиций');
-
-  // 4. Отход: у зелени он есть всегда, ноль — значит не записывали.
-  if (r.waste && r.waste.has_data) add('waste', 'Отход (обрезь)', 'ok', mln(r.waste.amount));
-  else add('waste', 'Отход (обрезь)', 'warn', 'не отмечен ни разу за месяц');
+  // 2. Сырьё: из Закупа (точно) или по оплатам (приблизительно).
+  const parts = r.cogs_parts || {};
+  if (parts.raw_source === 'purchase') add('raw', 'Сырьё из Закупа', 'ok', `${mln(parts.raw)}, заявок ${parts.raw_orders}`);
+  else add('raw', 'Сырьё из Закупа', 'warn', `приёмок нет — по оплатам ${mln(parts.raw)}`);
 
   // 5. Зарплата в расходах месяца.
   const noSalary = ((r.self_check && r.self_check.items) || []).some((x) => x.key === 'no_salary');
@@ -706,12 +730,14 @@ function monthReadiness(r) {
   if (un && un.cnt) add('unclassified', 'Операции без статьи', 'bad', `${un.cnt} шт на ${mln(un.exp)} расходов`);
   else add('unclassified', 'Операции без статьи', 'ok', 'нет');
 
-  // 7. Калькуляция покрывает проданное (для сравнения факт/план).
-  if (r.cogs.plan && r.cogs.plan.method === 'assortment') {
-    const share = r.cogs.plan.matched_units + r.cogs.plan.unmatched_units > 0
-      ? r.cogs.plan.matched_units / (r.cogs.plan.matched_units + r.cogs.plan.unmatched_units) : 1;
-    add('calc', 'Товары в Калькуляции', share >= 0.9 ? 'ok' : 'warn', Math.round(share * 100) + '% проданного');
-  } else add('calc', 'Товары в Калькуляции', 'warn', 'разбивка продаж по товарам не подтянута');
+  // Контроль склада — на прибыль не влияет (уровень info), но показывает, что
+  // кладовщики не отметили: сколько принятого сырья ушло в выдачи, отход, потери.
+  const sc = r.stock_control || {};
+  if (sc.received > 0) {
+    const covered = (sc.issued_raw || 0) + (sc.waste || 0) + (sc.writeoff || 0);
+    const share = Math.round((covered / sc.received) * 100);
+    add('stock', 'Склад: отмечено из принятого', 'info', `${share}% (выдано ${mln(sc.issued_raw)}, отход ${mln(sc.waste)}, потери ${mln(sc.writeoff)})`);
+  } else add('stock', 'Склад: отмечено из принятого', 'info', 'приёмок в Закупе нет');
 
   const bad = checks.filter((c) => c.level === 'bad').length;
   const warn = checks.filter((c) => c.level === 'warn').length;
@@ -757,13 +783,14 @@ async function buildPnl(pool, period) {
   try { const raw = byKey.get(SKU_KEY(period)); if (raw) sold = JSON.parse(raw); } catch (e) { sold = null; }
 
   const priceOf = (await monthlyPriceMaps(pool, period, period)).get(period) || new Map();
-  const [cash, fact, plan, adjust, waste, writeoff] = await Promise.all([
+  const [cash, fact, plan, adjust, waste, writeoff, receivedMap] = await Promise.all([
     cashSide(pool, from, toStr),
     factCogs(pool, from, toStr, priceOf),
     planCogs(pool, units, sold),
     stockAdjustments(pool, from, toStr),
     wasteCost(pool, from, toStr, priceOf),
     writeoffCost(pool, from, toStr, priceOf),
+    rawReceivedByMonth(pool, from, toStr),
   ]);
 
   // ВЫРУЧКА В P&L = РЕАЛИЗАЦИЯ (отгружено за месяц по SalesDoctor).
@@ -772,17 +799,11 @@ async function buildPnl(pool, period) {
   const cashIn = cash.revenue.total;
   const revenue = shippedLoaded ? shipped : cashIn;
   const revenueSource = shippedLoaded ? 'shipped' : 'cash';
-  // Себестоимость берём фактическую. Если склад за месяц не вёлся, считаем по
-  // плану — иначе отчёт бесполезен целые месяцы. Чем посчитано, отдаём наружу:
-  // подменять факт планом молча нельзя, человек должен это видеть.
-  const factTotal = fact.has_data ? fact.total : null;
-  const materials = factTotal !== null ? factTotal : plan.total;
-  const cogsSource = factTotal !== null ? 'fact' : (plan.total !== null ? 'plan' : null);
-  // Решение Шоха (сентябрь 2026): отход и потери со склада — часть себестоимости.
-  // За это сырьё заплачено, просто в продукт оно не попало. Раньше они были
-  // отдельной справочной строкой, и прибыль была завышена на их стоимость.
-  const losses = num(waste.amount) + num(writeoff.amount);
-  const cogs = materials === null ? null : materials + losses;
+  // Себестоимость: сырьё, принятое за месяц в Закупе (или оплаченное, если Закупа
+  // ещё не было), + упаковка, оплаченная за месяц. Склад — только контроль.
+  const mc = materialsCost(receivedMap.get(period), cash.materials_paid.items);
+  const cogsSource = mc.raw_source;
+  const cogs = mc.total;
   const gross = cogs === null ? null : revenue - cogs;
   const operating = gross === null ? null : gross - cash.opex.total;
   // Налог на прибыль — после операционной прибыли, по дате оплаты.
@@ -794,10 +815,12 @@ async function buildPnl(pool, period) {
   // плитку (href) или переход на вкладку внутри Кассы (go), плюс полный список
   // позиций (items), чтобы не выписывать их из текста руками.
   const warnings = [];
-  if (!fact.has_data) {
-    warnings.push(cogsSource === 'plan'
-      ? 'За месяц нет выдач сырья в производство, поэтому себестоимость посчитана по плану из Калькуляции. Чтобы увидеть факт, отмечайте выдачи в Складе.'
-      : 'За месяц нет ни выдач сырья со склада, ни количества отгрузок — себестоимость и прибыль посчитать не из чего.');
+  if (cogsSource === null) {
+    warnings.push('За месяц нет ни принятых заявок в Закупе, ни оплат поставщикам сырья — себестоимость и прибыль посчитать не из чего.');
+  }
+  if (cogsSource === 'paid') {
+    warnings.push('В этом месяце в Закупе нет принятых заявок на сырьё — сырьё посчитано по оплатам поставщикам (статья 10). '
+      + 'Это приблизительно: оплата и поставка могут приходиться на разные месяцы.');
   }
   if (fact.no_price.length) {
     // Называем позиции поимённо: «не оценено 1» непонятно, что делать.
@@ -856,7 +879,19 @@ async function buildPnl(pool, period) {
     // Себестоимость целиком и из чего она сложилась. Экран, график и Excel берут
     // ЭТУ цифру, а не собирают свою.
     cogs_total: cogs,
-    cogs_parts: { materials, waste: num(waste.amount), writeoff: num(writeoff.amount) },
+    cogs_parts: {
+      raw: mc.raw, packaging: mc.packaging, raw_source: mc.raw_source, raw_orders: mc.raw_orders,
+      raw_paid: mc.raw_paid,
+    },
+    // Контроль склада — на прибыль не влияет: сколько из принятого сырья склад
+    // отметил выданным в производство, отходом и потерями.
+    stock_control: {
+      issued: fact.has_data ? fact.total : 0,
+      issued_raw: fact.has_data ? fact.raw : 0,
+      waste: num(waste.amount),
+      writeoff: num(writeoff.amount),
+      received: mc.raw_source === 'purchase' ? mc.raw : null,
+    },
     gross_profit: gross,
     gross_margin_pct: gross === null ? null : pct(gross, revenue),
     opex: cash.opex,
@@ -882,10 +917,10 @@ async function buildPnl(pool, period) {
       // будут про разные величины.
       base: revenue,
       base_source: revenueSource,
-      raw_load_pct: pct((fact.has_data ? fact.raw : 0) + waste.amount, revenue),
+      raw_load_pct: pct(mc.raw, revenue),
       waste_pct: pct(waste.amount, revenue),
       writeoff_pct: pct(writeoff.amount, revenue),
-      pack_pct: fact.has_data ? pct(fact.packaging, revenue) : null,
+      pack_pct: pct(mc.packaging, revenue),
       opex_pct: pct(cash.opex.total, revenue),
     },
     excluded: {
@@ -986,15 +1021,8 @@ async function buildTrend(pool, endPeriod, months) {
     slot.cogs_known = true;
   });
 
-  // Отход и потери — по каждому месяцу, той же оценкой, что в карточке месяца.
-  const lossOf = new Map();
-  for (const m of monthList(firstMonth, endPeriod)) {
-    const f = m + '-01';
-    const t = monthEnd(m);
-    const pm = priceMaps.get(m) || new Map();
-    const [w, wo] = await Promise.all([wasteCost(pool, f, t, pm), writeoffCost(pool, f, t, pm)]);
-    lossOf.set(m, num(w.amount) + num(wo.amount));
-  }
+  // Сырьё из Закупа по месяцам — та же себестоимость, что в карточке месяца.
+  const receivedOf = await rawReceivedByMonth(pool, bounds.f, bounds.t);
 
   // Идём по всем месяцам подряд, включая пустые: провал в данных должен быть
   // виден дырой на графике, а не «съеденным» месяцем.
@@ -1006,7 +1034,7 @@ async function buildTrend(pool, endPeriod, months) {
     const slot = byMonth.get(key);
     if (!slot) { out.push({ period: key, revenue: 0, cogs: null, opex: 0, profit: null }); continue; }
     const c = classifyRows(slot.rows);
-    const cogs = slot.cogs_known ? slot.cogs + (lossOf.get(key) || 0) : null;
+    const cogs = materialsCost(receivedOf.get(key), c.materials).total;
     const shippedLoadedM = shippedOf.has(key);
     const rev = shippedLoadedM ? shippedOf.get(key) : c.revenueTotal;
     out.push({
@@ -1021,7 +1049,7 @@ async function buildTrend(pool, endPeriod, months) {
   return { months: n, from: bounds.f, to: bounds.t, points: out };
 }
 
-module.exports = { buildPnl, buildTrend, UNITS_KEY, SALES_KEY, SKU_KEY, SNAP_KEY, planCogs, saveSnapshot, loadSnapshot, linkProducts, matchKey, selfCheck, monthReadiness };
+module.exports = { buildPnl, buildTrend, UNITS_KEY, SALES_KEY, SKU_KEY, SNAP_KEY, planCogs, saveSnapshot, loadSnapshot, linkProducts, matchKey, selfCheck, monthReadiness, materialsCost };
 // Открыто для Склада: списания оцениваются ТОЙ ЖЕ ценой, что себестоимость в
 // P&L, иначе отчёт о потерях и P&L покажут разные деньги за одно и то же.
 module.exports.monthlyPriceMaps = monthlyPriceMaps;
