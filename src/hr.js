@@ -909,7 +909,7 @@ router.post('/api/employee/:id(\\d+)/access/link', J, async (req, res) => {
   const busy = (await db.pool.query('SELECT full_name FROM hr_employees WHERE erp_user_id=$1 AND id<>$2', [uid, req.params.id])).rows[0];
   if (busy) return res.status(409).json({ error: `Эта учётка уже привязана к сотруднику «${busy.full_name}»` });
   await db.pool.query('UPDATE hr_employees SET erp_user_id=$1, updated_at=now() WHERE id=$2', [uid, req.params.id]);
-  const r = await require('./person-link').syncUserPhone(db.pool, req.params.id);
+  const r = await require('./person-link').reconcileOnLink(db.pool, req.params.id);
   await db.log(req.user.id, 'hr_access_link', `сотрудник ${req.params.id} ↔ пользователь ${uid}`);
   res.json({ ok: true, phoneNote: r.ok ? null : r.note });
 });

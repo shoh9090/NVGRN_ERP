@@ -71,4 +71,26 @@ async function syncUserPhone(pool, employeeId) {
   return { ok: true };
 }
 
-module.exports = { last9, planPhoneLinks, autoLinkByPhone, syncUserPhone };
+// При ПРИВЯЗКЕ учётки к сотруднику номера могли быть заведены раньше по-разному.
+// Молча перезаписать номер учётки нельзя: бот знает человека именно по нему и
+// перестанет узнавать. Поэтому: у сотрудника номера нет — берём из учётки; у
+// учётки нет — берём из карточки; оба есть и разные — ничего не трогаем и
+// просим выбрать верный. Совпадают — всё хорошо.
+async function reconcileOnLink(pool, employeeId) {
+  const r = (await pool.query(
+    `SELECT e.phone, u.id AS user_id, u.tg_phone FROM hr_employees e JOIN users u ON u.id = e.erp_user_id
+      WHERE e.id = $1`, [employeeId])).rows[0];
+  if (!r) return { ok: true };
+  const ep = last9(r.phone), up = last9(r.tg_phone);
+  if (ep && up && ep !== up) {
+    const fmt = (d) => '+998 ' + d;
+    return { ok: false, note: `Номера разные: в карточке ${fmt(ep)}, в учётке ${fmt(up)} (по нему бот узнаёт человека). Впишите в карточку верный и сохраните.` };
+  }
+  if (!ep && up) {
+    await pool.query('UPDATE hr_employees SET phone = $1 WHERE id = $2', [r.tg_phone, employeeId]);
+    return { ok: true };
+  }
+  return syncUserPhone(pool, employeeId);
+}
+
+module.exports = { last9, planPhoneLinks, autoLinkByPhone, syncUserPhone, reconcileOnLink };
