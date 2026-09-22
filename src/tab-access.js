@@ -36,6 +36,7 @@ const TAB_REGISTRY = {
     { code: 'bunches', name: 'Пучки и горшки' },
     { code: 'culinary', name: 'Кулинарка' },
     { code: 'cutveg', name: 'Резаные овощи' },
+    { code: 'vinegar', name: 'Уксус' },
   ],
   '/cash': [
     { code: 'cashbox', name: 'Наличная касса' },
