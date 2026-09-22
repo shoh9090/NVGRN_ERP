@@ -56,9 +56,9 @@ const TOOLS = [
     name: 'ostatki_sklada',
     tile: '/stock',
     description: 'Остатки сырья и упаковки на складе (в единицах учёта). Можно искать по названию.',
-    schema: { type: 'object', properties: { поиск: { type: 'string', description: 'часть названия, например «айсберг»' } }, additionalProperties: false },
+    schema: { type: 'object', properties: { query: { type: 'string', description: 'часть названия, например «айсберг»' } }, additionalProperties: false },
     run: async (args) => {
-      const q = String(args['поиск'] || '').trim();
+      const q = String(args.query || '').trim();
       const p = [], w = ['COALESCE(mv.balance, 0) <> 0'];
       if (q) { p.push('%' + q + '%'); w.push(`m.name ILIKE $${p.length}`); }
       const rows = (await db.pool.query(
@@ -76,11 +76,11 @@ const TOOLS = [
     name: 'dolg_postavshchikam',
     tile: '/purchase',
     description: 'Сколько мы должны поставщикам: список по убыванию долга и общая сумма, в сумах.',
-    schema: { type: 'object', properties: { сколько: { type: 'number', description: 'сколько строк вернуть, по умолчанию 10' } }, additionalProperties: false },
+    schema: { type: 'object', properties: { limit: { type: 'number', description: 'сколько строк вернуть, по умолчанию 10' } }, additionalProperties: false },
     run: async (args) => {
       const rows = await require('./purchase-finance').supplierBalances({});
       const debt = rows.filter((r) => Number(r.balance) > 0).sort((a, b) => Number(b.balance) - Number(a.balance));
-      const n = Math.min(Math.max(parseInt(args['сколько'], 10) || 10, 1), 30);
+      const n = Math.min(Math.max(parseInt(args.limit, 10) || 10, 1), 30);
       return {
         всего_долг: money(debt.reduce((s, r) => s + Number(r.balance), 0)),
         поставщиков: debt.length,
@@ -103,9 +103,9 @@ const TOOLS = [
     name: 'prodazhi_za_mesyats',
     tile: '/cash',
     description: 'Продажи за месяц из SalesDoctor: выручка, количество единиц и топ товаров. Месяц в виде 2026-09.',
-    schema: { type: 'object', properties: { месяц: { type: 'string', description: 'например 2026-09' } }, additionalProperties: false },
+    schema: { type: 'object', properties: { month: { type: 'string', description: 'месяц в виде 2026-09' } }, additionalProperties: false },
     run: async (args) => {
-      const per = period(args['месяц']);
+      const per = period(args.month);
       const rows = (await db.pool.query('SELECT key, value FROM settings WHERE key = ANY($1)',
         [['pnl_sales_' + per, 'pnl_units_' + per, 'pnl_sku_' + per]])).rows;
       const by = new Map(rows.map((r) => [r.key, r.value]));
@@ -122,10 +122,10 @@ const TOOLS = [
     name: 'moya_zarplata',
     tile: null,
     description: 'Зарплата САМОГО спрашивающего за месяц: начислено, удержано, выплачено. Чужие зарплаты этот инструмент не показывает.',
-    schema: { type: 'object', properties: { месяц: { type: 'string', description: 'например 2026-09' } }, additionalProperties: false },
+    schema: { type: 'object', properties: { month: { type: 'string', description: 'месяц в виде 2026-09' } }, additionalProperties: false },
     run: async (args, ctx) => {
       if (!ctx.employee_id) return { итог: 'Человек не найден в Персонале' };
-      const per = period(args['месяц']);
+      const per = period(args.month);
       const r = (await db.pool.query(
         `SELECT * FROM hr_payroll WHERE employee_id = $1 AND period = $2`, [ctx.employee_id, per])).rows[0];
       if (!r || !r.accrued_at) return { месяц: per, итог: 'За этот месяц зарплата ещё не начислена' };
