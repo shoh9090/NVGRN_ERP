@@ -655,9 +655,12 @@ admin.post('/api/files/offload-videos', express.json(), async (req, res) => {
     if (!dry) await db.pool.query("UPDATE files SET data = ''::bytea WHERE id = $1", [x.id]);
     out.offloaded++; out.freed_bytes += Number(x.bytes); out.ids.push({ id: x.id, bytes: Number(x.bytes) });
   }
-  // Место на диске Postgres возвращает только после полного пересбора таблицы.
+  // Обычный VACUUM: освобождённое место база переиспользует для новых записей, и
+  // том перестаёт расти. VACUUM FULL (пересборка с возвратом места на диск) тут
+  // НЕЛЬЗЯ: он пишет полную копию таблицы и журнал — на почти полном диске это
+  // уронило базу 22.09.2026 («No space left on device»).
   if (!dry && out.offloaded) {
-    try { await db.pool.query('VACUUM FULL files'); out.vacuum = 'ok'; } catch (e) { out.vacuum = e.message; }
+    try { await db.pool.query('VACUUM files'); out.vacuum = 'ok'; } catch (e) { out.vacuum = e.message; }
   }
   await db.log(req.user.id, 'files_offload_videos', `${dry ? 'проверка' : 'очистка'}: ${out.offloaded} из ${out.total}, ${Math.round(out.freed_bytes / 1048576)} МБ`);
   res.json(out);

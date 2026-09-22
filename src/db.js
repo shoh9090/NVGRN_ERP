@@ -7,6 +7,11 @@ const pool = new Pool({
     ? { rejectUnauthorized: false }
     : false,
 });
+// Обрыв связи с базой (перезапуск Postgres, сеть) не должен ронять весь ERP.
+// Без этого обработчика pg бросает «Unhandled 'error' event», и процесс падает —
+// так случилось 22.09.2026, когда база остановилась из-за полного диска.
+// Простаивающее соединение просто выбрасывается, следующий запрос откроет новое.
+pool.on('error', (e) => console.error('[БАЗА] обрыв соединения:', e.message));
 
 const MIGRATIONS = `
 CREATE TABLE IF NOT EXISTS settings (
