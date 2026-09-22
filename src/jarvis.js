@@ -129,6 +129,35 @@ router.post('/api/rules', J, async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
+// Проверка ИИ прямо из плитки: тот же код, что в боте, те же инструменты и
+// права — но спрашивает админ со своего рабочего места, не занимая Telegram.
+router.post('/api/ai/ask', J, async (req, res) => {
+  if (onlyAdmin(req, res)) return;
+  const question = String((req.body || {}).question || '').trim();
+  if (!question) return res.status(400).json({ error: 'Нет вопроса' });
+  try {
+    const rules = await loadRules();
+    const ai = require('./ai');
+    const provider = String((req.body || {}).provider || rules.ai_provider) === 'openai' ? 'openai' : 'claude';
+    const tools = await require('./ai-tools').toolsFor(req.user);
+    const emp = (await db.pool.query('SELECT id, full_name FROM hr_employees WHERE erp_user_id = $1', [req.user.id])).rows[0];
+    const ctx = { user: req.user, employee_id: emp ? emp.id : null, full_name: emp ? emp.full_name : req.user.name };
+    const started = Date.now();
+    const out = await ai.ask(provider, {
+      model: (req.body || {}).model || rules.ai_model,
+      system: require('./jarvis-bot').SYSTEM + ` Сегодня ${R.localDate(Date.now())}. Спрашивает: ${ctx.full_name}.`,
+      messages: [{ role: 'user', content: question.slice(0, 2000) }],
+      tools,
+      runTool: async (name, args) => {
+        const t = tools.find((x) => x.name === name);
+        if (!t) return { ошибка: 'Нет такого инструмента или нет прав' };
+        try { return await t.run(args || {}, ctx); } catch (e) { return { ошибка: e.message }; }
+      },
+    });
+    res.json({ text: out.text, used: out.used, provider, seconds: Math.round((Date.now() - started) / 100) / 10, usage: out.usage });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 // ---------- Люди ↔ Trello ----------
 async function employeesForMatch() {
   await ensureSchema();

@@ -670,3 +670,5 @@ function webhook(req, res) {
 }
 
 module.exports = { start, webhook, tick, status };
+// Ту же инструкцию использует проверка ИИ в плитке — правило одно на оба входа.
+module.exports.SYSTEM = SYSTEM;
