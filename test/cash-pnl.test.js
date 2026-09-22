@@ -713,3 +713,14 @@ test('готовность: текущий месяц помечен как не
   assert.strictEqual(monthReadiness({ ...base, period: now }).checks.find((c) => c.key === 'open').level, 'warn');
   assert.strictEqual(monthReadiness({ ...base, period: '2020-01' }).checks.find((c) => c.key === 'open').level, 'ok');
 });
+
+test('«250гр» из SalesDoctor и «250г» из Калькуляции — один товар', () => {
+  const { matchKey } = require('../src/cash-pnl');
+  assert.strictEqual(matchKey('Кинза 250гр'), matchKey('Кинза 250г'));
+  assert.strictEqual(matchKey('Розмарин 20 гр'), matchKey('Розмарин 20г'));
+  assert.strictEqual(matchKey('Уксус яблочный 350 мл'), matchKey('Уксус яблочный 350мл'));
+  assert.strictEqual(matchKey('Микрозелень Горох 1 шт'), matchKey('Микрозелень Горох 1шт'));
+  // разный вес — разные товары, их путать нельзя
+  assert.notStrictEqual(matchKey('Кинза 250г'), matchKey('Кинза 40г'));
+  assert.notStrictEqual(matchKey('Айсберг 500г'), matchKey('Айсберг 300г'));
+});
