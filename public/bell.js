@@ -116,6 +116,34 @@
   });
   document.addEventListener('click', (e) => { if (!root.contains(e.target)) panel.style.display = 'none'; });
 
-  load();
+  // Всплывающее окно «Нужно исправить» при первом входе в ERP за день.
+  // Шох: «когда он открывает ERP — окошко со всеми его недочётами, чтобы исправил».
+  // Раз в день, а не на каждой странице: иначе окно мешает работать и его
+  // начинают закрывать не глядя. Весь день дела видны в колокольчике.
+  function popupTodos() {
+    if (!todos.length) return;
+    const today = new Date().toISOString().slice(0, 10);
+    try { if (localStorage.getItem('todo_popup_day') === today) return; localStorage.setItem('todo_popup_day', today); }
+    catch (e) { return; }                       // без памяти браузера не показываем — иначе окно на каждой странице
+    const close = () => ov.remove();
+    const ov = el('div', { class: 'todo-pop-ov', onclick: (e) => { if (e.target === ov) close(); } }, [
+      el('div', { class: 'todo-pop' }, [
+        el('div', { class: 'todo-pop-h' }, '📌 Нужно исправить · ' + todos.length),
+        el('div', { class: 'todo-pop-sub' }, 'Это ваши незавершённые дела в ERP. Пока они не сделаны, отчёты неточные.'),
+        ...todos.map((t) => el('a', { class: 'todo-pop-it', href: t.link || 'javascript:void(0)' }, [
+          el('div', { class: 'todo-pop-t' }, t.title),
+          t.body ? el('div', { class: 'todo-pop-b' }, t.body) : null,
+          el('div', { class: 'todo-pop-go' }, 'Исправить →'),
+        ])),
+        el('div', { class: 'todo-pop-a' }, [
+          el('span', { class: 'todo-pop-note' }, 'Список всегда под колокольчиком 🔔'),
+          el('button', { class: 'todo-pop-btn', onclick: close }, 'Позже'),
+        ]),
+      ]),
+    ]);
+    document.body.appendChild(ov);
+  }
+
+  load().then(popupTodos);
   setInterval(load, 60000); // опрос раз в минуту
 })();

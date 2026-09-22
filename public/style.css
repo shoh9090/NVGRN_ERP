@@ -298,3 +298,17 @@ details>summary{cursor:pointer;color:var(--forest-2);font-size:13px;font-weight:
 .bell-todo { background: #fffaf0; }
 .bell-todo-go { font-size: 12px; font-weight: 800; color: var(--forest, #163a28); margin-top: 4px; }
 .bell-btn.bell-has-todo { box-shadow: 0 0 0 2px #f0b429; border-radius: 50%; }
+
+/* Всплывающее окно «Нужно исправить» — раз в день при входе. */
+.todo-pop-ov { position: fixed; inset: 0; background: rgba(20, 36, 27, .45); z-index: 3000; display: flex; align-items: center; justify-content: center; padding: 16px; }
+.todo-pop { background: #fff; border-radius: 16px; max-width: 560px; width: 100%; max-height: 85vh; overflow: auto; padding: 18px 18px 14px; box-shadow: 0 20px 60px rgba(0,0,0,.25); }
+.todo-pop-h { font-family: 'Lora', serif; font-size: 22px; font-weight: 700; color: #14241b; }
+.todo-pop-sub { font-size: 13px; color: #6b7a70; margin: 4px 0 12px; }
+.todo-pop-it { display: block; text-decoration: none; color: inherit; border: 1px solid #f0dca8; background: #fffaf0; border-radius: 12px; padding: 10px 12px; margin-bottom: 8px; }
+.todo-pop-it:hover { border-color: #e0b64a; }
+.todo-pop-t { font-weight: 800; color: #14241b; }
+.todo-pop-b { font-size: 13px; color: #4a5a50; margin-top: 3px; line-height: 1.45; }
+.todo-pop-go { font-size: 13px; font-weight: 800; color: #163a28; margin-top: 6px; }
+.todo-pop-a { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; }
+.todo-pop-note { font-size: 12px; color: #6b7a70; }
+.todo-pop-btn { background: #163a28; color: #fff; border: 0; border-radius: 10px; padding: 9px 16px; font-weight: 700; cursor: pointer; }
