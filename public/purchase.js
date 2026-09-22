@@ -1891,6 +1891,52 @@
     else viewOrders();
   }
 
-  window.addEventListener('hashchange', () => switchTab(location.hash.slice(1) || 'orders'));
-  switchTab(location.hash.slice(1) || 'orders');
+  // «Нужно внести» из колокольчика: принятые позиции без цены. Вносишь цену —
+  // строка пропадает; внесли всё — окно закрывается, дело в колокольчике исчезает.
+  async function openNoPrice() {
+    let d;
+    try { d = await api('/noprice'); } catch (e) { toast(e.message, true); return; }
+    const rows = d.items || [];
+    if (!rows.length) { toast('Позиций без цены нет — всё внесено'); return; }
+    const left = el('div', { class: 'muted', style: 'margin-bottom:8px' });
+    let n = rows.length;
+    const paint = () => { left.textContent = 'Осталось внести: ' + n + '. Цена — за единицу, как в заявке.'; };
+    paint();
+    const tbody = el('tbody', {}, rows.map((r) => {
+      const inp = el('input', { type: 'number', min: '0', step: 'any', class: 'form-input', style: 'width:130px', placeholder: 'цена' });
+      const tr = el('tr', {});
+      const btn = el('button', { class: 'btn-primary', onclick: async () => {
+        const price = Number(inp.value);
+        if (!(price > 0)) { toast('Введите цену больше нуля', true); inp.focus(); return; }
+        btn.disabled = true;
+        try {
+          await api('/items/' + r.id + '/price', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ price }) });
+          tr.remove(); n--; paint();
+          if (!n) { m.close(); toast('Все цены внесены'); }
+        } catch (e) { toast(e.message, true); btn.disabled = false; }
+      } }, 'Сохранить');
+      inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') btn.click(); });
+      [el('td', {}, r.delivery_date ? r.delivery_date.split('-').reverse().join('.') : ''),
+        el('td', {}, '№' + r.number + ' · ' + r.supplier_name),
+        el('td', {}, r.item_name + (r.item_kind === 'packaging' ? ' 📦' : '')),
+        el('td', { class: 'tnum' }, fmt.format(Number(r.fact_qty) || 0) + ' ' + (r.unit || '')),
+        el('td', {}, inp), el('td', {}, btn)].forEach((c) => tr.appendChild(c));
+      return tr;
+    }));
+    const m = modal('Внести цены: принятые позиции без цены', el('div', {}, [
+      left,
+      el('table', { class: 'dict-table' }, [
+        el('thead', {}, el('tr', {}, ['Поставка', 'Заявка', 'Позиция', 'Принято', 'Цена', ''].map((h) => el('th', {}, h)))),
+        tbody,
+      ]),
+    ]), [el('button', { class: 'btn-primary', onclick: () => m.close() }, 'Готово')], { wide: true });
+  }
+
+  const startTab = () => {
+    const h = location.hash.slice(1);
+    if (h === 'noprice') { switchTab('orders'); openNoPrice(); return; }
+    switchTab(h || 'orders');
+  };
+  window.addEventListener('hashchange', startTab);
+  startTab();
 })();

@@ -292,3 +292,9 @@ details>summary{cursor:pointer;color:var(--forest-2);font-size:13px;font-weight:
 /* Доступ по вкладкам — отдельная страница админки */
 .tabs-box-static{margin:0 0 14px;padding:0 0 0 14px;border-left:2px solid var(--lime-d)}
 .tabs-title{font-size:13px;font-weight:700;margin-bottom:6px}
+
+/* «Нужно внести» в колокольчике: дела висят, пока их не сделали. */
+.bell-todo-head { background: #fff4dc; }
+.bell-todo { background: #fffaf0; }
+.bell-todo-go { font-size: 12px; font-weight: 800; color: var(--forest, #163a28); margin-top: 4px; }
+.bell-btn.bell-has-todo { box-shadow: 0 0 0 2px #f0b429; border-radius: 50%; }

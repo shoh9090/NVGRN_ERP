@@ -41,18 +41,45 @@
   root.appendChild(panel);
 
   let items = [];
+  let todos = [];       // «Нужно внести»: висят, пока не сделаны, пропадают сами
+  let unread = 0;
+  function paintBadge() {
+    const n = unread + todos.length;
+    if (n > 0) { badge.textContent = n; badge.style.display = ''; }
+    else badge.style.display = 'none';
+    // Есть несделанные дела — колокольчик подсвечен, чтобы ответственный заметил.
+    btn.classList.toggle('bell-has-todo', todos.length > 0);
+  }
   async function load() {
     try {
       const res = await fetch('/api/notifications');
-      if (!res.ok) return;
-      const data = await res.json();
-      items = data.items || [];
-      if (data.unread > 0) { badge.textContent = data.unread; badge.style.display = ''; }
-      else badge.style.display = 'none';
+      if (res.ok) {
+        const data = await res.json();
+        items = data.items || [];
+        unread = data.unread || 0;
+      }
     } catch (e) { /* тихо */ }
+    try {
+      const r2 = await fetch('/api/todos');
+      if (r2.ok) todos = (await r2.json()).items || [];
+    } catch (e) { /* тихо */ }
+    paintBadge();
   }
   function render() {
     panel.innerHTML = '';
+    // Сначала дела: их нужно сделать, а не прочитать.
+    if (todos.length) {
+      panel.appendChild(el('div', { class: 'bell-head bell-todo-head' }, [el('span', {}, '📌 Нужно внести · ' + todos.length)]));
+      const tl = el('div', { class: 'bell-list' });
+      for (const t of todos) {
+        tl.appendChild(el('a', { class: 'bell-item bell-todo', href: t.link || 'javascript:void(0)' }, [
+          el('div', { class: 'bell-item-title' }, t.title),
+          t.body ? el('div', { class: 'bell-item-body' }, t.body) : null,
+          el('div', { class: 'bell-todo-go' }, 'Внести →'),
+        ]));
+      }
+      panel.appendChild(tl);
+    }
     const unread = items.filter((n) => !n.is_read).length;
     panel.appendChild(el('div', { class: 'bell-head' }, [
       el('span', {}, unread ? 'Уведомления · ' + unread + ' новых' : 'Уведомления'),
@@ -77,7 +104,8 @@
   async function markAll() {
     try { await fetch('/api/notifications/read-all', { method: 'POST' }); } catch (e) {}
     items = items.map((n) => ({ ...n, is_read: true }));
-    badge.style.display = 'none';
+    unread = 0;
+    paintBadge();                          // дела остаются — их «прочитать» нельзя
     render();
   }
 

@@ -3741,6 +3741,11 @@
       } catch (e) { toast('Не нашёл эту транзакцию в Кассе', true); }
       return;
     }
+    // «Нужно внести» из колокольчика: операции без статьи — сразу на разбор.
+    if (location.hash === '#triage') {
+      TAB = 'triage';
+      try { history.replaceState(null, '', location.pathname); } catch (e) { /* ignore */ }
+    }
     render();
   })();
 })();

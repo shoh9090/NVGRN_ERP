@@ -1051,6 +1051,57 @@
   }
 
   load();
+
+  // «Нужно внести» из колокольчика: товары, которые продаются в SalesDoctor, но
+  // пары в Калькуляции не нашли. Привязываешь к товару Калькуляции — у него
+  // появляется код SD, строка пропадает, дело в колокольчике исчезает.
+  async function openMissingSold() {
+    let d;
+    try { d = await api('/missing-sold'); } catch (e) { toast(e.message, true); return; }
+    const missing = d.missing || [];
+    let free = d.free || [];
+    if (!missing.length) { toast('Все проданные товары есть в Калькуляции'); return; }
+    const left = el('div', { class: 'calc-modal-note' });
+    let n = missing.length;
+    const paint = () => { left.textContent = 'Осталось: ' + n + '. Выберите товар Калькуляции, которому соответствует товар из продаж. '
+      + 'Если его в Калькуляции нет — добавьте на нужном листе и вернитесь сюда.'; };
+    paint();
+    const selects = [];
+    const rows = missing.map((x) => {
+      const sel = el('select', { class: 'calc-modal-inp', style: 'max-width:280px' });
+      const fill = () => {
+        const cur = sel.value;
+        sel.innerHTML = '';
+        sel.appendChild(el('option', { value: '' }, '— выберите товар —'));
+        free.forEach((p) => sel.appendChild(el('option', { value: String(p.id) }, p.name)));
+        sel.value = cur;
+      };
+      fill(); selects.push(fill);
+      const row = el('div', { class: 'calc-miss-row' });
+      const ok = el('button', { class: 'calc-btn primary', onclick: async () => {
+        const pid = Number(sel.value);
+        if (!pid) { toast('Выберите товар Калькуляции', true); return; }
+        ok.disabled = true;
+        try {
+          await post('/sheet-product/' + pid, { sd_product_id: x.sd_id });
+          free = free.filter((p) => p.id !== pid);       // один товар — одна пара
+          selects.forEach((f) => f());
+          row.remove(); n--; paint();
+          if (!n) { m.close(); toast('Все товары привязаны'); }
+        } catch (e) { toast(e.message, true); ok.disabled = false; }
+      } }, 'Привязать');
+      [el('div', { class: 'calc-miss-name' }, [el('b', {}, x.name), el('div', { class: 'calc-modal-note' },
+        'продано ' + x.units.toLocaleString('ru-RU') + ' шт · код SD ' + x.sd_id)]), sel, ok].forEach((c) => row.appendChild(c));
+      return row;
+    });
+    const m = calcModal('Товары из продаж без пары в Калькуляции', el('div', {}, [left, ...rows]), [
+      el('button', { class: 'calc-btn', onclick: () => m.close() }, 'Закрыть'),
+    ]);
+  }
+  if (location.hash === '#missing') {
+    openMissingSold();
+    try { history.replaceState(null, '', location.pathname); } catch (e) { /* ignore */ }
+  }
   // ---------------------------------------------------------------------------
   // Товарные листы: Рознич. тара, Хорека, Салаты, Пучки
   // ---------------------------------------------------------------------------
