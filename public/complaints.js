@@ -445,16 +445,27 @@
   // мёртвая полоска с цифрами и отдельный список «Все статусы».
   // Количества сервер считает по тем же фильтрам, но без самого статуса —
   // иначе в выбранном срезе все соседние цифры обнулялись бы.
-  function statusChips(counts) {
+  function statusChips(counts, waitingOwner) {
     const map = {}; let all = 0;
     (counts || []).forEach((c) => { map[c.status] = c.n; all += c.n; });
     const chips = HubChips.create({
-      items: [{ key: '', label: 'Все' }].concat((DICTS.status || []).map((s) => ({ key: s.code, label: s.label_ru }))),
+      // Последняя таблетка — срез «ждут руководителя звена»: критичная без решения
+      // или простая, по которой не написали причину. Это те, кого бот дёргает.
+      items: [{ key: '', label: 'Все' }]
+        .concat((DICTS.status || []).map((s) => ({ key: s.code, label: s.label_ru })))
+        .concat([{ key: 'waiting_owner', label: 'Ждут руководителя' }]),
       value: listState.status,
       onChange: (key) => { listState.status = key; loadList(); },
     });
-    chips.setCounts(Object.assign({ '': all }, map));
+    chips.setCounts(Object.assign({ '': all, waiting_owner: waitingOwner || 0 }, map));
     return chips;
+  }
+
+  // Кто закрыл претензию и чем. Пусто — ещё никто.
+  function closedBy(c) {
+    if (!c.resolved_by) return c.waiting_owner ? el('span', { class: 'cmp-wait' }, 'ждёт руководителя') : '—';
+    const res = c.resolution || c.agent_resolution;
+    return el('span', {}, c.resolved_by + (res ? ' · ' + (lbl('resolution', res) || res) : ''));
   }
   function row(c, n) {
     return el('div', { class: 'cmp-row', onclick: () => openCard(c.id) }, [
@@ -466,6 +477,7 @@
       el('div', { class: 'cmp-c cmp-point' }, c.point_name || c.firm_name || '—'),
       el('div', { class: 'cmp-c' }, c.agent_name || '—'),
       el('div', { class: 'cmp-c' }, c.severity ? el('span', { class: 'cmp-sev cmp-sev-' + c.severity }, lbl('severity', c.severity)) : '—'),
+      el('div', { class: 'cmp-c cmp-closed' }, closedBy(c)),
       el('div', { class: 'cmp-c' }, c.media_count ? el('span', { class: 'cmp-media' }, '📎 ' + c.media_count) : ''),
       el('div', { class: 'cmp-c' }, el('span', { class: 'cmp-badge ' + (STATUS_CLASS[c.status] || '') }, lbl('status', c.status))),
     ]);
@@ -479,15 +491,20 @@
     const wrap = $('#cmp-list-wrap'); if (!wrap) return;
     await loadNets();
     const params = new URLSearchParams();
-    for (const k of ['from', 'to', 'status', 'type', 'link', 'severity', 'q', 'inn', 'point', 'agent']) if (listState[k]) params.set(k, listState[k]);
+    const waitingOnly = listState.status === 'waiting_owner';
+    for (const k of ['from', 'to', 'status', 'type', 'link', 'severity', 'q', 'inn', 'point', 'agent']) {
+      if (k === 'status' && waitingOnly) continue;          // это не статус, а срез
+      if (listState[k]) params.set(k, listState[k]);
+    }
     let data;
     try { data = await api('/list?' + params.toString()); } catch (e) { toast(e.message, true); return; }
     wrap.innerHTML = '';
     wrap.appendChild(listFilterBar());
-    wrap.appendChild(statusChips(data.counts));
-    const head = el('div', { class: 'cmp-row cmp-head' }, ['#', 'Дата', 'Продукт', 'Тип жалобы', 'Звено', 'Точка', 'Агент', 'Степень', '', 'Статус'].map((h) => el('div', { class: 'cmp-c' }, h)));
-    wrap.appendChild(el('div', { class: 'cmp-list' }, [head, ...data.items.map((c, i) => row(c, i + 1))]));
-    if (!data.items.length) wrap.appendChild(el('div', { class: 'cmp-empty' }, 'Претензий по фильтру нет. Если база пустая — откройте «Импорт истории» или дождитесь подачи из бота.'));
+    wrap.appendChild(statusChips(data.counts, data.waiting_owner));
+    const head = el('div', { class: 'cmp-row cmp-head' }, ['#', 'Дата', 'Продукт', 'Тип жалобы', 'Звено', 'Точка', 'Агент', 'Степень', 'Закрыл', '', 'Статус'].map((h) => el('div', { class: 'cmp-c' }, h)));
+    const items = waitingOnly ? data.items.filter((c) => c.waiting_owner) : data.items;
+    wrap.appendChild(el('div', { class: 'cmp-list' }, [head, ...items.map((c, i) => row(c, i + 1))]));
+    if (!items.length) wrap.appendChild(el('div', { class: 'cmp-empty' }, 'Претензий по фильтру нет. Если база пустая — откройте «Импорт истории» или дождитесь подачи из бота.'));
   }
 
   async function openCard(id) {
@@ -515,6 +532,13 @@
         ? field('Хранение', [c.storage_place, c.storage_temp != null ? c.storage_temp + '°C' : null, c.open_hours != null ? c.open_hours + ' ч открыт' : null].filter(Boolean).join(' · ')) : null,
       c.client_comment ? field('Комментарий клиента', c.client_comment) : null,
       c.agent_reacted_at ? field('Реакция агента', ruDateTime(c.agent_reacted_at) + (c.agent_resolution ? ' · ' + lbl('resolution', c.agent_resolution) : '') + (c.agent_comment ? ' · ' + c.agent_comment : '')) : null,
+      // Что сделал руководитель звена: он решает критичные и пишет причину по
+      // остальным. Раньше это было видно только в примечании справа.
+      field('Руководитель звена', c.resolved_by && !/агент/i.test(c.resolved_by)
+        ? (c.resolved_by + (c.resolution ? ' · ' + (lbl('resolution', c.resolution) || c.resolution) : '')
+           + (c.resolved_at ? ' · ' + ruDateTime(c.resolved_at) : ''))
+        : (String(c.internal_note || '').trim() ? 'написал причину' : 'решения пока нет')),
+      String(c.internal_note || '').trim() ? field('Причина от руководителя', c.internal_note) : null,
       media.children.length ? el('div', { class: 'cmp-fld' }, [el('span', { class: 'cmp-fld-l' }, 'Медиа'), media]) : null,
     ]);
     const selOf = (kind, cur, ph) => el('select', { class: 'cmp-edit' }, [el('option', { value: '' }, ph), ...(DICTS[kind] || []).map((x) => el('option', { value: x.code, selected: cur === x.code || null }, x.label_ru))]);

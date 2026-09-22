@@ -23,7 +23,7 @@
 .cmp-st-done { background: #e8f5e9; color: #2e7d32; }
 
 .cmp-list { display: flex; flex-direction: column; border: 1px solid #e3e7e1; border-radius: 12px; overflow: hidden; background: #fff; }
-.cmp-row { display: grid; grid-template-columns: 34px 92px 1.4fr 1.3fr 1fr 1.2fr 0.9fr 1fr 56px 1fr; gap: 8px; padding: 10px 12px; align-items: center; border-bottom: 1px solid #f0f2ef; cursor: pointer; font-size: 13px; }
+.cmp-row { display: grid; grid-template-columns: 34px 88px 1.3fr 1.2fr 1fr 1.1fr 0.9fr 0.8fr 1.1fr 50px 0.9fr; gap: 8px; padding: 10px 12px; align-items: center; border-bottom: 1px solid #f0f2ef; cursor: pointer; font-size: 13px; }
 .cmp-num { color: #9aa39a; font-variant-numeric: tabular-nums; font-weight: 700; }
 .cmp-row:last-child { border-bottom: none; }
 .cmp-row:not(.cmp-head):hover { background: #f7faf6; }
@@ -187,3 +187,7 @@ tr.cmp-clk:hover td { background: #f3f6f1; }
   .cmp-set-lbl { min-width: 120px; }
   .cmp-set-link { width: 140px; }
 }
+
+/* Колонка «Закрыл»: кто довёл претензию до конца и чем. */
+.cmp-closed { font-size: 12px; }
+.cmp-wait { color: #b25b00; font-weight: 700; }

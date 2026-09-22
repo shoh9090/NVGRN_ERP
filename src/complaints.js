@@ -260,6 +260,15 @@ router.get('/api/list', async (req, res) => {
                      c.agent_name) AS agent_name,
             c.product_name, c.product_category, c.complaint_type, c.link_code,
             c.severity, c.resolution, c.status, c.source,
+            c.resolved_by, c.resolved_at, c.agent_resolution,
+            NULLIF(btrim(COALESCE(c.internal_note, '')), '') IS NOT NULL AS has_note,
+            -- «Ждёт руководителя звена» — та же примета, по которой бот шлёт
+            -- напоминания: критичная (живность) без решения либо простая, по
+            -- которой руководитель не написал причину. Только претензии из бота:
+            -- у импортированной истории руководителей не спрашивали.
+            (c.source IN ('client_bot', 'agent') AND c.link_code IS NOT NULL AND (
+               CASE WHEN c.complaint_type = 'zhivnost' THEN c.status <> 'resolved'
+                    ELSE btrim(COALESCE(c.internal_note, '')) = '' END)) AS waiting_owner,
             (SELECT count(*) FROM tgbot.complaint_files f WHERE f.complaint_id = c.id)::int AS media_count
      FROM tgbot.complaints c ${full.whereSQL}
      ORDER BY c.created_at DESC, c.id DESC LIMIT 1000`, full.params
@@ -272,7 +281,13 @@ router.get('/api/list', async (req, res) => {
     base.params
   )).rows;
 
-  res.json({ items: rows, total: rows.length, counts });
+  // Сколько ждут руководителя звена — для таблетки рядом со статусами.
+  const waiting = (await db.pool.query(
+    `SELECT count(*)::int AS n FROM tgbot.complaints c ${base.whereSQL}
+      ${base.whereSQL ? 'AND' : 'WHERE'} c.source IN ('client_bot', 'agent') AND c.link_code IS NOT NULL
+        AND (CASE WHEN c.complaint_type = 'zhivnost' THEN c.status <> 'resolved'
+                  ELSE btrim(COALESCE(c.internal_note, '')) = '' END)`, base.params)).rows[0].n;
+  res.json({ items: rows, total: rows.length, counts, waiting_owner: waiting });
 });
 
 // ----- Одна претензия (карточка) -----
