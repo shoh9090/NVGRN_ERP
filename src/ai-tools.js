@@ -42,6 +42,16 @@ function pnlAnswer(p, per) {
     операционная_прибыль: n(p.operating_profit),
     чистая_прибыль: n(p.net_profit),
     маржа_валовая_процент: p.gross_margin_pct === null ? null : Math.round(p.gross_margin_pct),
+    // Чему в этих цифрах можно верить: тот же светофор, что на экране Кассы.
+    // Без него бот отвечал уверенной цифрой и по месяцу, где половины данных нет.
+    данные: (() => {
+      try {
+        const rd = require('./cash-pnl').monthReadiness(p);
+        const bad = rd.checks.filter((c) => c.level === 'bad' || c.level === 'warn')
+          .map((c) => c.label + ': ' + c.note);
+        return { вывод: rd.verdict_text, месяц_закрыт: !!rd.closed, что_неполно: bad.length ? bad : undefined };
+      } catch (e) { return undefined; }
+    })(),
     примечание: p.net_profit === null ? 'Прибыль не считается: не хватает данных за месяц' : undefined,
   };
 }
@@ -198,7 +208,7 @@ const TOOLS = [
     schema: { type: 'object', properties: { month: { type: 'string', description: 'месяц в виде 2026-09' } }, additionalProperties: false },
     run: async (args) => {
       const per = period(args.month);
-      const p = await require('./cash-pnl').buildPnl(db.pool, per);
+      const p = await require('./cash-pnl').pnlFor(db.pool, per);
       return pnlAnswer(p, per);
     },
   },

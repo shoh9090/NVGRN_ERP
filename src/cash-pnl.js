@@ -2,10 +2,12 @@
 //
 // Чем он отличается от Кэш-флоу: там движение денег, здесь попытка показать
 // заработок. Отличия сведены к трём:
-//   1. Себестоимость берётся НЕ из оплат поставщикам, а из списания склада —
-//      деньги за сырьё платятся в одном месяце, а расходуется оно в другом.
+//   1. Себестоимость = сырьё, ПРИНЯТОЕ за месяц в Закупе, плюс упаковка,
+//      оплаченная за месяц (решение Шоха, сентябрь 2026). Зелень не хранится:
+//      что приняли, то и ушло. Склад на прибыль не влияет — он контроль.
 //   2. Из расчёта убраны финансовые и инвестиционные потоки: возврат тела
 //      кредита, взносы учредителей, капекс. Это не доход и не расход.
+//      Проценты по кредитам и налоги — расход, они в отчёте есть.
 //   3. Внутренние перемещения между своими счетами исключены полностью.
 //
 // Чего в этом отчёте ЧЕСТНО НЕТ (написано и на экране):
@@ -18,6 +20,10 @@
 // приходят в сентябре, и отчёт на поступлениях показывает мнимый убыток.
 // Поступления остаются в отчёте справочно, для сверки с Кэш-флоу.
 // Это управленческая картина, а не бухгалтерский ОПиУ.
+
+// Замок закрытого периода: закрытый месяц отдаётся из снимка, а не считается
+// заново (см. pnlFor внизу файла).
+const { cashLockedUntil } = require('./cash-lock');
 
 // Ключ, под которым храним подтянутое из SalesDoctor количество отгрузок.
 // Хранится по месяцам: цифра нужна, чтобы посчитать плановую себестоимость.
@@ -1012,6 +1018,22 @@ async function loadSnapshot(pool, period) {
 }
 
 // ---------------------------------------------------------------------------
+// Единая точка выдачи отчёта
+// ---------------------------------------------------------------------------
+// Экран, готовность месяцев, график и Джарвис берут P&L ТОЛЬКО отсюда. Иначе
+// повторяется история, когда бот отвечал одну цифру, а экран показывал другую:
+// экран смотрел в снимок закрытого месяца, а бот пересчитывал заново.
+// Закрытый месяц = есть снимок И месяц попадает в замок Кассы.
+async function pnlFor(pool, period) {
+  const snap = await loadSnapshot(pool, period);
+  if (snap) {
+    const lock = await cashLockedUntil(pool).catch(() => null);
+    if (lock && period + '-01' <= lock) return snap;
+  }
+  return buildPnl(pool, period);
+}
+
+// ---------------------------------------------------------------------------
 // Динамика по месяцам — для графика на дашборде
 // ---------------------------------------------------------------------------
 // Считаем те же величины, что и месячный отчёт, но сразу за несколько месяцев
@@ -1077,6 +1099,17 @@ async function buildTrend(pool, endPeriod, months) {
   // Сырьё из Закупа по месяцам — та же себестоимость, что в карточке месяца.
   const receivedOf = await rawReceivedByMonth(pool, bounds.f, bounds.t);
 
+  // Закрытые месяцы берём из снимка — ровно как карточка. Иначе график жил бы
+  // своей жизнью: закрыли август, а линия продолжала бы шевелиться от новых
+  // приёмок и правок задним числом.
+  const lock = await cashLockedUntil(pool).catch(() => null);
+  const snapOf = new Map();
+  for (const r of (await pool.query("SELECT key, value FROM settings WHERE key LIKE 'pnl_snapshot_%'")).rows) {
+    const per = String(r.key).replace('pnl_snapshot_', '');
+    if (!lock || per + '-01' > lock) continue;
+    try { snapOf.set(per, JSON.parse(r.value)); } catch (e) { /* испорченный снимок — считаем месяц заново */ }
+  }
+
   // Идём по всем месяцам подряд, включая пустые: провал в данных должен быть
   // виден дырой на графике, а не «съеденным» месяцем.
   const out = [];
@@ -1084,25 +1117,44 @@ async function buildTrend(pool, endPeriod, months) {
   for (let i = n - 1; i >= 0; i--) {
     const d = new Date(Date.UTC(ey, em - 1 - i, 1));
     const key = d.toISOString().slice(0, 7);
+    const snap = snapOf.get(key);
+    if (snap) {
+      out.push({
+        period: key,
+        revenue: num(snap.revenue && snap.revenue.total),
+        revenue_source: (snap.revenue && snap.revenue.source) || 'shipped',
+        cogs: snap.cogs_total === undefined ? null : snap.cogs_total,
+        opex: num(snap.opex && snap.opex.total),
+        operating: snap.operating_profit === undefined ? null : snap.operating_profit,
+        profit: snap.net_profit === undefined ? null : snap.net_profit,
+        closed: true,
+      });
+      continue;
+    }
     const slot = byMonth.get(key);
-    if (!slot) { out.push({ period: key, revenue: 0, cogs: null, opex: 0, profit: null }); continue; }
+    if (!slot) { out.push({ period: key, revenue: 0, cogs: null, opex: 0, operating: null, profit: null }); continue; }
     const c = classifyRows(slot.rows);
     const cogs = materialsCost(receivedOf.get(key), c.materials).total;
     const shippedLoadedM = shippedOf.has(key);
     const rev = shippedLoadedM ? shippedOf.get(key) : c.revenueTotal;
+    // Прибыль на графике — ТА ЖЕ чистая прибыль, что в карточке месяца:
+    // минус проценты по кредитам и налог на прибыль. Раньше график показывал
+    // операционную, и в месяц с уплаченным налогом линия и карточка расходились.
+    const operating = cogs === null ? null : rev - cogs - c.opexTotal;
     out.push({
       period: key,
       revenue: rev,
       revenue_source: shippedLoadedM ? 'shipped' : 'cash',
       cogs,
       opex: c.opexTotal,
-      profit: cogs === null ? null : rev - cogs - c.opexTotal,
+      operating,
+      profit: operating === null ? null : operating - c.interestTotal - c.profitTaxTotal,
     });
   }
   return { months: n, from: bounds.f, to: bounds.t, points: out };
 }
 
-module.exports = { buildPnl, buildTrend, UNITS_KEY, SALES_KEY, SKU_KEY, SNAP_KEY, planCogs, saveSnapshot, loadSnapshot, linkProducts, matchKey, selfCheck, monthReadiness, materialsCost };
+module.exports = { buildPnl, pnlFor, buildTrend, UNITS_KEY, SALES_KEY, SKU_KEY, SNAP_KEY, planCogs, saveSnapshot, loadSnapshot, linkProducts, matchKey, selfCheck, monthReadiness, materialsCost };
 // Открыто для Склада: списания оцениваются ТОЙ ЖЕ ценой, что себестоимость в
 // P&L, иначе отчёт о потерях и P&L покажут разные деньги за одно и то же.
 module.exports.monthlyPriceMaps = monthlyPriceMaps;

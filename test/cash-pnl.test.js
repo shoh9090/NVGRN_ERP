@@ -707,6 +707,64 @@ test('проценты по кредитам — расход; тело кред
   assert.strictEqual(r.excluded.finance.out, 20000000);
 });
 
+// --- Одна цифра во всех каналах -------------------------------------------
+// Главная беда отчёта о деньгах — когда экран, график и бот показывают разное.
+// Эти проверки держат их вместе.
+
+// Пул для графика: свой набор запросов (границы периода, снимки, замок).
+function trendPool(o) {
+  const opts = o || {};
+  return {
+    query: async (sql) => {
+      const q = String(sql).replace(/\s+/g, ' ');
+      if (/AS f,/.test(q)) return { rows: [{ f: '2026-07-01', t: '2026-08-31' }] };
+      if (/cash_locked_until/.test(q)) return { rows: opts.lock ? [{ value: opts.lock }] : [] };
+      if (/key LIKE 'pnl_snapshot_%'/.test(q)) return { rows: opts.snaps || [] };
+      if (/key LIKE 'pnl_sales_%'/.test(q)) return { rows: opts.sales || [] };
+      if (/FROM cash_transactions t JOIN cash_categories/.test(q)) return { rows: opts.cash || [] };
+      if (/FROM purchase_orders po/.test(q)) return { rows: opts.received || [] };
+      return { rows: [] };
+    },
+  };
+}
+
+test('график показывает ТУ ЖЕ прибыль, что карточка месяца: минус проценты и налог', async () => {
+  const { buildTrend } = require('../src/cash-pnl');
+  const cash = CASH.concat([
+    { code: '60', name: 'Проценты', group_name: '6. Финансы', flow_type: 'financing', inc: 0, exp: 7000000, cnt: 1 },
+    { code: '67', name: 'Налог на прибыль', group_name: '6. Финансы', flow_type: 'financing', inc: 0, exp: 3000000, cnt: 1 },
+  ]).map((r) => ({ ...r, m: '2026-08' }));
+  const card = await buildPnl(makePool({
+    cash, received: [{ m: '2026-08', orders: 12, total: 35000000 }],
+  }), '2026-08');
+  const trend = await buildTrend(trendPool({ cash, received: [{ m: '2026-08', orders: 12, total: 35000000 }] }), '2026-08', 2);
+  const aug = trend.points.find((p) => p.period === '2026-08');
+  assert.strictEqual(aug.profit, card.net_profit);
+  assert.strictEqual(aug.operating, card.operating_profit);
+});
+
+test('закрытый месяц: и экран, и график берут снимок, а не считают заново', async () => {
+  const { buildTrend, pnlFor } = require('../src/cash-pnl');
+  const snap = { period: '2026-07', revenue: { total: 500, source: 'shipped' }, cogs_total: 100,
+    opex: { total: 50 }, operating_profit: 350, net_profit: 300, snapshot_at: '2026-08-01 10:00' };
+  const snaps = [{ key: 'pnl_snapshot_2026-07', value: JSON.stringify(snap) }];
+  const trend = await buildTrend(trendPool({ snaps, lock: '2026-07-31' }), '2026-08', 2);
+  const jul = trend.points.find((p) => p.period === '2026-07');
+  assert.strictEqual(jul.profit, 300);
+  assert.strictEqual(jul.closed, true);
+
+  // Тот же снимок отдаётся и как отчёт месяца.
+  const pool = {
+    query: async (sql) => {
+      const q = String(sql).replace(/\s+/g, ' ');
+      if (/key = \$1/.test(q)) return { rows: [{ value: JSON.stringify(snap) }] };
+      if (/cash_locked_until/.test(q)) return { rows: [{ value: '2026-07-31' }] };
+      return { rows: [] };
+    },
+  };
+  assert.strictEqual((await pnlFor(pool, '2026-07')).net_profit, 300);
+});
+
 test('готовность месяца: один и тот же светофор для любого месяца', async () => {
   const { monthReadiness } = require('../src/cash-pnl');
   // Месяц без склада, без SD и без зарплаты — прибыли верить нельзя.

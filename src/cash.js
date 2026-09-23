@@ -6,7 +6,7 @@ const multer = require('multer');
 const XLSX = require('xlsx');
 const db = require('./db');
 const integrations = require('./integrations');
-const { buildPnl, buildTrend, UNITS_KEY, SALES_KEY, SKU_KEY, SNAP_KEY, saveSnapshot, loadSnapshot, monthReadiness } = require('./cash-pnl');
+const { buildPnl, pnlFor, buildTrend, UNITS_KEY, SALES_KEY, SKU_KEY, SNAP_KEY, saveSnapshot, loadSnapshot, monthReadiness } = require('./cash-pnl');
 const pfin = require('./purchase-finance'); // общий расчёт долга поставщикам (read-only в «Обязательствах»)
 
 const router = express.Router();
@@ -1597,9 +1597,7 @@ router.get('/api/pnl/readiness', async (req, res) => {
   try {
     for (let i = n - 1; i >= 0; i--) {
       const period = new Date(Date.UTC(ey, em - 1 - i, 1)).toISOString().slice(0, 7);
-      const snap = await loadSnapshot(db.pool, period);
-      const r = (snap && await isLocked(period + '-01')) ? snap : await buildPnl(db.pool, period);
-      out.push(monthReadiness(r));
+      out.push(monthReadiness(await pnlFor(db.pool, period)));
     }
     res.json({ months: out });
   } catch (e) {
@@ -1613,10 +1611,9 @@ router.get('/api/pnl', async (req, res) => {
     ? req.query.period : new Date().toISOString().slice(0, 7);
   try {
     // Закрытый месяц показываем из снимка, сделанного при закрытии: его цифры
-    // больше не меняются от новых закупок и правок Калькуляции.
-    const snap = await loadSnapshot(db.pool, period);
-    if (snap && await isLocked(period + '-01')) return res.json(snap);
-    res.json(await buildPnl(db.pool, period));
+    // больше не меняются от новых закупок и правок Калькуляции. Это решает
+    // pnlFor — одна и та же точка выдачи для экрана, графика и Джарвиса.
+    res.json(await pnlFor(db.pool, period));
   } catch (e) {
     console.error('[КАССА] P&L:', e.message);
     res.status(400).json({ error: e.message });
