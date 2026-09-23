@@ -303,6 +303,10 @@ const SYSTEM = [
   'Ты видишь переписку с этим человеком за последние дни — держи нить разговора,',
   'короткое «ну давай» или «а по второму» понимай как продолжение предыдущего.',
   'ВАЖНО: цифры из прошлых сообщений устарели. Спрашивают снова — бери свежие инструментом, а не из истории.',
+  // Память компании — общий мозг: как мы работаем, а не сколько мы продали.
+  'Ниже дано то, что компания просила помнить: договорённости и особенности работы. Учитывай это в ответах.',
+  'Просят «запомни», объясняют особенность или принимают решение — вызывай инструмент zapomnit.',
+  'Цифры и суммы в память НЕ записывай: они устаревают, их всегда берут из базы инструментами.',
 ].join(' ');
 
 // Память разговора: последние сообщения за N дней. Берём с конца и не больше
@@ -352,7 +356,11 @@ async function aiAnswer(chatId, me, question, rules) {
   try {
     const started = Date.now();
     const out = await ai.ask(provider, {
-      model: rules.ai_model, system: SYSTEM + ` Сегодня ${R.localDate(Date.now())}. Спрашивает: ${me.full_name}.`,
+      model: rules.ai_model,
+      system: SYSTEM + ` Сегодня ${R.localDate(Date.now())}. Спрашивает: ${me.full_name}.
+
+`
+        + await require('./ai-tools').memoryBrief(),
       messages: [...(await recallChat(chatId, rules)), { role: 'user', content: question.slice(0, 2000) }],
       tools, runTool,
       onStep: () => tg('sendChatAction', { chat_id: chatId, action: 'typing' }),

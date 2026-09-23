@@ -64,6 +64,25 @@ async function ensureJarvisSchema(pool) {
   )`);
   await q('CREATE INDEX IF NOT EXISTS idx_jv_chat ON jarvis_chat (chat_id, created_at DESC)');
 
+  // Память компании: факты и решения, которые Джарвис должен помнить всегда,
+  // а не только в рамках одного разговора. Например: «KorzinkaRS — это РЦ сети,
+  // мы сменили формат и возим по маркетам» или «зелень не хранится: что приняли,
+  // то в тот же день ушло». Это НЕ цифры — цифры всегда берутся инструментами
+  // из базы. Здесь только то, что объясняет, как мы работаем.
+  await q(`CREATE TABLE IF NOT EXISTS jarvis_memory (
+    id SERIAL PRIMARY KEY,
+    scope TEXT NOT NULL DEFAULT 'company',   -- company | person
+    employee_id INT,                          -- для личных заметок
+    topic TEXT NOT NULL DEFAULT '',           -- о чём: клиенты, склад, продажи…
+    fact TEXT NOT NULL,
+    source TEXT DEFAULT '',                   -- кто сказал и когда
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_by INT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  await q('CREATE INDEX IF NOT EXISTS idx_jv_memory ON jarvis_memory (scope, active)');
+
   // Журнал Джарвиса: каждое напоминание и каждое нарушение — одна запись.
   // dedup_key не даёт отправить одно и то же дважды. Нарушения отсюда
   // потом станут штрафами в Персонале (шаг 4).

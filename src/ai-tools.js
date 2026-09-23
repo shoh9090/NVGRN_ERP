@@ -72,7 +72,76 @@ function pnlAnswer(p, per) {
   };
 }
 
+// Память компании: то, что объясняет, КАК мы работаем. Цифры сюда не пишем —
+// они всегда берутся из базы инструментами, иначе в памяти осядут устаревшие
+// суммы и Джарвис начнёт врать уверенным голосом.
+async function companyMemory(limit = 40) {
+  try {
+    return (await db.pool.query(
+      `SELECT topic, fact, source FROM jarvis_memory
+        WHERE active = TRUE AND scope = 'company' ORDER BY updated_at DESC LIMIT $1`, [limit])).rows;
+  } catch (e) { return []; }
+}
+// Краткий свод для системной инструкции: Джарвис знает это всегда, без вопросов.
+async function memoryBrief(maxChars = 2000) {
+  const rows = await companyMemory();
+  const lines = [];
+  let size = 0;
+  for (const r of rows) {
+    const line = (r.topic ? r.topic + ': ' : '') + r.fact;
+    size += line.length + 2;
+    if (size > maxChars) break;
+    lines.push('• ' + line);
+  }
+  return lines.length ? 'Что ты знаешь о компании (записано людьми):\n' + lines.join('\n') : '';
+}
+
 const TOOLS = [
+  {
+    name: 'pamyat_kompanii',
+    tile: null,
+    description: 'Что записано в память компании: как мы работаем, договорённости, особенности клиентов и процессов. Ищет по слову.',
+    schema: { type: 'object', properties: { query: { type: 'string', description: 'слово для поиска, можно пусто' } }, additionalProperties: false },
+    run: async (args, ctx) => {
+      const q = String(args.query || '').trim();
+      const p = [ctx.employee_id || 0];
+      let w = '';
+      if (q) { p.push('%' + q + '%'); w = ` AND (fact ILIKE $${p.length} OR topic ILIKE $${p.length})`; }
+      const rows = (await db.pool.query(
+        `SELECT scope, topic, fact, source FROM jarvis_memory
+          WHERE active = TRUE AND (scope = 'company' OR employee_id = $1)${w}
+          ORDER BY updated_at DESC LIMIT 40`, p)).rows;
+      return rows.length ? rows.map((r) => ({ тема: r.topic, факт: r.fact, кто: r.source, чьё: r.scope === 'company' ? 'компания' : 'личное' }))
+        : { итог: 'В памяти пока ничего нет по этому запросу' };
+    },
+  },
+  {
+    name: 'zapomnit',
+    tile: null,
+    description: 'Запомнить факт или договорённость надолго. Пользоваться, когда человек говорит «запомни», «имей в виду», '
+      + 'объясняет особенность работы или принимает решение. Цифры и суммы запоминать НЕЛЬЗЯ — они устаревают.',
+    schema: { type: 'object', properties: {
+      fact: { type: 'string', description: 'сам факт, одной фразой' },
+      topic: { type: 'string', description: 'тема: клиенты, склад, продажи, производство…' },
+      scope: { type: 'string', description: '«company» — для всех (только руководитель), «person» — личная заметка' },
+    }, required: ['fact'], additionalProperties: false },
+    run: async (args, ctx) => {
+      const fact = String(args.fact || '').trim().slice(0, 500);
+      if (!fact) return { ошибка: 'Нечего запоминать' };
+      // Факт компании пишет только руководитель: иначе в общую память попадёт
+      // чьё-то личное мнение и станет «правилом».
+      const wantCompany = String(args.scope || 'company') === 'company';
+      const scope = (wantCompany && ctx.user && ctx.user.isAdmin) ? 'company' : 'person';
+      await db.pool.query(
+        `INSERT INTO jarvis_memory (scope, employee_id, topic, fact, source, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6)`,
+        [scope, scope === 'person' ? ctx.employee_id : null, String(args.topic || '').slice(0, 60), fact,
+          `${ctx.full_name || ''}, ${new Date(Date.now() + 5 * 3600000).toISOString().slice(0, 10)}`,
+          ctx.user ? ctx.user.id : null]);
+      return { записано: fact, чьё: scope === 'company' ? 'память компании' : 'личная заметка',
+        примечание: (wantCompany && scope === 'person') ? 'В общую память пишет руководитель — записал как личное' : undefined };
+    },
+  },
   {
     name: 'moi_dela',
     tile: null,
@@ -380,4 +449,4 @@ async function toolsFor(user) {
   return out;
 }
 
-module.exports = { TOOLS, toolsFor, hasTile, pnlAnswer };
+module.exports = { TOOLS, toolsFor, hasTile, pnlAnswer, companyMemory, memoryBrief };

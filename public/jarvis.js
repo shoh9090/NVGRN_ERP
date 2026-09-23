@@ -35,11 +35,11 @@
 
   function render() {
     main.innerHTML = '';
-    const tabs = el('div', { class: 'hub-tabs' }, [['rules', 'Правила'], ['people', 'Люди и Trello'], ['log', 'Журнал']].map(([k, t]) =>
+    const tabs = el('div', { class: 'hub-tabs' }, [['rules', 'Правила'], ['people', 'Люди и Trello'], ['memory', 'Память'], ['log', 'Журнал']].map(([k, t]) =>
       el('button', { class: 'hub-tab' + (TAB === k ? ' on' : ''), onclick: () => { TAB = k; try { localStorage.setItem('jv_tab', k); } catch (e) { /* ок */ } render(); } }, t)));
     const box = el('div', {}, el('div', { class: 'jv-muted' }, 'Загрузка…'));
     main.append(tabs, box);
-    ({ rules: renderRules, people: renderPeople, log: renderLog }[TAB] || renderRules)(box).catch((e) => { box.innerHTML = ''; box.appendChild(el('div', { class: 'jv-err' }, e.message)); });
+    ({ rules: renderRules, people: renderPeople, memory: renderMemory, log: renderLog }[TAB] || renderRules)(box).catch((e) => { box.innerHTML = ''; box.appendChild(el('div', { class: 'jv-err' }, e.message)); });
   }
 
   // ---------- Правила ----------
@@ -393,6 +393,40 @@
           el('td', {}, x.sent ? '✓' : el('span', { class: 'jv-warn', title: 'Человек не открыл бота или напоминания выключены' }, 'не дошло')),
         ]))),
       ]) : el('div', { class: 'jv-muted' }, 'Пока пусто. Напоминания и нарушения появятся здесь.')]));
+  }
+
+  // ---------- Память компании ----------
+  // «Общий мозг»: как мы работаем и почему. Цифр здесь нет — они всегда
+  // берутся из базы, иначе в памяти осядут устаревшие суммы.
+  async function renderMemory(box) {
+    const d = await api('/memory');
+    box.innerHTML = '';
+    box.appendChild(el('div', { class: 'jv-muted' },
+      'Это то, что Джарвис помнит всегда и учитывает в ответах: договорённости, особенности клиентов и процессов. '
+      + 'Цифры сюда не пишем — они живут в базе и берутся свежими. Джарвис пополняет память сам, когда ему говорят «запомни».'));
+    if (d.can_edit) {
+      const topic = el('input', { class: 'jv-inp', placeholder: 'тема: клиенты, склад, продажи…', style: 'min-width:200px' });
+      const fact = el('input', { class: 'jv-inp', placeholder: 'например: KorzinkaRS — РЦ сети, возим по маркетам', style: 'min-width:420px;flex:1' });
+      const add = el('button', { class: 'btn-primary', onclick: async () => {
+        if (!fact.value.trim()) { toast('Напишите факт', true); return; }
+        try { await api('/memory', { topic: topic.value, fact: fact.value }); toast('Записано'); render(); }
+        catch (e) { toast(e.message, true); }
+      } }, 'Запомнить');
+      box.appendChild(el('section', { class: 'jv-sec' }, [el('div', { class: 'jv-ctl' }, [topic, fact, add])]));
+    }
+    if (!d.items.length) { box.appendChild(el('div', { class: 'jv-muted' }, 'Пока пусто.')); return; }
+    box.appendChild(el('div', { class: 'pur-content' }, el('table', { class: 'dict-table jv-table' }, [
+      el('thead', {}, el('tr', {}, ['Тема', 'Что помним', 'Кто записал', 'Чьё', ''].map((t) => el('th', {}, t)))),
+      el('tbody', {}, d.items.map((m) => el('tr', { style: m.active ? '' : 'opacity:.45' }, [
+        el('td', {}, m.topic || '—'),
+        el('td', {}, m.fact),
+        el('td', { class: 'jv-muted' }, m.source || ''),
+        el('td', {}, m.scope === 'company' ? 'компания' : 'личное: ' + (m.full_name || '')),
+        el('td', {}, d.can_edit ? el('button', { class: 'pur-tbtn', onclick: async () => {
+          try { await api('/memory/' + m.id + '/toggle', {}); render(); } catch (e) { toast(e.message, true); }
+        } }, m.active ? 'Забыть' : 'Вернуть') : null),
+      ]))),
+    ])));
   }
 
   render();

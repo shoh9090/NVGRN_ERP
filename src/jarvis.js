@@ -184,6 +184,46 @@ router.post('/api/ai/ask', J, async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
+// ---------- Память компании ----------
+// Это «общий мозг»: как мы работаем, почему так, что уже решили. Цифр здесь
+// нет — они живут в базе и всегда берутся свежими.
+router.get('/api/memory', async (req, res) => {
+  try {
+    await ensureSchema();
+    const rows = (await db.pool.query(
+      `SELECT m.id, m.scope, m.topic, m.fact, m.source, m.active, m.created_at, e.full_name
+         FROM jarvis_memory m LEFT JOIN hr_employees e ON e.id = m.employee_id
+        WHERE m.scope = 'company' OR m.employee_id IN (SELECT id FROM hr_employees WHERE erp_user_id = $1)
+        ORDER BY m.active DESC, m.updated_at DESC LIMIT 300`, [req.user.id])).rows;
+    res.json({ items: rows, can_edit: !!req.user.isAdmin });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+router.post('/api/memory', J, async (req, res) => {
+  if (onlyAdmin(req, res)) return;
+  try {
+    await ensureSchema();
+    const b = req.body || {};
+    const fact = String(b.fact || '').trim().slice(0, 500);
+    if (!fact) return res.status(400).json({ error: 'Пустой факт' });
+    const emp = (await db.pool.query('SELECT full_name FROM hr_employees WHERE erp_user_id = $1', [req.user.id])).rows[0];
+    await db.pool.query(
+      `INSERT INTO jarvis_memory (scope, topic, fact, source, created_by)
+       VALUES ('company', $1, $2, $3, $4)`,
+      [String(b.topic || '').slice(0, 60), fact,
+        `${(emp && emp.full_name) || req.user.name}, ${new Date(Date.now() + 5 * 3600000).toISOString().slice(0, 10)}`,
+        req.user.id]);
+    await db.log(req.user.id, 'jarvis_memory_add', fact.slice(0, 120));
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+router.post('/api/memory/:id(\d+)/toggle', async (req, res) => {
+  if (onlyAdmin(req, res)) return;
+  try {
+    await db.pool.query('UPDATE jarvis_memory SET active = NOT active, updated_at = now() WHERE id = $1', [req.params.id]);
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 // ---------- Люди ↔ Trello ----------
 async function employeesForMatch() {
   await ensureSchema();
