@@ -2237,11 +2237,30 @@
       el('div', { class: 'calc-sb-lv' }, [node, suffix ? el('span', { class: 'calc-dim' }, suffix) : null]),
     ]);
 
+    // Новый товар добавляет заводу объём: те же аренда и ФОТ делятся на большее
+    // число штук, и себестоимость всех товаров падает. Раньше про это надо было
+    // догадаться и посчитать в уме — теперь система предлагает сама. Именно
+    // предлагает: молча менять общий рычаг компании нельзя.
+    const added = sb.lines.reduce((s, l) => s + Math.max(0, (Number(l.qty_new) || 0) - (Number(l.qty) || 0)), 0);
+    const suggested = (SB.output_now || 0) + added;
+    const showHint = added > 0 && SB.output_now > 0
+      && (sb.outputNew === null || Math.round(sb.outputNew) === Math.round(SB.output_now));
+    const outHintBox = showHint ? el('div', { class: 'calc-dim', style: 'font-size:12px;margin-top:4px' }, [
+      el('span', {}, 'В сценарии +' + money0(added) + ' шт. '),
+      el('button', {
+        class: 'calc-link', style: 'font-size:12px',
+        onclick: () => { sb.outputNew = suggested; sbRecalc(); },
+      }, 'Учесть в выпуске: ' + money0(suggested)),
+    ]) : null;
+
     return el('div', { class: 'calc-sb-levers' }, [
       field('Выпуск завода, шт/мес',
-        el('div', { class: 'calc-sb-pair' }, [
-          el('span', { class: 'calc-dim' }, SB.output_now ? money0(SB.output_now) : '—'),
-          el('span', { class: 'calc-dim' }, '→'), out,
+        el('div', {}, [
+          el('div', { class: 'calc-sb-pair' }, [
+            el('span', { class: 'calc-dim' }, SB.output_now ? money0(SB.output_now) : '—'),
+            el('span', { class: 'calc-dim' }, '→'), out,
+          ]),
+          outHintBox,
         ]), outHint),
       field('Минимальная маржа', mm,
         SB.can_edit
@@ -2285,7 +2304,9 @@
   function sbTable() {
     const HEAD = [
       ['Товар', 'Клик по строке — из чего складывается цена.'],
-      ['Объём', 'Слева — сколько клиент берёт сейчас. Справа — сколько обещает брать за скидку.'],
+      // Период раньше нигде не был написан, и объём читали то как месячный,
+      // то как разовый. Считается он месячным — так и подписываем.
+      ['Объём, шт/мес', 'Штук (упаковок) в месяц, не килограммов.\n\nСлева — сколько клиент берёт сейчас. Справа — сколько обещает брать за скидку.\n\nНовый товар: слева 0, справа — обещанный объём.'],
       ['Цена', 'Слева — цена по выбранному прайсу. Справа — та, которую просит клиент.'],
       ['Скидка', 'На сколько процентов новая цена ниже прайсовой.'],
       ['Маржа', 'Сколько процентов цены остаётся компании после всех расходов и налогов.\n\nКрасным — если ушла ниже минимальной.'],

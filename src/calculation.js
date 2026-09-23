@@ -1566,14 +1566,15 @@ const mul = (v, k) => (v === null || v === undefined ? null : v * k);
 const sumRu = (v) => Math.round(v).toLocaleString('ru-RU');
 function sandboxVerdict(lines, delta, minMargin) {
   if (!lines.length) return null;
-  // Без объёма «сейчас» сравнивать не с чем: «было» посчиталось бы от нуля или
-  // от случайной единицы, и любая скидка выглядела бы выгодной.
-  const noQty = lines.filter((x) => !(x.qty > 0));
+  // Объём не задан вообще — считать нечего. А вот «берёт сейчас = 0», но
+  // «обещает взять» заполнено — это НОВЫЙ товар: сравнивать не с чем по самой
+  // природе сделки, и требовать «сколько берёт сейчас» бессмысленно.
+  const noQty = lines.filter((x) => !(x.qty > 0) && !(x.qty_new > 0));
   if (noQty.length) {
     return {
       level: 'warn',
-      text: 'Впишите объём, который клиент берёт сейчас' + (lines.length > 1 ? ' («' + noQty.map((x) => x.name).join('», «') + '»)' : '')
-        + '. Без него не с чем сравнивать: скидка будет выглядеть выгодной при любых цифрах.',
+      text: 'Впишите объём' + (lines.length > 1 ? ' («' + noQty.map((x) => x.name).join('», «') + '»)' : '')
+        + ': сколько клиент берёт сейчас, а для нового товара — сколько обещает брать.',
     };
   }
   if (lines.some((x) => x.now.incomplete)) {
@@ -1588,6 +1589,16 @@ function sandboxVerdict(lines, delta, minMargin) {
     };
   }
   if (delta === null) return null;
+  // Всё в сценарии — новое: сравнивать не с чем, поэтому говорим не «скидка
+  // окупается», а сколько сделка принесёт. Это другой вопрос и другой ответ.
+  if (lines.every((x) => !(x.qty > 0))) {
+    return {
+      level: delta > 0 ? 'good' : 'bad',
+      text: delta > 0
+        ? 'Новый товар: принесёт ' + sumRu(delta) + ' сум вклада в месяц — это деньги на аренду, зарплаты и прибыль.'
+        : 'Новый товар по этой цене отнимает ' + sumRu(-delta) + ' сум в месяц: каждая проданная единица дешевле того, во что обходится.',
+    };
+  }
   if (delta >= 0) {
     return {
       level: 'good',
@@ -2066,3 +2077,6 @@ module.exports.MANUAL_SHEETS = MANUAL_SHEETS;
 // Открыто для тестов: именно это соответствие решает, данные какой вкладки
 // закрывать. Промах здесь тихо открыл бы чужой лист.
 module.exports.calcTabOf = calcTabOf;
+// Открыто для тестов: вердикт песочницы — это то, на что смотрит продажник,
+// решая, давать скидку или нет.
+module.exports.sandboxVerdict = sandboxVerdict;

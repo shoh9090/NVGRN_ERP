@@ -73,6 +73,10 @@ input.calc-cell:focus, input.calc-name:focus {
 }
 .calc-ro { color: var(--ink); }
 .calc-dim { color: var(--ink-faint); font-style: italic; font-size: 12.5px; }
+/* Подсказка-действие: выглядит ссылкой, а не кнопкой — она предлагает, а не требует. */
+.calc-link { background: none; border: 0; padding: 0; cursor: pointer; font-weight: 700;
+  color: var(--forest, #163a28); text-decoration: underline; font-family: inherit; }
+.calc-link:hover { color: var(--lime-d, #6f9e2f); }
 .calc-hintcell { cursor: help; }
 
 /* Столбец «откуда факт» */
