@@ -238,6 +238,42 @@ const TOOLS = [
     },
   },
   {
+    name: 'prodazhi_po_tovaram',
+    tile: ['/cash', '/tgbot'],
+    description: 'Продажи по товарам за любой период: сколько штук и на какую сумму. Можно спросить один товар '
+      + '(«сколько продали айсберга на прошлой неделе») или топ за период. Даты в виде 2026-09-15.',
+    schema: { type: 'object', properties: {
+      from: { type: 'string', description: 'с какой даты' },
+      to: { type: 'string', description: 'по какую дату' },
+      product: { type: 'string', description: 'часть названия товара, если нужен один' },
+      client: { type: 'string', description: 'часть названия клиента, если нужен разрез по одному клиенту' },
+      limit: { type: 'number', description: 'сколько строк вернуть, по умолчанию 10' },
+    }, additionalProperties: false },
+    run: async (args) => {
+      const sd = require('./sd-sales');
+      const cov = await sd.coverage();
+      const to = day(args.to, cov.last_day || today());
+      const from = day(args.from, to.slice(0, 8) + '01');
+      const p = [from, to];
+      let w = '';
+      if (String(args.product || '').trim()) { p.push('%' + String(args.product).trim() + '%'); w += ` AND product_name ILIKE $${p.length}`; }
+      if (String(args.client || '').trim()) { p.push('%' + String(args.client).trim() + '%'); w += ` AND client_name ILIKE $${p.length}`; }
+      const n = Math.min(Math.max(parseInt(args.limit, 10) || 10, 1), 30);
+      const rows = (await db.pool.query(
+        `SELECT product_name AS товар, SUM(qty)::numeric AS штук, SUM(amount - returned)::numeric AS сумма
+           FROM sd_sales WHERE day BETWEEN $1 AND $2${w}
+          GROUP BY product_name ORDER BY 2 DESC LIMIT ${n}`, p)).rows;
+      if (!rows.length) {
+        return { период: `${from} — ${to}`, итог: cov.days ? 'За этот период таких продаж нет'
+          : 'Продажи из SalesDoctor ещё не выгружены' };
+      }
+      const itog = rows.reduce((s, r) => ({ штук: s.штук + Number(r.штук), сумма: s.сумма + Number(r.сумма) }), { штук: 0, сумма: 0 });
+      return { период: `${from} — ${to}`, выгружено_по: cov.last_day,
+        товары: rows.map((r) => ({ товар: r.товар, штук: Math.round(Number(r.штук)), сумма: money(r.сумма) })),
+        итого: { штук: Math.round(itog.штук), сумма: money(itog.сумма) } };
+    },
+  },
+  {
     name: 'prodazhi_po_klientam',
     tile: ['/cash', '/tgbot'],
     tab: { '/cash': 'pnl' },
