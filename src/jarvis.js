@@ -134,6 +134,10 @@ router.get('/api/sd/sales', async (req, res) => {
   try { res.json(await require('./sd-sales').coverage()); }
   catch (e) { res.status(400).json({ error: e.message }); }
 });
+router.get('/api/sd/months', async (req, res) => {
+  try { res.json({ months: await require('./sd-sales').byMonth() }); }
+  catch (e) { res.status(400).json({ error: e.message }); }
+});
 router.post('/api/sd/backfill', J, async (req, res) => {
   if (onlyAdmin(req, res)) return;
   try {

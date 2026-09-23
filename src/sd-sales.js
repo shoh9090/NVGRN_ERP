@@ -182,6 +182,15 @@ async function backfillStep() {
   return s;
 }
 
+// Сколько строк по месяцам — чтобы видеть дырки в истории (месяц без данных).
+async function byMonth() {
+  await ensureSchema();
+  return (await db.pool.query(
+    `SELECT to_char(day, 'YYYY-MM') AS month, COUNT(DISTINCT day)::int AS days,
+            COUNT(*)::int AS rows, COALESCE(SUM(amount - returned), 0)::numeric AS amount
+       FROM sd_sales GROUP BY 1 ORDER BY 1`)).rows;
+}
+
 // Что вообще есть в базе — для плитки и для честного ответа «за этот день выгрузки нет».
 async function coverage() {
   await ensureSchema();
@@ -192,4 +201,4 @@ async function coverage() {
   return { ...r, backfill: await backfillState() };
 }
 
-module.exports = { ensureSchema, syncRange, syncRecent, startBackfill, backfillStep, backfillState, coverage, KEEP_MONTHS };
+module.exports = { ensureSchema, byMonth, syncRange, syncRecent, startBackfill, backfillStep, backfillState, coverage, KEEP_MONTHS };
