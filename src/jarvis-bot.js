@@ -931,12 +931,15 @@ async function tick() {
     if (!got) return;
     try {
       const rules = await loadRules();
+      // Продажи из SalesDoctor — независимый источник, и обновляются первыми.
+      // Раньше они стояли в конце такта, после Trello: не настроен Trello или
+      // он ответил ошибкой — и Джарвис молча отвечал по вчерашним продажам.
+      await sdSalesTick().catch((e) => console.warn('[ПРОДАЖИ SD]', e.message));
       if (!rules.workspace_id || !trello.configured()) return;
       const people = await trackedPeople();
       const scan = await scanWorkspace(rules);
       await syncComments(rules, scan, people);
       await remindAll(rules, scan, people, Date.now());
-      await sdSalesTick().catch((e) => console.warn('[ПРОДАЖИ SD]', e.message));
       Object.assign(status, { last_sync: new Date().toISOString(), last_error: null, boards: scan.boards.length, cards: scan.cards.length });
     } finally { await client.query('SELECT pg_advisory_unlock(772031)').catch(() => {}); }
   } catch (e) {

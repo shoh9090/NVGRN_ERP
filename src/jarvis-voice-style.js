@@ -26,10 +26,15 @@ const SYSTEM = [
 // Сравниваем набор чисел в фактах и в ответе — расхождение значит «не доверяем».
 const numbersOf = (s) => (String(s).match(/\d[\d  ]*/g) || []).map((x) => x.replace(/\D/g, '')).filter(Boolean);
 function numbersKept(source, result) {
+  // Сравниваем ВСЕ числа, включая однозначные. Раньше короткие не проверялись,
+  // и «ответь за 3 дня» спокойно превращалось в «за 9 дней»: срок изменился,
+  // а проверка пропускала. Правило простое: набор чисел обязан совпасть.
+  // Не совпал — отправляем исходный текст, без оживления. Это не потеря:
+  // сообщение уходит как раньше, просто сухое.
   const want = new Set(numbersOf(source));
   const got = new Set(numbersOf(result));
-  for (const n of want) if (n.length > 1 && !got.has(n)) return false;   // потеряли значимое число
-  for (const n of got) if (n.length > 2 && !want.has(n)) return false;   // приписали своё
+  for (const n of want) if (!got.has(n)) return false;   // потеряли число
+  for (const n of got) if (!want.has(n)) return false;   // приписали своё
   return true;
 }
 
