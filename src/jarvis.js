@@ -134,6 +134,12 @@ router.get('/api/sd/sales', async (req, res) => {
   try { res.json(await require('./sd-sales').coverage()); }
   catch (e) { res.status(400).json({ error: e.message }); }
 });
+// Наблюдения Джарвиса («Обратите внимание») — те же, что уходят в утреннюю
+// сводку. Здесь видно все, чтобы проверить формулировки до рассылки.
+router.get('/api/insights', async (req, res) => {
+  try { res.json({ items: await require('./jarvis-insights').collect(db.pool) }); }
+  catch (e) { res.status(400).json({ error: e.message }); }
+});
 router.get('/api/sd/months', async (req, res) => {
   try { res.json({ months: await require('./sd-sales').byMonth() }); }
   catch (e) { res.status(400).json({ error: e.message }); }
