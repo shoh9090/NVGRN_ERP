@@ -50,7 +50,32 @@ function mdToHtml(text) {
     .replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s).,:;!?]|$)/g, '$1<i>$2</i>')
     .replace(/(^|[\s(])_([^_\n]+)_(?=[\s).,:;!?]|$)/g, '$1<i>$2</i>')
     .replace(/^\s*[-*]\s+/gm, '• ')                 // маркеры списка — точками
-    .replace(/^\s*(#{1,6})\s*(.+)$/gm, '<b>$2</b>'); // заголовки — просто жирным
+    .replace(/^\s*(#{1,6})\s*(.+)$/gm, '<b>$2</b>') // заголовки — просто жирным
+    // Модель по инструкции выделяет важное тегами <b>…</b>. После esc() они
+    // превращались в текст «&lt;b&gt;» и показывались в чате как теги. Возвращаем
+    // обратно — но только этот короткий список, всё остальное остаётся текстом.
+    .replace(/&lt;(\/?(?:b|i|u|s|code|pre))&gt;/g, '<$1>');
+}
+
+// Telegram не принимает сообщение длиннее 4096 символов: длинный ответ просто
+// не доходил, а в журнале стояло «отправлено». Режем по строкам и отвечаем
+// честно, дошло ли всё.
+async function sendLong(chatId, html, extra = {}) {
+  const LIMIT = 3800;
+  if (html.length <= LIMIT) return !!(await send(chatId, html, extra));
+  const chunks = [];
+  let cur = '';
+  for (const line of String(html).split('\n')) {
+    if (cur && (cur.length + 1 + line.length) > LIMIT) { chunks.push(cur); cur = line; }
+    else cur = cur ? cur + '\n' + line : line;
+  }
+  if (cur) chunks.push(cur);
+  let ok = true;
+  for (let i = 0; i < chunks.length; i++) {
+    const r = await send(chatId, chunks[i], i === chunks.length - 1 ? extra : {});
+    if (!r) ok = false;
+  }
+  return ok;
 }
 const send = (chatId, html, extra = {}) => tg('sendMessage', { chat_id: chatId, text: html, parse_mode: 'HTML', disable_web_page_preview: true, ...extra });
 // Кнопки внизу — частые вопросы одним нажатием. Они идут МИМО ИИ: читают базу
@@ -258,10 +283,12 @@ async function aiAnswer(chatId, me, question, rules) {
       onStep: () => tg('sendChatAction', { chat_id: chatId, action: 'typing' }),
     });
     const text = out.text || 'Не понял вопрос. Спросите иначе.';
-    await send(chatId, mdToHtml(text), menu);
+    // В журнал пишем, дошёл ли ответ на самом деле. Раньше там всегда стояло
+    // «отправлено», даже когда Telegram отвечал ошибкой.
+    const ok = await sendLong(chatId, mdToHtml(text), menu);
     await log('ai', me.employee_id, null,
       `${question.slice(0, 200)} → ${text.slice(0, 300)} [${provider}, ${out.used.join(', ') || 'без инструментов'}, ${Math.round((Date.now() - started) / 100) / 10} с]`,
-      true, null);
+      ok, null);
   } catch (e) {
     await send(chatId, 'Не получилось ответить: ' + esc(e.message));
     await log('ai', me.employee_id, null, `${question.slice(0, 200)} → ошибка: ${e.message}`, false, null);

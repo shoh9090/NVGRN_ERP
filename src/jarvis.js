@@ -275,10 +275,20 @@ router.get('/api/log', async (req, res) => {
   try {
     await ensureSchema();
     const kind = LOG_KINDS.includes(req.query.kind) ? req.query.kind : null;
-    const items = (await db.pool.query(
-      `SELECT l.id, l.kind, l.card_name, l.card_url, l.text, l.sent, l.created_at, e.full_name
+    const rows = (await db.pool.query(
+      `SELECT l.id, l.kind, l.card_name, l.card_url, l.text, l.sent, l.created_at, e.full_name, e.erp_user_id
          FROM jarvis_log l LEFT JOIN hr_employees e ON e.id = l.employee_id
         WHERE ($1::text IS NULL OR l.kind = $1) ORDER BY l.created_at DESC LIMIT 300`, [kind])).rows;
+    // Личный разговор с Джарвисом — это чужая переписка: в ней бывает зарплата
+    // и цифры, закрытые для читающего. Сам факт разговора виден всем (сколько
+    // спрашивают — полезно знать), а содержание — только автору и админу.
+    const PRIVATE = new Set(['ai', 'voice']);
+    const items = rows.map((r) => {
+      const mine = req.user && r.erp_user_id && Number(r.erp_user_id) === Number(req.user.id);
+      const hide = PRIVATE.has(r.kind) && !(req.user && req.user.isAdmin) && !mine;
+      const { erp_user_id, ...row } = r;
+      return hide ? { ...row, text: 'личный разговор — содержание видно автору и администратору', private: true } : row;
+    });
     const counts = (await db.pool.query(
       `SELECT kind, count(*)::int AS n FROM jarvis_log WHERE created_at > now() - interval '30 days' GROUP BY kind`)).rows;
     const waiting = (await db.pool.query(
