@@ -125,6 +125,7 @@
     const mVio = numInp(r.mention_violation_h, { step: '0.5' });
     const oVio = numInp(r.overdue_violation_days);
     const stale = numInp(r.stale_days, { min: '1' });
+    const mStale = numInp(r.mention_stale_days, { min: '1' });
     const dueAsk = numInp(r.due_ask_after_h, { step: '0.5' });
     const cap = numInp(r.daily_cap, { min: '1' });
     const salesDays = numInp(r.sales_digest_days, { min: '0' });
@@ -240,6 +241,7 @@
           field('Новую карточку не трогать', dueAsk, 'рабочих часов — человек ещё сам может поставить срок'),
           field('Сигнал о переносах срока', moves, 'после стольких переносов Джарвис напишет руководителю'),
           field('Карточка без движения', stale, 'дней — потом одно напоминание списком'),
+          field('Упоминание протухает', mStale, 'дней — старше этого ответа уже никто не ждёт'),
           field('Кто отвечает на вопросы', aiProv, 'ключи лежат в Railway, в ERP их не видно'),
           field('Модель ИИ', aiModel, 'пусто — claude-sonnet-5'),
           field('Чем распознаём речь', voiceModel, 'пусто — whisper-1'),
@@ -267,7 +269,7 @@
           stale_days: stale.value, fine_mention: fM.value, fine_overdue: fO.value, fines_enabled: finesOn.checked,
           reminders_enabled: remOn.checked, due_required_h: dueH.value, moves_alert: moves.value,
           due_ask_after_h: dueAsk.value, daily_cap: cap.value, mute_clients: mute.value,
-          sales_digest_days: salesDays.value,
+          sales_digest_days: salesDays.value, mention_stale_days: mStale.value,
           ai_enabled: aiOn.checked, ai_provider: aiProv.value, ai_model: aiModel.value,
           voice_enabled: voiceOn.checked, voice_model: voiceModel.value, memory_days: memDays.value,
           web_enabled: webOn.checked,

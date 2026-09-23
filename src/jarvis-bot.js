@@ -603,6 +603,13 @@ async function syncComments(rules, scan, people) {
     for (const u of R.parseMentions(via ? via.text : d.text)) {
       const p = byUser.get(u);
       if (!p || p.trello_member_id === authorMember) continue;
+      // Разговор ушёл дальше: в карточке попросили уже другого человека —
+      // значит, старое упоминание больше никого не ждёт (замечание Шоха:
+      // «Абдушукур написал Угилой, почему это снова у меня?»).
+      await pool.query(
+        `UPDATE jarvis_mentions SET answered_at = $3, answered_via = 'moved'
+          WHERE card_id = $1 AND answered_at IS NULL AND created_at < $3 AND employee_id <> $2`,
+        [card.id, p.employee_id, a.date]);
       await pool.query(
         `INSERT INTO jarvis_mentions (action_id, member_id, employee_id, card_id, card_name, card_url, board_name,
            author_member_id, author_name, text, created_at)
@@ -613,6 +620,13 @@ async function syncComments(rules, scan, people) {
     }
   }
   await setSetting('jarvis_sync_since', maxDate);
+  // Упоминание старше mention_stale_days — протухло. Если за две недели
+  // никто о нём не вспомнил, это не задача, а история переписки.
+  await pool.query(
+    `UPDATE jarvis_mentions SET answered_at = now(), answered_via = 'stale'
+      WHERE answered_at IS NULL AND created_at < now() - ($1 || ' days')::interval`,
+    [String(rules.mention_stale_days)]);
+
   // Карточка сделана — ждать ответа больше не от кого: её перенесли в колонку
   // «Сделано/Готово», отметили выполненной или убрали в архив (решение Шоха).
   const waiting = new Set(scan.cards.filter((c) => !isDone(c, scan)).map((c) => c.id));

@@ -15,6 +15,7 @@ const DEFAULTS = {
   mention_violation_h: 10,   // …и нарушение через N рабочих часов
   overdue_violation_days: 1, // срок карточки прошёл: нарушение через N рабочих дней
   stale_days: 7,             // карточка без движения: одно напоминание, без штрафа
+  mention_stale_days: 14,    // упоминание старше — протухло, ответа уже никто не ждёт
   due_ask_after_h: 3,        // сколько рабочих часов не трогать новую карточку без срока
   daily_cap: 8,              // потолок сообщений Джарвиса одному человеку в день
   due_required_h: 4,         // карточка в работе без срока: столько рабочих часов на срок
@@ -62,6 +63,7 @@ function normalizeRules(raw) {
     num(r.mention_violation_h, DEFAULTS.mention_violation_h, 0.5, 200));
   out.overdue_violation_days = Math.round(num(r.overdue_violation_days, DEFAULTS.overdue_violation_days, 0, 30));
   out.stale_days = Math.round(num(r.stale_days, DEFAULTS.stale_days, 1, 90));
+  out.mention_stale_days = Math.round(num(r.mention_stale_days, DEFAULTS.mention_stale_days, 1, 180));
   out.due_ask_after_h = num(r.due_ask_after_h, DEFAULTS.due_ask_after_h, 0, 100);
   out.daily_cap = Math.round(num(r.daily_cap, DEFAULTS.daily_cap, 1, 50));
   out.sales_digest_days = Math.round(num(r.sales_digest_days, DEFAULTS.sales_digest_days, 0, 30));

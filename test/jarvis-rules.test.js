@@ -223,3 +223,9 @@ test('интернет: по умолчанию выключен, включае
   assert.strictEqual(normalizeRules({ web_enabled: true }).web_enabled, true);
   assert.strictEqual(normalizeRules({ web_enabled: 'нет' }).web_enabled, false);
 });
+
+test('упоминание протухает: две недели по умолчанию', () => {
+  assert.strictEqual(normalizeRules({}).mention_stale_days, 14);
+  assert.strictEqual(normalizeRules({ mention_stale_days: 0 }).mention_stale_days, 1);
+  assert.strictEqual(normalizeRules({ mention_stale_days: 999 }).mention_stale_days, 180);
+});
