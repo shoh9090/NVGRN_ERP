@@ -378,6 +378,12 @@ async function cardInWorkspace(cardId) {
 }
 
 async function postReply(chatId, me, p, text) {
+  // Перед самой записью проверяем ещё раз. Между нажатием кнопки и отправкой
+  // текста проходит до получаса: карточку могли закрыть, перенести на чужую
+  // доску или убрать из пространства — писать в неё уже нельзя.
+  if (!await cardInWorkspace(p.cardId)) {
+    return send(chatId, 'Эта карточка больше не в рабочем пространстве — ответ не опубликован.', menu);
+  }
   try {
     await trello.addComment(p.cardId, me.full_name + R.VIA + text.slice(0, 3000));
   } catch (e) {
@@ -393,6 +399,11 @@ async function postReply(chatId, me, p, text) {
 
 // Срок поставлен из бота — сразу в Trello и в журнал.
 async function applyDue(chatId, me, target, dueIso) {
+  // Как и с ответом: дату человек вводит отдельным шагом, и к этому моменту
+  // карточка могла уехать из пространства. Проверяем перед записью.
+  if (!await cardInWorkspace(target.cardId)) {
+    return send(chatId, 'Эта карточка больше не в рабочем пространстве — срок не поставлен.', menu);
+  }
   try { await trello.setDue(target.cardId, dueIso); }
   catch (e) { return send(chatId, 'Не получилось поставить срок в Trello: ' + esc(e.message)); }
   await pool.query(
@@ -964,12 +975,28 @@ async function start(p) {
   setInterval(tick, TICK_MS);
 }
 
+// Номера уже обработанных сообщений. Telegram изредка присылает одно и то же
+// обновление дважды — например, если сеть оборвалась до нашего ответа. Второй
+// раз публиковать комментарий в карточке или ставить срок нельзя.
+const seenUpdates = new Set();
+function firstTime(id) {
+  if (id === undefined || id === null) return true;
+  if (seenUpdates.has(id)) return false;
+  seenUpdates.add(id);
+  // Держим в памяти последнюю тысячу — этого с запасом хватает на повторы.
+  if (seenUpdates.size > 1000) {
+    for (const v of seenUpdates) { seenUpdates.delete(v); if (seenUpdates.size <= 800) break; }
+  }
+  return true;
+}
+
 // Express-обработчик адреса, на который Telegram присылает сообщения.
 function webhook(req, res) {
   if (!token() || req.params.secret !== secret() || req.get('X-Telegram-Bot-Api-Secret-Token') !== secret()) {
     return res.status(404).end();
   }
   res.sendStatus(200); // Telegram ждёт быстрый ответ; обработка — следом
+  if (!firstTime((req.body || {}).update_id)) return;
   if (pool) handleUpdate(req.body || {}).catch((e) => console.warn('[ДЖАРВИС] сообщение:', e.message));
 }
 
