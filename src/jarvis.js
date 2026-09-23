@@ -70,16 +70,6 @@ router.get('/api/state', async (req, res) => {
     out.voice = { ready: require('./stt').configured() };
     out.ai = { claude: ai.hasKey('claude'), openai: ai.hasKey('openai'),
       tools: require('./ai-tools').TOOLS.map((t) => ({ name: t.name, tile: t.tile, description: t.description })) };
-    // Кто из сотрудников открыл бота. Джарвис не может написать первым тому,
-    // кто не нажал «Старт»: до таких людей напоминания просто не доходят,
-    // и это надо видеть сразу, а не выяснять по факту молчания.
-    out.staff = (await db.pool.query(
-      `SELECT e.full_name, d.name AS department_name, (u.jv_chat_id IS NOT NULL) AS in_bot
-         FROM hr_employees e
-         JOIN users u ON u.id = e.erp_user_id AND u.is_active = TRUE
-         LEFT JOIN hr_departments d ON d.id = e.department_id
-        WHERE e.status = 'active'
-        ORDER BY (u.jv_chat_id IS NOT NULL), e.full_name`)).rows;
     // Роли для раздела «Кто вносит»: сколько в роли людей и сколько из них в боте —
     // видно сразу, дойдёт ли напоминание.
     out.roles = (await db.pool.query(
