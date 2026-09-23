@@ -568,6 +568,7 @@ async function remindAll(rules, scan, people, now) {
   }
   await dueControl(rules, scan, byMember, deliver, now);
   await morning(rules, overdueBy, now);
+  await weeklySilent(rules, now).catch((e) => console.warn('[ДЖАРВИС] молчуны:', e.message));
 
   // 3. Карточки без движения — ОДНО сообщение списком на человека в неделю.
   // Раньше на каждую карточку шло отдельное сообщение: у людей было по три
@@ -795,6 +796,54 @@ async function sdSalesTick() {
   await pool.query(`INSERT INTO settings (key, value) VALUES ($1, $2)
                     ON CONFLICT (key) DO UPDATE SET value = $2`, [key, day]);
   console.log(`[ПРОДАЖИ SD] ночью обновлено ${r.from}…${r.to}: строк ${r.rows}`);
+}
+
+// ---------- Раз в неделю: кто не отвечает ----------
+// Просьба Шоха: «пошевелить» тех, кто не реагирует вообще. Человеку — лично и
+// с подначкой (текст пишет модель, цифры наши), руководителю — сухим списком.
+// Раз в неделю, в понедельник утром: чаще это уже травля, а не напоминание.
+async function weeklySilent(rules, now) {
+  if (!rules.reminders_enabled || !R.isWorkTime(now, rules)) return;
+  const local = new Date(now + 5 * 3600000);
+  if (local.getUTCDay() !== 1) return;                      // только понедельник
+  const hour = (now + 5 * 3600000) % 86400000 / 3600000;
+  if (hour >= rules.work_from + 3) return;
+  const week = Math.floor(now / (7 * 86400000));
+  const people = await require('./jarvis-insights').silentPeople(pool, 7);
+  if (!people.length) return;
+  const liven = require('./jarvis-voice-style').liven;
+
+  for (const p of people.filter((x) => x.in_bot)) {
+    const key = `sil:${p.employee_id}:${week}`;
+    if (await seen(key)) continue;
+    const chat = ((await pool.query(
+      'SELECT u.jv_chat_id FROM users u JOIN hr_employees e ON e.erp_user_id = u.id WHERE e.id = $1',
+      [p.employee_id])).rows[0] || {}).jv_chat_id;
+    if (!chat) continue;
+    const name = String(p.full_name).split(/\s+/)[1] || p.full_name;
+    const facts = `За неделю я написал тебе ${p.reminds} раз, а ответа не было ни разу.\n`
+      + (p.open_mentions ? `Упоминаний без ответа в Trello: ${p.open_mentions}.\n` : '')
+      + 'Нажми «📋 Мои карточки» — там всё, что ждёт тебя, и кнопка «Ответить».';
+    const ok = !!(await send(chat, await liven(facts, rules, name), menu));
+    await log('remind_silent', p.employee_id, null, `Напоминаний ${p.reminds}, ответов 0`, ok, key);
+  }
+
+  // Руководителям — общий список, без иронии: это разговор про людей.
+  const bossKey = `silboss:${week}`;
+  if (await seen(bossKey)) return;
+  const bosses = (await pool.query(
+    `SELECT DISTINCT u.jv_chat_id FROM users u
+       JOIN user_roles ur ON ur.user_id = u.id JOIN roles r ON r.id = ur.role_id
+      WHERE r.is_admin = TRUE AND u.is_active = TRUE AND u.jv_chat_id IS NOT NULL`)).rows.map((r) => r.jv_chat_id);
+  if (!bosses.length) return;
+  const lines = people.map((p) => `• ${esc(p.full_name)} — ${p.reminds} напоминаний, ответов 0`
+    + (p.open_mentions ? `, упоминаний без ответа ${p.open_mentions}` : '')
+    + (p.in_bot ? '' : ' (бота не открыл)'));
+  for (const chat of bosses) {
+    await send(chat, `🙊 <b>За неделю не отреагировали ни разу:</b>\n${lines.join('\n')}\n\n`
+      + 'Каждому я написал лично. Кто не открыл бота — ему я писать не могу, это только через вас.', menu);
+  }
+  await log('remind_silent', null, null, `Сводка руководителю: ${people.length} чел.`, true, bossKey);
 }
 
 // ---------- Такт ----------

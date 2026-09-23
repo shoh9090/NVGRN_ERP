@@ -92,6 +92,39 @@ async function stockRunningOut(pool) {
       ORDER BY days_left LIMIT 5`, [STOCK_DAYS_LEFT])).rows;
 }
 
+// «Молчуны»: кому Джарвис писал, а человек ни разу не отреагировал.
+// Считаем по журналу: сколько ушло напоминаний и сколько было действий в ответ
+// (ответ в карточку, поставленный срок). Ноль действий при трёх и более
+// напоминаниях — человек просто не читает бота.
+const SILENT_MIN_REMINDS = 3;
+async function silentPeople(pool, days = 7) {
+  return (await pool.query(
+    `WITH sent AS (
+       SELECT employee_id, COUNT(*)::int AS n FROM jarvis_log
+        WHERE sent = TRUE AND employee_id IS NOT NULL
+          AND created_at > now() - ($1 || ' days')::interval
+          AND kind IN ('remind_mention', 'remind_no_due', 'remind_stale', 'remind_overdue',
+                       'violation_mention', 'violation_overdue', 'violation_no_due', 'morning')
+        GROUP BY 1),
+     acted AS (
+       SELECT employee_id, COUNT(*)::int AS n FROM jarvis_log
+        WHERE employee_id IS NOT NULL AND created_at > now() - ($1 || ' days')::interval
+          AND kind IN ('reply', 'due_set', 'ai', 'voice')
+        GROUP BY 1),
+     open_m AS (
+       SELECT employee_id, COUNT(*)::int AS n FROM jarvis_mentions
+        WHERE answered_at IS NULL AND employee_id IS NOT NULL GROUP BY 1)
+     SELECT e.id AS employee_id, e.full_name, s.n AS reminds,
+            COALESCE(o.n, 0) AS open_mentions, (u.jv_chat_id IS NOT NULL) AS in_bot
+       FROM sent s
+       JOIN hr_employees e ON e.id = s.employee_id AND e.status = 'active'
+       LEFT JOIN users u ON u.id = e.erp_user_id
+       LEFT JOIN acted a ON a.employee_id = s.employee_id
+       LEFT JOIN open_m o ON o.employee_id = s.employee_id
+      WHERE COALESCE(a.n, 0) = 0 AND s.n >= $2
+      ORDER BY s.n DESC LIMIT 10`, [String(days), SILENT_MIN_REMINDS])).rows;
+}
+
 // Наблюдения по плиткам: что показывать человеку с такими правами.
 // Возвращает [{ tile, icon, text }] — текст уже готов, модель не нужна.
 async function collect(pool, rules) {
@@ -126,4 +159,4 @@ async function collect(pool, rules) {
   return out;
 }
 
-module.exports = { collect, clientDrops, clientsGone, stockRunningOut, DROP_PCT, STOCK_DAYS_LEFT };
+module.exports = { collect, clientDrops, clientsGone, stockRunningOut, silentPeople, DROP_PCT, STOCK_DAYS_LEFT, SILENT_MIN_REMINDS };

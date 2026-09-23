@@ -354,7 +354,7 @@
     remind_mention: '🔔 Напоминание: упоминание', violation_mention: '⚠️ Нарушение: нет ответа',
     remind_overdue: '☀️ Утренний список просрочек', violation_overdue: '⚠️ Нарушение: просрочка',
     remind_stale: '💤 Без движения', remind_no_due: '📅 Спросили срок', violation_no_due: '⚠️ Нарушение: нет срока',
-    due_set: '📅 Срок поставлен', due_moved: '🔁 Срок перенесён', ai: '🤖 Вопрос Джарвису', voice: '🎧 Голосовое', reply: '✍️ Ответ из Telegram', morning: '☀️ Утренняя сводка',
+    due_set: '📅 Срок поставлен', due_moved: '🔁 Срок перенесён', ai: '🤖 Вопрос Джарвису', voice: '🎧 Голосовое', remind_silent: '🙊 Не отвечает — встряска', reply: '✍️ Ответ из Telegram', morning: '☀️ Утренняя сводка',
   };
   const dt = (v) => v ? new Date(v).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
   const cardLink = (name, url) => url ? el('a', { href: url, target: '_blank', rel: 'noopener' }, name || 'карточка') : (name || '');
