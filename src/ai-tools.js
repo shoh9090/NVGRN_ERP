@@ -28,6 +28,24 @@ const period = (v) => (/^\d{4}-\d{2}$/.test(String(v || '')) ? String(v) : new D
 const today = () => new Date(Date.now() + 5 * 3600000).toISOString().slice(0, 10);
 const day = (v, def) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : def);
 
+// Джарвис должен пересказывать уже собранный P&L, а не выбирать из него свои
+// строки. cogs.fact — это только контроль складских выдач; в прибыль входит
+// единая итоговая себестоимость cogs_total (сырьё из Закупа + упаковка).
+function pnlAnswer(p, per) {
+  const n = (v) => (v === null || v === undefined ? null : money(v));
+  return {
+    месяц: per,
+    выручка: n(p.revenue && p.revenue.total),
+    себестоимость: n(p.cogs_total),
+    операционные_расходы: n(p.opex && p.opex.total),
+    валовая_прибыль: n(p.gross_profit),
+    операционная_прибыль: n(p.operating_profit),
+    чистая_прибыль: n(p.net_profit),
+    маржа_валовая_процент: p.gross_margin_pct === null ? null : Math.round(p.gross_margin_pct),
+    примечание: p.net_profit === null ? 'Прибыль не считается: не хватает данных за месяц' : undefined,
+  };
+}
+
 const TOOLS = [
   {
     name: 'moi_dela',
@@ -181,17 +199,7 @@ const TOOLS = [
     run: async (args) => {
       const per = period(args.month);
       const p = await require('./cash-pnl').buildPnl(db.pool, per);
-      const n = (v) => (v === null || v === undefined ? null : money(v));
-      return {
-        месяц: per,
-        выручка: n(p.revenue && p.revenue.total),
-        себестоимость: n(p.cogs && p.cogs.fact && p.cogs.fact.total),
-        валовая_прибыль: n(p.gross_profit),
-        операционная_прибыль: n(p.operating_profit),
-        чистая_прибыль: n(p.net_profit),
-        маржа_валовая_процент: p.gross_margin_pct === null ? null : Math.round(p.gross_margin_pct),
-        примечание: p.net_profit === null ? 'Прибыль не считается: не хватает данных за месяц' : undefined,
-      };
+      return pnlAnswer(p, per);
     },
   },
   {
@@ -336,4 +344,4 @@ async function toolsFor(user) {
   return out;
 }
 
-module.exports = { TOOLS, toolsFor, hasTile };
+module.exports = { TOOLS, toolsFor, hasTile, pnlAnswer };
