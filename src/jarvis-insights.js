@@ -106,10 +106,17 @@ async function silentPeople(pool, days = 7) {
           AND kind IN ('remind_mention', 'remind_no_due', 'remind_stale', 'remind_overdue',
                        'violation_mention', 'violation_overdue', 'violation_no_due', 'morning')
         GROUP BY 1),
+     -- Реакцией считается ответ на дело, а не болтовня с ботом. Ответ прямо
+     -- в карточке Trello — такая же реакция, как ответ через бота: раньше
+     -- человек отвечал в Trello и всё равно попадал в «не отвечает».
      acted AS (
        SELECT employee_id, COUNT(*)::int AS n FROM jarvis_log
         WHERE employee_id IS NOT NULL AND created_at > now() - ($1 || ' days')::interval
-          AND kind IN ('reply', 'due_set', 'ai', 'voice')
+          AND kind IN ('reply', 'due_set')
+        GROUP BY 1
+        UNION ALL
+       SELECT employee_id, COUNT(*)::int AS n FROM jarvis_mentions
+        WHERE employee_id IS NOT NULL AND answered_at > now() - ($1 || ' days')::interval
         GROUP BY 1),
      open_m AS (
        SELECT employee_id, COUNT(*)::int AS n FROM jarvis_mentions
@@ -119,7 +126,7 @@ async function silentPeople(pool, days = 7) {
        FROM sent s
        JOIN hr_employees e ON e.id = s.employee_id AND e.status = 'active'
        LEFT JOIN users u ON u.id = e.erp_user_id
-       LEFT JOIN acted a ON a.employee_id = s.employee_id
+       LEFT JOIN (SELECT employee_id, SUM(n)::int AS n FROM acted GROUP BY 1) a ON a.employee_id = s.employee_id
        LEFT JOIN open_m o ON o.employee_id = s.employee_id
       WHERE COALESCE(a.n, 0) = 0 AND s.n >= $2
       ORDER BY s.n DESC LIMIT 10`, [String(days), SILENT_MIN_REMINDS])).rows;

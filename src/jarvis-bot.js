@@ -489,6 +489,12 @@ async function log(kind, employeeId, card, text, sent, dedupKey) {
     `INSERT INTO jarvis_log (kind, employee_id, card_id, card_name, card_url, text, sent, dedup_key)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (dedup_key) DO NOTHING RETURNING id`,
     [kind, employeeId, card ? card.id : null, card ? card.name : null, card ? card.url : null, text, !!sent, dedupKey]);
+  // Запись уже была, а сообщение дошло только сейчас (в прошлый раз мешал
+  // дневной потолок или человек ещё не подключился к боту) — поднимаем отметку
+  // «доставлено». Иначе в журнале навсегда оставалось бы «не дошло».
+  if (!r.rows.length && sent && dedupKey) {
+    await pool.query('UPDATE jarvis_log SET sent = TRUE, created_at = now() WHERE dedup_key = $1 AND sent = FALSE', [dedupKey]);
+  }
   return r.rows.length > 0;
 }
 
@@ -526,9 +532,14 @@ async function remindAll(rules, scan, people, now) {
       const card = { id: m.card_id, name: m.card_name, url: m.card_url };
       const quote = m.text ? `\n«${esc(m.text.slice(0, 300))}»` : '';
       if (step === 'remind') {
-        await pool.query('UPDATE jarvis_mentions SET reminded_at = now() WHERE id = $1', [m.id]);
         const ok = await deliver(p, `🔔 Вас упомянули в карточке <b>«${esc(m.card_name)}»</b> (${esc(m.board_name)}) — ${esc(m.author_name)}:${quote}\n\nОтвета пока нет.`,
           cardButtons(m.card_id, m.card_url, m.id));
+        // Отметку «напомнили» ставим ТОЛЬКО когда сообщение ушло. Раньше она
+        // ставилась заранее, и если упёрлись в дневной потолок, человек ещё не
+        // подключился к боту или Telegram ответил ошибкой — напоминание
+        // считалось сделанным и больше не повторялось никогда. Теперь оно
+        // повторится на следующем такте, а в журнале видно «не дошло».
+        if (ok) await pool.query('UPDATE jarvis_mentions SET reminded_at = now() WHERE id = $1', [m.id]);
         await log('remind_mention', m.employee_id, card, m.author_name, ok, 'rm:' + m.id);
       } else {
         await pool.query('UPDATE jarvis_mentions SET violation_at = now(), reminded_at = COALESCE(reminded_at, now()) WHERE id = $1', [m.id]);
