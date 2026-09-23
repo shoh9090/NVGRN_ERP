@@ -699,12 +699,24 @@ async function remindAll(rules, scan, people, now) {
   if (!canSend) return;
 
   // 2. Просроченные карточки: нарушение через N рабочих дней; список — в утренней сводке.
+  // Чей сейчас ход. В карточке обычно несколько участников, но отвечать должен
+  // тот, кого последним попросили: если в карточке есть упоминание без ответа —
+  // мяч у него, остальных не дёргаем (замечание Шоха: «какое отношение это
+  // имеет ко мне? мяч на стороне Угилой»).
+  const ballAt = new Map();
+  for (const r of (await pool.query(
+    `SELECT card_id, array_agg(DISTINCT employee_id) AS emps FROM jarvis_mentions
+      WHERE answered_at IS NULL AND employee_id IS NOT NULL GROUP BY card_id`)).rows) {
+    ballAt.set(r.card_id, new Set(r.emps.map(Number)));
+  }
   const overdueBy = new Map();
   for (const c of scan.cards) {
     if (!isOverdue(c, scan, now)) continue;
+    const ball = ballAt.get(c.id);
     for (const mid of c.idMembers || []) {
       const p = byMember.get(mid);
       if (!p) continue;
+      if (ball && !ball.has(p.employee_id)) continue;   // ход не его — молчим
       if (!overdueBy.has(p.employee_id)) overdueBy.set(p.employee_id, []);
       overdueBy.get(p.employee_id).push(c);
       if (R.overdueIsViolation(Date.parse(c.due), now, rules)) {
@@ -718,7 +730,7 @@ async function remindAll(rules, scan, people, now) {
       }
     }
   }
-  await dueControl(rules, scan, byMember, deliver, now);
+  await dueControl(rules, scan, byMember, deliver, now, ballAt);
   await morning(rules, overdueBy, now);
   await salesDigest(rules, now).catch((e) => console.warn('[ДЖАРВИС] сводка продаж:', e.message));
   await weeklySilent(rules, now).catch((e) => console.warn('[ДЖАРВИС] молчуны:', e.message));
@@ -760,7 +772,7 @@ async function remindAll(rules, scan, people, now) {
 const seen = async (key) => (await pool.query('SELECT 1 FROM jarvis_log WHERE dedup_key = $1', [key])).rows.length > 0;
 
 const ASK_LIMIT = 3;     // столько вопросов про срок одному человеку за полдня
-async function dueControl(rules, scan, byMember, deliver, now) {
+async function dueControl(rules, scan, byMember, deliver, now, ballAt) {
   const rows = new Map((await pool.query('SELECT * FROM jarvis_cards')).rows.map((r) => [r.card_id, r]));
   // Старых карточек без срока много — спрашиваем порциями, а не сваливаем всё разом.
   const asked = new Map((await pool.query(
@@ -772,7 +784,11 @@ async function dueControl(rules, scan, byMember, deliver, now) {
        JOIN user_roles ur ON ur.user_id = u.id JOIN roles r ON r.id = ur.role_id
       WHERE r.is_admin = TRUE AND u.is_active = TRUE AND u.jv_chat_id IS NOT NULL`)).rows.map((r) => r.jv_chat_id);
   for (const c of scan.cards) {
-    const people = (c.idMembers || []).map((m) => byMember.get(m)).filter(Boolean);
+    const ball = ballAt && ballAt.get(c.id);
+    // Спрашиваем срок у того, за кем ход: если в карточке ждут ответа от
+    // конкретного человека, остальных участников не трогаем.
+    const people = (c.idMembers || []).map((m) => byMember.get(m)).filter(Boolean)
+      .filter((p) => !ball || ball.has(p.employee_id));
     if (isDone(c, scan) || !people.length) continue;         // без исполнителя это заметка, а не задача
     const card = { id: c.id, name: c.name, url: c.shortUrl };
     const row = rows.get(c.id);
