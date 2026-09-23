@@ -30,6 +30,7 @@ const DEFAULTS = {
   mute_clients: [],          // клиенты, о которых не напоминать (сменили формат работы, закрылись)
   sales_digest_days: 3,      // как часто РОП получает сводку по притихшим клиентам (0 — не слать)
   ai_model: '',              // пусто = модель поставщика по умолчанию
+  memory_days: 7,            // сколько дней Джарвис помнит разговор (0 — без памяти)
   voice_enabled: true,       // можно ли слать голосовые (нужен ключ OPENAI_API_KEY)
   voice_model: 'whisper-1',  // чем распознаём речь
   enabled_at: '',            // когда включили: часы по старым упоминаниям идут с этого момента
@@ -91,6 +92,7 @@ function normalizeRules(raw) {
   out.ai_enabled = r.ai_enabled === true || r.ai_enabled === 'true';
   out.ai_provider = r.ai_provider === 'openai' ? 'openai' : 'claude';
   out.ai_model = String(r.ai_model || '').trim().slice(0, 60);
+  out.memory_days = Math.round(num(r.memory_days, DEFAULTS.memory_days, 0, 30));
   out.voice_enabled = r.voice_enabled === undefined ? true : (r.voice_enabled === true || r.voice_enabled === 'true');
   out.voice_model = String(r.voice_model || '').trim().slice(0, 60) || DEFAULTS.voice_model;
   // Свои названия колонок, которые тоже считаются закрытыми.

@@ -189,6 +189,10 @@ async function handleUpdate(u) {
   if (text === MENU_MY || text === '/my' || /^мои карточки$/i.test(text)) return myCards(chatId, me);
   if (text === MENU_TODO) return myTodos(chatId, me);
   if (text === MENU_PAY) return mySalary(chatId, me);
+  if (/^(\/forget|забудь|начнём заново|boshqadan)$/i.test(text)) {
+    await pool.query('DELETE FROM jarvis_chat WHERE chat_id = $1', [chatId]);
+    return send(chatId, '🧹 Забыл наш разговор. Начнём с чистого листа.', await kb(chatId));
+  }
   if (text === MENU_SALES || /^(клиенты|сводка по клиентам)$/i.test(text)) return salesNow(chatId, me);
   if (/^(\/help|\/start|помощь|что (ты )?(умеешь|можешь)|чем поможешь|nima qila olasan|yordam)\??$/i.test(text)) return sendHelp(chatId, me);
   if (text) {
@@ -295,7 +299,39 @@ const SYSTEM = [
   'ГРАНИЦЫ ИРОНИИ: там, где деньги, зарплата, нарушения, штрафы, претензии клиентов и чужие ошибки —',
   'никаких шуток, отвечай спокойно и по делу. Никогда не подшучивай над человеком, его работой или его результатами.',
   'Плохие новости (упал спрос, просрочка, нет данных) подавай прямо и без сарказма.',
+  // Память: разговор помним неделю, но цифры в нём — вчерашние.
+  'Ты видишь переписку с этим человеком за последние дни — держи нить разговора,',
+  'короткое «ну давай» или «а по второму» понимай как продолжение предыдущего.',
+  'ВАЖНО: цифры из прошлых сообщений устарели. Спрашивают снова — бери свежие инструментом, а не из истории.',
 ].join(' ');
+
+// Память разговора: последние сообщения за N дней. Берём с конца и не больше
+// разумного объёма — иначе каждый вопрос тащил бы неделю переписки и стоил бы
+// втрое дороже. Цифры из старых сообщений считаются устаревшими: если спросят
+// снова, модель обязана взять свежие инструментом (об этом сказано в SYSTEM).
+const MEMORY_MSGS = 16;
+const MEMORY_CHARS = 6000;
+async function recallChat(chatId, rules) {
+  if (!rules.memory_days) return [];
+  const rows = (await pool.query(
+    `SELECT role, text FROM jarvis_chat
+      WHERE chat_id = $1 AND created_at > now() - ($2 || ' days')::interval
+      ORDER BY created_at DESC LIMIT $3`, [chatId, String(rules.memory_days), MEMORY_MSGS])).rows;
+  const out = [];
+  let size = 0;
+  for (const r of rows) {                       // идём от свежих к старым, пока влезает
+    size += r.text.length;
+    if (size > MEMORY_CHARS) break;
+    out.unshift({ role: r.role === 'assistant' ? 'assistant' : 'user', content: r.text });
+  }
+  return out;
+}
+async function rememberChat(chatId, employeeId, role, text) {
+  await pool.query('INSERT INTO jarvis_chat (chat_id, employee_id, role, text) VALUES ($1,$2,$3,$4)',
+    [chatId, employeeId, role, String(text).slice(0, 4000)]);
+  // Чистим раз в сутки-двое: таблица не должна расти бесконечно.
+  if (Math.random() < 0.02) await pool.query("DELETE FROM jarvis_chat WHERE created_at < now() - interval '14 days'");
+}
 
 async function aiAnswer(chatId, me, question, rules) {
   const ai = require('./ai');
@@ -317,7 +353,7 @@ async function aiAnswer(chatId, me, question, rules) {
     const started = Date.now();
     const out = await ai.ask(provider, {
       model: rules.ai_model, system: SYSTEM + ` Сегодня ${R.localDate(Date.now())}. Спрашивает: ${me.full_name}.`,
-      messages: [{ role: 'user', content: question.slice(0, 2000) }],
+      messages: [...(await recallChat(chatId, rules)), { role: 'user', content: question.slice(0, 2000) }],
       tools, runTool,
       onStep: () => tg('sendChatAction', { chat_id: chatId, action: 'typing' }),
     });
@@ -325,6 +361,11 @@ async function aiAnswer(chatId, me, question, rules) {
     // В журнал пишем, дошёл ли ответ на самом деле. Раньше там всегда стояло
     // «отправлено», даже когда Telegram отвечал ошибкой.
     const ok = await sendLong(chatId, mdToHtml(text), await kb(chatId));
+    // Запоминаем разговор, чтобы следующее «ну давай» было понятно.
+    if (rules.memory_days) {
+      await rememberChat(chatId, me.employee_id, 'user', question);
+      await rememberChat(chatId, me.employee_id, 'assistant', text);
+    }
     await log('ai', me.employee_id, null,
       `${question.slice(0, 200)} → ${text.slice(0, 300)} [${provider}, ${out.used.join(', ') || 'без инструментов'}, ${Math.round((Date.now() - started) / 100) / 10} с]`,
       ok, null);

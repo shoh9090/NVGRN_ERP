@@ -143,6 +143,7 @@
     const aiModel = inp(r.ai_model, { placeholder: 'по умолчанию: claude-sonnet-5', style: 'min-width:260px' });
     const voiceOn = el('input', { type: 'checkbox', checked: r.voice_enabled, disabled: dis });
     const voiceModel = inp(r.voice_model, { placeholder: 'whisper-1', style: 'min-width:200px' });
+    const memDays = numInp(r.memory_days, { min: '0', max: '30' });
 
     // Кто вносит: у дела цепочка ответственных — кто первый и кто подхватывает.
     const ownerChain = {};
@@ -241,6 +242,7 @@
           field('Кто отвечает на вопросы', aiProv, 'ключи лежат в Railway, в ERP их не видно'),
           field('Модель ИИ', aiModel, 'пусто — claude-sonnet-5'),
           field('Чем распознаём речь', voiceModel, 'пусто — whisper-1'),
+          field('Помнит разговор', memDays, 'дней; 0 — каждый вопрос с чистого листа. «забудь» в боте стирает переписку'),
           field('Сводка РОПу по клиентам', salesDays, 'раз во столько дней; 0 — не слать. Приходит разложенной по менеджерам, чтобы переслать'),
           field('Не следить за клиентами', mute, 'через запятую: про них не писать «перестал брать» — например, сменился формат работы'),
         ]),
@@ -266,7 +268,7 @@
           due_ask_after_h: dueAsk.value, daily_cap: cap.value, mute_clients: mute.value,
           sales_digest_days: salesDays.value,
           ai_enabled: aiOn.checked, ai_provider: aiProv.value, ai_model: aiModel.value,
-          voice_enabled: voiceOn.checked, voice_model: voiceModel.value,
+          voice_enabled: voiceOn.checked, voice_model: voiceModel.value, memory_days: memDays.value,
           done_lists: doneExtra.value,
           owners: Object.fromEntries(Object.entries(ownerChain).map(([k, c]) => [k,
             [c.first.value ? { role: c.first.value, after_h: 0 } : null,

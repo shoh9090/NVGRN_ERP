@@ -51,6 +51,19 @@ async function ensureJarvisSchema(pool) {
   // Сколько было в прошлый раз: стало меньше — работа идёт, часы считаем заново.
   await q('ALTER TABLE jarvis_todo_state ADD COLUMN IF NOT EXISTS last_count INT');
 
+  // Переписка с Джарвисом: нужна, чтобы он помнил разговор, а не отвечал
+  // каждый раз с чистого листа («ну давай» без контекста — замечание Шоха).
+  // Храним неделю, потом чистим: это память разговора, а не архив.
+  await q(`CREATE TABLE IF NOT EXISTS jarvis_chat (
+    id SERIAL PRIMARY KEY,
+    chat_id BIGINT NOT NULL,
+    employee_id INT,
+    role TEXT NOT NULL,                  -- user | assistant
+    text TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  await q('CREATE INDEX IF NOT EXISTS idx_jv_chat ON jarvis_chat (chat_id, created_at DESC)');
+
   // Журнал Джарвиса: каждое напоминание и каждое нарушение — одна запись.
   // dedup_key не даёт отправить одно и то же дважды. Нарушения отсюда
   // потом станут штрафами в Персонале (шаг 4).

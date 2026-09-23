@@ -211,3 +211,9 @@ test('сводка РОПу: раз в N дней, 0 — выключено', ()
   assert.strictEqual(normalizeRules({ sales_digest_days: 0 }).sales_digest_days, 0);
   assert.strictEqual(normalizeRules({ sales_digest_days: 99 }).sales_digest_days, 30);
 });
+
+test('память разговора: неделя по умолчанию, 0 — без памяти', () => {
+  assert.strictEqual(normalizeRules({}).memory_days, 7);
+  assert.strictEqual(normalizeRules({ memory_days: 0 }).memory_days, 0);
+  assert.strictEqual(normalizeRules({ memory_days: 99 }).memory_days, 30);
+});
