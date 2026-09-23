@@ -854,6 +854,14 @@ async function seed() {
   await pool.query("UPDATE tiles SET is_visible = TRUE WHERE url = '/hr' AND is_visible IS DISTINCT FROM TRUE").catch(() => {});
   console.log('[SEED] Плитка /hr обеспечена');
 
+  // Плитка «Джарвис»: фирменная иконка вместо эмодзи (картинка Шоха, 23.09.2026).
+  // Ставим один раз: если админ потом сменит иконку руками, мы её не перетрём.
+  const iconSet = await pool.query("SELECT 1 FROM settings WHERE key = 'jarvis_tile_icon_v1'");
+  if (iconSet.rows.length === 0) {
+    await pool.query("UPDATE tiles SET icon = '/static/icons/jarvis.webp' WHERE url = '/jarvis'").catch(() => {});
+    await pool.query("INSERT INTO settings (key, value) VALUES ('jarvis_tile_icon_v1', '1') ON CONFLICT (key) DO NOTHING");
+  }
+
   // Плитка «Джарвис» — правила внутреннего бота (Trello, сроки, штрафы), docs/plan-jarvis.md
   const jvt = await pool.query("SELECT id FROM tiles WHERE url = '/jarvis' LIMIT 1");
   if (jvt.rows.length === 0) {
