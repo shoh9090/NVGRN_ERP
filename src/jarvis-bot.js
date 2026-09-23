@@ -1144,9 +1144,23 @@ async function tick() {
 }
 
 // ---------- Запуск ----------
+// Интернет Джарвису включил Шох (24.09.2026): найденное там — справка со
+// ссылкой, с нашими цифрами она не смешивается. Правила уже лежат в базе с
+// выключенным поиском, поэтому включаем его один раз, по флагу. Выключит
+// переключателем в плитке — обратно само не включится.
+async function webOnOnce() {
+  if ((await pool.query("SELECT 1 FROM settings WHERE key = 'jarvis_web_on_v1'")).rows.length) return;
+  const raw = JSON.parse((await getSetting('jarvis_rules')) || '{}');
+  raw.web_enabled = true;
+  await setSetting('jarvis_rules', JSON.stringify(raw));
+  await setSetting('jarvis_web_on_v1', '1');
+  console.log('[ДЖАРВИС] поиск в интернете включён');
+}
+
 async function start(p) {
   pool = p;
   try { await ensureJarvisSchema(pool); } catch (e) { console.warn('[ДЖАРВИС] схема:', e.message); return; }
+  await webOnOnce().catch((e) => console.warn('[ДЖАРВИС] интернет:', e.message));
   const domain = process.env.RAILWAY_PUBLIC_DOMAIN;
   if (token() && domain) {
     const ok = await tg('setWebhook', {

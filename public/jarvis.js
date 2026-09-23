@@ -87,7 +87,23 @@
         } }, c.days ? 'Перезалить историю за 24 месяца' : 'Загрузить историю за 24 месяца'));
       }
     }).catch(() => {});
-    box.appendChild(el('div', { class: 'jv-conns' }, [trelloCard, botCard, syncCard, salesCard]));
+    // Кто открыл бота. Джарвис не может написать первым — человек должен сам
+    // нажать «Старт» и поделиться номером. Пока не нажал, напоминания до него
+    // не доходят, и это должно быть видно, а не выясняться по молчанию.
+    const staff = s.staff || [];
+    const inBot = staff.filter((x) => x.in_bot);
+    const off = staff.filter((x) => !x.in_bot);
+    const peopleCard = el('div', { class: 'jv-conn ' + (off.length ? 'bad' : 'ok') }, [
+      el('div', { class: 'jv-conn-t' }, '👥 Люди в боте'),
+      el('div', {}, (off.length ? '⚠️ ' : '✓ ') + inBot.length + ' из ' + staff.length + ' подключились'),
+      off.length ? el('details', { class: 'jv-muted', style: 'margin-top:6px' }, [
+        el('summary', {}, 'Не открыли бота (' + off.length + ')'),
+        el('div', { style: 'margin-top:4px' }, off.map((x) => el('div', {},
+          x.full_name + (x.department_name ? ' · ' + x.department_name : '')))),
+        el('div', { style: 'margin-top:6px' }, 'Им ничего не приходит. Пусть откроют бота и нажмут «📱 Поделиться номером».'),
+      ]) : null,
+    ]);
+    box.appendChild(el('div', { class: 'jv-conns' }, [trelloCard, botCard, syncCard, salesCard, peopleCard]));
 
     const dis = !isAdmin;
     const inp = (val, attrs = {}) => el('input', { class: 'jv-inp', value: String(val), disabled: dis, ...attrs });
