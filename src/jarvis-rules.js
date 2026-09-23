@@ -15,6 +15,8 @@ const DEFAULTS = {
   mention_violation_h: 10,   // …и нарушение через N рабочих часов
   overdue_violation_days: 1, // срок карточки прошёл: нарушение через N рабочих дней
   stale_days: 7,             // карточка без движения: одно напоминание, без штрафа
+  due_ask_after_h: 3,        // сколько рабочих часов не трогать новую карточку без срока
+  daily_cap: 8,              // потолок сообщений Джарвиса одному человеку в день
   due_required_h: 4,         // карточка в работе без срока: столько рабочих часов на срок
   moves_alert: 3,            // столько переносов срока — сигнал руководителю
   fine_mention: 0,           // штраф за неответ на упоминание, сум
@@ -54,7 +56,11 @@ function normalizeRules(raw) {
     num(r.mention_violation_h, DEFAULTS.mention_violation_h, 0.5, 200));
   out.overdue_violation_days = Math.round(num(r.overdue_violation_days, DEFAULTS.overdue_violation_days, 0, 30));
   out.stale_days = Math.round(num(r.stale_days, DEFAULTS.stale_days, 1, 90));
-  out.due_required_h = num(r.due_required_h, DEFAULTS.due_required_h, 0.5, 100);
+  out.due_ask_after_h = num(r.due_ask_after_h, DEFAULTS.due_ask_after_h, 0, 100);
+  out.daily_cap = Math.round(num(r.daily_cap, DEFAULTS.daily_cap, 1, 50));
+  // Спрашивать срок раньше, чем ждём его постановки, — бессмысленно.
+  out.due_required_h = Math.max(out.due_ask_after_h,
+    num(r.due_required_h, DEFAULTS.due_required_h, 0.5, 100));
   out.moves_alert = Math.round(num(r.moves_alert, DEFAULTS.moves_alert, 1, 20));
   out.fine_mention = Math.round(num(r.fine_mention, 0, 0, 100000000));
   out.fine_overdue = Math.round(num(r.fine_overdue, 0, 0, 100000000));

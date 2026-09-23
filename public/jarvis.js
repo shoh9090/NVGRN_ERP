@@ -123,6 +123,8 @@
     const mVio = numInp(r.mention_violation_h, { step: '0.5' });
     const oVio = numInp(r.overdue_violation_days);
     const stale = numInp(r.stale_days, { min: '1' });
+    const dueAsk = numInp(r.due_ask_after_h, { step: '0.5' });
+    const cap = numInp(r.daily_cap, { min: '1' });
     const dueH = numInp(r.due_required_h, { step: '0.5' });
     const moves = numInp(r.moves_alert, { min: '1' });
     const fM = numInp(r.fine_mention, { step: '1000' });
@@ -177,6 +179,7 @@
       sec('Рабочее время', 'Вне рабочего времени Джарвис не пишет, а часы до напоминания не идут.', [
         row('Часы', 'с ', from, ' до ', to),
         row('Дни', el('div', { class: 'jv-days' }, dayBoxes)),
+        row('Не больше сообщений в день', cap, ' на человека (нарушения приходят всегда)'),
       ]),
       sec('Упомянули (@) — и нет ответа в карточке', null, [
         row('Напомнить через', mRem, ' рабочих часов'),
@@ -185,6 +188,7 @@
       sec('Карточка в работе, но срока нет', 'У карточки с исполнителем должен быть срок, иначе задача «принята» и висит. '
         + 'Джарвис спрашивает срок кнопками в боте («Сегодня», «Завтра», «Через неделю», своя дата) и сам ставит его в Trello. '
         + 'Переносы срока не запрещены, но видны в журнале.', [
+        row('Не трогать новую карточку', dueAsk, ' рабочих часов'),
         row('Нарушение через', dueH, ' рабочих часов без срока'),
         row('Сигнал руководителю', 'после ', moves, ' переносов срока'),
       ]),
@@ -229,6 +233,7 @@
           mention_remind_h: mRem.value, mention_violation_h: mVio.value, overdue_violation_days: oVio.value,
           stale_days: stale.value, fine_mention: fM.value, fine_overdue: fO.value, fines_enabled: finesOn.checked,
           reminders_enabled: remOn.checked, due_required_h: dueH.value, moves_alert: moves.value,
+          due_ask_after_h: dueAsk.value, daily_cap: cap.value,
           ai_enabled: aiOn.checked, ai_provider: aiProv.value, ai_model: aiModel.value,
           done_lists: doneExtra.value,
           owners: Object.fromEntries(Object.entries(ownerChain).map(([k, c]) => [k,

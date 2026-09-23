@@ -131,7 +131,9 @@ test('срок с кнопки и датой словами — конец ра�
 test('срок задачи: значения по умолчанию и границы', () => {
   assert.strictEqual(normalizeRules({}).due_required_h, 4);
   assert.strictEqual(normalizeRules({}).moves_alert, 3);
-  assert.strictEqual(normalizeRules({ due_required_h: 0, moves_alert: 0 }).due_required_h, 0.5);
+  // срок нельзя требовать раньше, чем мы вообще начали спрашивать (due_ask_after_h)
+  assert.strictEqual(normalizeRules({ due_required_h: 0, moves_alert: 0 }).due_required_h, 3);
+  assert.strictEqual(normalizeRules({ due_ask_after_h: 0, due_required_h: 0 }).due_required_h, 0.5);
   assert.strictEqual(normalizeRules({ moves_alert: 99 }).moves_alert, 20);
 });
 
@@ -165,4 +167,14 @@ test('колонка «не актуально» — карточка закры
   assert.ok(!isDoneList('запланировано'));
   assert.ok(isDoneList('Идеи', ['идеи']));    // своя колонка из правил плитки
   assert.deepStrictEqual(normalizeRules({ done_lists: 'идеи,  на паузе , ' }).done_lists, ['идеи', 'на паузе']);
+});
+
+test('поток сообщений: новую карточку не трогаем сразу, потолок в день', () => {
+  const r = normalizeRules({});
+  assert.strictEqual(r.due_ask_after_h, 3);     // 3 рабочих часа тишины после появления карточки
+  assert.strictEqual(r.daily_cap, 8);
+  // спрашивать срок позже, чем считать нарушение, нельзя
+  assert.strictEqual(normalizeRules({ due_ask_after_h: 6, due_required_h: 2 }).due_required_h, 6);
+  assert.strictEqual(normalizeRules({ daily_cap: 0 }).daily_cap, 1);
+  assert.strictEqual(normalizeRules({ daily_cap: 999 }).daily_cap, 50);
 });

@@ -424,7 +424,20 @@ async function remindAll(rules, scan, people, now) {
   const byMember = new Map(people.map((p) => [p.trello_member_id, p]));
   const workNow = R.isWorkTime(now, rules);
   const canSend = rules.reminders_enabled && workNow;
-  const deliver = async (p, html, extra) => (canSend && p && p.jv_chat_id ? !!(await send(p.jv_chat_id, html, extra)) : false);
+  // Потолок сообщений в день на человека (решение Шоха: «слишком много сообщений»).
+  // Нарушения выше потолка — их мало и они важные, остальное ждёт завтра.
+  const sentToday = new Map((await pool.query(
+    `SELECT employee_id, COUNT(*)::int AS n FROM jarvis_log
+      WHERE sent = TRUE AND employee_id IS NOT NULL AND created_at > now() - interval '20 hours'
+        AND kind <> 'ai' GROUP BY employee_id`)).rows.map((r) => [r.employee_id, r.n]));
+  const overCap = (p) => p && (sentToday.get(p.employee_id) || 0) >= rules.daily_cap;
+  const deliver = async (p, html, extra, force) => {
+    if (!canSend || !p || !p.jv_chat_id) return false;
+    if (!force && overCap(p)) return false;
+    const ok = !!(await send(p.jv_chat_id, html, extra));
+    if (ok) sentToday.set(p.employee_id, (sentToday.get(p.employee_id) || 0) + 1);
+    return ok;
+  };
 
   // 1. Упоминания без ответа.
   // Решаем только в рабочее время и только когда напоминания включены —
@@ -447,7 +460,7 @@ async function remindAll(rules, scan, people, now) {
         await pool.query('UPDATE jarvis_mentions SET violation_at = now(), reminded_at = COALESCE(reminded_at, now()) WHERE id = $1', [m.id]);
         const h = rules.mention_violation_h;
         const ok = await deliver(p, `⚠️ Нет ответа ${h} рабочих часов на упоминание в карточке <b>«${esc(m.card_name)}»</b> — `
-          + `это нарушение${rules.fines_enabled ? '' : ' (штрафы пока не начисляются)'}.${quote}`, cardButtons(m.card_id, m.card_url, m.id));
+          + `это нарушение${rules.fines_enabled ? '' : ' (штрафы пока не начисляются)'}.${quote}`, cardButtons(m.card_id, m.card_url, m.id), true);
         await log('violation_mention', m.employee_id, card, `Нет ответа ${h} раб. ч, упомянул(а) ${m.author_name}`, ok, 'vm:' + m.id);
         const author = byMember.get(m.author_member_id);
         if (author && author.employee_id !== m.employee_id) {
@@ -473,7 +486,7 @@ async function remindAll(rules, scan, people, now) {
         const exists = (await pool.query('SELECT 1 FROM jarvis_log WHERE dedup_key = $1', [key])).rows.length;
         if (!exists) {
           const ok = await deliver(p, `⚠️ Карточка <b>«${esc(c.name)}»</b> просрочена (срок был ${dateRu(c.due)}) — `
-            + `это нарушение${rules.fines_enabled ? '' : ' (штрафы пока не начисляются)'}.`, cardButtons(c.id, c.shortUrl));
+            + `это нарушение${rules.fines_enabled ? '' : ' (штрафы пока не начисляются)'}.`, cardButtons(c.id, c.shortUrl), true);
           await log('violation_overdue', p.employee_id, { id: c.id, name: c.name, url: c.shortUrl }, 'Срок был ' + dateRu(c.due), ok, key);
         }
       }
@@ -482,22 +495,31 @@ async function remindAll(rules, scan, people, now) {
   await dueControl(rules, scan, byMember, deliver, now);
   await morning(rules, overdueBy, now);
 
-  // 3. Карточки без движения N дней — одно напоминание участникам.
+  // 3. Карточки без движения — ОДНО сообщение списком на человека в неделю.
+  // Раньше на каждую карточку шло отдельное сообщение: у людей было по три
+  // десятка уведомлений за утро, и бот превращался в спам (замечание Шоха).
   const staleMs = rules.stale_days * 86400000;
+  const staleBy = new Map();
   for (const c of scan.cards) {
     if (isDone(c, scan) || !(c.idMembers || []).length) continue;
     if (now - Date.parse(c.dateLastActivity) < staleMs) continue;
-    if (c.due && Date.parse(c.due) < now) continue; // про просрочку уже пишем отдельно
+    if (c.due && Date.parse(c.due) < now) continue;          // про просрочку пишем отдельно
     for (const mid of c.idMembers) {
       const p = byMember.get(mid);
       if (!p) continue;
-      const key = `st:${c.id}:${mid}:${c.dateLastActivity}`;
-      const exists = (await pool.query('SELECT 1 FROM jarvis_log WHERE dedup_key = $1', [key])).rows.length;
-      if (exists) continue;
-      const ok = await deliver(p, `💤 Карточка <b>«${esc(c.name)}»</b> без движения больше ${rules.stale_days} дней. Она ещё нужна?`,
-        cardButtons(c.id, c.shortUrl));
-      await log('remind_stale', p.employee_id, { id: c.id, name: c.name, url: c.shortUrl }, `Без движения с ${dateRu(c.dateLastActivity)}`, ok, key);
+      if (!staleBy.has(p.employee_id)) staleBy.set(p.employee_id, []);
+      staleBy.get(p.employee_id).push(c);
     }
+  }
+  const week = Math.floor(now / (7 * 86400000));             // раз в неделю, не чаще
+  for (const [empId, cards] of staleBy) {
+    const key = `stw:${empId}:${week}`;
+    if (await seen(key)) continue;
+    const p = byEmp.get(empId);
+    const list = cards.slice(0, 15).map((c) => `• ${esc(c.name)} — с ${dateRu(c.dateLastActivity)}`).join('\n');
+    const ok = await deliver(p, `💤 Без движения больше ${rules.stale_days} дней (${cards.length}):\n${list}\n\n`
+      + 'Если карточки уже не нужны — перенесите их в «не актуально», и я о них забуду.', menu);
+    await log('remind_stale', empId, null, `Без движения: ${cards.length} карточек`, ok, key);
   }
 }
 
@@ -509,7 +531,7 @@ async function remindAll(rules, scan, people, now) {
 // а после moves_alert переносов Джарвис говорит об этом руководителю.
 const seen = async (key) => (await pool.query('SELECT 1 FROM jarvis_log WHERE dedup_key = $1', [key])).rows.length > 0;
 
-const ASK_LIMIT = 5;     // столько вопросов про срок одному человеку за полдня
+const ASK_LIMIT = 3;     // столько вопросов про срок одному человеку за полдня
 async function dueControl(rules, scan, byMember, deliver, now) {
   const rows = new Map((await pool.query('SELECT * FROM jarvis_cards')).rows.map((r) => [r.card_id, r]));
   // Старых карточек без срока много — спрашиваем порциями, а не сваливаем всё разом.
@@ -567,6 +589,9 @@ async function dueControl(rules, scan, byMember, deliver, now) {
       [c.id, c.name, c.shortUrl, scan.boardName.get(c.idBoard) || '', since]);
     const hours = R.workHours(R.clockStart(Date.parse(since), rules), now, rules);
     for (const p of people) {
+      // Новую карточку не трогаем сразу: человек только завёл её и, может,
+      // прямо сейчас ставит срок руками (замечание Шоха).
+      if (hours < rules.due_ask_after_h) continue;
       const ask = `rd:${c.id}:${p.employee_id}:${since}`;
       if (!(await seen(ask))) {
         const n = asked.get(p.employee_id) || 0;
@@ -581,7 +606,7 @@ async function dueControl(rules, scan, byMember, deliver, now) {
       const vkey = `vd:${c.id}:${p.employee_id}:${since}`;
       if (await seen(vkey)) continue;
       const ok = await deliver(p, `⚠️ Карточка <b>«${esc(c.name)}»</b> в работе без срока больше ${rules.due_required_h} рабочих часов — `
-        + `это нарушение${rules.fines_enabled ? '' : ' (штрафы пока не начисляются)'}. Поставьте срок:`, dueButtons(c.id, c.shortUrl));
+        + `это нарушение${rules.fines_enabled ? '' : ' (штрафы пока не начисляются)'}. Поставьте срок:`, dueButtons(c.id, c.shortUrl), true);
       await log('violation_no_due', p.employee_id, card, `Без срока ${Math.round(hours)} раб. ч`, ok, vkey);
     }
   }
