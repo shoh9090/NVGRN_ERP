@@ -349,11 +349,6 @@
       box.appendChild(el('section', { class: 'jv-sec' }, [el('h3', {}, 'Сопоставлены, но в пространстве Trello их больше нет'),
         el('div', {}, d.lost.map((e) => el('div', {}, e.full_name + ' — @' + (e.trello_username || '?'))))]));
     }
-    if (d.without.length) {
-      box.appendChild(el('section', { class: 'jv-sec' }, [el('h3', {}, 'Активные сотрудники без Trello (' + d.without.length + ')'),
-        el('div', { class: 'jv-muted' }, 'Джарвис напоминает только тем, кто есть в Trello. Если человеку нужны карточки — пригласите его в пространство.'),
-        el('div', { class: 'jv-list' }, d.without.map((e) => el('span', {}, empName(e))))]));
-    }
   }
 
   // ---------- Журнал ----------

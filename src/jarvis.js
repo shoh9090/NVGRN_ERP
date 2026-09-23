@@ -220,10 +220,8 @@ router.get('/api/people', async (req, res) => {
     // Связь, которая больше не ведёт в пространство (человека убрали из Trello).
     const lost = emps.filter((e) => e.trello_member_id && !memberIds.has(e.trello_member_id))
       .map((e) => ({ id: e.id, full_name: e.full_name, trello_username: e.trello_username }));
-    const without = emps.filter((e) => e.status === 'active' && !e.trello_member_id)
-      .map((e) => ({ id: e.id, full_name: e.full_name, department_name: e.department_name, position: e.position }));
     res.json({
-      workspace_name: rules.workspace_name, members: rows, lost, without,
+      workspace_name: rules.workspace_name, members: rows, lost,
       employees: emps.map((e) => ({ id: e.id, full_name: e.full_name, status: e.status, department_name: e.department_name })),
     });
   } catch (e) { res.status(400).json({ error: e.message }); }
