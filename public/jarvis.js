@@ -318,7 +318,11 @@
     const sure = d.members.filter((m) => !m.linked && m.suggestion && m.suggestion.strength === 'full' && m.suggestion.status === 'active');
     const done = d.members.filter((m) => m.linked).length;
     const head = el('div', { class: 'pur-toolbar' }, [
-      el('div', { class: 'jv-muted' }, 'В пространстве «' + d.workspace_name + '»: ' + d.members.length + ' чел., сопоставлено ' + done + '.'),
+      el('div', { class: 'jv-muted' }, ['В пространстве «' + d.workspace_name + '»: ' + d.members.length + ' чел., сопоставлено ' + done + '. ',
+        // Сопоставить человека с Trello мало: пока он сам не открыл бота,
+        // Джарвис не может ему написать — ни напомнить, ни ответить.
+        el('b', {}, '🟢 в боте ' + d.members.filter((m) => m.linked && m.linked.in_bot).length
+          + ' из ' + (d.members.filter((m) => m.linked).length || 0))]),
       isAdmin && sure.length ? el('div', { class: 'pur-toolbar-right' }, el('button', { class: 'btn-primary', onclick: async (ev) => {
         ev.target.disabled = true;
         try { for (const m of sure) await link(m.id, m.suggestion.id); toast('Подтверждено: ' + sure.length); render(); }
@@ -338,7 +342,10 @@
         const fired = m.linked.status === 'fired';
         emp = el('td', {}, [el('div', { class: 'jv-b' }, '✓ ' + m.linked.full_name),
           el('div', { class: fired ? 'jv-warn' : 'jv-muted' }, fired ? 'уволен(а) — Джарвис не контролирует; уберите из пространства Trello'
-            : [m.linked.department_name, m.linked.position, m.linked.in_bot ? 'в боте ✓' : null].filter(Boolean).join(' · '))]);
+            : [m.linked.department_name, m.linked.position].filter(Boolean).join(' · ')),
+          fired ? null : el('div', { class: m.linked.in_bot ? 'jv-inbot' : 'jv-offbot' },
+            m.linked.in_bot ? '🟢 в боте — пишу и напоминаю'
+              : '⚪ не открыл(а) бота — ничего не получает')]);
         if (isAdmin) act.appendChild(el('button', { class: 'btn-danger-link', onclick: async () => {
           if (!confirm('Отвязать ' + m.fullName + ' от «' + m.linked.full_name + '»?')) return;
           try { await api('/people/unlink', { employee_id: m.linked.id }); render(); } catch (e) { toast(e.message, true); }

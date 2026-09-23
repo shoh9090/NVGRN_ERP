@@ -134,6 +134,9 @@ label input,label select{margin-top:5px;font-weight:500;text-transform:none;lett
 }
 .topbar-left,.topbar-right{display:flex;align-items:center;gap:14px}
 .topbar-logo{height:40px;border-radius:8px}
+/* Своя иконка плитки в шапке вместо эмодзи: системные эмодзи в Windows
+   рисуются по-своему и выглядят чужеродно (замечание Шоха). */
+.topbar-tile-icon{height:26px;width:26px;border-radius:6px;object-fit:cover;margin-right:2px}
 .company{font-family:'Lora',serif;font-weight:600;font-size:17px;letter-spacing:.2px;color:var(--ink)}
 .topbar .btn-ghost{color:var(--ink-soft);border:1px solid var(--line);background:var(--surface)}
 .topbar .btn-ghost:hover{background:var(--surface-2);border-color:#cfc9b9}

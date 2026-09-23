@@ -7,6 +7,7 @@
 
   Параметры (все необязательные, кроме title):
     title    — иконка и название плитки, например '🛒 Закуп'
+    icon     — вместо эмодзи своя картинка (путь), например '/static/icons/jarvis.webp'
     home     — главная Hub: без кнопки возврата, у админа — «Админ-панель»
     backHref — куда ведёт кнопка слева (по умолчанию '/')
     backText — подпись кнопки (по умолчанию 'На главную')
@@ -18,6 +19,7 @@
     <% if (!isHome) { %><a class="btn-ghost topbar-back" href="<%= typeof backHref !== 'undefined' ? backHref : '/' %>">← <%= typeof backText !== 'undefined' ? backText : 'На главную' %></a><% } %>
     <a class="topbar-brand" href="/" title="На главную Hub">
       <% if (settings && settings.logo_file_id) { %><img class="topbar-logo" src="/file/<%= settings.logo_file_id %>" alt=""><% } %>
+      <% if (typeof icon !== 'undefined' && icon) { %><img class="topbar-tile-icon" src="<%= icon %>" alt=""><% } %>
       <span class="company"><%= title %></span>
     </a>
   </div>

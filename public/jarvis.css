@@ -61,3 +61,8 @@ select.jv-inp{min-width:240px;max-width:100%}
 .jv-fold > summary::before{content:'▸ ';color:var(--ink-faint)}
 .jv-fold[open] > summary::before{content:'▾ '}
 .jv-fold-b{padding:0 18px 14px}
+
+/* Подключён ли человек к боту. Сопоставление с Trello само по себе
+   ничего не даёт: пока человек не нажал «Старт», Джарвис ему не пишет. */
+.jv-inbot{font-size:12px;color:#2f7d32;margin-top:2px}
+.jv-offbot{font-size:12px;color:#a8562a;margin-top:2px}
