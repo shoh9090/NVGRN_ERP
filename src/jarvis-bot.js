@@ -84,7 +84,24 @@ const send = (chatId, html, extra = {}) => tg('sendMessage', { chat_id: chatId, 
 const MENU_MY = '📋 Мои карточки';
 const MENU_TODO = '📌 Мои дела';
 const MENU_PAY = '💰 Моя зарплата';
+const MENU_SALES = '📊 Клиенты';
 const menu = { reply_markup: { keyboard: [[{ text: MENU_MY }, { text: MENU_TODO }], [{ text: MENU_PAY }]], resize_keyboard: true } };
+const menuBoss = { reply_markup: { keyboard: [[{ text: MENU_MY }, { text: MENU_TODO }], [{ text: MENU_PAY }, { text: MENU_SALES }]], resize_keyboard: true } };
+// Кнопка «Клиенты» — только руководителю продаж и админу: остальным этот
+// разрез не открыт, и в клавиатуре ему делать нечего.
+const bossCache = new Map();               // chatId → { boss, at }
+async function kb(chatId) {
+  const c = bossCache.get(chatId);
+  if (c && Date.now() - c.at < 3600000) return c.boss ? menuBoss : menu;
+  let boss = false;
+  try {
+    boss = (await pool.query(
+      `SELECT 1 FROM users u JOIN user_roles ur ON ur.user_id = u.id JOIN roles r ON r.id = ur.role_id
+        WHERE u.jv_chat_id = $1 AND (r.is_admin = TRUE OR r.bot_role = 'head_of_sales') LIMIT 1`, [chatId])).rows.length > 0;
+  } catch (e) { boss = false; }
+  bossCache.set(chatId, { boss, at: Date.now() });
+  return boss ? menuBoss : menu;
+}
 const askContact = { reply_markup: { keyboard: [[{ text: '📱 Поделиться номером', request_contact: true }]], resize_keyboard: true, one_time_keyboard: true } };
 // Кнопки под сообщением о карточке: ответить и открыть.
 function cardButtons(cardId, url, mentionId) {
@@ -135,18 +152,18 @@ async function handleUpdate(u) {
   // Расшифровку всегда показываем — человек должен видеть, что его услышали.
   if ((m.voice || m.audio) && me0) {
     const rules = await loadRules();
-    if (!rules.voice_enabled) return send(chatId, '🎧 Голосовые пока выключены — напишите текстом.', menu);
+    if (!rules.voice_enabled) return send(chatId, '🎧 Голосовые пока выключены — напишите текстом.', await kb(chatId));
     const stt = require('./stt');
-    if (!stt.configured()) return send(chatId, '🎧 Распознавание речи не подключено. Скажите администратору.', menu);
+    if (!stt.configured()) return send(chatId, '🎧 Распознавание речи не подключено. Скажите администратору.', await kb(chatId));
     tg('sendChatAction', { chat_id: chatId, action: 'typing' });
     try {
       const text = await stt.voiceToText(token(), m.voice || m.audio, rules.voice_model);
-      if (!text) return send(chatId, '🎧 Ничего не расслышал. Попробуйте ещё раз поближе к микрофону.', menu);
+      if (!text) return send(chatId, '🎧 Ничего не расслышал. Попробуйте ещё раз поближе к микрофону.', await kb(chatId));
       await send(chatId, `🎧 Услышал: «${esc(text)}»`);
       await log('voice', me0.employee_id, null, text.slice(0, 300), true, null);
       return handleUpdate({ message: { ...m, voice: undefined, audio: undefined, text } });
     } catch (e) {
-      return send(chatId, '🎧 ' + esc(e.message), menu);
+      return send(chatId, '🎧 ' + esc(e.message), await kb(chatId));
     }
   }
   const me = me0;
@@ -156,10 +173,10 @@ async function handleUpdate(u) {
       + 'Salom! Men Jarvis — Novagreen ichki yordamchi dasturiman. Meni tanishim uchun pastdagi tugmani bosing.', askContact);
   }
   const text = String(m.text || '').trim();
-  if (text === '/cancel') { pending.delete(chatId); return send(chatId, 'Отменено.', menu); }
+  if (text === '/cancel') { pending.delete(chatId); return send(chatId, 'Отменено.', await kb(chatId)); }
   const p = pending.get(chatId);
-  if (p && text && !text.startsWith('/') && ![MENU_MY, MENU_TODO, MENU_PAY].includes(text)) {
-    if (Date.now() > p.until) { pending.delete(chatId); return send(chatId, 'Время вышло — нажмите кнопку ещё раз.', menu); }
+  if (p && text && !text.startsWith('/') && ![MENU_MY, MENU_TODO, MENU_PAY, MENU_SALES].includes(text)) {
+    if (Date.now() > p.until) { pending.delete(chatId); return send(chatId, 'Время вышло — нажмите кнопку ещё раз.', await kb(chatId)); }
     if (p.kind === 'due') {
       const due = R.parseDueDate(text, Date.now(), await loadRules());
       if (!due) return send(chatId, 'Не понял дату. Напишите так: 25.09 или 25.09.2026, либо «завтра». /cancel — отмена');
@@ -172,12 +189,13 @@ async function handleUpdate(u) {
   if (text === MENU_MY || text === '/my' || /^мои карточки$/i.test(text)) return myCards(chatId, me);
   if (text === MENU_TODO) return myTodos(chatId, me);
   if (text === MENU_PAY) return mySalary(chatId, me);
+  if (text === MENU_SALES || /^(клиенты|сводка по клиентам)$/i.test(text)) return salesNow(chatId, me);
   if (/^(\/help|\/start|помощь|что (ты )?(умеешь|можешь)|чем поможешь|nima qila olasan|yordam)\??$/i.test(text)) return sendHelp(chatId, me);
   if (text) {
     const rules = await loadRules();
     if (rules.ai_enabled) return aiAnswer(chatId, me, text, rules);
   }
-  return send(chatId, `${esc(me.full_name)}, спросите словами: «мои дела», «мои карточки», «остатки склада».`, menu);
+  return send(chatId, `${esc(me.full_name)}, спросите словами: «мои дела», «мои карточки», «остатки склада».`, await kb(chatId));
 }
 
 // «Что ты умеешь» — ответ собираем сами, а не у модели: он одинаковый каждый
@@ -204,7 +222,28 @@ async function sendHelp(chatId, me) {
   const lines = tools.map((t) => TOOL_HELP[t.name]).filter(Boolean).map(([i, s]) => `${i} ${esc(s)}`);
   return send(chatId, '🤖 Я Джарвис — помощник Novagreen на основе ИИ. Отвечаю по данным ERP, '
     + 'в пределах того, что открыто твоей роли.\n\n<b>Спроси словами, например:</b>\n' + lines.join('\n')
-    + '\n\n💬 Пиши как удобно, по-русски или o‘zbekcha. Частое — кнопками внизу.', menu);
+    + '\n\n💬 Пиши как удобно, по-русски или o‘zbekcha. Частое — кнопками внизу.', await kb(chatId));
+}
+
+// Кнопка «📊 Клиенты» — та же сводка, что приходит раз в три дня, но по
+// требованию. Есть только у админа и руководителя продаж: остальным этот
+// разрез не открыт. Каждый блок — отдельным сообщением, чтобы переслать.
+async function salesNow(chatId, me) {
+  const user = await erpUser(me.user_id);
+  const allowed = user.isAdmin || (await pool.query(
+    `SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id
+      WHERE ur.user_id = $1 AND r.bot_role = 'head_of_sales' LIMIT 1`, [me.user_id])).rows.length > 0;
+  if (!allowed) return send(chatId, 'Этот разрез открыт руководителю продаж и администратору.', await kb(chatId));
+  tg('sendChatAction', { chat_id: chatId, action: 'typing' });
+  const rules = await loadRules();
+  const groups = await require('./jarvis-insights').clientsByManager(pool, rules);
+  if (!groups.length) return send(chatId, '👍 Клиенты не проседают: за две недели заметных падений нет.', await kb(chatId));
+  const total = groups.reduce((s, g) => s + g.lines.length, 0);
+  await send(chatId, `📊 <b>Клиенты, которые притихли</b> — ${total} шт.\nНиже по менеджерам, можно пересылать.`, await kb(chatId));
+  for (const g of groups) {
+    await send(chatId, `👤 <b>${esc(g.manager)}</b>\n${g.lines.map((l) => esc(l)).join('\n')}`);
+  }
+  return log('sales_digest', me.employee_id, null, `По кнопке: менеджеров ${groups.length}, клиентов ${total}`, true, null);
 }
 
 // Кнопки: те же данные, что у ИИ-инструментов, но без модели — быстро и бесплатно.
@@ -215,16 +254,16 @@ const toolRun = async (name, me, args = {}) => {
 };
 async function myTodos(chatId, me) {
   const out = await toolRun('moi_dela', me);
-  if (!Array.isArray(out)) return send(chatId, '👍 Дел нет — всё внесено.', menu);
+  if (!Array.isArray(out)) return send(chatId, '👍 Дел нет — всё внесено.', await kb(chatId));
   const lines = out.map((i) => `• <b>${esc(i.дело)}</b>\n  ${esc(i.подробно)}`);
-  return send(chatId, '<b>Нужно внести:</b>\n' + lines.join('\n'), menu);
+  return send(chatId, '<b>Нужно внести:</b>\n' + lines.join('\n'), await kb(chatId));
 }
 async function mySalary(chatId, me) {
   const r = await toolRun('moya_zarplata', me);
-  if (r.итог) return send(chatId, esc(r.итог), menu);
+  if (r.итог) return send(chatId, esc(r.итог), await kb(chatId));
   const n = (v) => Number(v || 0).toLocaleString('ru-RU');
   return send(chatId, `<b>Зарплата за ${esc(r.месяц)}</b>\nНачислено: ${n(r.начислено)}\nУдержано: ${n(r.удержано)}`
-    + (r.штрафы ? `\nШтрафы: ${n(r.штрафы)}` : '') + `\nВыплачено: ${n(r.выплачено)}`, menu);
+    + (r.штрафы ? `\nШтрафы: ${n(r.штрафы)}` : '') + `\nВыплачено: ${n(r.выплачено)}`, await kb(chatId));
 }
 
 // ---------- Вопрос словами (ИИ) ----------
@@ -285,7 +324,7 @@ async function aiAnswer(chatId, me, question, rules) {
     const text = out.text || 'Не понял вопрос. Спросите иначе.';
     // В журнал пишем, дошёл ли ответ на самом деле. Раньше там всегда стояло
     // «отправлено», даже когда Telegram отвечал ошибкой.
-    const ok = await sendLong(chatId, mdToHtml(text), menu);
+    const ok = await sendLong(chatId, mdToHtml(text), await kb(chatId));
     await log('ai', me.employee_id, null,
       `${question.slice(0, 200)} → ${text.slice(0, 300)} [${provider}, ${out.used.join(', ') || 'без инструментов'}, ${Math.round((Date.now() - started) / 100) / 10} с]`,
       ok, null);
@@ -327,7 +366,7 @@ async function onContact(m) {
     + 'Отвечаю по данным ERP и только в пределах ваших прав.\n'
     + 'Напоминаю про карточки Trello и отвечаю на вопросы обычными словами: «мои дела», «остатки склада», «мои карточки».\n\n'
     + '🤖 Men Jarvisman — Novagreen yordamchi dasturi, odam emasman. '
-    + 'Savollarga oddiy so‘zlar bilan javob beraman. O‘zbekcha yozing — o‘zbekcha javob beraman.', menu);
+    + 'Savollarga oddiy so‘zlar bilan javob beraman. O‘zbekcha yozing — o‘zbekcha javob beraman.', await kb(chatId));
 }
 
 async function onCallback(cq) {
@@ -382,7 +421,7 @@ async function postReply(chatId, me, p, text) {
   // текста проходит до получаса: карточку могли закрыть, перенести на чужую
   // доску или убрать из пространства — писать в неё уже нельзя.
   if (!await cardInWorkspace(p.cardId)) {
-    return send(chatId, 'Эта карточка больше не в рабочем пространстве — ответ не опубликован.', menu);
+    return send(chatId, 'Эта карточка больше не в рабочем пространстве — ответ не опубликован.', await kb(chatId));
   }
   try {
     await trello.addComment(p.cardId, me.full_name + R.VIA + text.slice(0, 3000));
@@ -402,7 +441,7 @@ async function applyDue(chatId, me, target, dueIso) {
   // Как и с ответом: дату человек вводит отдельным шагом, и к этому моменту
   // карточка могла уехать из пространства. Проверяем перед записью.
   if (!await cardInWorkspace(target.cardId)) {
-    return send(chatId, 'Эта карточка больше не в рабочем пространстве — срок не поставлен.', menu);
+    return send(chatId, 'Эта карточка больше не в рабочем пространстве — срок не поставлен.', await kb(chatId));
   }
   try { await trello.setDue(target.cardId, dueIso); }
   catch (e) { return send(chatId, 'Не получилось поставить срок в Trello: ' + esc(e.message)); }
@@ -413,19 +452,19 @@ async function applyDue(chatId, me, target, dueIso) {
     [target.cardId, target.cardName, target.cardUrl, dueIso]);
   await log('due_set', me.employee_id, { id: target.cardId, name: target.cardName, url: target.cardUrl },
     'Срок ' + dateRu(dueIso), true, null);
-  return send(chatId, `📅 Срок карточки «${esc(target.cardName)}» — ${dateRu(dueIso)}. Напомню, если подойдёт и не будет сделано.`, menu);
+  return send(chatId, `📅 Срок карточки «${esc(target.cardName)}» — ${dateRu(dueIso)}. Напомню, если подойдёт и не будет сделано.`, await kb(chatId));
 }
 
 // «Мои карточки»: что ждёт ответа и что просрочено — из последнего чтения Trello.
 async function myCards(chatId, me) {
-  if (!me.trello_member_id) return send(chatId, 'Ваш Trello ещё не сопоставлен. Попросите администратора: плитка «Джарвис» → «Люди и Trello».', menu);
+  if (!me.trello_member_id) return send(chatId, 'Ваш Trello ещё не сопоставлен. Попросите администратора: плитка «Джарвис» → «Люди и Trello».', await kb(chatId));
   const open = (await pool.query(
     `SELECT id, card_id, card_name, card_url, author_name, created_at FROM jarvis_mentions
       WHERE employee_id = $1 AND answered_at IS NULL ORDER BY created_at LIMIT 10`, [me.employee_id])).rows;
   const scan = await scanCached();
   const now = Date.now();
   const overdue = scan ? scan.cards.filter((c) => c.idMembers.includes(me.trello_member_id) && isOverdue(c, scan, now)) : [];
-  if (!open.length && !overdue.length) return send(chatId, '👍 Всё чисто: упоминаний без ответа и просроченных карточек нет.', menu);
+  if (!open.length && !overdue.length) return send(chatId, '👍 Всё чисто: упоминаний без ответа и просроченных карточек нет.', await kb(chatId));
   if (open.length) {
     await send(chatId, `<b>Ждут вашего ответа (${open.length}):</b>`);
     for (const m of open) await send(chatId, `💬 «${esc(m.card_name)}» — упомянул(а) ${esc(m.author_name)}`, cardButtons(m.card_id, m.card_url, m.id));
@@ -643,7 +682,7 @@ async function remindAll(rules, scan, people, now) {
     const p = byEmp.get(empId);
     const list = cards.slice(0, 15).map((c) => `• ${esc(c.name)} — с ${dateRu(c.dateLastActivity)}`).join('\n');
     const ok = await deliver(p, `💤 Без движения больше ${rules.stale_days} дней (${cards.length}):\n${list}\n\n`
-      + 'Если карточки уже не нужны — перенесите их в «не актуально», и я о них забуду.', menu);
+      + 'Если карточки уже не нужны — перенесите их в «не актуально», и я о них забуду.', p && p.jv_chat_id ? await kb(p.jv_chat_id) : menu);
     await log('remind_stale', empId, null, `Без движения: ${cards.length} карточек`, ok, key);
   }
 }
@@ -872,7 +911,7 @@ async function salesDigest(rules, now) {
   const total = groups.reduce((s, g) => s + g.lines.length, 0);
   for (const chat of chats) {
     await send(chat, `📊 <b>Клиенты, которые притихли</b> — ${total} шт. за ${rules.sales_digest_days} дн.\n`
-      + 'Дальше — по менеджерам. Любое сообщение можно переслать менеджеру как есть.', menu);
+      + 'Дальше — по менеджерам. Любое сообщение можно переслать менеджеру как есть.', await kb(chat));
     for (const g of groups) {
       await send(chat, `👤 <b>${esc(g.manager)}</b>\n${g.lines.map((l) => esc(l)).join('\n')}\n\n`
         + 'Что с ними? Если ушли по-хорошему — скажите, я перестану напоминать.');
@@ -907,7 +946,7 @@ async function weeklySilent(rules, now) {
     const facts = `За неделю я написал тебе ${p.reminds} раз, а ответа не было ни разу.\n`
       + (p.open_mentions ? `Упоминаний без ответа в Trello: ${p.open_mentions}.\n` : '')
       + 'Нажми «📋 Мои карточки» — там всё, что ждёт тебя, и кнопка «Ответить».';
-    const ok = !!(await send(chat, await liven(facts, rules, name), menu));
+    const ok = !!(await send(chat, await liven(facts, rules, name), await kb(chat)));
     await log('remind_silent', p.employee_id, null, `Напоминаний ${p.reminds}, ответов 0`, ok, key);
   }
 
@@ -924,7 +963,7 @@ async function weeklySilent(rules, now) {
     + (p.in_bot ? '' : ' (бота не открыл)'));
   for (const chat of bosses) {
     await send(chat, `🙊 <b>За неделю не отреагировали ни разу:</b>\n${lines.join('\n')}\n\n`
-      + 'Каждому я написал лично. Кто не открыл бота — ему я писать не могу, это только через вас.', menu);
+      + 'Каждому я написал лично. Кто не открыл бота — ему я писать не могу, это только через вас.', await kb(chat));
   }
   await log('remind_silent', null, null, `Сводка руководителю: ${people.length} чел.`, true, bossKey);
 }
