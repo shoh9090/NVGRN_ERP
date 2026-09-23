@@ -675,6 +675,12 @@ async function morning(rules, overdueBy, now) {
       WHERE u.is_active = TRUE AND e.status = 'active' AND u.jv_chat_id IS NOT NULL
       GROUP BY u.id, e.id`)).rows;
   const { todosFor, refreshTodoState } = require('./todos');
+  // Наблюдения считаем один раз на всех, показываем каждому по его правам.
+  let insights = [];
+  try { insights = await require('./jarvis-insights').collect(pool); }
+  catch (e) { console.warn('[НАБЛЮДЕНИЯ]', e.message); }
+  const hasTileFor = (p, url) => require('./ai-tools')
+    .hasTile({ id: p.id, isAdmin: p.is_admin, isFinance: p.is_finance }, url);
   // Сколько дело уже висит — считаем один раз на такт, не на каждого человека.
   await refreshTodoState(pool).catch((e) => console.warn('[ДЕЛА] состояние:', e.message));
   for (const p of people) {
@@ -687,7 +693,16 @@ async function morning(rules, overdueBy, now) {
       'SELECT count(*)::int AS n FROM jarvis_mentions WHERE employee_id = $1 AND answered_at IS NULL', [p.employee_id])).rows[0].n;
     let todos = [];
     try { todos = await todosFor({ id: p.id, isAdmin: p.is_admin, isFinance: p.is_finance }); } catch (e) { todos = []; }
-    if (!overdue.length && !waiting && !todos.length) continue;
+    // Наблюдения: то, о чём человек не спрашивал, но что стоит знать.
+    // Показываем только открытые его плиткам и не больше трёх.
+    const mine = [];
+    for (const n of insights) {
+      if (mine.length >= 3) break;
+      let ok = false;
+      for (const url of n.tiles) if (await hasTileFor(p, url)) { ok = true; break; }
+      if (ok) mine.push(n);
+    }
+    if (!overdue.length && !waiting && !todos.length && !mine.length) continue;
     const name = String(p.full_name).split(/\s+/)[1] || p.full_name;
     const parts = [`☀️ Доброе утро, ${esc(name)}!`];
     if (overdue.length || waiting) {
@@ -698,6 +713,10 @@ async function morning(rules, overdueBy, now) {
       }
       if (waiting) parts.push(`💬 Ждут вашего ответа: ${waiting}`);
       parts.push(`Список с кнопками — «${MENU_MY}».`);
+    }
+    if (mine.length) {
+      parts.push('\n<b>Обратите внимание</b>');
+      mine.forEach((n) => parts.push(`${n.icon} ${esc(n.text)}`));
     }
     if (todos.length) {
       parts.push('\n<b>ERP — нужно внести</b>');
@@ -715,7 +734,7 @@ async function morning(rules, overdueBy, now) {
       ? todos.filter((t) => t.link).slice(0, 4).map((t) => [{ text: '➡️ ' + t.title.slice(0, 40), url: hubUrl(t.link) }]) : [];
     const ok = !!(await send(p.jv_chat_id, parts.join('\n'), buttons.length ? { reply_markup: { inline_keyboard: buttons } } : menu));
     await log('morning', p.employee_id, null,
-      [overdue.length ? 'просрочено ' + overdue.length : '', waiting ? 'ждут ответа ' + waiting : '',
+      [overdue.length ? 'просрочено ' + overdue.length : '', waiting ? 'ждут ответа ' + waiting : '', mine.length ? 'наблюдений ' + mine.length : '',
         ...todos.map((t) => t.title)].filter(Boolean).join('; '), ok, key);
   }
 }
