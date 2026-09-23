@@ -1199,5 +1199,10 @@ function webhook(req, res) {
 }
 
 module.exports = { start, webhook, tick, status };
+// Холостой прогон (test/jarvis-dryrun.test.js) гоняет такт целиком на
+// поддельной базе и поддельных ответах Trello и Telegram. Так ловятся ошибки,
+// которые видны только при запуске («opts is not defined»): проверка синтаксиса
+// их пропускает, а люди потом полдня не получают напоминаний.
+module.exports.__setPool = (p) => { pool = p; };
 // Ту же инструкцию использует проверка ИИ в плитке — правило одно на оба входа.
 module.exports.SYSTEM = SYSTEM;
