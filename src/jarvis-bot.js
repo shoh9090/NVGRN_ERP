@@ -107,12 +107,7 @@ const askContact = { reply_markup: { keyboard: [[{ text: '📱 Поделить�
 function cardButtons(cardId, url, mentionId) {
   const row = [{ text: '✍️ Ответить', callback_data: mentionId ? 'jm:' + mentionId : 'jc:' + cardId }];
   if (url) row.push({ text: 'Открыть в Trello', url });
-  const rows = [row];
-  // Иногда человека упоминают «до кучи», а отвечать должен другой. Пусть скажет
-  // об этом одной кнопкой, а не молчит, копя нарушения (замечание Шоха:
-  // «к этой карте я никакого отношения не имею, я тут при чём?»).
-  if (mentionId) rows.push([{ text: '🙈 Это не ко мне', callback_data: 'jn:' + mentionId }]);
-  return { reply_markup: { inline_keyboard: rows } };
+  return { reply_markup: { inline_keyboard: [row] } };
 }
 // Кнопки постановки срока: нажал — Джарвис сам проставит дату в Trello.
 function dueButtons(cardId, url) {
@@ -446,19 +441,6 @@ async function onCallback(cq) {
   if (!me) return send(chatId, 'Сначала нажмите «📱 Поделиться номером».', askContact);
   const data = String(cq.data || '');
   let target = null;
-  if (data.startsWith('jn:')) {
-    // «Это не ко мне»: упоминание закрываем, но в журнале оно остаётся —
-    // видно, кого дёргают зря.
-    const r = await pool.query(
-      `UPDATE jarvis_mentions SET answered_at = now(), answered_via = 'dismissed'
-        WHERE id = $1 AND employee_id = $2 AND answered_at IS NULL RETURNING card_id, card_name, card_url`,
-      [parseInt(data.slice(3), 10) || 0, me.employee_id]);
-    if (!r.rows.length) return send(chatId, 'Это упоминание уже закрыто.');
-    const m = r.rows[0];
-    await log('dismiss', me.employee_id, { id: m.card_id, name: m.card_name, url: m.card_url },
-      'Сказал(а): не ко мне', true, null);
-    return send(chatId, `Снял с вас «${esc(m.card_name)}». Больше не напоминаю.`);
-  }
   if (data.startsWith('jm:')) {
     const mt = (await pool.query('SELECT id, card_id, card_name, card_url FROM jarvis_mentions WHERE id = $1 AND employee_id = $2',
       [parseInt(data.slice(3), 10) || 0, me.employee_id])).rows[0];
