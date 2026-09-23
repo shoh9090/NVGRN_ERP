@@ -217,3 +217,9 @@ test('память разговора: неделя по умолчанию, 0 �
   assert.strictEqual(normalizeRules({ memory_days: 0 }).memory_days, 0);
   assert.strictEqual(normalizeRules({ memory_days: 99 }).memory_days, 30);
 });
+
+test('интернет: по умолчанию выключен, включается явно', () => {
+  assert.strictEqual(normalizeRules({}).web_enabled, false);
+  assert.strictEqual(normalizeRules({ web_enabled: true }).web_enabled, true);
+  assert.strictEqual(normalizeRules({ web_enabled: 'нет' }).web_enabled, false);
+});

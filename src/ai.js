@@ -36,10 +36,22 @@ async function askClaude({ model, system, messages, tools, runTool, onStep }) {
   const headers = { 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' };
   if (process.env.ANTHROPIC_WORKSPACE_ID) headers['anthropic-workspace-id'] = process.env.ANTHROPIC_WORKSPACE_ID;
   const defs = tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.schema }));
+  // Поиск в интернете — серверный инструмент Anthropic: ходит сам, отдельный
+  // ключ не нужен. Это СПРАВКА со ссылкой, а не данные компании (решение Шоха).
+  if (opts.web) defs.push({ type: 'web_search_20260209', name: 'web_search', max_uses: 5 });
   const msgs = messages.slice();
   const used = [];
   for (let step = 0; step < MAX_STEPS; step++) {
     const data = await post(url, headers, { model, max_tokens: 2000, system, messages: msgs, tools: defs });
+    // Долгий поиск модель ставит на паузу и просит продолжить — продолжаем.
+    if (data.stop_reason === 'pause_turn') {
+      msgs.push({ role: 'assistant', content: data.content });
+      if (!used.includes('интернет')) used.push('интернет');
+      continue;
+    }
+    if ((data.content || []).some((c) => c.type === 'web_search_tool_result' || c.type === 'server_tool_use')) {
+      if (!used.includes('интернет')) used.push('интернет');
+    }
     const calls = (data.content || []).filter((c) => c.type === 'tool_use');
     if (!calls.length) {
       const text = (data.content || []).filter((c) => c.type === 'text').map((c) => c.text).join('\n').trim();

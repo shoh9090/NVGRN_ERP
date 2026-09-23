@@ -174,6 +174,7 @@ router.post('/api/ai/ask', J, async (req, res) => {
       system: require('./jarvis-bot').SYSTEM + ` Сегодня ${R.localDate(Date.now())}. Спрашивает: ${ctx.full_name}.`,
       messages: [{ role: 'user', content: question.slice(0, 2000) }],
       tools,
+      web: rules.web_enabled && provider === 'claude',
       runTool: async (name, args) => {
         const t = tools.find((x) => x.name === name);
         if (!t) return { ошибка: 'Нет такого инструмента или нет прав' };

@@ -144,6 +144,7 @@
     const voiceOn = el('input', { type: 'checkbox', checked: r.voice_enabled, disabled: dis });
     const voiceModel = inp(r.voice_model, { placeholder: 'whisper-1', style: 'min-width:200px' });
     const memDays = numInp(r.memory_days, { min: '0', max: '30' });
+    const webOn = el('input', { type: 'checkbox', checked: r.web_enabled, disabled: dis });
 
     // Кто вносит: у дела цепочка ответственных — кто первый и кто подхватывает.
     const ownerChain = {};
@@ -269,6 +270,7 @@
           sales_digest_days: salesDays.value,
           ai_enabled: aiOn.checked, ai_provider: aiProv.value, ai_model: aiModel.value,
           voice_enabled: voiceOn.checked, voice_model: voiceModel.value, memory_days: memDays.value,
+          web_enabled: webOn.checked,
           done_lists: doneExtra.value,
           owners: Object.fromEntries(Object.entries(ownerChain).map(([k, c]) => [k,
             [c.first.value ? { role: c.first.value, after_h: 0 } : null,
