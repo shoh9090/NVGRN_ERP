@@ -568,7 +568,7 @@ async function scanWorkspace(rules) {
   return _scan;
 }
 async function scanCached() {
-  if (_scan && Date.now() - _scan.at < TICK_MS * 2) return _scan;
+  if (_scan && Date.now() - _scan.at < 2 * 60 * 1000) return _scan;
   const rules = await loadRules();
   if (!rules.workspace_id || !trello.configured()) return null;
   try { return await scanWorkspace(rules); } catch (e) { return _scan; }
@@ -651,6 +651,19 @@ async function log(kind, employeeId, card, text, sent, dedupKey) {
     await pool.query('UPDATE jarvis_log SET sent = TRUE, created_at = now() WHERE dedup_key = $1 AND sent = FALSE', [dedupKey]);
   }
   return r.rows.length > 0;
+}
+
+// Свежая проверка перед отправкой: карточка могла измениться минуту назад —
+// поставили срок, отметили выполненной, перенесли в «Сделано». Лучше промолчать,
+// чем написать про просрочку, которой уже нет.
+async function stillOverdue(card, scan, now) {
+  try {
+    const f = await trello.card(card.id);
+    if (!f || f.closed) return null;
+    if (f.dueComplete || !f.due || Date.parse(f.due) >= now) return null;
+    if (R.isDoneList(scan.listName.get(f.idList), scan.doneExtra)) return null;
+    return f;                                   // всё ещё просрочена, срок — свежий
+  } catch (e) { return card; }                  // Trello не ответил — работаем по снимку
 }
 
 // ---------- Напоминания ----------
@@ -736,8 +749,9 @@ async function remindAll(rules, scan, people, now) {
       if (R.overdueIsViolation(Date.parse(c.due), now, rules)) {
         const key = `vo:${c.id}:${mid}:${c.due}`;
         const exists = (await pool.query('SELECT 1 FROM jarvis_log WHERE dedup_key = $1', [key])).rows.length;
-        if (!exists) {
-          const ok = await deliver(p, `⚠️ Карточка <b>«${esc(c.name)}»</b> просрочена (срок был ${dateRu(c.due)}) — `
+        const fresh = exists ? null : await stillOverdue(c, scan, now);
+        if (!exists && fresh) {
+          const ok = await deliver(p, `⚠️ Карточка <b>«${esc(c.name)}»</b> просрочена (срок был ${dateRu(fresh.due)}) — `
             + `это нарушение${rules.fines_enabled ? '' : ' (штрафы пока не начисляются)'}.`, cardButtons(c.id, c.shortUrl), true);
           await log('violation_overdue', p.employee_id, { id: c.id, name: c.name, url: c.shortUrl }, 'Срок был ' + dateRu(c.due), ok, key);
         }
@@ -745,7 +759,7 @@ async function remindAll(rules, scan, people, now) {
     }
   }
   await dueControl(rules, scan, byMember, deliver, now, ballAt);
-  await morning(rules, overdueBy, now);
+  await morning(rules, overdueBy, now, scan);
   await salesDigest(rules, now).catch((e) => console.warn('[ДЖАРВИС] сводка продаж:', e.message));
   await weeklySilent(rules, now).catch((e) => console.warn('[ДЖАРВИС] молчуны:', e.message));
 
@@ -877,7 +891,7 @@ async function dueControl(rules, scan, byMember, deliver, now, ballAt) {
 // окно — первые 3 часа рабочего дня.
 const morningChecked = new Set();
 const hubUrl = (link) => 'https://' + process.env.RAILWAY_PUBLIC_DOMAIN + link;
-async function morning(rules, overdueBy, now) {
+async function morning(rules, overdueBy, now, scan) {
   const hour = ((now + 5 * 3600000) % 86400000) / 3600000;
   if (hour >= rules.work_from + 3) return;
   const today = R.localDate(now);
@@ -902,7 +916,13 @@ async function morning(rules, overdueBy, now) {
     if (morningChecked.has(key)) continue;
     morningChecked.add(key);
     if ((await pool.query('SELECT 1 FROM jarvis_log WHERE dedup_key = $1', [key])).rows.length) continue;
-    const overdue = overdueBy.get(p.employee_id) || [];
+    // Перед утренней сводкой перечитываем просроченные карточки: за ночь их
+// могли закрыть или перенести срок, а человек получил бы устаревший список.
+    const overdue = [];
+    for (const c of (overdueBy.get(p.employee_id) || []).slice(0, 10)) {
+      const fresh = scan ? await stillOverdue(c, scan, now) : c;
+      if (fresh) overdue.push({ ...c, due: fresh.due || c.due });
+    }
     const waiting = (await pool.query(
       'SELECT count(*)::int AS n FROM jarvis_mentions WHERE employee_id = $1 AND answered_at IS NULL', [p.employee_id])).rows[0].n;
     let todos = [];

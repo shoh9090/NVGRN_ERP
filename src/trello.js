@@ -38,7 +38,7 @@ module.exports = {
   comments: (board, since) => get(`/boards/${id(board)}/actions`, { filter: 'commentCard', since, limit: '1000' }),
   cards: (board) => get(`/boards/${id(board)}/cards`, { filter: 'open', fields: 'name,due,dueComplete,idMembers,idList,dateLastActivity,shortUrl,idBoard' }),
   lists: (board) => get(`/boards/${id(board)}/lists`, { filter: 'open', fields: 'name' }),
-  card: (c) => get(`/cards/${id(c)}`, { fields: 'name,shortUrl,idBoard,closed' }),
+  card: (c) => get(`/cards/${id(c)}`, { fields: 'name,shortUrl,idBoard,closed,due,dueComplete,idList,idMembers' }),
   // Ответ из Telegram — комментарием в карточку (от учётки владельца токена).
   addComment: (c, text) => call('POST', `/cards/${id(c)}/actions/comments`, { text }),
   // Срок, поставленный кнопкой в боте.
