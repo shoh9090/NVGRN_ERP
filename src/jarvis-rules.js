@@ -29,6 +29,8 @@ const DEFAULTS = {
   done_lists: [],            // свои колонки Trello, которые тоже считаются закрытыми
   mute_clients: [],          // клиенты, о которых не напоминать (сменили формат работы, закрылись)
   ai_model: '',              // пусто = модель поставщика по умолчанию
+  voice_enabled: true,       // можно ли слать голосовые (нужен ключ OPENAI_API_KEY)
+  voice_model: 'whisper-1',  // чем распознаём речь
   enabled_at: '',            // когда включили: часы по старым упоминаниям идут с этого момента
 };
 
@@ -87,6 +89,8 @@ function normalizeRules(raw) {
   out.ai_enabled = r.ai_enabled === true || r.ai_enabled === 'true';
   out.ai_provider = r.ai_provider === 'openai' ? 'openai' : 'claude';
   out.ai_model = String(r.ai_model || '').trim().slice(0, 60);
+  out.voice_enabled = r.voice_enabled === undefined ? true : (r.voice_enabled === true || r.voice_enabled === 'true');
+  out.voice_model = String(r.voice_model || '').trim().slice(0, 60) || DEFAULTS.voice_model;
   // Свои названия колонок, которые тоже считаются закрытыми.
   out.done_lists = (Array.isArray(r.done_lists) ? r.done_lists : String(r.done_lists || '').split(','))
     .map((x) => String(x || '').trim()).filter(Boolean).slice(0, 30);

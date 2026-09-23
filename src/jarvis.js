@@ -67,6 +67,7 @@ router.get('/api/state', async (req, res) => {
       sync: require('./jarvis-bot').status, todo_kinds: require('./todos').TODO_KINDS };
     // ИИ: какие ключи реально лежат в Railway (сами ключи наружу не отдаём).
     const ai = require('./ai');
+    out.voice = { ready: require('./stt').configured() };
     out.ai = { claude: ai.hasKey('claude'), openai: ai.hasKey('openai'),
       tools: require('./ai-tools').TOOLS.map((t) => ({ name: t.name, tile: t.tile, description: t.description })) };
     // Роли для раздела «Кто вносит»: сколько в роли людей и сколько из них в боте —
@@ -269,7 +270,7 @@ router.post('/api/people/unlink', J, async (req, res) => {
 
 // ---------- Журнал ----------
 // Что Джарвис напомнил и какие нарушения записал; сверху — что сейчас ждёт ответа.
-const LOG_KINDS = ['ai', 'morning', 'remind_no_due', 'violation_no_due', 'due_set', 'due_moved', 'remind_mention', 'violation_mention', 'remind_overdue', 'violation_overdue', 'remind_stale', 'reply'];
+const LOG_KINDS = ['ai', 'voice', 'morning', 'remind_no_due', 'violation_no_due', 'due_set', 'due_moved', 'remind_mention', 'violation_mention', 'remind_overdue', 'violation_overdue', 'remind_stale', 'reply'];
 router.get('/api/log', async (req, res) => {
   try {
     await ensureSchema();

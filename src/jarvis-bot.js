@@ -105,7 +105,26 @@ async function handleUpdate(u) {
   const chatId = m.chat.id;
 
   if (m.contact) return onContact(m);
-  const me = await personByChat(chatId);
+  const me0 = await personByChat(chatId);
+  // Голосовое: расшифровываем и дальше работаем как с обычным текстом.
+  // Расшифровку всегда показываем — человек должен видеть, что его услышали.
+  if ((m.voice || m.audio) && me0) {
+    const rules = await loadRules();
+    if (!rules.voice_enabled) return send(chatId, '🎧 Голосовые пока выключены — напишите текстом.', menu);
+    const stt = require('./stt');
+    if (!stt.configured()) return send(chatId, '🎧 Распознавание речи не подключено. Скажите администратору.', menu);
+    tg('sendChatAction', { chat_id: chatId, action: 'typing' });
+    try {
+      const text = await stt.voiceToText(token(), m.voice || m.audio, rules.voice_model);
+      if (!text) return send(chatId, '🎧 Ничего не расслышал. Попробуйте ещё раз поближе к микрофону.', menu);
+      await send(chatId, `🎧 Услышал: «${esc(text)}»`);
+      await log('voice', me0.employee_id, null, text.slice(0, 300), true, null);
+      return handleUpdate({ message: { ...m, voice: undefined, audio: undefined, text } });
+    } catch (e) {
+      return send(chatId, '🎧 ' + esc(e.message), menu);
+    }
+  }
+  const me = me0;
   if (!me) {
     return send(chatId, 'Здравствуйте! Это Джарвис — внутренний помощник Novagreen на основе ИИ, программа, а не человек.\n'
       + 'Чтобы я вас узнал, нажмите «📱 Поделиться номером» внизу.\n\n'

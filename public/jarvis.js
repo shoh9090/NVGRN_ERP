@@ -138,6 +138,8 @@
       el('option', { value: 'openai', selected: r.ai_provider === 'openai' }, 'GPT (OpenAI)' + ((s.ai || {}).openai ? ' — ключ есть ✓' : ' — ключа нет')),
     ]);
     const aiModel = inp(r.ai_model, { placeholder: 'по умолчанию: claude-sonnet-5', style: 'min-width:260px' });
+    const voiceOn = el('input', { type: 'checkbox', checked: r.voice_enabled, disabled: dis });
+    const voiceModel = inp(r.voice_model, { placeholder: 'whisper-1', style: 'min-width:200px' });
 
     // Кто вносит: у дела цепочка ответственных — кто первый и кто подхватывает.
     const ownerChain = {};
@@ -207,6 +209,12 @@
         row('Вопросы словами', el('label', { class: 'jv-day' }, [aiOn, ' включены'])),
         row('Кто отвечает', aiProv),
         row('Модель', aiModel),
+        row('Голосовые', el('label', { class: 'jv-day' }, [voiceOn, ' принимаем']),
+          el('span', { class: (s.voice || {}).ready ? 'jv-muted' : 'jv-warn' },
+            (s.voice || {}).ready ? ' ключ OPENAI_API_KEY есть ✓' : ' нужен ключ OPENAI_API_KEY в Railway')),
+        row('Чем распознаём речь', voiceModel),
+        el('div', { class: 'jv-muted' }, 'Человек говорит голосом — Джарвис показывает расшифровку («Услышал: …») и отвечает текстом. '
+          + 'Русский распознаётся хорошо, узбекский хуже, поэтому расшифровка видна всегда. Около 0,6 цента за минуту.'),
         el('div', { class: 'jv-muted' }, 'Инструменты, доступные ИИ: '
           + ((s.ai || {}).tools || []).map((t) => t.name + (t.tile ? ' (' + t.tile + ')' : ' (личное)')).join(', ')),
       ]),
@@ -238,6 +246,7 @@
           reminders_enabled: remOn.checked, due_required_h: dueH.value, moves_alert: moves.value,
           due_ask_after_h: dueAsk.value, daily_cap: cap.value, mute_clients: mute.value,
           ai_enabled: aiOn.checked, ai_provider: aiProv.value, ai_model: aiModel.value,
+          voice_enabled: voiceOn.checked, voice_model: voiceModel.value,
           done_lists: doneExtra.value,
           owners: Object.fromEntries(Object.entries(ownerChain).map(([k, c]) => [k,
             [c.first.value ? { role: c.first.value, after_h: 0 } : null,
@@ -332,7 +341,7 @@
     remind_mention: '🔔 Напоминание: упоминание', violation_mention: '⚠️ Нарушение: нет ответа',
     remind_overdue: '☀️ Утренний список просрочек', violation_overdue: '⚠️ Нарушение: просрочка',
     remind_stale: '💤 Без движения', remind_no_due: '📅 Спросили срок', violation_no_due: '⚠️ Нарушение: нет срока',
-    due_set: '📅 Срок поставлен', due_moved: '🔁 Срок перенесён', ai: '🤖 Вопрос Джарвису', reply: '✍️ Ответ из Telegram', morning: '☀️ Утренняя сводка',
+    due_set: '📅 Срок поставлен', due_moved: '🔁 Срок перенесён', ai: '🤖 Вопрос Джарвису', voice: '🎧 Голосовое', reply: '✍️ Ответ из Telegram', morning: '☀️ Утренняя сводка',
   };
   const dt = (v) => v ? new Date(v).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
   const cardLink = (name, url) => url ? el('a', { href: url, target: '_blank', rel: 'noopener' }, name || 'карточка') : (name || '');

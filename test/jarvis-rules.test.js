@@ -183,3 +183,11 @@ test('клиенты, за которыми не следим, — списко�
   assert.deepStrictEqual(normalizeRules({ mute_clients: 'KorzinkaRS, Morye , ' }).mute_clients, ['KorzinkaRS', 'Morye']);
   assert.deepStrictEqual(normalizeRules({}).mute_clients, []);
 });
+
+test('голосовые: по умолчанию принимаем, модель распознавания подставляется', () => {
+  const r = normalizeRules({});
+  assert.strictEqual(r.voice_enabled, true);
+  assert.strictEqual(r.voice_model, 'whisper-1');
+  assert.strictEqual(normalizeRules({ voice_enabled: false }).voice_enabled, false);
+  assert.strictEqual(normalizeRules({ voice_model: '  ' }).voice_model, 'whisper-1');
+});
