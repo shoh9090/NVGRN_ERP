@@ -13,7 +13,11 @@ const integrations = require('./integrations');
 
 const TZ = 5 * 3600000;                 // Ташкент
 const KEEP_MONTHS = 24;                 // глубина хранения (решение Шоха)
-const STATUSES = [1, 2, 3, 4];          // новый, отправлен, доставлен, закрыт; 5 — отменён, не берём
+// Статусы — ТЕ ЖЕ, что в P&L и Калькуляции (integrations.SALES_STATUSES):
+// отгружен, доставлен, закрыт. Раньше здесь был ещё статус 1 «новый», и
+// аналитика Джарвиса считала продажами заказы, которые ещё не уехали, — у неё
+// и у P&L «продажи» получались разные.
+const STATUSES = integrations.SALES_STATUSES;
 const today = () => new Date(Date.now() + TZ).toISOString().slice(0, 10);
 
 let _ready = false;
@@ -78,8 +82,12 @@ async function fetchRange(from, to) {
         rows.set(key, cur);
       }
     }
-    const total = data.pagination ? data.pagination.total : 0;
-    if (!items.length || items.length < limit || page * limit >= total) break;
+    // SalesDoctor не всегда присылает pagination.total. Раньше при его отсутствии
+    // условие «page * limit >= 0» срабатывало сразу после первой полной страницы,
+    // и отрезок сохранялся неполным — молча, как будто продаж было меньше.
+    const total = Number(data.pagination && data.pagination.total) || 0;
+    if (!items.length || items.length < limit) break;
+    if (total && page * limit >= total) break;
     if (page === 200) throw new Error('Слишком много страниц — отрезок не сохраняю целиком');
   }
   return { rows: [...rows.values()], days };
@@ -102,7 +110,10 @@ async function saveRange(from, to, data) {
         [r.day, r.client_sd, r.client_name, r.agent_sd, r.agent_name, r.product_sd, r.product_name, r.qty, r.amount, r.returned]);
     }
     // Отмечаем каждый день отрезка, даже пустой: «продаж не было» — тоже знание.
-    for (let d = new Date(from); d <= new Date(to); d = new Date(d.getTime() + 86400000)) {
+    // Но только прошедшие дни: отметить 30 сентября 23-го числа значит объявить,
+    // что за него продаж не было, — а его просто ещё не случилось.
+    const last = to < today() ? to : today();
+    for (let d = new Date(from); d <= new Date(last); d = new Date(d.getTime() + 86400000)) {
       const day = d.toISOString().slice(0, 10);
       const n = data.rows.filter((r) => r.day === day).length;
       await client.query(
@@ -202,3 +213,8 @@ async function coverage() {
 }
 
 module.exports = { ensureSchema, byMonth, syncRange, syncRecent, startBackfill, backfillStep, backfillState, coverage, KEEP_MONTHS };
+// Открыто для тестов: обрыв постраничной выгрузки и отметка «день выгружен» —
+// это молчаливая потеря продаж, такое обязано проверяться автоматически.
+module.exports.fetchRange = fetchRange;
+module.exports.saveRange = saveRange;
+module.exports.STATUSES = STATUSES;

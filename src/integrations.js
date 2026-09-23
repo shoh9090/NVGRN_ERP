@@ -723,6 +723,13 @@ async function syncCashClients() {
   return { created, updated, total: created + updated };
 }
 
+// Какие заказы SalesDoctor считаются продажей: отгруженные и далее по цепочке.
+// Статус 1 — новый заказ: его ещё не отгрузили, и продажей он не является.
+// Список один на всю систему: P&L, Калькуляция и аналитика Джарвиса обязаны
+// считать «продажи» одинаково, иначе одни и те же клиенты в двух отчётах
+// покупают разное.
+const SALES_STATUSES = [2, 3, 4];
+
 // ---------------------------------------------------------------------------
 // Реализация за месяц в штуках (для листа «Производство» калькуляции)
 // ---------------------------------------------------------------------------
@@ -732,7 +739,7 @@ async function syncCashClients() {
 // чтобы было видно, из чего сложилась цифра, и её можно было сверить с отчётом SD.
 async function getMonthlySalesUnits(period, opts = {}) {
   if (!/^\d{4}-\d{2}$/.test(String(period || ''))) throw new Error('Период указывается как ГГГГ-ММ');
-  const statuses = opts.statuses || [2, 3, 4];
+  const statuses = opts.statuses || SALES_STATUSES;
   const maxMs = opts.maxMs || 20000;      // общий предел ожидания
   const maxPages = opts.maxPages || 20;   // защита от бесконечной постраничной выгрузки
   const started = Date.now();
@@ -788,8 +795,13 @@ async function getMonthlySalesUnits(period, opts = {}) {
         byStatus[st].amount = (byStatus[st].amount || 0) + sum;
       }
     }
-    const total = data.pagination ? data.pagination.total : 0;
-    if (!items.length || items.length < limit || page * limit >= total) break;
+    // Конец выгрузки: пустая или неполная страница. Раньше условие включало
+    // «page * limit >= total», а SalesDoctor не всегда присылает total — тогда
+    // total = 0, условие срабатывало сразу, и выгрузка обрывалась на первой
+    // странице. Месяц молча сохранялся неполным.
+    const total = Number(data.pagination && data.pagination.total) || 0;
+    if (!items.length || items.length < limit) break;
+    if (total && page * limit >= total) break;
     page++;
   }
 
@@ -887,4 +899,4 @@ async function probePayments(from, to) {
 }
 
 // sdRequest и sdLogin нужны подробной выгрузке продаж (src/sd-sales.js): ходим в SD одним кодом.
-module.exports = { sdRequest, sdLogin, sdHealth, getMonthlySalesUnits, getPayments, probePayments, getSdConfig, saveSdConfig, testConnection, syncFinishedGoods, syncPrices, diagSD, getHorecaPoints, getAgentCoverage, syncCrmAgents, syncCrmExpeditors, syncClientsToContacts, getSdProducts, syncCashClients, probeContragent };
+module.exports = { SALES_STATUSES, sdRequest, sdLogin, sdHealth, getMonthlySalesUnits, getPayments, probePayments, getSdConfig, saveSdConfig, testConnection, syncFinishedGoods, syncPrices, diagSD, getHorecaPoints, getAgentCoverage, syncCrmAgents, syncCrmExpeditors, syncClientsToContacts, getSdProducts, syncCashClients, probeContragent };
