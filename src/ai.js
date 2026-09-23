@@ -28,7 +28,7 @@ async function post(url, headers, body) {
 }
 
 // --- Claude (Messages API) ---
-async function askClaude({ model, system, messages, tools, runTool, onStep }) {
+async function askClaude({ model, system, messages, tools, runTool, onStep, web }) {
   const url = 'https://api.anthropic.com/v1/messages';
   // Ключ служебной учётки не привязан к рабочему пространству — Anthropic
   // требует назвать его отдельным заголовком (ANTHROPIC_WORKSPACE_ID в Railway).
@@ -38,7 +38,7 @@ async function askClaude({ model, system, messages, tools, runTool, onStep }) {
   const defs = tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.schema }));
   // Поиск в интернете — серверный инструмент Anthropic: ходит сам, отдельный
   // ключ не нужен. Это СПРАВКА со ссылкой, а не данные компании (решение Шоха).
-  if (opts.web) defs.push({ type: 'web_search_20260209', name: 'web_search', max_uses: 5 });
+  if (web) defs.push({ type: 'web_search_20260209', name: 'web_search', max_uses: 5 });
   const msgs = messages.slice();
   const used = [];
   for (let step = 0; step < MAX_STEPS; step++) {
