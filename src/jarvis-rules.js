@@ -165,6 +165,28 @@ function parseMentions(text) {
   }
   return [...out];
 }
+// «Принято», «hop, vazifa tushunarli», «ок» — это подтверждение, а не вопрос.
+// Тот, кого в таком комментарии упомянули, никому ничего не должен: мяч
+// остаётся у того, кто задачу принял, — с него Джарвис и спросит срок
+// (случай Шоха: «Абдушукур пишет, что задача принята, но нам же мало этого»).
+// Цифры в тексте — признак содержательного ответа (дата, сумма), это не отписка.
+const ACK = new Set([
+  'ок', 'окей', 'ok', 'okey', 'okay', 'хорошо', 'ладно', 'понял', 'поняла', 'понятно',
+  'принято', 'принял', 'приняла', 'принимаю', 'договорились', 'ага', 'да', 'есть',
+  'сделаю', 'сделаем', 'выполню', 'спасибо', 'рахмат',
+  'hop', 'xop', 'hup', 'mayli', 'yaxshi', 'zor', 'boladi', 'bladi', 'tayyor',
+  'tushunarli', 'tushundim', 'tushunarlik', 'albatta', 'qilaman', 'qilamiz',
+  'bajaraman', 'bajaramiz', 'rahmat', 'ha',
+]);
+function isAck(text) {
+  const raw = String(text || '').replace(/@[a-z0-9_]+/gi, ' ').trim();
+  if (!raw || raw.length > 60) return false;
+  if (/[?？]/.test(raw) || /\d/.test(raw)) return false;
+  const words = raw.toLowerCase().replace(/[’'`‘ʻ]/g, '').split(/[^\p{L}]+/u).filter(Boolean);
+  if (!words.length || words.length > 6) return false;
+  return words.some((w) => ACK.has(w));
+}
+
 // Колонка, в которой карточка считается закрытой: не просрочена и ответа не ждёт.
 // Кроме «сделано» это и «не актуально», «отменено», «заморожено» — работа по ним
 // не ведётся, дёргать людей не за что (случай Шоха: карточки 2025 года из
@@ -296,5 +318,5 @@ function parseDueDate(text, nowMs, r) {
 module.exports = {
   DEFAULTS, normalizeRules, toLatin, nameWords, nameMatch, suggestPairs, dueInDays, parseDueDate,
   workHours, isWorkTime, localDate, clockStart, mentionStep, overdueIsViolation,
-  parseMentions, isDoneList, viaJarvis, VIA,
+  parseMentions, isAck, isDoneList, viaJarvis, VIA,
 };

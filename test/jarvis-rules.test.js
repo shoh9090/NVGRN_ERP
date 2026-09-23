@@ -229,3 +229,16 @@ test('упоминание протухает: две недели по умол
   assert.strictEqual(normalizeRules({ mention_stale_days: 0 }).mention_stale_days, 1);
   assert.strictEqual(normalizeRules({ mention_stale_days: 999 }).mention_stale_days, 180);
 });
+
+test('подтверждение — не вопрос: «принято» мяч не передаёт', () => {
+  const { isAck } = require('../src/jarvis-rules');
+  assert.ok(isAck('@shakhobiddinmuradov Hop vazifa tushunarli'));
+  assert.ok(isAck('Принято'));
+  assert.ok(isAck('ок, сделаю'));
+  assert.ok(isAck('Ha, mayli'));
+  // Содержательный ответ подтверждением не считаем: там есть что прочитать.
+  assert.ok(!isAck('@a 25.09.26 skladimizda tayor holatda boladi'));
+  assert.ok(!isAck('надо найти контакт Екатерины, она быстрее реагирует'));
+  assert.ok(!isAck('понял, а когда счёт?'));
+  assert.ok(!isAck(''));
+});

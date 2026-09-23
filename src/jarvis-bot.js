@@ -107,7 +107,12 @@ const askContact = { reply_markup: { keyboard: [[{ text: '📱 Поделить�
 function cardButtons(cardId, url, mentionId) {
   const row = [{ text: '✍️ Ответить', callback_data: mentionId ? 'jm:' + mentionId : 'jc:' + cardId }];
   if (url) row.push({ text: 'Открыть в Trello', url });
-  return { reply_markup: { inline_keyboard: [row] } };
+  const rows = [row];
+  // Иногда человека упоминают «до кучи», а отвечать должен другой. Пусть скажет
+  // об этом одной кнопкой, а не молчит, копя нарушения (замечание Шоха:
+  // «к этой карте я никакого отношения не имею, я тут при чём?»).
+  if (mentionId) rows.push([{ text: '🙈 Это не ко мне', callback_data: 'jn:' + mentionId }]);
+  return { reply_markup: { inline_keyboard: rows } };
 }
 // Кнопки постановки срока: нажал — Джарвис сам проставит дату в Trello.
 function dueButtons(cardId, url) {
@@ -441,6 +446,19 @@ async function onCallback(cq) {
   if (!me) return send(chatId, 'Сначала нажмите «📱 Поделиться номером».', askContact);
   const data = String(cq.data || '');
   let target = null;
+  if (data.startsWith('jn:')) {
+    // «Это не ко мне»: упоминание закрываем, но в журнале оно остаётся —
+    // видно, кого дёргают зря.
+    const r = await pool.query(
+      `UPDATE jarvis_mentions SET answered_at = now(), answered_via = 'dismissed'
+        WHERE id = $1 AND employee_id = $2 AND answered_at IS NULL RETURNING card_id, card_name, card_url`,
+      [parseInt(data.slice(3), 10) || 0, me.employee_id]);
+    if (!r.rows.length) return send(chatId, 'Это упоминание уже закрыто.');
+    const m = r.rows[0];
+    await log('dismiss', me.employee_id, { id: m.card_id, name: m.card_name, url: m.card_url },
+      'Сказал(а): не ко мне', true, null);
+    return send(chatId, `Снял с вас «${esc(m.card_name)}». Больше не напоминаю.`);
+  }
   if (data.startsWith('jm:')) {
     const mt = (await pool.query('SELECT id, card_id, card_name, card_url FROM jarvis_mentions WHERE id = $1 AND employee_id = $2',
       [parseInt(data.slice(3), 10) || 0, me.employee_id])).rows[0];
@@ -579,13 +597,20 @@ const isOverdue = (c, scan, now) => c.due && !isDone(c, scan) && Date.parse(c.du
 // Новые комментарии → упоминания и ответы. Каждый комментарий по порядку:
 // сначала он отвечает на упоминания автора в этой карточке, потом сам кого-то упоминает.
 async function syncComments(rules, scan, people) {
-  const since = (await getSetting('jarvis_sync_since')) || new Date(Date.now() - 7 * 86400000).toISOString();
+  const saved = (await getSetting('jarvis_sync_since')) || new Date(Date.now() - 7 * 86400000).toISOString();
+  // Раз в час перечитываем всю недавнюю переписку заново, а не только новое.
+  // Правила «чей ход» мы уточняем по ходу дела, и упоминания, попавшие в базу
+  // до правки, иначе висели бы вечно: старые комментарии второй раз уже не
+  // читаются. Повторное чтение безопасно — записи идемпотентны.
+  const deepAt = await getSetting('jarvis_sync_deep');
+  const deep = !deepAt || Date.now() - Date.parse(deepAt) > 3600000;
+  const since = deep ? new Date(Date.now() - rules.mention_stale_days * 86400000).toISOString() : saved;
   const actions = [];
   for (const b of scan.boards) actions.push(...await trello.comments(b.id, since));
   actions.sort((a, b) => Date.parse(a.date) - Date.parse(b.date));
   const byUser = new Map(people.filter((p) => p.username).map((p) => [p.username, p]));
   const byName = new Map(people.map((p) => [p.full_name, p]));
-  let maxDate = since;
+  let maxDate = saved;
   for (const a of actions) {
     if (a.date > maxDate) maxDate = a.date;
     const d = a.data || {}, card = d.card || {};
@@ -599,6 +624,22 @@ async function syncComments(rules, scan, people) {
         `UPDATE jarvis_mentions SET answered_at = $3, answered_via = 'trello'
           WHERE card_id = $1 AND member_id = $2 AND answered_at IS NULL AND created_at < $3`,
         [card.id, a.idMemberCreator, a.date]);
+    }
+    // «Принято», «hop, tushunarli» — это подтверждение, а не задача упомянутому.
+    // Мяч остаётся у того, кто принял: с него спросим срок (см. dueControl).
+    if (R.isAck(via ? via.text : d.text)) {
+      await pool.query(
+        "UPDATE jarvis_mentions SET answered_at = created_at, answered_via = 'ack' WHERE action_id = $1 AND answered_at IS NULL",
+        [a.id]);
+      if (author && author.employee_id) {
+        await pool.query(
+          `INSERT INTO jarvis_cards (card_id, name, url, accepted_by, accepted_at, updated_at)
+           VALUES ($1,$2,$3,$4,$5,now())
+           ON CONFLICT (card_id) DO UPDATE SET accepted_by = $4, accepted_at = $5, updated_at = now()`,
+          [card.id, card.name || '', card.shortLink ? 'https://trello.com/c/' + card.shortLink : null,
+            author.employee_id, a.date]);
+      }
+      continue;
     }
     for (const u of R.parseMentions(via ? via.text : d.text)) {
       const p = byUser.get(u);
@@ -620,6 +661,7 @@ async function syncComments(rules, scan, people) {
     }
   }
   await setSetting('jarvis_sync_since', maxDate);
+  if (deep) await setSetting('jarvis_sync_deep', new Date().toISOString());
   // Упоминание старше mention_stale_days — протухло. Если за две недели
   // никто о нём не вспомнил, это не задача, а история переписки.
   await pool.query(
@@ -758,7 +800,7 @@ async function remindAll(rules, scan, people, now) {
       }
     }
   }
-  await dueControl(rules, scan, byMember, deliver, now, ballAt);
+  await dueControl(rules, scan, byMember, byEmp, deliver, now, ballAt);
   await morning(rules, overdueBy, now, scan);
   await salesDigest(rules, now).catch((e) => console.warn('[ДЖАРВИС] сводка продаж:', e.message));
   await weeklySilent(rules, now).catch((e) => console.warn('[ДЖАРВИС] молчуны:', e.message));
@@ -800,7 +842,7 @@ async function remindAll(rules, scan, people, now) {
 const seen = async (key) => (await pool.query('SELECT 1 FROM jarvis_log WHERE dedup_key = $1', [key])).rows.length > 0;
 
 const ASK_LIMIT = 3;     // столько вопросов про срок одному человеку за полдня
-async function dueControl(rules, scan, byMember, deliver, now, ballAt) {
+async function dueControl(rules, scan, byMember, byEmp, deliver, now, ballAt) {
   const rows = new Map((await pool.query('SELECT * FROM jarvis_cards')).rows.map((r) => [r.card_id, r]));
   // Старых карточек без срока много — спрашиваем порциями, а не сваливаем всё разом.
   const asked = new Map((await pool.query(
@@ -813,13 +855,17 @@ async function dueControl(rules, scan, byMember, deliver, now, ballAt) {
       WHERE r.is_admin = TRUE AND u.is_active = TRUE AND u.jv_chat_id IS NOT NULL`)).rows.map((r) => r.jv_chat_id);
   for (const c of scan.cards) {
     const ball = ballAt && ballAt.get(c.id);
+    const row = rows.get(c.id);
     // Спрашиваем срок у того, за кем ход: если в карточке ждут ответа от
     // конкретного человека, остальных участников не трогаем.
-    const people = (c.idMembers || []).map((m) => byMember.get(m)).filter(Boolean)
+    let people = (c.idMembers || []).map((m) => byMember.get(m)).filter(Boolean)
       .filter((p) => !ball || ball.has(p.employee_id));
+    // А если кто-то написал «принято» — спрос с него одного: он взял задачу
+    // на себя, остальным участникам про срок писать незачем.
+    const accepted = row && row.accepted_by ? byEmp.get(Number(row.accepted_by)) : null;
+    if (accepted) people = [accepted];
     if (isDone(c, scan) || !people.length) continue;         // без исполнителя это заметка, а не задача
     const card = { id: c.id, name: c.name, url: c.shortUrl };
-    const row = rows.get(c.id);
 
     if (c.due) {
       const was = row && row.due ? Date.parse(row.due) : null;
@@ -862,14 +908,17 @@ async function dueControl(rules, scan, byMember, deliver, now, ballAt) {
     const hours = R.workHours(R.clockStart(Date.parse(since), rules), now, rules);
     for (const p of people) {
       // Новую карточку не трогаем сразу: человек только завёл её и, может,
-      // прямо сейчас ставит срок руками (замечание Шоха).
-      if (hours < rules.due_ask_after_h) continue;
+      // прямо сейчас ставит срок руками (замечание Шоха). Но если человек
+      // только что написал «принято», самое время спросить — сразу.
+      if (!accepted && hours < rules.due_ask_after_h) continue;
       const ask = `rd:${c.id}:${p.employee_id}:${since}`;
       if (!(await seen(ask))) {
         const n = asked.get(p.employee_id) || 0;
         if (n >= ASK_LIMIT) continue;                        // остальные спросим следующей порцией
         asked.set(p.employee_id, n + 1);
-        const ok = await deliver(p, `📅 Карточка <b>«${esc(c.name)}»</b> за вами, но срока нет. Когда сделаете?`,
+        const ok = await deliver(p, accepted
+          ? `📅 Вы приняли карточку <b>«${esc(c.name)}»</b>. Когда будет готово?`
+          : `📅 Карточка <b>«${esc(c.name)}»</b> за вами, но срока нет. Когда сделаете?`,
           dueButtons(c.id, c.shortUrl));
         await log('remind_no_due', p.employee_id, card, 'Спросили срок', ok, ask);
         continue;                                            // нарушение — не в ту же минуту

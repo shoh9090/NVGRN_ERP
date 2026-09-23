@@ -41,6 +41,10 @@ async function ensureJarvisSchema(pool) {
     no_due_since TIMESTAMPTZ,            -- с какого момента карточка в работе без срока
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
   )`);
+  // Кто написал в карточке «принято/понял»: с него и спрашиваем срок,
+  // а не со всех участников (решение по замечанию Шоха, 24.09.2026).
+  await q('ALTER TABLE jarvis_cards ADD COLUMN IF NOT EXISTS accepted_by BIGINT');
+  await q('ALTER TABLE jarvis_cards ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMPTZ');
 
   // С какого момента висит дело ERP («Нужно внести»). Нужно для цепочки
   // ответственных: не сделал первый — через N рабочих часов подключается второй.
