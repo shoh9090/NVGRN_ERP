@@ -191,3 +191,11 @@ test('голосовые: по умолчанию принимаем, модел
   assert.strictEqual(normalizeRules({ voice_enabled: false }).voice_enabled, false);
   assert.strictEqual(normalizeRules({ voice_model: '  ' }).voice_model, 'whisper-1');
 });
+
+test('оживление сообщений: цифры подменять нельзя', () => {
+  const { numbersKept } = require('../src/jarvis-voice-style');
+  const src = 'Mari wellness: за две недели 2 419 500 против 7 104 399 — падение 66%.';
+  assert.ok(numbersKept(src, 'Слушай, Mari wellness просел на 66%: было 7 104 399, стало 2 419 500 😐'));
+  assert.ok(!numbersKept(src, 'Mari wellness просел на 90%: было 7 104 399, стало 2 419 500'));  // приписал своё
+  assert.ok(!numbersKept(src, 'Mari wellness сильно просел, детали в ERP'));                      // потерял цифры
+});

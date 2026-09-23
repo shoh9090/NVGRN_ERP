@@ -762,7 +762,10 @@ async function morning(rules, overdueBy, now) {
     // Кнопки ведут прямо в окно ERP, где это вносится.
     const buttons = process.env.RAILWAY_PUBLIC_DOMAIN
       ? todos.filter((t) => t.link).slice(0, 4).map((t) => [{ text: '➡️ ' + t.title.slice(0, 40), url: hubUrl(t.link) }]) : [];
-    const ok = !!(await send(p.jv_chat_id, parts.join('\n'), buttons.length ? { reply_markup: { inline_keyboard: buttons } } : menu));
+    // Сводку пишем живым языком: факты собрала система, а формулировку
+    // доверяем модели — цифры она менять не имеет права (jarvis-voice-style).
+    const body = await require('./jarvis-voice-style').liven(parts.join('\n'), rules, name);
+    const ok = !!(await send(p.jv_chat_id, body, buttons.length ? { reply_markup: { inline_keyboard: buttons } } : menu));
     await log('morning', p.employee_id, null,
       [overdue.length ? 'просрочено ' + overdue.length : '', waiting ? 'ждут ответа ' + waiting : '', mine.length ? 'наблюдений ' + mine.length : '',
         ...todos.map((t) => t.title)].filter(Boolean).join('; '), ok, key);

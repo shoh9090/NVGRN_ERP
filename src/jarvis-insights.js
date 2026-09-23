@@ -23,10 +23,15 @@ async function clientDrops(pool) {
         WHERE day > CURRENT_DATE - 14 GROUP BY 1),
      prev AS (
        SELECT client_name, SUM(amount - returned) AS s FROM sd_sales
-        WHERE day > CURRENT_DATE - 28 AND day <= CURRENT_DATE - 14 GROUP BY 1)
-     SELECT p.client_name, p.s AS was, COALESCE(c.s, 0) AS now_s,
+        WHERE day > CURRENT_DATE - 28 AND day <= CURRENT_DATE - 14 GROUP BY 1),
+     agent AS (
+       SELECT DISTINCT ON (client_name) client_name, agent_name FROM sd_sales
+        WHERE day > CURRENT_DATE - 56 AND COALESCE(agent_name, '') <> ''
+        ORDER BY client_name, day DESC)
+     SELECT p.client_name, p.s AS was, COALESCE(c.s, 0) AS now_s, a.agent_name,
             ROUND((COALESCE(c.s, 0) - p.s) * 100.0 / NULLIF(p.s, 0)) AS pct
        FROM prev p LEFT JOIN cur c ON c.client_name = p.client_name
+       LEFT JOIN agent a ON a.client_name = p.client_name
       WHERE p.s >= $1 AND COALESCE(c.s, 0) < p.s * (1 - $2 / 100.0)
       ORDER BY (p.s - COALESCE(c.s, 0)) DESC LIMIT 5`, [DROP_MIN_AMOUNT, DROP_PCT])).rows;
 }
@@ -38,9 +43,14 @@ async function clientsGone(pool) {
        SELECT client_name, SUM(amount - returned) AS s, COUNT(DISTINCT day) AS days
          FROM sd_sales WHERE day > CURRENT_DATE - 56 AND day <= CURRENT_DATE - 14
         GROUP BY 1),
-     cur AS (SELECT DISTINCT client_name FROM sd_sales WHERE day > CURRENT_DATE - 14)
-     SELECT p.client_name, p.s AS was, p.days
+     cur AS (SELECT DISTINCT client_name FROM sd_sales WHERE day > CURRENT_DATE - 14),
+     agent AS (
+       SELECT DISTINCT ON (client_name) client_name, agent_name FROM sd_sales
+        WHERE day > CURRENT_DATE - 56 AND COALESCE(agent_name, '') <> ''
+        ORDER BY client_name, day DESC)
+     SELECT p.client_name, p.s AS was, p.days, a.agent_name
        FROM prev p LEFT JOIN cur c ON c.client_name = p.client_name
+       LEFT JOIN agent a ON a.client_name = p.client_name
       WHERE c.client_name IS NULL AND p.days >= 4 AND p.s >= $1
       ORDER BY p.s DESC LIMIT 5`, [DROP_MIN_AMOUNT])).rows;
 }
@@ -81,13 +91,15 @@ async function collect(pool, rules) {
   await safe(async () => {
     for (const r of (await clientDrops(pool)).filter((x) => !muted(x.client_name))) {
       out.push({ tiles: ['/cash', '/tgbot'], icon: '📉',
-        text: `${r.client_name}: за две недели ${money(r.now_s)} против ${money(r.was)} двумя неделями раньше — падение ${Math.abs(r.pct)}%.` });
+        text: `${r.client_name}${r.agent_name ? ' (менеджер ' + r.agent_name + ')' : ''}: за две недели ${money(r.now_s)} `
+          + `против ${money(r.was)} двумя неделями раньше — падение ${Math.abs(r.pct)}%.` });
     }
   });
   await safe(async () => {
     for (const r of (await clientsGone(pool)).filter((x) => !muted(x.client_name))) {
       out.push({ tiles: ['/cash', '/tgbot'], icon: '🚫',
-        text: `${r.client_name} две недели ничего не брал, а до этого брал ${r.days} дней на ${money(r.was)}.` });
+        text: `${r.client_name}${r.agent_name ? ' (менеджер ' + r.agent_name + ')' : ''} две недели ничего не брал, `
+          + `а до этого брал ${r.days} дней на ${money(r.was)}.` });
     }
   });
   await safe(async () => {

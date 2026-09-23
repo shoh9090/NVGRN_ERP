@@ -1,0 +1,62 @@
+// jarvis-voice-style.js — «оживление» сообщений Джарвиса.
+//
+// Просьба Шоха (23.09.2026): напоминания должны быть человеческими и с юмором,
+// а не как у автоответчика: «Камол, всё производство на тебе, а задачка висит…».
+//
+// Как это сделано безопасно: цифры и факты считает СИСТЕМА и передаёт модели
+// готовыми. Модель только переписывает их бодрым языком — ей прямо запрещено
+// менять числа, добавлять свои и делать выводы. Не получилось (нет ключа,
+// ошибка, подозрительный ответ) — отправляем обычный текст, как раньше.
+
+const ai = require('./ai');
+
+const SYSTEM = [
+  'Ты Джарвис — корпоративный помощник Novagreen Foods. Пишешь коллегам в Telegram.',
+  'Тебе дают готовый список фактов. Перепиши их одним коротким сообщением: живо, по-человечески,',
+  'с лёгкой иронией и подначкой, как пишет умный коллега, а не робот. Можно один-два эмодзи.',
+  'СТРОГО: ни одной цифры не меняй и не добавляй своих. Не придумывай фактов, имён и причин.',
+  'Не выдумывай, что кто-то виноват. Не пиши длинно: 3–8 строк максимум.',
+  'Сохрани все строки-факты — можно перефразировать, но ничего не выбрасывай.',
+  'Имя человека используй, к нему обращайся на «ты» — все свои.',
+  'Про деньги, штрафы и претензии клиентов пиши без сарказма, спокойно.',
+  'Формат для Telegram: без markdown-звёздочек, выделение только <b>так</b>.',
+].join(' ');
+
+// Проверка: модель не должна была потерять или подменить числа.
+// Сравниваем набор чисел в фактах и в ответе — расхождение значит «не доверяем».
+const numbersOf = (s) => (String(s).match(/\d[\d  ]*/g) || []).map((x) => x.replace(/\D/g, '')).filter(Boolean);
+function numbersKept(source, result) {
+  const want = new Set(numbersOf(source));
+  const got = new Set(numbersOf(result));
+  for (const n of want) if (n.length > 1 && !got.has(n)) return false;   // потеряли значимое число
+  for (const n of got) if (n.length > 2 && !want.has(n)) return false;   // приписали своё
+  return true;
+}
+
+// text — готовое сообщение (факты). Возвращает оживлённый вариант или исходный.
+async function liven(text, rules, name) {
+  if (!rules || !rules.ai_enabled) return text;
+  const provider = rules.ai_provider === 'openai' ? 'openai' : 'claude';
+  if (!ai.hasKey(provider)) return text;
+  try {
+    const out = await ai.ask(provider, {
+      model: rules.ai_model,
+      system: SYSTEM,
+      messages: [{ role: 'user', content: `Кому пишем: ${name || 'коллега'}.\nФакты:\n${text}` }],
+      tools: [],
+      runTool: async () => ({}),
+    });
+    const res = String(out.text || '').trim();
+    if (!res || res.length > 2000) return text;
+    if (!numbersKept(text, res)) {
+      console.warn('[ДЖАРВИС] оживление отклонено: цифры не совпали');
+      return text;
+    }
+    return res;
+  } catch (e) {
+    console.warn('[ДЖАРВИС] оживление:', e.message);
+    return text;
+  }
+}
+
+module.exports = { liven, numbersKept };
