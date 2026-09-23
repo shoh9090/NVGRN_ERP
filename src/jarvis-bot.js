@@ -40,6 +40,18 @@ async function tg(method, body) {
   } catch (e) { console.warn(`[ДЖАРВИС] Telegram ${method}: ${e.message}`); return null; }
 }
 const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+// Модель пишет разметку markdown, а Telegram её не понимает: в чате были видны
+// сами звёздочки (замечание Шоха). Переводим в тот HTML, который Telegram знает.
+function mdToHtml(text) {
+  return esc(text)
+    .replace(/```[a-z]*\n?([\s\S]*?)```/g, (m, code) => '<pre>' + code.trim() + '</pre>')
+    .replace(/`([^`\n]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>')
+    .replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s).,:;!?]|$)/g, '$1<i>$2</i>')
+    .replace(/(^|[\s(])_([^_\n]+)_(?=[\s).,:;!?]|$)/g, '$1<i>$2</i>')
+    .replace(/^\s*[-*]\s+/gm, '• ')                 // маркеры списка — точками
+    .replace(/^\s*(#{1,6})\s*(.+)$/gm, '<b>$2</b>'); // заголовки — просто жирным
+}
 const send = (chatId, html, extra = {}) => tg('sendMessage', { chat_id: chatId, text: html, parse_mode: 'HTML', disable_web_page_preview: true, ...extra });
 // Кнопки внизу — частые вопросы одним нажатием. Они идут МИМО ИИ: читают базу
 // напрямую, отвечают мгновенно и ничего не стоят. Решение Шоха: кликать проще,
@@ -116,11 +128,39 @@ async function handleUpdate(u) {
   if (text === MENU_MY || text === '/my' || /^мои карточки$/i.test(text)) return myCards(chatId, me);
   if (text === MENU_TODO) return myTodos(chatId, me);
   if (text === MENU_PAY) return mySalary(chatId, me);
+  if (/^(\/help|\/start|помощь|что (ты )?(умеешь|можешь)|чем поможешь|nima qila olasan|yordam)\??$/i.test(text)) return sendHelp(chatId, me);
   if (text) {
     const rules = await loadRules();
     if (rules.ai_enabled) return aiAnswer(chatId, me, text, rules);
   }
   return send(chatId, `${esc(me.full_name)}, спросите словами: «мои дела», «мои карточки», «остатки склада».`, menu);
+}
+
+// «Что ты умеешь» — ответ собираем сами, а не у модели: он одинаковый каждый
+// раз, с иконками, и не стоит денег. Список — ровно то, что открыто этой роли.
+const TOOL_HELP = {
+  moi_dela: ['📋', 'твои дела «Нужно внести» в ERP — что не внесено и куда'],
+  moi_kartochki_trello: ['🗂', 'твои карточки Trello: упоминания без ответа и просрочки'],
+  moi_narusheniya: ['⚠️', 'что я тебе записал: напоминания и нарушения'],
+  moy_tabel: ['🕘', 'твой табель за месяц: дни, часы, отпуска'],
+  moya_zarplata: ['💵', 'твоя зарплата за месяц — только твоя, чужие не показываю'],
+  ostatki_sklada: ['📦', 'остатки сырья и упаковки на складе'],
+  zayavki_zakupa: ['🛒', 'заявки в Закупе: что заказано, что принято'],
+  dolg_postavshchikam: ['🤝', 'сколько мы должны поставщикам'],
+  ostatki_deneg: ['🏦', 'остатки денег по кассам и счетам'],
+  pribyl_za_mesyats: ['💰', 'итоги месяца: выручка, себестоимость, прибыль'],
+  prodazhi_za_mesyats: ['📈', 'продажи за месяц и топ товаров'],
+  prodazhi_po_klientam: ['👥', 'продажи по клиентам за период'],
+  dinamika_klienta: ['📊', 'динамика клиента по неделям — растёт или падает'],
+  pretenzii: ['📣', 'претензии за период: сколько, по каким товарам'],
+};
+async function sendHelp(chatId, me) {
+  const user = await erpUser(me.user_id);
+  const tools = await require('./ai-tools').toolsFor(user);
+  const lines = tools.map((t) => TOOL_HELP[t.name]).filter(Boolean).map(([i, s]) => `${i} ${esc(s)}`);
+  return send(chatId, '🤖 Я Джарвис — помощник Novagreen на основе ИИ. Отвечаю по данным ERP, '
+    + 'в пределах того, что открыто твоей роли.\n\n<b>Спроси словами, например:</b>\n' + lines.join('\n')
+    + '\n\n💬 Пиши как удобно, по-русски или o‘zbekcha. Частое — кнопками внизу.', menu);
 }
 
 // Кнопки: те же данные, что у ИИ-инструментов, но без модели — быстро и бесплатно.
@@ -157,6 +197,10 @@ const SYSTEM = [
   'Спросят, кто ты — отвечай честно: Джарвис, программа-помощник Novagreen на основе ИИ, не человек.',
   'Язык держи по последнему сообщению человека: перешёл на узбекский — переходи и ты, вернулся на русский — возвращайся.',
   'Названия товаров и имена людей пиши так, как они записаны в системе, не переводи их.',
+  'Пиши для Telegram: короткие строки, пункты списка начинай с подходящего эмодзи (📦 склад, 💰 деньги,',
+  '📋 задачи, 📈 продажи, 👥 клиенты, ⚠️ проблема), между смысловыми блоками — пустая строка.',
+  'Таблицы в чате не рисуй — только строки вида «Название — 1 200 шт, 3 400 000 сум».',
+  'Никакой разметки звёздочками и решётками: выделяй важное <b>вот так</b>, если нужно.',
 ].join(' ');
 
 async function aiAnswer(chatId, me, question, rules) {
@@ -184,7 +228,7 @@ async function aiAnswer(chatId, me, question, rules) {
       onStep: () => tg('sendChatAction', { chat_id: chatId, action: 'typing' }),
     });
     const text = out.text || 'Не понял вопрос. Спросите иначе.';
-    await send(chatId, esc(text), menu);
+    await send(chatId, mdToHtml(text), menu);
     await log('ai', me.employee_id, null,
       `${question.slice(0, 200)} → ${text.slice(0, 300)} [${provider}, ${out.used.join(', ') || 'без инструментов'}, ${Math.round((Date.now() - started) / 100) / 10} с]`,
       true, null);
