@@ -690,6 +690,23 @@ test('часть принятых позиций без цены — жёлты�
   assert.ok(r.warnings.some((w) => wtext(w).includes('без цены')));
 });
 
+test('проценты по кредитам — расход; тело кредита в прибыль не идёт', async () => {
+  const r = await buildPnl(makePool({
+    cash: CASH.concat([
+      { code: '60', name: 'Проценты по кредитам', group_name: '6. Финансы', flow_type: 'financing', inc: 0, exp: 7000000, cnt: 2 },
+      { code: '67', name: 'Налог на прибыль', group_name: '6. Финансы', flow_type: 'financing', inc: 0, exp: 3000000, cnt: 1 },
+    ]),
+    received: [{ m: '2026-08', orders: 12, total: 35000000 }],
+  }), '2026-08');
+  // Операционная прибыль не меняется: проценты — не работа компании, а цена денег.
+  assert.strictEqual(r.operating_profit, 57000000);
+  assert.strictEqual(r.interest.total, 7000000);
+  // Чистая = операционная − проценты − налог на прибыль.
+  assert.strictEqual(r.net_profit, 57000000 - 7000000 - 3000000);
+  // Возврат тела кредита (61) в прибыли по-прежнему не участвует.
+  assert.strictEqual(r.excluded.finance.out, 20000000);
+});
+
 test('готовность месяца: один и тот же светофор для любого месяца', async () => {
   const { monthReadiness } = require('../src/cash-pnl');
   // Месяц без склада, без SD и без зарплаты — прибыли верить нельзя.

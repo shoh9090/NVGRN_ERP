@@ -71,6 +71,12 @@ const isCapex = (g) => String(g || '').startsWith(GRP_CAPEX);
 //   • кредиты, займы, возвраты долгов, резервы — по-прежнему вне прибыли.
 const OPEX_FROM_FINANCE = new Set(['62', '64', '65', '66', '68']);
 const PROFIT_TAX_CODE = '67';
+// Проценты по кредитам (статья 60) — настоящий расход компании, в отличие от
+// возврата тела кредита (61): тело — это отданные свои деньги, проценты — плата
+// за них. Раньше вся статья выпадала из прибыли вместе с телом, и чистая
+// прибыль была завышена на проценты. Показываем отдельной строкой ПОСЛЕ
+// операционной прибыли: к работе компании они отношения не имеют, это цена денег.
+const LOAN_INTEREST_CODE = '60';
 const GRP_TAXES = 'Налоги и комиссии банка';
 
 const num = (v) => Number(v) || 0;
@@ -93,6 +99,7 @@ function classifyRows(rows) {
   const refunds = [];      // расход по ДОХОДНОЙ статье — возврат покупателю
   const conversion = [];   // конверсия валюты: обе ноги, деньги никуда не делись
   const profitTax = [];    // налог на прибыль — после операционной прибыли
+  const interest = [];     // проценты по кредитам — тоже после операционной прибыли
 
   // Приход и расход по одной статье разбираем ОТДЕЛЬНО. Раньше статья целиком
   // уходила в одну корзину, и возврат от поставщика сырья пропадал из сверки:
@@ -126,6 +133,7 @@ function classifyRows(rows) {
     if (item.exp > 0) {
       const code = String(r.code);
       if (code === PROFIT_TAX_CODE) profitTax.push(item);
+      else if (code === LOAN_INTEREST_CODE) interest.push(item);
       else if (OPEX_FROM_FINANCE.has(code)) {
         // Налоги и комиссии банка — расход, хоть статья и в группе «Финансы».
         if (!opex.has(GRP_TAXES)) opex.set(GRP_TAXES, { group_name: GRP_TAXES, amount: 0, items: [] });
@@ -153,8 +161,9 @@ function classifyRows(rows) {
   const sum = (list, f) => list.reduce((s, x) => s + x[f], 0);
   const refundsTotal = sum(refunds, 'exp');
   return {
-    revenue, opex, materials, finance, capex, otherIn, otherIncome, refunds, conversion, profitTax,
+    revenue, opex, materials, finance, capex, otherIn, otherIncome, refunds, conversion, profitTax, interest,
     profitTaxTotal: sum(profitTax, 'exp'),
+    interestTotal: sum(interest, 'exp'),
     // Выручка от продаж — ровно статья 200, как в Кэш-флоу
     salesTotal: sum(revenue, 'inc'),
     otherIncomeTotal: sum(otherIncome, 'inc'),
@@ -230,6 +239,7 @@ async function cashSide(pool, from, to) {
     refunds: { total: refundsTotal, items: refunds },
     conversion: { in: convIn, out: sum(conversion, 'exp'), items: conversion },
     profit_tax: { total: c.profitTaxTotal, items: c.profitTax },
+    interest: { total: c.interestTotal, items: c.interest },
     unclassified: { inc: num(un.inc), exp: num(un.exp), cnt: Number(un.cnt) },
     // Сверка: из чего складывается расхождение с приходом в Кэш-флоу.
     // Показываем арифметикой, чтобы не выяснять это в переписке.
@@ -853,9 +863,12 @@ async function buildPnl(pool, period) {
   const cogs = mc.total;
   const gross = cogs === null ? null : revenue - cogs;
   const operating = gross === null ? null : gross - cash.opex.total;
-  // Налог на прибыль — после операционной прибыли, по дате оплаты.
+  // Проценты по кредитам и налог на прибыль — после операционной прибыли,
+  // по дате оплаты. Операционную прибыль они не трогают: она про работу
+  // компании, а это цена заёмных денег и расчёт с государством.
   const profitTax = num(cash.profit_tax.total);
-  const net = operating === null ? null : operating - profitTax;
+  const interest = num(cash.interest.total);
+  const net = operating === null ? null : operating - interest - profitTax;
 
   // Честные предупреждения: пусть человек видит, чему верить нельзя.
   // Каждое — не только «что не так», но и куда идти исправлять: ссылка на нужную
@@ -937,6 +950,7 @@ async function buildPnl(pool, period) {
     operating_profit: operating,
     operating_margin_pct: operating === null ? null : pct(operating, revenue),
     profit_tax: cash.profit_tax,
+    interest: cash.interest,
     net_profit: net,
     net_margin_pct: net === null ? null : pct(net, revenue),
     reconcile: cash.reconcile,

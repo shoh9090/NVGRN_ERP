@@ -1187,11 +1187,18 @@
     row('Рентабельность', pnlPct(d.operating_margin_pct), { cls: 'cash-pnl-sub' });
 
     gap();
+    row('Проценты по кредитам', money((d.interest && d.interest.total) || 0), {
+      cls: 'cash-pnl-sub',
+      hint: 'Статья 60, по дате оплаты. Это плата за заёмные деньги — расход. Возврат тела кредита (статья 61) в прибыль не идёт: это свои деньги, отданные обратно.',
+    });
     row('Налог на прибыль', money((d.profit_tax && d.profit_tax.total) || 0), {
       cls: 'cash-pnl-sub',
       hint: 'По дате оплаты (статья 67). Платится не каждый месяц, поэтому чистая прибыль по месяцам скачет.',
     });
-    row('Чистая прибыль', pnlMoney(d.net_profit === undefined ? null : d.net_profit), { cls: 'cash-pnl-total' });
+    row('Чистая прибыль', pnlMoney(d.net_profit === undefined ? null : d.net_profit), {
+      cls: 'cash-pnl-total',
+      hint: 'Операционная прибыль минус проценты по кредитам и налог на прибыль.',
+    });
 
     box.appendChild(el('table', { class: 'cash-pnl-t' }, el('tbody', {}, rows)));
 
@@ -1344,8 +1351,10 @@
     head('5. Операционная прибыль');
     line(d.operating_profit !== null && d.operating_profit < 0 ? 'Убыток' : 'Прибыль',
       'Валовая прибыль минус операционные расходы', d.operating_profit, 'cash-src-total');
+    line('Проценты по кредитам', 'Касса → статья 60, по дате оплаты. Тело кредита (61) сюда не входит — это возврат своих денег',
+      (d.interest && d.interest.total) || 0);
     line('Налог на прибыль', 'Касса → статья 67, по дате оплаты', (d.profit_tax && d.profit_tax.total) || 0);
-    line('Чистая прибыль', 'Операционная прибыль минус налог на прибыль',
+    line('Чистая прибыль', 'Операционная прибыль минус проценты по кредитам и налог на прибыль',
       d.net_profit === undefined ? null : d.net_profit, 'cash-src-total');
 
     // Если месяц в минусе — прямо говорим, что именно съело прибыль
