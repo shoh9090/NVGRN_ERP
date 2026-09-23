@@ -663,6 +663,33 @@ test('всё сходится — проверка молчит', () => {
   assert.strictEqual(sc.total_gap, 0);
 });
 
+test('приёмка есть, а цен в ней нет — это не «сырьё бесплатное», а неполные данные', async () => {
+  const { monthReadiness } = require('../src/cash-pnl');
+  const r = await buildPnl(makePool({
+    cash: CASH,                                                    // оплата поставщикам 40 млн
+    received: [{ m: '2026-08', orders: 3, total: 0, no_price: 7 }], // приняли, цен не проставили
+  }), '2026-08');
+  // Себестоимость НЕ ноль: раз по приёмкам считать нечего, берём оплаты.
+  assert.strictEqual(r.cogs_source, 'paid');
+  assert.strictEqual(r.cogs_total, 40000000);
+  assert.strictEqual(r.cogs_parts.purchase_empty, true);
+  // И светофор красный, а не зелёный.
+  assert.strictEqual(monthReadiness(r).checks.find((c) => c.key === 'raw').level, 'bad');
+  assert.ok(r.warnings.some((w) => wtext(w).includes('цен в них нет')), JSON.stringify(r.warnings));
+});
+
+test('часть принятых позиций без цены — жёлтый, сырьё занижено', async () => {
+  const { monthReadiness } = require('../src/cash-pnl');
+  const r = await buildPnl(makePool({
+    cash: CASH,
+    received: [{ m: '2026-08', orders: 12, total: 35000000, no_price: 4 }],
+  }), '2026-08');
+  assert.strictEqual(r.cogs_source, 'purchase');
+  assert.strictEqual(r.cogs_parts.raw_no_price, 4);
+  assert.strictEqual(monthReadiness(r).checks.find((c) => c.key === 'raw').level, 'warn');
+  assert.ok(r.warnings.some((w) => wtext(w).includes('без цены')));
+});
+
 test('готовность месяца: один и тот же светофор для любого месяца', async () => {
   const { monthReadiness } = require('../src/cash-pnl');
   // Месяц без склада, без SD и без зарплаты — прибыли верить нельзя.

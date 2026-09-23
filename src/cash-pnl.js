@@ -442,18 +442,28 @@ async function factCogs(pool, from, to, priceOf) {
 const CODE_RAW_PAID = '10';
 const CODE_PACK_PAID = '11';
 
-// Сырьё, принятое в Закупе, по месяцам: Map 'ГГГГ-ММ' → { total, orders }.
+// Сырьё, принятое в Закупе, по месяцам: Map 'ГГГГ-ММ' → { total, orders, no_price }.
+//
+// Месяц определяет ФАКТИЧЕСКАЯ дата приёмки (received_at), а плановая дата
+// поставки — только для старых документов, где приёмку не отметили. Ровно так
+// же считает долг поставщику `purchase-finance.js`. Раньше P&L брал плановую
+// дату, и заявка с планом на 31 августа, принятая 1 сентября, попадала в
+// себестоимость августа, а в долг — в сентябрь: две плитки про одну поставку
+// показывали разные месяцы.
 async function rawReceivedByMonth(pool, from, to) {
   const rows = (await pool.query(
-    `SELECT to_char(po.delivery_date, 'YYYY-MM') AS m,
+    `SELECT to_char(COALESCE(po.received_at::date, po.delivery_date), 'YYYY-MM') AS m,
             COUNT(DISTINCT po.id) AS orders,
-            COALESCE(SUM(COALESCE(i.fact_qty, 0) * i.price), 0) AS total
+            COALESCE(SUM(COALESCE(i.fact_qty, 0) * i.price), 0) AS total,
+            COUNT(*) FILTER (WHERE COALESCE(i.fact_qty, 0) > 0 AND COALESCE(i.price, 0) = 0) AS no_price
        FROM purchase_orders po
        JOIN purchase_order_items i ON i.order_id = po.id
       WHERE po.status = 'received' AND i.item_kind = 'raw'
-        AND po.delivery_date BETWEEN $1 AND $2
+        AND COALESCE(po.received_at::date, po.delivery_date) BETWEEN $1 AND $2
       GROUP BY 1`, [from, to])).rows;
-  return new Map(rows.filter((r) => r.m).map((r) => [r.m, { total: num(r.total), orders: Number(r.orders) || 0 }]));
+  return new Map(rows.filter((r) => r.m).map((r) => [r.m, {
+    total: num(r.total), orders: Number(r.orders) || 0, no_price: Number(r.no_price) || 0,
+  }]));
 }
 
 // Себестоимость месяца из двух источников. Чистая функция — проверяется тестом.
@@ -461,17 +471,25 @@ async function rawReceivedByMonth(pool, from, to) {
 // статьям 10/11 (classifyRows().materials).
 function materialsCost(received, materials) {
   const paidBy = (code) => (materials || []).filter((x) => String(x.code) === code).reduce((a, x) => a + num(x.exp), 0);
-  const fromPurchase = !!(received && received.orders > 0);
+  // Приёмки берём, только если у них есть СУММА. Заявка принята, но цены не
+  // проставлены — это не «сырьё стоило ноль», это незаполненные данные: раньше
+  // такой месяц показывал себестоимость 0 и зелёный светофор «данные полные».
+  const hasOrders = !!(received && received.orders > 0);
+  const fromPurchase = hasOrders && received.total > 0;
   const rawPaid = paidBy(CODE_RAW_PAID);
   const raw = fromPurchase ? received.total : rawPaid;
   const packaging = paidBy(CODE_PACK_PAID);
-  // Ни приёмок, ни оплат за сырьё — себестоимость посчитать не из чего. Ноль тут
-  // был бы враньём: прибыль вышла бы равной выручке минус расходы.
+  // Ни приёмок с ценой, ни оплат за сырьё — себестоимость посчитать не из чего.
+  // Ноль тут был бы враньём: прибыль вышла бы равной выручке минус расходы.
   const nothing = !fromPurchase && rawPaid <= 0;
   return {
     raw, packaging, total: nothing ? null : raw + packaging,
     raw_source: fromPurchase ? 'purchase' : (nothing ? null : 'paid'),
-    raw_orders: fromPurchase ? received.orders : 0,
+    raw_orders: hasOrders ? received.orders : 0,
+    // Принятые позиции без цены: на столько сырьё месяца занижено.
+    raw_no_price: hasOrders ? (received.no_price || 0) : 0,
+    // Приёмки есть, а денег в них нет — цены не проставлены совсем.
+    purchase_empty: hasOrders && !(received.total > 0),
     raw_paid: rawPaid,
   };
 }
@@ -735,9 +753,20 @@ function monthReadiness(r) {
   else add('sales', 'Продажи из SalesDoctor', 'bad', 'не подтянуты — выручка взята по деньгам');
 
   // 2. Сырьё: из Закупа (точно) или по оплатам (приблизительно).
+  // Зелёным — только когда у ВСЕХ принятых позиций есть цена. Принятая заявка
+  // без цены молча занижает себестоимость, а месяц при этом выглядел «полным».
   const parts = r.cogs_parts || {};
-  if (parts.raw_source === 'purchase') add('raw', 'Сырьё из Закупа', 'ok', `${mln(parts.raw)}, заявок ${parts.raw_orders}`);
-  else add('raw', 'Сырьё из Закупа', 'warn', `приёмок нет — по оплатам ${mln(parts.raw)}`);
+  if (parts.purchase_empty) {
+    add('raw', 'Сырьё из Закупа', 'bad', `заявок ${parts.raw_orders}, но цен в них нет — сырьё взято по оплатам ${mln(parts.raw)}`);
+  } else if (parts.raw_source === 'purchase' && parts.raw_no_price > 0) {
+    add('raw', 'Сырьё из Закупа', 'warn', `${mln(parts.raw)}, заявок ${parts.raw_orders}; ${parts.raw_no_price} позиций без цены — сырьё занижено`);
+  } else if (parts.raw_source === 'purchase') {
+    add('raw', 'Сырьё из Закупа', 'ok', `${mln(parts.raw)}, заявок ${parts.raw_orders}`);
+  } else if (parts.raw_source === 'paid') {
+    add('raw', 'Сырьё из Закупа', 'warn', `приёмок нет — по оплатам ${mln(parts.raw)}`);
+  } else {
+    add('raw', 'Сырьё из Закупа', 'bad', 'ни приёмок, ни оплат поставщикам — себестоимости нет');
+  }
 
   // 5. Зарплата в расходах месяца.
   const noSalary = ((r.self_check && r.self_check.items) || []).some((x) => x.key === 'no_salary');
@@ -836,17 +865,18 @@ async function buildPnl(pool, period) {
   if (cogsSource === null) {
     warnings.push('За месяц нет ни принятых заявок в Закупе, ни оплат поставщикам сырья — себестоимость и прибыль посчитать не из чего.');
   }
-  if (mc.raw_source === 'purchase') {
-    const np = (await pool.query(
-      `SELECT COUNT(*)::int AS n FROM purchase_order_items i JOIN purchase_orders po ON po.id = i.order_id
-        WHERE po.status = 'received' AND i.item_kind = 'raw' AND COALESCE(i.fact_qty, 0) > 0
-          AND COALESCE(i.price, 0) = 0 AND po.delivery_date BETWEEN $1 AND $2`, [from, toStr]).catch(() => ({ rows: [] }))).rows[0];
-    if (np && np.n) {
-      warnings.push({
-        text: `В Закупе ${np.n} принятых позиций сырья без цены — сырьё за месяц занижено на их стоимость.`,
-        href: '/purchase#noprice', label: 'Внести цены',
-      });
-    }
+  if (mc.raw_no_price) {
+    warnings.push({
+      text: `В Закупе ${mc.raw_no_price} принятых позиций сырья без цены — сырьё за месяц занижено на их стоимость.`,
+      href: '/purchase#noprice', label: 'Внести цены',
+    });
+  }
+  if (mc.purchase_empty) {
+    warnings.push({
+      text: `За месяц принято заявок: ${mc.raw_orders}, но цен в них нет ни одной — сырьё по приёмкам посчитать не из чего.`
+        + (mc.raw_paid > 0 ? ' Взята оплата поставщикам (статья 10), это приблизительно.' : ''),
+      href: '/purchase#noprice', label: 'Внести цены',
+    });
   }
   if (cogsSource === 'paid') {
     warnings.push('В этом месяце в Закупе нет принятых заявок на сырьё — сырьё посчитано по оплатам поставщикам (статья 10). '
@@ -890,7 +920,7 @@ async function buildPnl(pool, period) {
     cogs_total: cogs,
     cogs_parts: {
       raw: mc.raw, packaging: mc.packaging, raw_source: mc.raw_source, raw_orders: mc.raw_orders,
-      raw_paid: mc.raw_paid,
+      raw_paid: mc.raw_paid, raw_no_price: mc.raw_no_price, purchase_empty: mc.purchase_empty,
     },
     // Контроль склада — на прибыль не влияет: сколько из принятого сырья склад
     // отметил выданным в производство, отходом и потерями.
