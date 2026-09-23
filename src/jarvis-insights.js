@@ -61,7 +61,10 @@ async function stockRunningOut(pool) {
        FROM bal b JOIN spend s ON s.item_kind = b.item_kind AND s.item_id = b.item_id
        JOIN ref_raw_materials rm ON rm.id = b.item_id AND b.item_kind = 'raw'
        LEFT JOIN ref_units u ON u.id = rm.unit_id
-      WHERE s.per_day > 0 AND b.balance >= 0
+      -- Только то, что ЗАКАНЧИВАЕТСЯ. Нулевой остаток у зелени — норма:
+      -- её не хранят, сколько приняли, столько в тот же день и ушло,
+      -- поэтому «остаток 0» было бы ложной тревогой каждый день.
+      WHERE s.per_day > 0 AND b.balance > 0
         AND b.balance / NULLIF(s.per_day, 0) < $1
         AND NOT COALESCE(rm.is_waste, FALSE)
       ORDER BY days_left LIMIT 5`, [STOCK_DAYS_LEFT])).rows;
