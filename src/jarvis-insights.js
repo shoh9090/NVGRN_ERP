@@ -24,10 +24,16 @@ async function clientDrops(pool) {
      prev AS (
        SELECT client_name, SUM(amount - returned) AS s FROM sd_sales
         WHERE day > CURRENT_DATE - 28 AND day <= CURRENT_DATE - 14 GROUP BY 1),
+     -- Имя менеджера SalesDoctor в заказ не кладёт, только код агента,
+     -- поэтому имя берём из справочника агентов (tgbot.crm_agents).
      agent AS (
-       SELECT DISTINCT ON (client_name) client_name, agent_name FROM sd_sales
-        WHERE day > CURRENT_DATE - 56 AND COALESCE(agent_name, '') <> ''
-        ORDER BY client_name, day DESC)
+       SELECT DISTINCT ON (s.client_name) s.client_name,
+              COALESCE(NULLIF(s.agent_name, ''), a.sd_agent_name) AS agent_name
+         FROM sd_sales s
+         LEFT JOIN tgbot.crm_agents a ON a.sd_agent_id = s.agent_sd
+        WHERE s.day > CURRENT_DATE - 56
+          AND COALESCE(NULLIF(s.agent_name, ''), a.sd_agent_name) IS NOT NULL
+        ORDER BY s.client_name, s.day DESC)
      SELECT p.client_name, p.s AS was, COALESCE(c.s, 0) AS now_s, a.agent_name,
             ROUND((COALESCE(c.s, 0) - p.s) * 100.0 / NULLIF(p.s, 0)) AS pct
        FROM prev p LEFT JOIN cur c ON c.client_name = p.client_name
@@ -44,10 +50,16 @@ async function clientsGone(pool) {
          FROM sd_sales WHERE day > CURRENT_DATE - 56 AND day <= CURRENT_DATE - 14
         GROUP BY 1),
      cur AS (SELECT DISTINCT client_name FROM sd_sales WHERE day > CURRENT_DATE - 14),
+     -- Имя менеджера SalesDoctor в заказ не кладёт, только код агента,
+     -- поэтому имя берём из справочника агентов (tgbot.crm_agents).
      agent AS (
-       SELECT DISTINCT ON (client_name) client_name, agent_name FROM sd_sales
-        WHERE day > CURRENT_DATE - 56 AND COALESCE(agent_name, '') <> ''
-        ORDER BY client_name, day DESC)
+       SELECT DISTINCT ON (s.client_name) s.client_name,
+              COALESCE(NULLIF(s.agent_name, ''), a.sd_agent_name) AS agent_name
+         FROM sd_sales s
+         LEFT JOIN tgbot.crm_agents a ON a.sd_agent_id = s.agent_sd
+        WHERE s.day > CURRENT_DATE - 56
+          AND COALESCE(NULLIF(s.agent_name, ''), a.sd_agent_name) IS NOT NULL
+        ORDER BY s.client_name, s.day DESC)
      SELECT p.client_name, p.s AS was, p.days, a.agent_name
        FROM prev p LEFT JOIN cur c ON c.client_name = p.client_name
        LEFT JOIN agent a ON a.client_name = p.client_name
