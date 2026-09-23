@@ -75,6 +75,9 @@
       const b = c.backfill || {};
       const body = el('div', {}, c.days
         ? [c.first_day ? 'Есть дни: ' + c.first_day + ' — ' + c.last_day + ' (' + c.days + ' дн., строк ' + c.rows + ')' : 'пока пусто',
+          el('div', { class: 'jv-muted' }, c.deliveries
+            ? 'Доставки по водителям: ' + c.deliveries + ' заказов'
+            : 'Доставок по водителям ещё нет — перезалейте историю, и Джарвис сможет считать по водителям'),
           b.next_month && !b.finished ? el('div', { class: 'jv-muted' }, 'Заливка истории: загружено месяцев ' + (b.done || 0) + ', сейчас ' + b.next_month + (b.error ? ' · ошибка: ' + b.error : '')) : null]
         : 'Ещё не выгружали');
       salesCard.replaceChild(body, salesCard.lastChild);

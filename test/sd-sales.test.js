@@ -60,3 +60,39 @@ test('продажи считаются одними и теми же стату
   assert.deepStrictEqual(sd.STATUSES, integrations.SALES_STATUSES);
   assert.ok(!sd.STATUSES.includes(1), 'новый заказ ещё не отгружен — это не продажа');
 });
+
+// Доставки берутся из того же ответа SalesDoctor, что и продажи: кто повёз,
+// сколько точек, какой статус. Без этого Джарвис не мог ответить на вопрос
+// «сколько доставок было за неделю по водителям» (замечание Шоха 24.09.2026).
+test('из заказов забираем и доставки: водитель, клиент, статус', async () => {
+  const saved = { cfg: integrations.getSdConfig, login: integrations.sdLogin, req: integrations.sdRequest };
+  integrations.getSdConfig = async () => ({ url: 'x', login: 'l', password: 'p' });
+  integrations.sdLogin = async () => ({ userId: 1, token: 't' });
+  integrations.sdRequest = async () => ({ result: { order: [
+    { ...order(1), SD_id: 'o1', summa: 1000, status: 3, expeditor: { SD_id: 'e1', name: 'Водитель Один' } },
+    { ...order(2), SD_id: 'o2', summa: 2000, status: 2, expeditor: { SD_id: 'e1', name: 'Водитель Один' } },
+    { ...order(3), SD_id: 'o3', summa: 3000, status: 3 },   // заказ без водителя — тоже строка
+  ] } });
+  try {
+    const r = await sd.fetchRange('2026-09-01', '2026-09-30');
+    assert.strictEqual(r.deliveries.length, 3, 'одна строка на заказ');
+    const one = r.deliveries.find((d) => d.order_sd === 'o1');
+    assert.strictEqual(one.expeditor_sd, 'e1');
+    assert.strictEqual(one.expeditor_name, 'Водитель Один');
+    assert.strictEqual(one.status, 3);
+    assert.strictEqual(r.deliveries.find((d) => d.order_sd === 'o3').expeditor_sd, '',
+      'заказ без водителя не теряем — иначе доставок окажется меньше, чем было');
+  } finally {
+    integrations.getSdConfig = saved.cfg; integrations.sdLogin = saved.login; integrations.sdRequest = saved.req;
+  }
+});
+
+test('вес единицы берём из названия товара, выдуманного не даём', () => {
+  const { unitKg } = require('../src/ai-tools');
+  assert.strictEqual(unitKg('Айсберг 500 гр'), 0.5);
+  assert.strictEqual(unitKg('Айсберг 100гр'), 0.1);
+  assert.strictEqual(unitKg('Салат 1 кг'), 1);
+  assert.strictEqual(unitKg('Руккола 250 г'), 0.25);
+  assert.strictEqual(unitKg('Микрозелень СТМ'), null, 'веса в названии нет — считать нечего');
+  assert.strictEqual(unitKg('Уксус 350 мл'), null, 'миллилитры это не килограммы');
+});

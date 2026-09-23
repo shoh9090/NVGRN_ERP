@@ -38,6 +38,25 @@ async function ensureSchema() {
   )`);
   await db.pool.query('CREATE INDEX IF NOT EXISTS idx_sd_sales_day ON sd_sales (day)');
   await db.pool.query('CREATE INDEX IF NOT EXISTS idx_sd_sales_client ON sd_sales (client_sd, day)');
+  // Доставки: одна строка = один заказ. Берутся из того же ответа SalesDoctor,
+  // что и продажи, — лишнего похода в SD нет. Нужны, чтобы отвечать «сколько
+  // доставок было по водителям» и «в какие дни нагрузка выше» (решение Шоха,
+  // 24.09.2026). Раньше водитель виден был только в клиентском боте и только
+  // за сегодня.
+  await db.pool.query(`CREATE TABLE IF NOT EXISTS sd_deliveries (
+    day DATE NOT NULL,
+    order_sd TEXT NOT NULL,
+    expeditor_sd TEXT NOT NULL DEFAULT '',
+    expeditor_name TEXT NOT NULL DEFAULT '',
+    client_sd TEXT NOT NULL DEFAULT '',
+    client_name TEXT NOT NULL DEFAULT '',
+    agent_name TEXT NOT NULL DEFAULT '',
+    status INT,
+    amount NUMERIC NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, order_sd)
+  )`);
+  await db.pool.query('CREATE INDEX IF NOT EXISTS idx_sd_deliv_day ON sd_deliveries (day)');
+  await db.pool.query('CREATE INDEX IF NOT EXISTS idx_sd_deliv_exp ON sd_deliveries (expeditor_sd, day)');
   // Какие дни уже выгружены: без этого непонятно, «продаж не было» или «не забрали».
   await db.pool.query(`CREATE TABLE IF NOT EXISTS sd_sales_days (
     day DATE PRIMARY KEY,
@@ -54,6 +73,7 @@ async function fetchRange(from, to) {
   if (!cfg.url || !cfg.login || !cfg.password) throw new Error('SalesDoctor не настроен');
   const auth = await integrations.sdLogin(cfg);
   const rows = new Map();          // ключ день|клиент|агент|товар
+  const deliv = new Map();         // ключ день|заказ — доставки (кто повёз)
   const days = new Map();          // день → число заказов
   const limit = 500;
   for (let page = 1; page <= 200; page++) {
@@ -68,6 +88,17 @@ async function fetchRange(from, to) {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) continue;
       days.set(day, (days.get(day) || 0) + 1);
       const client = o.client || {}, agent = o.agent || {};
+      const exp = o.expeditor || {};
+      const orderId = String(o.SD_id || o.code_1C || '');
+      if (orderId) {
+        deliv.set(day + '|' + orderId, {
+          day, order_sd: orderId,
+          expeditor_sd: exp.SD_id || '', expeditor_name: exp.name || exp.fio || '',
+          client_sd: client.SD_id || '', client_name: client.clientName || client.name || '',
+          agent_name: agent.name || '', status: Number(o.status) || null,
+          amount: Number(o.summa) || 0,
+        });
+      }
       for (const op of (o.orderProducts || [])) {
         const prod = op.product || {};
         const key = [day, client.SD_id || '', agent.SD_id || '', prod.SD_id || ''].join('|');
@@ -90,7 +121,7 @@ async function fetchRange(from, to) {
     if (total && page * limit >= total) break;
     if (page === 200) throw new Error('Слишком много страниц — отрезок не сохраняю целиком');
   }
-  return { rows: [...rows.values()], days };
+  return { rows: [...rows.values()], deliveries: [...deliv.values()], days };
 }
 
 // Сохранение отрезка: старые строки этих дней заменяем целиком, одной транзакцией.
@@ -99,6 +130,16 @@ async function saveRange(from, to, data) {
   try {
     await client.query('BEGIN');
     await client.query('DELETE FROM sd_sales WHERE day BETWEEN $1 AND $2', [from, to]);
+    await client.query('DELETE FROM sd_deliveries WHERE day BETWEEN $1 AND $2', [from, to]);
+    for (const d of (data.deliveries || [])) {
+      await client.query(
+        `INSERT INTO sd_deliveries (day, order_sd, expeditor_sd, expeditor_name, client_sd, client_name, agent_name, status, amount)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+         ON CONFLICT (day, order_sd) DO UPDATE SET expeditor_sd = EXCLUDED.expeditor_sd,
+           expeditor_name = EXCLUDED.expeditor_name, client_name = EXCLUDED.client_name,
+           agent_name = EXCLUDED.agent_name, status = EXCLUDED.status, amount = EXCLUDED.amount`,
+        [d.day, d.order_sd, d.expeditor_sd, d.expeditor_name, d.client_sd, d.client_name, d.agent_name, d.status, d.amount]);
+    }
     for (const r of data.rows) {
       await client.query(
         `INSERT INTO sd_sales (day, client_sd, client_name, agent_sd, agent_name, product_sd, product_name, qty, amount, returned)
@@ -139,6 +180,7 @@ async function syncRecent(daysBack = 4) {
   const from = new Date(Date.now() + TZ - daysBack * 86400000).toISOString().slice(0, 10);
   const n = await syncRange(from, to);
   await db.pool.query('DELETE FROM sd_sales WHERE day < (CURRENT_DATE - $1::int)', [KEEP_MONTHS * 31]);
+  await db.pool.query('DELETE FROM sd_deliveries WHERE day < (CURRENT_DATE - $1::int)', [KEEP_MONTHS * 31]);
   return { from, to, rows: n };
 }
 
@@ -209,7 +251,10 @@ async function coverage() {
     `SELECT to_char(MIN(day), 'YYYY-MM-DD') AS first_day, to_char(MAX(day), 'YYYY-MM-DD') AS last_day,
             COUNT(*)::int AS days, COALESCE(SUM(rows), 0)::int AS rows
        FROM sd_sales_days`)).rows[0];
-  return { ...r, backfill: await backfillState() };
+  // Доставки появились позже продаж: если история залита до них, строк тут
+  // будет мало — это видно в плитке, чтобы не гадать, почему Джарвис молчит.
+  const d = (await db.pool.query('SELECT COUNT(*)::int AS rows FROM sd_deliveries')).rows[0];
+  return { ...r, deliveries: d.rows, backfill: await backfillState() };
 }
 
 module.exports = { ensureSchema, byMonth, syncRange, syncRecent, startBackfill, backfillStep, backfillState, coverage, KEEP_MONTHS };

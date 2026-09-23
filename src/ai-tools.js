@@ -40,6 +40,19 @@ async function hasTile(user, url, tab) {
   }
 }
 
+// Вес единицы из названия товара: «Айсберг 500 гр» → 0,5 кг. Наши товары
+// названы по фасовке, и пока это единственный источник веса. Не распознали —
+// молчим: лучше без килограммов, чем с выдуманными (решение Шоха: считает
+// система, а не модель).
+function unitKg(name) {
+  const s = String(name || '').toLowerCase().replace(',', '.');
+  let m = s.match(/(\d+(?:\.\d+)?)\s*(?:кг|kg)(?![а-яa-z])/);
+  if (m) return Number(m[1]);
+  m = s.match(/(\d+(?:\.\d+)?)\s*(?:гр|грамм|г|g)(?![а-яa-z])/);
+  if (m) return Number(m[1]) / 1000;
+  return null;
+}
+
 const period = (v) => (/^\d{4}-\d{2}$/.test(String(v || '')) ? String(v) : new Date(Date.now() + 5 * 3600000).toISOString().slice(0, 7));
 const today = () => new Date(Date.now() + 5 * 3600000).toISOString().slice(0, 10);
 const day = (v, def) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : def);
@@ -239,9 +252,13 @@ const TOOLS = [
   },
   {
     name: 'prodazhi_po_tovaram',
-    tile: ['/cash', '/tgbot'],
-    description: 'Продажи по товарам за любой период: сколько штук и на какую сумму. Можно спросить один товар '
-      + '(«сколько продали айсберга на прошлой неделе») или топ за период. Даты в виде 2026-09-15.',
+    // Закупу и складу объём продаж нужен для планирования: сколько зелени
+    // брать и что фасовать. Деньги им не показываем — см. ниже (решение Шоха,
+    // 24.09.2026).
+    tile: ['/cash', '/tgbot', '/purchase', '/stock'],
+    description: 'Продажи по товарам за любой период: сколько штук, сколько килограммов и на какую сумму. '
+      + 'Можно спросить один товар («сколько продали айсберга на прошлой неделе») или топ за период. '
+      + 'Даты в виде 2026-09-15.',
     schema: { type: 'object', properties: {
       from: { type: 'string', description: 'с какой даты' },
       to: { type: 'string', description: 'по какую дату' },
@@ -249,9 +266,13 @@ const TOOLS = [
       client: { type: 'string', description: 'часть названия клиента, если нужен разрез по одному клиенту' },
       limit: { type: 'number', description: 'сколько строк вернуть, по умолчанию 10' },
     }, additionalProperties: false },
-    run: async (args) => {
+    run: async (args, ctx) => {
       const sd = require('./sd-sales');
       const cov = await sd.coverage();
+      // Суммы — только тем, у кого Касса или Бот HoReCa. У закупщика и склада
+      // свои плитки: им отдаём объём в штуках и килограммах, без денег.
+      const u = ctx && ctx.user;
+      const withMoney = !!u && (await hasTile(u, '/cash') || await hasTile(u, '/tgbot'));
       const to = day(args.to, cov.last_day || today());
       const from = day(args.from, to.slice(0, 8) + '01');
       const p = [from, to];
@@ -267,10 +288,85 @@ const TOOLS = [
         return { период: `${from} — ${to}`, итог: cov.days ? 'За этот период таких продаж нет'
           : 'Продажи из SalesDoctor ещё не выгружены' };
       }
+      // Килограммы считаем здесь, из фасовки в названии: раньше это делала
+      // модель в уме, и проверить её было нечем.
+      let kgAll = 0, kgKnown = true;
+      const out = rows.map((r) => {
+        const kg = unitKg(r.товар);
+        if (kg === null) kgKnown = false; else kgAll += kg * Number(r.штук);
+        const line = { товар: r.товар, штук: Math.round(Number(r.штук)) };
+        if (kg !== null) line.кг = Math.round(kg * Number(r.штук) * 10) / 10;
+        if (withMoney) line.сумма = money(r.сумма);
+        return line;
+      });
       const itog = rows.reduce((s, r) => ({ штук: s.штук + Number(r.штук), сумма: s.сумма + Number(r.сумма) }), { штук: 0, сумма: 0 });
-      return { период: `${from} — ${to}`, выгружено_по: cov.last_day,
-        товары: rows.map((r) => ({ товар: r.товар, штук: Math.round(Number(r.штук)), сумма: money(r.сумма) })),
-        итого: { штук: Math.round(itog.штук), сумма: money(itog.сумма) } };
+      const total = { штук: Math.round(itog.штук) };
+      if (kgAll) total.кг = Math.round(kgAll * 10) / 10;
+      if (kgAll && !kgKnown) total.примечание = 'Килограммы — только по товарам, у которых вес указан в названии';
+      if (withMoney) total.сумма = money(itog.сумма);
+      return { период: `${from} — ${to}`, выгружено_по: cov.last_day, товары: out, итого: total };
+    },
+  },
+  {
+    name: 'dostavki_po_voditelyam',
+    // Логистика живёт в плитке бота HoReCa; финансам видно всё по Кассе.
+    tile: ['/tgbot', '/cash'],
+    description: 'Доставки за период из нашей копии SalesDoctor: сколько заказов увёз каждый водитель, '
+      + 'сколько точек объехал, сколько заказов так и висит «Отгружен», и в какие дни недели нагрузка выше. '
+      + 'Даты в виде 2026-09-15.',
+    schema: { type: 'object', properties: {
+      from: { type: 'string', description: 'с какой даты' },
+      to: { type: 'string', description: 'по какую дату' },
+      driver: { type: 'string', description: 'часть имени водителя, если нужен один' },
+    }, additionalProperties: false },
+    run: async (args, ctx) => {
+      const sd = require('./sd-sales');
+      await sd.ensureSchema();
+      const cov = await sd.coverage();
+      const u = ctx && ctx.user;
+      const withMoney = !!u && (await hasTile(u, '/cash') || await hasTile(u, '/tgbot'));
+      const to = day(args.to, cov.last_day || today());
+      const from = day(args.from, to.slice(0, 8) + '01');
+      const p = [from, to];
+      let w = '';
+      if (String(args.driver || '').trim()) {
+        p.push('%' + String(args.driver).trim() + '%');
+        w = ` AND COALESCE(NULLIF(d.expeditor_name, ''), e.name, '') ILIKE $${p.length}`;
+      }
+      // Имя водителя SalesDoctor отдаёт не всегда — тогда берём из справочника
+      // экспедиторов, который бот сверяет с SD каждую ночь.
+      const rows = (await db.pool.query(
+        `SELECT COALESCE(NULLIF(d.expeditor_name, ''), e.name, '— водитель не указан —') AS водитель,
+                COUNT(*)::int AS доставок, COUNT(DISTINCT d.client_sd)::int AS точек,
+                COUNT(*) FILTER (WHERE d.status = 2)::int AS висит_отгружен,
+                COALESCE(SUM(d.amount), 0)::numeric AS сумма
+           FROM sd_deliveries d
+           LEFT JOIN tgbot.crm_expeditors e ON e.sd_id = d.expeditor_sd
+          WHERE d.day BETWEEN $1 AND $2${w}
+          GROUP BY 1 ORDER BY 2 DESC`, p)).rows;
+      if (!rows.length) {
+        return { период: `${from} — ${to}`,
+          итог: cov.days ? 'За этот период доставок не выгружено' : 'Доставки из SalesDoctor ещё не выгружены' };
+      }
+      const DOW = { 1: 'понедельник', 2: 'вторник', 3: 'среда', 4: 'четверг', 5: 'пятница', 6: 'суббота', 7: 'воскресенье' };
+      const byDow = (await db.pool.query(
+        `SELECT EXTRACT(ISODOW FROM day)::int AS dow, COUNT(*)::int AS n,
+                COUNT(DISTINCT day)::int AS dney
+           FROM sd_deliveries WHERE day BETWEEN $1 AND $2 GROUP BY 1 ORDER BY 1`, [from, to])).rows;
+      const nagruzka = {};
+      for (const r of byDow) nagruzka[DOW[r.dow]] = Math.round((r.n / Math.max(r.dney, 1)) * 10) / 10;
+      const total = rows.reduce((a, r) => a + r.доставок, 0);
+      return {
+        период: `${from} — ${to}`, выгружено_по: cov.last_day, всего_доставок: total,
+        водители: rows.map((r) => {
+          const line = { водитель: r.водитель, доставок: r.доставок, точек: r.точек };
+          if (r.висит_отгружен) line.висит_отгружен = r.висит_отгружен;
+          if (withMoney) line.сумма = money(r.сумма);
+          return line;
+        }),
+        доставок_в_день_по_дням_недели: nagruzka,
+        примечание: 'Доставка считается по дате документа заказа, как в напоминаниях водителям',
+      };
     },
   },
   {
@@ -485,4 +581,4 @@ async function toolsFor(user) {
   return out;
 }
 
-module.exports = { TOOLS, toolsFor, hasTile, pnlAnswer, companyMemory, memoryBrief };
+module.exports = { TOOLS, toolsFor, hasTile, pnlAnswer, companyMemory, memoryBrief, unitKg };
