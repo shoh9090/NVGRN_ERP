@@ -1,9 +1,14 @@
 // ai-tools.js — что Джарвис умеет посмотреть в ERP, отвечая на вопрос словами.
 //
 // Каждый инструмент — это запрос к нашей базе, а НЕ рассуждение модели.
-// У инструмента есть плитка: нет доступа к плитке — инструмент человеку не
-// даётся вовсе, модель о нём даже не знает. Права те же, что на экране:
-// РОП не видит закупочных цен ни в ERP, ни в боте.
+// У инструмента есть плитка и, где это важно, вкладка внутри неё: нет доступа —
+// инструмент человеку не даётся вовсе, модель о нём даже не знает. Права те же,
+// что на экране: РОП не видит закупочных цен ни в ERP, ни в боте.
+//
+// Почему вкладка, а не только плитка: доступ в Кассу может быть выдан ради
+// «Транзакций», а P&L и кошельки при этом закрыты (src/tab-access.js). Пока
+// проверялась одна плитка, такой человек получал прибыль и остатки денег
+// вопросом в боте — то, чего ему не показывает экран.
 //
 // Личные инструменты (свои дела, своя зарплата) есть у всех — но показывают
 // только данные самого спрашивающего.
@@ -13,15 +18,26 @@ const db = require('./db');
 const money = (v) => Math.round(Number(v) || 0);
 const EMPTY = { type: 'object', properties: {}, additionalProperties: false };
 
-async function hasTile(user, url) {
+async function hasTile(user, url, tab) {
   if (!user) return false;
   if (user.isAdmin) return true;
-  if (url === '/cash' && user.isFinance) return true;
-  const r = await db.pool.query(
-    `SELECT 1 FROM tiles t JOIN role_tiles rt ON rt.tile_id = t.id
-       JOIN user_roles ur ON ur.role_id = rt.role_id
-      WHERE ur.user_id = $1 AND t.url = $2 LIMIT 1`, [user.id, url]);
-  return r.rows.length > 0;
+  const finance = url === '/cash' && user.isFinance;
+  if (!finance) {
+    const r = await db.pool.query(
+      `SELECT 1 FROM tiles t JOIN role_tiles rt ON rt.tile_id = t.id
+         JOIN user_roles ur ON ur.role_id = rt.role_id
+        WHERE ur.user_id = $1 AND t.url = $2 LIMIT 1`, [user.id, url]);
+    if (!r.rows.length) return false;
+  }
+  if (!tab) return true;
+  // Та же проверка, что у экрана: сбой проверки прав — это «нельзя», а не «можно».
+  try {
+    const { allowedTabs, tabAllowed } = require('./tab-access');
+    return tabAllowed(await allowedTabs(db.pool, user, url), tab);
+  } catch (e) {
+    console.error('[ДЖАРВИС права]', e.message);
+    return false;
+  }
 }
 
 const period = (v) => (/^\d{4}-\d{2}$/.test(String(v || '')) ? String(v) : new Date(Date.now() + 5 * 3600000).toISOString().slice(0, 7));
@@ -85,6 +101,7 @@ const TOOLS = [
   {
     name: 'ostatki_sklada',
     tile: '/stock',
+    tab: { '/stock': ['issue', 'inventory'] },
     description: 'Остатки сырья и упаковки на складе (в единицах учёта). Можно искать по названию.',
     schema: { type: 'object', properties: { query: { type: 'string', description: 'часть названия, например «айсберг»' } }, additionalProperties: false },
     run: async (args) => {
@@ -105,6 +122,7 @@ const TOOLS = [
   {
     name: 'dolg_postavshchikam',
     tile: '/purchase',
+    tab: { '/purchase': 'settlements' },
     description: 'Сколько мы должны поставщикам: список по убыванию долга и общая сумма, в сумах.',
     schema: { type: 'object', properties: { limit: { type: 'number', description: 'сколько строк вернуть, по умолчанию 10' } }, additionalProperties: false },
     run: async (args) => {
@@ -121,6 +139,7 @@ const TOOLS = [
   {
     name: 'ostatki_deneg',
     tile: '/cash',
+    tab: { '/cash': 'wallets' },
     description: 'Остатки по кошелькам и счетам компании (Касса), в сумах.',
     schema: EMPTY,
     run: async () => {
@@ -132,6 +151,7 @@ const TOOLS = [
   {
     name: 'prodazhi_za_mesyats',
     tile: '/cash',
+    tab: { '/cash': 'pnl' },
     description: 'Продажи за месяц из SalesDoctor: выручка, количество единиц и топ товаров. Месяц в виде 2026-09.',
     schema: { type: 'object', properties: { month: { type: 'string', description: 'месяц в виде 2026-09' } }, additionalProperties: false },
     run: async (args) => {
@@ -151,6 +171,7 @@ const TOOLS = [
   {
     name: 'prodazhi_po_klientam',
     tile: ['/cash', '/tgbot'],
+    tab: { '/cash': 'pnl' },
     description: 'Продажи по клиентам за период из нашей копии SalesDoctor: кто сколько взял, в штуках и сумах. Даты в виде 2026-09-01.',
     schema: { type: 'object', properties: {
       from: { type: 'string', description: 'с какой даты' },
@@ -182,6 +203,7 @@ const TOOLS = [
   {
     name: 'dinamika_klienta',
     tile: ['/cash', '/tgbot'],
+    tab: { '/cash': 'pnl' },
     description: 'Как менялись закупки клиента по неделям или месяцам: растёт или падает. Нужен кусок названия клиента.',
     schema: { type: 'object', properties: {
       client: { type: 'string', description: 'часть названия клиента, например «korzinka»' },
@@ -204,6 +226,7 @@ const TOOLS = [
   {
     name: 'pribyl_za_mesyats',
     tile: '/cash',
+    tab: { '/cash': 'pnl' },
     description: 'Итоги месяца из P&L: выручка, себестоимость, операционные расходы, валовая и чистая прибыль. Месяц в виде 2026-09.',
     schema: { type: 'object', properties: { month: { type: 'string', description: 'месяц в виде 2026-09' } }, additionalProperties: false },
     run: async (args) => {
@@ -215,6 +238,7 @@ const TOOLS = [
   {
     name: 'pretenzii',
     tile: '/complaints',
+    tab: { '/complaints': ['list', 'dash'] },
     description: 'Претензии клиентов за период: сколько всего, сколько не закрыто, по каким товарам и типам, топ точек. Даты в виде 2026-09-01.',
     schema: { type: 'object', properties: {
       from: { type: 'string', description: 'с какой даты, 2026-09-01' },
@@ -249,6 +273,7 @@ const TOOLS = [
   {
     name: 'zayavki_zakupa',
     tile: '/purchase',
+    tab: { '/purchase': 'orders' },
     description: 'Заявки в Закупе: что заказано и ещё не принято, ближайшие поставки, сколько принято за последние дни.',
     schema: { type: 'object', properties: { days: { type: 'number', description: 'за сколько дней смотреть приёмки, по умолчанию 7' } }, additionalProperties: false },
     run: async (args) => {
@@ -343,10 +368,11 @@ async function toolsFor(user) {
   for (const t of TOOLS) {
     // У инструмента может быть несколько плиток: продажи по клиентам нужны и
     // финансам (Касса), и РОПу (Бот HoReCa) — достаточно любой из них.
+    // t.tab — вкладка, которую эта плитка требует (см. tab-access.js).
     const tiles = t.tile ? [].concat(t.tile) : [];
     if (tiles.length) {
       let ok = false;
-      for (const url of tiles) if (await hasTile(user, url)) { ok = true; break; }
+      for (const url of tiles) if (await hasTile(user, url, t.tab && t.tab[url])) { ok = true; break; }
       if (!ok) continue;
     }
     out.push(t);
