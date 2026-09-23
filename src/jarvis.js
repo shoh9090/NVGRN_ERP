@@ -137,7 +137,7 @@ router.get('/api/sd/sales', async (req, res) => {
 // Наблюдения Джарвиса («Обратите внимание») — те же, что уходят в утреннюю
 // сводку. Здесь видно все, чтобы проверить формулировки до рассылки.
 router.get('/api/insights', async (req, res) => {
-  try { res.json({ items: await require('./jarvis-insights').collect(db.pool) }); }
+  try { res.json({ items: await require('./jarvis-insights').collect(db.pool, await loadRules()) }); }
   catch (e) { res.status(400).json({ error: e.message }); }
 });
 router.get('/api/sd/months', async (req, res) => {

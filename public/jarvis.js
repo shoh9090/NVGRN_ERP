@@ -125,6 +125,7 @@
     const stale = numInp(r.stale_days, { min: '1' });
     const dueAsk = numInp(r.due_ask_after_h, { step: '0.5' });
     const cap = numInp(r.daily_cap, { min: '1' });
+    const mute = inp((r.mute_clients || []).join(', '), { placeholder: 'например: KorzinkaRS, Morye', style: 'min-width:280px' });
     const dueH = numInp(r.due_required_h, { step: '0.5' });
     const moves = numInp(r.moves_alert, { min: '1' });
     const fM = numInp(r.fine_mention, { step: '1000' });
@@ -180,6 +181,8 @@
         row('Часы', 'с ', from, ' до ', to),
         row('Дни', el('div', { class: 'jv-days' }, dayBoxes)),
         row('Не больше сообщений в день', cap, ' на человека (нарушения приходят всегда)'),
+        row('Не следить за клиентами', mute),
+        el('div', { class: 'jv-muted' }, 'Через запятую. Про них Джарвис не будет писать «перестал брать» — например, если сменился формат работы.'),
       ]),
       sec('Упомянули (@) — и нет ответа в карточке', null, [
         row('Напомнить через', mRem, ' рабочих часов'),
@@ -233,7 +236,7 @@
           mention_remind_h: mRem.value, mention_violation_h: mVio.value, overdue_violation_days: oVio.value,
           stale_days: stale.value, fine_mention: fM.value, fine_overdue: fO.value, fines_enabled: finesOn.checked,
           reminders_enabled: remOn.checked, due_required_h: dueH.value, moves_alert: moves.value,
-          due_ask_after_h: dueAsk.value, daily_cap: cap.value,
+          due_ask_after_h: dueAsk.value, daily_cap: cap.value, mute_clients: mute.value,
           ai_enabled: aiOn.checked, ai_provider: aiProv.value, ai_model: aiModel.value,
           done_lists: doneExtra.value,
           owners: Object.fromEntries(Object.entries(ownerChain).map(([k, c]) => [k,

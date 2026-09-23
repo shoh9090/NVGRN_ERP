@@ -27,6 +27,7 @@ const DEFAULTS = {
   ai_enabled: false,         // можно ли спрашивать Джарвиса словами
   ai_provider: 'claude',     // claude | openai — ключ берётся из Railway
   done_lists: [],            // свои колонки Trello, которые тоже считаются закрытыми
+  mute_clients: [],          // клиенты, о которых не напоминать (сменили формат работы, закрылись)
   ai_model: '',              // пусто = модель поставщика по умолчанию
   enabled_at: '',            // когда включили: часы по старым упоминаниям идут с этого момента
 };
@@ -89,6 +90,10 @@ function normalizeRules(raw) {
   // Свои названия колонок, которые тоже считаются закрытыми.
   out.done_lists = (Array.isArray(r.done_lists) ? r.done_lists : String(r.done_lists || '').split(','))
     .map((x) => String(x || '').trim()).filter(Boolean).slice(0, 30);
+  // «R019_KorzinkaRS перестал брать» — верно по цифрам, но это смена формата
+  // работы (решение Шоха, 23.09.2026). Такие клиенты просто выключаются.
+  out.mute_clients = (Array.isArray(r.mute_clients) ? r.mute_clients : String(r.mute_clients || '').split(','))
+    .map((x) => String(x || '').trim()).filter(Boolean).slice(0, 50);
   return out;
 }
 

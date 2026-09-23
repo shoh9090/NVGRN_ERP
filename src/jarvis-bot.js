@@ -677,7 +677,7 @@ async function morning(rules, overdueBy, now) {
   const { todosFor, refreshTodoState } = require('./todos');
   // Наблюдения считаем один раз на всех, показываем каждому по его правам.
   let insights = [];
-  try { insights = await require('./jarvis-insights').collect(pool); }
+  try { insights = await require('./jarvis-insights').collect(pool, rules); }
   catch (e) { console.warn('[НАБЛЮДЕНИЯ]', e.message); }
   const hasTileFor = (p, url) => require('./ai-tools')
     .hasTile({ id: p.id, isAdmin: p.is_admin, isFinance: p.is_finance }, url);

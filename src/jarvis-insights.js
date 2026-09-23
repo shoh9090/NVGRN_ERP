@@ -72,18 +72,20 @@ async function stockRunningOut(pool) {
 
 // Наблюдения по плиткам: что показывать человеку с такими правами.
 // Возвращает [{ tile, icon, text }] — текст уже готов, модель не нужна.
-async function collect(pool) {
+async function collect(pool, rules) {
+  const mute = ((rules && rules.mute_clients) || []).map((x) => String(x).toLowerCase());
+  const muted = (name) => mute.some((m) => String(name || '').toLowerCase().includes(m));
   const out = [];
   const safe = async (fn) => { try { await fn(); } catch (e) { console.warn('[НАБЛЮДЕНИЯ]', e.message); } };
 
   await safe(async () => {
-    for (const r of await clientDrops(pool)) {
+    for (const r of (await clientDrops(pool)).filter((x) => !muted(x.client_name))) {
       out.push({ tiles: ['/cash', '/tgbot'], icon: '📉',
         text: `${r.client_name}: за две недели ${money(r.now_s)} против ${money(r.was)} двумя неделями раньше — падение ${Math.abs(r.pct)}%.` });
     }
   });
   await safe(async () => {
-    for (const r of await clientsGone(pool)) {
+    for (const r of (await clientsGone(pool)).filter((x) => !muted(x.client_name))) {
       out.push({ tiles: ['/cash', '/tgbot'], icon: '🚫',
         text: `${r.client_name} две недели ничего не брал, а до этого брал ${r.days} дней на ${money(r.was)}.` });
     }

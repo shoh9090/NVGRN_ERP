@@ -178,3 +178,8 @@ test('поток сообщений: новую карточку не трога
   assert.strictEqual(normalizeRules({ daily_cap: 0 }).daily_cap, 1);
   assert.strictEqual(normalizeRules({ daily_cap: 999 }).daily_cap, 50);
 });
+
+test('клиенты, за которыми не следим, — списком через запятую', () => {
+  assert.deepStrictEqual(normalizeRules({ mute_clients: 'KorzinkaRS, Morye , ' }).mute_clients, ['KorzinkaRS', 'Morye']);
+  assert.deepStrictEqual(normalizeRules({}).mute_clients, []);
+});
