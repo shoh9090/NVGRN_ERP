@@ -242,3 +242,22 @@ test('подтверждение — не вопрос: «принято» мя�
   assert.ok(!isAck('понял, а когда счёт?'));
   assert.ok(!isAck(''));
 });
+
+test('итог недели сравнивает одинаковые отрезки', () => {
+  const { weekWindows, trend } = require('../src/jarvis-rules');
+  // Пятница 25.09.2026, 18:00 Ташкента: эта неделя пн–пт против прошлой пн–пт.
+  const fri = weekWindows(Date.parse('2026-09-25T13:00:00Z'), 'friday');
+  assert.deepStrictEqual(fri, { from: '2026-09-21', to: '2026-09-25', prev_from: '2026-09-14', prev_to: '2026-09-18' });
+  // Понедельник 28.09, 9:00: прошлая неделя целиком против позапрошлой.
+  const mon = weekWindows(Date.parse('2026-09-28T04:00:00Z'), 'monday');
+  assert.deepStrictEqual(mon, { from: '2026-09-21', to: '2026-09-27', prev_from: '2026-09-14', prev_to: '2026-09-20' });
+});
+
+test('разницу меньше 10% не объявляем ни победой, ни провалом', () => {
+  const { trend } = require('../src/jarvis-rules');
+  assert.strictEqual(trend(130, 100).pct, 30);
+  assert.strictEqual(trend(130, 100).flat, false);
+  assert.strictEqual(trend(104, 100).flat, true, '4% — это шум, хвалить не за что');
+  assert.strictEqual(trend(90, 100).up, false);
+  assert.strictEqual(trend(5, 0).pct, null, 'сравнивать не с чем — молчим');
+});

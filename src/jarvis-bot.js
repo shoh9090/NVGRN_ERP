@@ -785,6 +785,7 @@ async function remindAll(rules, scan, people, now) {
   await dueControl(rules, scan, byMember, byEmp, deliver, now, ballAt);
   await morning(rules, overdueBy, now, scan);
   await salesDigest(rules, now).catch((e) => console.warn('[ДЖАРВИС] сводка продаж:', e.message));
+  await weeklyScore(rules, now).catch((e) => console.warn('[ДЖАРВИС] итог недели:', e.message));
   await weeklySilent(rules, now).catch((e) => console.warn('[ДЖАРВИС] молчуны:', e.message));
 
   // 3. Карточки без движения — ОДНО сообщение списком на человека в неделю.
@@ -1037,6 +1038,129 @@ async function sdSalesTick() {
 // второй стал бы бардаком. Вместо этого РОП получает сводку, разложенную по
 // менеджерам: каждый кусок — отдельным сообщением, чтобы переслать его
 // менеджеру одним касанием, не переписывая руками.
+// ---------- Итог недели (решение Шоха 24.09.2026) ----------
+// Люди должны слышать не только «вы просрочили», но и «это сделано хорошо».
+// В пятницу вечером — чем закончили неделю, в понедельник утром — с чем
+// стартуем. Каждому по его зоне: продажи РОПу, потери складу, качество
+// принятой зелени закупу. Цифры считаем сами, из базы; разницу меньше 10%
+// не упоминаем вовсе — иначе похвала превращается в фон и её перестают читать.
+async function weekSales(w) {
+  const q = async (from, to) => Number((await pool.query(
+    'SELECT COALESCE(SUM(amount - returned), 0)::numeric AS s FROM sd_sales WHERE day BETWEEN $1 AND $2',
+    [from, to])).rows[0].s);
+  const cur = await q(w.from, w.to), prev = await q(w.prev_from, w.prev_to);
+  if (!cur && !prev) return null;
+  // Кто вырос и кто просел — по объёму в штуках, деньги тут не нужны.
+  const byProd = async (from, to) => new Map((await pool.query(
+    `SELECT product_name, SUM(qty)::numeric AS q FROM sd_sales WHERE day BETWEEN $1 AND $2
+      GROUP BY 1 ORDER BY 2 DESC LIMIT 12`, [from, to])).rows.map((r) => [r.product_name, Number(r.q)]));
+  const a = await byProd(w.from, w.to), b = await byProd(w.prev_from, w.prev_to);
+  const moves = [];
+  for (const [name, q] of a) {
+    const was = b.get(name) || 0;
+    const t = R.trend(q, was);
+    if (t.pct !== null && !t.flat) moves.push({ name, pct: t.pct });
+  }
+  moves.sort((x, y) => y.pct - x.pct);
+  return { cur, prev, trend: R.trend(cur, prev), up: moves[0], down: moves[moves.length - 1] };
+}
+
+// Потери склада за неделю в килограммах: подтверждённые списания.
+async function weekLosses(w) {
+  const q = async (from, to) => Number((await pool.query(
+    `SELECT COALESCE(SUM(i.qty), 0)::numeric AS s
+       FROM stock_writeoff_items i JOIN stock_writeoffs o ON o.id = i.writeoff_id
+      WHERE o.status = 'confirmed' AND o.moved_at BETWEEN $1 AND $2`, [from, to])).rows[0].s);
+  const cur = await q(w.from, w.to), prev = await q(w.prev_from, w.prev_to);
+  if (!cur && !prev) return null;
+  return { cur, prev, trend: R.trend(cur, prev) };
+}
+
+// Качество принятой зелени: сколько отхода отметили при приёмке — в процентах
+// от принятого веса. В килограммах смысла нет: приняли больше — и отхода больше.
+async function weekIntakeWaste(w) {
+  const q = async (from, to) => (await pool.query(
+    `SELECT COALESCE(SUM(qty) FILTER (WHERE reason = 'receive_waste'), 0)::numeric AS waste,
+            COALESCE(SUM(qty) FILTER (WHERE reason = 'receive'), 0)::numeric AS got
+       FROM stock_movements WHERE item_kind = 'raw' AND moved_at BETWEEN $1 AND $2`, [from, to])).rows[0];
+  const a = await q(w.from, w.to), b = await q(w.prev_from, w.prev_to);
+  if (!Number(a.got) && !Number(b.got)) return null;
+  const pct = (r) => (Number(r.got) ? (Number(r.waste) / Number(r.got)) * 100 : 0);
+  return { cur: pct(a), prev: pct(b), kg: Number(a.waste), trend: R.trend(pct(a), pct(b)) };
+}
+
+// Деньги в сводке — крупными мазками: точность до сума тут не нужна,
+// нужна картина недели.
+const money = (v) => {
+  const n = Math.round(Number(v) || 0);
+  return n >= 10000000 ? (Math.round(n / 100000) / 10).toLocaleString('ru-RU') + ' млн сум'
+    : n.toLocaleString('ru-RU') + ' сум';
+};
+const kg = (v) => (Math.round(Number(v) * 10) / 10).toLocaleString('ru-RU') + ' кг';
+const pct1 = (v) => (Math.round(Number(v) * 10) / 10).toLocaleString('ru-RU') + '%';
+const znak = (t) => (t.up ? '+' : '') + t.pct + '%';
+
+async function weeklyScore(rules, now) {
+  if (!rules.reminders_enabled) return;
+  const local = new Date(now + 5 * 3600000);
+  const dow = local.getUTCDay() === 0 ? 7 : local.getUTCDay();
+  const hour = (now + 5 * 3600000) % 86400000 / 3600000;
+  let mode = null;
+  if (dow === 5 && hour >= 17 && hour < 20) mode = 'friday';
+  if (dow === 1 && hour >= rules.work_from && hour < rules.work_from + 3) mode = 'monday';
+  if (!mode) return;
+  const w = R.weekWindows(now, mode);
+  const key0 = `wk:${mode}:${w.from}`;
+  const sales = await weekSales(w).catch(() => null);
+  const losses = await weekLosses(w).catch(() => null);
+  const intake = await weekIntakeWaste(w).catch(() => null);
+  if (!sales && !losses && !intake) return;
+
+  const people = (await pool.query(
+    `SELECT u.id, u.jv_chat_id, e.id AS employee_id, e.full_name,
+            BOOL_OR(COALESCE(r.is_admin, FALSE)) AS is_admin, BOOL_OR(COALESCE(r.is_finance, FALSE)) AS is_finance
+       FROM users u JOIN hr_employees e ON e.erp_user_id = u.id
+       LEFT JOIN user_roles ur ON ur.user_id = u.id LEFT JOIN roles r ON r.id = ur.role_id
+      WHERE u.is_active = TRUE AND e.status = 'active' AND u.jv_chat_id IS NOT NULL
+      GROUP BY u.id, e.id`)).rows;
+  const tiles = require('./ai-tools');
+  const head = mode === 'friday'
+    ? `🏁 <b>Итог недели</b> (${dateRu(w.from)}–${dateRu(w.to)})`
+    : `🚀 <b>Прошлая неделя</b> (${dateRu(w.from)}–${dateRu(w.to)})`;
+
+  for (const p of people) {
+    const key = `${key0}:${p.employee_id}`;
+    if (await seen(key)) continue;
+    const u = { id: p.id, isAdmin: p.is_admin, isFinance: p.is_finance };
+    const lines = [];
+    if (sales && (await tiles.hasTile(u, '/cash') || await tiles.hasTile(u, '/tgbot'))) {
+      const t = sales.trend;
+      lines.push(`📈 Продажи: ${money(sales.cur)}` + (t.pct === null ? ''
+        : t.flat ? ` — как и неделю назад (${znak(t)})` : ` — ${znak(t)} к прошлой неделе`));
+      if (sales.up) lines.push(`   ▲ ${esc(sales.up.name)}: +${sales.up.pct}%`);
+      if (sales.down && sales.down.pct < 0) lines.push(`   ▼ ${esc(sales.down.name)}: ${sales.down.pct}%`);
+    }
+    if (losses && await tiles.hasTile(u, '/stock')) {
+      const t = losses.trend;
+      lines.push(`🗑 Списано со склада: ${kg(losses.cur)}` + (t.pct === null ? ''
+        : t.flat ? ' — ровно как неделю назад' : t.up ? ` — на ${t.pct}% больше прошлой недели` : ` — на ${Math.abs(t.pct)}% меньше прошлой недели`));
+    }
+    if (intake && await tiles.hasTile(u, '/purchase')) {
+      const t = intake.trend;
+      lines.push(`🥬 Отход при приёмке: ${pct1(intake.cur)} от принятого (${kg(intake.kg)})`
+        + (t.pct === null || t.flat ? '' : t.up ? ` — хуже прошлой недели на ${t.pct}%` : ` — лучше прошлой недели на ${Math.abs(t.pct)}%`));
+    }
+    if (!lines.length) continue;
+    const name = String(p.full_name).split(/\s+/)[1] || p.full_name;
+    const tail = mode === 'friday'
+      ? 'Хороших выходных. В понедельник посчитаем заново — цифры помнят всё.'
+      : 'Поехали. К пятнице сверимся.';
+    const ok = await send(p.jv_chat_id, `${head}\n${esc(name)}, вот как оно:\n\n${lines.join('\n')}\n\n${tail}`,
+      await kb(p.jv_chat_id));
+    await log('week_score', p.employee_id, null, lines.join(' · ').slice(0, 400), !!ok, key);
+  }
+}
+
 async function salesDigest(rules, now) {
   if (!rules.reminders_enabled || !rules.sales_digest_days || !R.isWorkTime(now, rules)) return;
   const hour = (now + 5 * 3600000) % 86400000 / 3600000;

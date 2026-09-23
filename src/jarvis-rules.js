@@ -155,6 +155,35 @@ function overdueIsViolation(dueMs, nowMs, r) {
   return nowMs > dueMs && workHours(clockStart(dueMs, r), nowMs, r) >= need;
 }
 
+// ---- Итог недели (решение Шоха 24.09.2026) ----
+// В пятницу вечером — чем закончили неделю, в понедельник утром — с чем
+// стартуем. Сравниваем одинаковые отрезки: в пятницу эту неделю с той же
+// частью прошлой (понедельник–пятница против понедельника–пятницы), иначе
+// неполная неделя всегда «хуже» полной.
+function weekWindows(nowMs, mode) {
+  const d = new Date(nowMs + 5 * 3600000);
+  const iso = (ms) => new Date(ms).toISOString().slice(0, 10);
+  const day0 = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+  const dow = d.getUTCDay() === 0 ? 7 : d.getUTCDay();          // пн = 1
+  const D = 86400000;
+  if (mode === 'monday') {
+    const to = day0 - dow * D;                                   // прошлое воскресенье
+    const from = to - 6 * D;
+    return { from: iso(from), to: iso(to), prev_from: iso(from - 7 * D), prev_to: iso(to - 7 * D) };
+  }
+  const from = day0 - (dow - 1) * D;                             // понедельник этой недели
+  return { from: iso(from), to: iso(day0), prev_from: iso(from - 7 * D), prev_to: iso(day0 - 7 * D) };
+}
+
+// Насколько изменилось. Разницу меньше 10% не объявляем ни победой, ни
+// провалом: это шум, а от еженедельной похвалы ни за что люди глохнут.
+function trend(cur, prev, minPct = 10) {
+  const c = Number(cur) || 0, p = Number(prev) || 0;
+  if (!p) return { pct: null, flat: true, up: c > 0 };
+  const pct = Math.round(((c - p) / p) * 100);
+  return { pct, flat: Math.abs(pct) < minPct, up: pct >= 0 };
+}
+
 // @логины из текста комментария. @card/@board — «всем», их не считаем:
 // упоминание — это когда ждут ответа от конкретного человека.
 function parseMentions(text) {
@@ -318,5 +347,5 @@ function parseDueDate(text, nowMs, r) {
 module.exports = {
   DEFAULTS, normalizeRules, toLatin, nameWords, nameMatch, suggestPairs, dueInDays, parseDueDate,
   workHours, isWorkTime, localDate, clockStart, mentionStep, overdueIsViolation,
-  parseMentions, isAck, isDoneList, viaJarvis, VIA,
+  parseMentions, isAck, isDoneList, viaJarvis, VIA, weekWindows, trend,
 };
