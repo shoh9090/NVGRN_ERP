@@ -92,8 +92,11 @@ async function collect(pool, rules) {
   });
   await safe(async () => {
     for (const r of await stockRunningOut(pool)) {
+      // «остаток 0, хватит на 0 дней» — это округление, а не ноль. Говорим по-человечески.
+      const left = Number(r.days_left) < 1 ? 'меньше дня' : `примерно на ${num1(r.days_left)} дн.`;
+      const bal = Number(r.balance) < 1 ? 'почти нулевой' : `${num1(r.balance)} ${r.unit || ''}`;
       out.push({ tiles: ['/stock', '/purchase'], icon: '📦',
-        text: `${r.name}: остаток ${num1(r.balance)} ${r.unit || ''} — при нынешнем расходе (${num1(r.per_day)} в день) хватит примерно на ${num1(r.days_left)} дн.` });
+        text: `${r.name}: остаток ${bal}, расход ${num1(r.per_day)} ${r.unit || ''} в день — хватит ${left}.` });
     }
   });
   return out;
