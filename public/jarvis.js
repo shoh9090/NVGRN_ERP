@@ -127,6 +127,7 @@
     const stale = numInp(r.stale_days, { min: '1' });
     const dueAsk = numInp(r.due_ask_after_h, { step: '0.5' });
     const cap = numInp(r.daily_cap, { min: '1' });
+    const salesDays = numInp(r.sales_digest_days, { min: '0' });
     const mute = inp((r.mute_clients || []).join(', '), { placeholder: 'например: KorzinkaRS, Morye', style: 'min-width:280px' });
     const dueH = numInp(r.due_required_h, { step: '0.5' });
     const moves = numInp(r.moves_alert, { min: '1' });
@@ -236,6 +237,7 @@
           field('Кто отвечает на вопросы', aiProv, 'ключи лежат в Railway, в ERP их не видно'),
           field('Модель ИИ', aiModel, 'пусто — claude-sonnet-5'),
           field('Чем распознаём речь', voiceModel, 'пусто — whisper-1'),
+          field('Сводка РОПу по клиентам', salesDays, 'раз во столько дней; 0 — не слать. Приходит разложенной по менеджерам, чтобы переслать'),
           field('Не следить за клиентами', mute, 'через запятую: про них не писать «перестал брать» — например, сменился формат работы'),
         ]),
         el('div', { class: 'jv-muted' }, 'Что умеет ИИ: '
@@ -258,6 +260,7 @@
           stale_days: stale.value, fine_mention: fM.value, fine_overdue: fO.value, fines_enabled: finesOn.checked,
           reminders_enabled: remOn.checked, due_required_h: dueH.value, moves_alert: moves.value,
           due_ask_after_h: dueAsk.value, daily_cap: cap.value, mute_clients: mute.value,
+          sales_digest_days: salesDays.value,
           ai_enabled: aiOn.checked, ai_provider: aiProv.value, ai_model: aiModel.value,
           voice_enabled: voiceOn.checked, voice_model: voiceModel.value,
           done_lists: doneExtra.value,
@@ -354,7 +357,7 @@
     remind_mention: '🔔 Напоминание: упоминание', violation_mention: '⚠️ Нарушение: нет ответа',
     remind_overdue: '☀️ Утренний список просрочек', violation_overdue: '⚠️ Нарушение: просрочка',
     remind_stale: '💤 Без движения', remind_no_due: '📅 Спросили срок', violation_no_due: '⚠️ Нарушение: нет срока',
-    due_set: '📅 Срок поставлен', due_moved: '🔁 Срок перенесён', ai: '🤖 Вопрос Джарвису', voice: '🎧 Голосовое', remind_silent: '🙊 Не отвечает — встряска', reply: '✍️ Ответ из Telegram', morning: '☀️ Утренняя сводка',
+    due_set: '📅 Срок поставлен', due_moved: '🔁 Срок перенесён', ai: '🤖 Вопрос Джарвису', voice: '🎧 Голосовое', remind_silent: '🙊 Не отвечает — встряска', sales_digest: '📊 Сводка РОПу по клиентам', reply: '✍️ Ответ из Telegram', morning: '☀️ Утренняя сводка',
   };
   const dt = (v) => v ? new Date(v).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
   const cardLink = (name, url) => url ? el('a', { href: url, target: '_blank', rel: 'noopener' }, name || 'карточка') : (name || '');

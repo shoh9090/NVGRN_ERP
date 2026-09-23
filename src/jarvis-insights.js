@@ -125,6 +125,29 @@ async function silentPeople(pool, days = 7) {
       ORDER BY s.n DESC LIMIT 10`, [String(days), SILENT_MIN_REMINDS])).rows;
 }
 
+// То же самое, но сгруппированное по менеджерам — для сводки РОПу.
+// Решение Шоха (23.09.2026): агентов в Джарвиса не подключаем (у них уже есть
+// клиентский бот, второй будет бардаком). Вместо этого РОП получает готовые
+// куски по каждому менеджеру и пересылает их ему одним касанием.
+async function clientsByManager(pool, rules) {
+  const mute = ((rules && rules.mute_clients) || []).map((x) => String(x).toLowerCase());
+  const muted = (n) => mute.some((m) => String(n || '').toLowerCase().includes(m));
+  const by = new Map();
+  const add = (agent, line) => {
+    const key = agent || 'Без менеджера';
+    if (!by.has(key)) by.set(key, []);
+    by.get(key).push(line);
+  };
+  for (const r of (await clientDrops(pool)).filter((x) => !muted(x.client_name))) {
+    add(r.agent_name, `📉 ${r.client_name}: ${money(r.now_s)} за две недели против ${money(r.was)} — падение ${Math.abs(r.pct)}%`);
+  }
+  for (const r of (await clientsGone(pool)).filter((x) => !muted(x.client_name))) {
+    add(r.agent_name, `🚫 ${r.client_name}: две недели тишины, до этого ${r.days} дней на ${money(r.was)}`);
+  }
+  return [...by.entries()].map(([manager, lines]) => ({ manager, lines }))
+    .sort((a, b) => b.lines.length - a.lines.length);
+}
+
 // Наблюдения по плиткам: что показывать человеку с такими правами.
 // Возвращает [{ tile, icon, text }] — текст уже готов, модель не нужна.
 async function collect(pool, rules) {
@@ -159,4 +182,4 @@ async function collect(pool, rules) {
   return out;
 }
 
-module.exports = { collect, clientDrops, clientsGone, stockRunningOut, silentPeople, DROP_PCT, STOCK_DAYS_LEFT, SILENT_MIN_REMINDS };
+module.exports = { collect, clientDrops, clientsGone, stockRunningOut, silentPeople, clientsByManager, DROP_PCT, STOCK_DAYS_LEFT, SILENT_MIN_REMINDS };

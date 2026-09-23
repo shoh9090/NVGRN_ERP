@@ -28,6 +28,7 @@ const DEFAULTS = {
   ai_provider: 'claude',     // claude | openai — ключ берётся из Railway
   done_lists: [],            // свои колонки Trello, которые тоже считаются закрытыми
   mute_clients: [],          // клиенты, о которых не напоминать (сменили формат работы, закрылись)
+  sales_digest_days: 3,      // как часто РОП получает сводку по притихшим клиентам (0 — не слать)
   ai_model: '',              // пусто = модель поставщика по умолчанию
   voice_enabled: true,       // можно ли слать голосовые (нужен ключ OPENAI_API_KEY)
   voice_model: 'whisper-1',  // чем распознаём речь
@@ -61,6 +62,7 @@ function normalizeRules(raw) {
   out.stale_days = Math.round(num(r.stale_days, DEFAULTS.stale_days, 1, 90));
   out.due_ask_after_h = num(r.due_ask_after_h, DEFAULTS.due_ask_after_h, 0, 100);
   out.daily_cap = Math.round(num(r.daily_cap, DEFAULTS.daily_cap, 1, 50));
+  out.sales_digest_days = Math.round(num(r.sales_digest_days, DEFAULTS.sales_digest_days, 0, 30));
   // Спрашивать срок раньше, чем ждём его постановки, — бессмысленно.
   out.due_required_h = Math.max(out.due_ask_after_h,
     num(r.due_required_h, DEFAULTS.due_required_h, 0.5, 100));

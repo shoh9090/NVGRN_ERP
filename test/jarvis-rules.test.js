@@ -199,3 +199,9 @@ test('оживление сообщений: цифры подменять не�
   assert.ok(!numbersKept(src, 'Mari wellness просел на 90%: было 7 104 399, стало 2 419 500'));  // приписал своё
   assert.ok(!numbersKept(src, 'Mari wellness сильно просел, детали в ERP'));                      // потерял цифры
 });
+
+test('сводка РОПу: раз в N дней, 0 — выключено', () => {
+  assert.strictEqual(normalizeRules({}).sales_digest_days, 3);
+  assert.strictEqual(normalizeRules({ sales_digest_days: 0 }).sales_digest_days, 0);
+  assert.strictEqual(normalizeRules({ sales_digest_days: 99 }).sales_digest_days, 30);
+});

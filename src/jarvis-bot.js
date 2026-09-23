@@ -568,6 +568,7 @@ async function remindAll(rules, scan, people, now) {
   }
   await dueControl(rules, scan, byMember, deliver, now);
   await morning(rules, overdueBy, now);
+  await salesDigest(rules, now).catch((e) => console.warn('[ДЖАРВИС] сводка продаж:', e.message));
   await weeklySilent(rules, now).catch((e) => console.warn('[ДЖАРВИС] молчуны:', e.message));
 
   // 3. Карточки без движения — ОДНО сообщение списком на человека в неделю.
@@ -796,6 +797,39 @@ async function sdSalesTick() {
   await pool.query(`INSERT INTO settings (key, value) VALUES ($1, $2)
                     ON CONFLICT (key) DO UPDATE SET value = $2`, [key, day]);
   console.log(`[ПРОДАЖИ SD] ночью обновлено ${r.from}…${r.to}: строк ${r.rows}`);
+}
+
+// ---------- Раз в N дней: клиенты, которые притихли ----------
+// Решение Шоха: агентов в Джарвиса не подключаем — у них есть клиентский бот,
+// второй стал бы бардаком. Вместо этого РОП получает сводку, разложенную по
+// менеджерам: каждый кусок — отдельным сообщением, чтобы переслать его
+// менеджеру одним касанием, не переписывая руками.
+async function salesDigest(rules, now) {
+  if (!rules.reminders_enabled || !rules.sales_digest_days || !R.isWorkTime(now, rules)) return;
+  const hour = (now + 5 * 3600000) % 86400000 / 3600000;
+  if (hour >= rules.work_from + 3) return;
+  const bucket = Math.floor((now + 5 * 3600000) / (rules.sales_digest_days * 86400000));
+  const key = `sales:${bucket}`;
+  if (await seen(key)) return;
+  const groups = await require('./jarvis-insights').clientsByManager(pool, rules);
+  if (!groups.length) return;
+  // Кому: роль с «Руководитель продаж» в боте (Админ-панель → Роли), плюс админы.
+  const chats = (await pool.query(
+    `SELECT DISTINCT u.jv_chat_id FROM users u
+       JOIN user_roles ur ON ur.user_id = u.id JOIN roles r ON r.id = ur.role_id
+      WHERE u.is_active = TRUE AND u.jv_chat_id IS NOT NULL
+        AND (r.bot_role = 'head_of_sales' OR r.is_admin = TRUE)`)).rows.map((r) => r.jv_chat_id);
+  if (!chats.length) return;
+  const total = groups.reduce((s, g) => s + g.lines.length, 0);
+  for (const chat of chats) {
+    await send(chat, `📊 <b>Клиенты, которые притихли</b> — ${total} шт. за ${rules.sales_digest_days} дн.\n`
+      + 'Дальше — по менеджерам. Любое сообщение можно переслать менеджеру как есть.', menu);
+    for (const g of groups) {
+      await send(chat, `👤 <b>${esc(g.manager)}</b>\n${g.lines.map((l) => esc(l)).join('\n')}\n\n`
+        + 'Что с ними? Если ушли по-хорошему — скажите, я перестану напоминать.');
+    }
+  }
+  await log('sales_digest', null, null, `Менеджеров ${groups.length}, клиентов ${total}`, true, key);
 }
 
 // ---------- Раз в неделю: кто не отвечает ----------
