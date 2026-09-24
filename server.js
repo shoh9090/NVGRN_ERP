@@ -788,6 +788,18 @@ admin.get('/integrations/sd/contragent', async (req, res) => {
   }
 });
 
+// Проба: умеет ли SalesDoctor принимать оплату (а не только отдавать).
+// Ничего не создаёт — спрашивает методы с пустыми параметрами и сравнивает
+// ответ с ответом на заведомо несуществующий метод.
+admin.get('/integrations/sd/payment-write', async (req, res) => {
+  try {
+    const out = await integrations.probePaymentWrite();
+    res.type('application/json; charset=utf-8').send(JSON.stringify(out, null, 2));
+  } catch (e) {
+    res.type('text/plain; charset=utf-8').status(400).send('Ошибка пробы: ' + e.message);
+  }
+});
+
 admin.post('/integrations/sd/test', async (req, res) => {
   try {
     await integrations.saveSdConfig(req.body); // сохраняем то, что в форме, и сразу проверяем

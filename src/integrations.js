@@ -657,6 +657,38 @@ async function probeContragent() {
   return { enabled: false, error: tried.join(' | ') };
 }
 
+// Умеет ли SalesDoctor ПРИНИМАТЬ оплату, а не только отдавать. Читать мы умеем
+// (getPayment), записи никогда не пробовали — а от ответа зависит, можно ли
+// вообще сажать оплаты из ERP.
+//
+// Проба намеренно устроена так, чтобы ничего не создать:
+//  1) сначала спрашиваем заведомо несуществующий метод — запоминаем, как SD
+//     говорит «такого метода нет»;
+//  2) потом спрашиваем кандидатов С ПУСТЫМИ параметрами. Ответ «нет метода» —
+//     значит записи нет. Любой ДРУГОЙ ответ (не хватает полей, неверный формат)
+//     значит метод есть, и по тексту видно, чего он ждёт.
+// Валидных параметров не отправляем никогда: цель — узнать, а не записать.
+const PAYMENT_WRITE_METHODS = ['setPayment', 'addPayment', 'createPayment', 'savePayment', 'newPayment'];
+async function probePaymentWrite() {
+  const cfg = await getSdConfig();
+  if (!cfg.url || !cfg.login || !cfg.password) throw new Error('Сначала заполните доступ к SalesDoctor.');
+  const auth = await sdLogin(cfg);
+  const ask = async (method) => {
+    try {
+      const data = await sdRequest(cfg.url, { method, auth: { userId: auth.userId, token: auth.token }, params: {} });
+      return { ok: true, answer: JSON.stringify(data).slice(0, 300) };
+    } catch (e) { return { ok: false, answer: String(e.message).slice(0, 300) }; }
+  };
+  // Эталон «метода нет» — по нему отличаем настоящие ответы от отказа.
+  const unknown = await ask('nvgrnProbeNoSuchMethod');
+  const out = [];
+  for (const m of PAYMENT_WRITE_METHODS) {
+    const r = await ask(m);
+    out.push({ method: m, same_as_unknown: r.answer === unknown.answer, answer: r.answer });
+  }
+  return { unknown_looks_like: unknown.answer, tried: out };
+}
+
 async function syncClientsToContacts() {
   const cfg = await getSdConfig();
   if (!cfg.url || !cfg.login || !cfg.password) throw new Error('Сначала заполните доступ к SalesDoctor в разделе «Интеграции».');
@@ -899,4 +931,4 @@ async function probePayments(from, to) {
 }
 
 // sdRequest и sdLogin нужны подробной выгрузке продаж (src/sd-sales.js): ходим в SD одним кодом.
-module.exports = { SALES_STATUSES, sdRequest, sdLogin, sdHealth, getMonthlySalesUnits, getPayments, probePayments, getSdConfig, saveSdConfig, testConnection, syncFinishedGoods, syncPrices, diagSD, getHorecaPoints, getAgentCoverage, syncCrmAgents, syncCrmExpeditors, syncClientsToContacts, getSdProducts, syncCashClients, probeContragent };
+module.exports = { SALES_STATUSES, sdRequest, sdLogin, sdHealth, getMonthlySalesUnits, getPayments, probePayments, getSdConfig, saveSdConfig, testConnection, syncFinishedGoods, syncPrices, diagSD, getHorecaPoints, getAgentCoverage, syncCrmAgents, syncCrmExpeditors, syncClientsToContacts, getSdProducts, syncCashClients, probeContragent, probePaymentWrite };
