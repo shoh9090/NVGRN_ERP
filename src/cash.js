@@ -3774,23 +3774,34 @@ async function sdPaymentsPlan(date) {
     crm = p.items.filter((x) => x.kind === SD_TX_CLIENT_PAYMENT);
   } catch (e) { crmError = e.message; }
   const near = (a, b) => Math.abs(Number(a) - Number(b)) < 1;      // копейки округления
-  const crmFor = (conId, amount) => crm.find((x) => x.contragent_sd && String(x.contragent_sd) === String(conId) && near(x.amount, amount));
+  // Проверено на оплатах 24.09.2026: в CRM у оплаты клиент и контрагент — это
+  // ОДИН И ТОТ ЖЕ номер точки (y3_1674), а отдельный справочник контрагентов
+  // (getContragent) даёт совсем другие номера (z7_1882) и в оплатах не
+  // используется. Поэтому сверяем по обоим номерам, какой бы ни стоял в оплате:
+  // сверка по одному пропустила три оплаты, которые в CRM уже были.
+  const crmFor = (ids, amount) => {
+    const mine = ids.filter(Boolean).map(String);
+    if (!mine.length) return null;
+    return crm.find((x) => near(x.amount, amount)
+      && (mine.includes(String(x.client_sd || '')) || mine.includes(String(x.contragent_sd || '')))) || null;
+  };
 
   const out = rows.map((r) => {
     const item = {
       id: r.id, amount: Number(r.amount), date: r.d,
       payer_name: r.payer_name, payer_inn: r.payer_inn, purpose: r.purpose,
       client: r.cp_name || null, contragent_sd: r.sd_contragent_id || null,
+      client_sd: r.sd_client_id || null,
       agent_sd: r.sd_agent_id || null, sent_id: r.sd_payment_id || null,
     };
     if (r.sd_payment_id) return { ...item, state: 'sent', why: 'уже отправлено из ERP' };
     if (!String(r.payer_inn || '').trim()) return { ...item, state: 'manual', why: 'в приходе нет ИНН плательщика' };
     if (!r.cp_id) return { ...item, state: 'manual', why: 'нет активного клиента с таким ИНН' };
-    if (!r.sd_contragent_id) return { ...item, state: 'manual', why: 'у клиента не заполнен контрагент SalesDoctor' };
+    if (!r.sd_contragent_id && !r.sd_client_id) return { ...item, state: 'manual', why: 'у клиента нет номера в SalesDoctor' };
     if (r.sd_agent_ambiguous) return { ...item, state: 'manual', why: 'у клиента несколько агентов — от чьего имени проводить, решает человек' };
     if (!r.sd_agent_id) return { ...item, state: 'manual', why: 'у клиента не указан агент' };
     if (crmError) return { ...item, state: 'manual', why: 'CRM недоступна, сверить нельзя: ' + crmError };
-    const hit = crmFor(r.sd_contragent_id, r.amount);
+    const hit = crmFor([r.sd_client_id, r.sd_contragent_id], r.amount);
     if (hit) return { ...item, state: 'in_crm', why: 'такая оплата уже есть в CRM', crm_id: hit.sd_id };
     return { ...item, state: 'ready', why: '' };
   });
