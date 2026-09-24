@@ -227,6 +227,16 @@
           field('Простая без причины', el('div', { class: 'jv-ctl' }, ['напомнить через ', cmplSimple, ' раб. ч']),
             'Простую закрывает агент, от руководителя нужна причина.'),
         ]),
+        // Кто получит карточку. Пустое звено — претензия уйдёт в никуда.
+        el('div', { class: 'jv-links' }, (s.links || []).map((L) => {
+          const bad = !L.role_name || !L.in_jarvis;
+          return el('div', { class: bad ? 'jv-offbot' : 'jv-inbot' },
+            (bad ? '⚠️ ' : '🟢 ') + L.label_ru + ': '
+            + (!L.role_name ? 'не назначена роль — задайте её в Претензии → Справочник'
+              : !L.people ? 'в роли «' + L.role_name + '» нет людей'
+              : !L.in_jarvis ? 'никто из роли «' + L.role_name + '» не открыл Джарвиса — карточка не дойдёт'
+              : L.role_name + ', в боте ' + L.in_jarvis + ' из ' + L.people));
+        })),
       ]),
 
       // 2. Что контролируем в Trello.

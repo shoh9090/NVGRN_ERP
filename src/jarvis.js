@@ -70,6 +70,21 @@ router.get('/api/state', async (req, res) => {
     out.voice = { ready: require('./stt').configured() };
     out.ai = { claude: ai.hasKey('claude'), openai: ai.hasKey('openai'),
       tools: require('./ai-tools').TOOLS.map((t) => ({ name: t.name, tile: t.tile, description: t.description })) };
+    // Звенья претензий: кто за них отвечает и сколько этих людей в Джарвисе.
+    // Включать переключатель, когда руководитель звена не открыл бота, —
+    // значит оставить претензию вообще без адресата.
+    try {
+      out.links = (await db.pool.query(
+        `SELECT d.code, d.label_ru, r.name AS role_name,
+                COUNT(DISTINCT u.id)::int AS people,
+                COUNT(DISTINCT u.id) FILTER (WHERE u.jv_chat_id IS NOT NULL)::int AS in_jarvis
+           FROM tgbot.complaint_dicts d
+           LEFT JOIN roles r ON r.id = d.owner_role_id
+           LEFT JOIN user_roles ur ON ur.role_id = d.owner_role_id
+           LEFT JOIN users u ON u.id = ur.user_id AND u.is_active = TRUE
+          WHERE d.kind = 'link' AND d.active
+          GROUP BY d.code, d.label_ru, r.name, d.sort_order ORDER BY d.sort_order`)).rows;
+    } catch (e) { out.links = []; }
     // Роли для раздела «Кто вносит»: сколько в роли людей и сколько из них в боте —
     // видно сразу, дойдёт ли напоминание.
     out.roles = (await db.pool.query(
