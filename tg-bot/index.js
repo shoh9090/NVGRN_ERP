@@ -763,7 +763,23 @@ async function main() {
     }
     return sent;
   }
+  // Сводку логисту может слать Джарвис — внутренний бот компании (переключатель
+  // «Сводка доставки логисту» в плитке «Джарвис»). Тогда мы молчим: две
+  // одинаковые сводки в двух ботах — это шум, а не контроль.
+  let _jvLgAt = 0, _jvLgOn = false;
+  async function jarvisLogistics() {
+    if (Date.now() - _jvLgAt < 60000) return _jvLgOn;
+    try {
+      const r = await db.query("SELECT value FROM public.settings WHERE key = 'jarvis_rules'");
+      const raw = JSON.parse((r.rows[0] && r.rows[0].value) || "{}");
+      _jvLgOn = raw.logistics_digest === true || raw.logistics_digest === "true";
+    } catch (e) { _jvLgOn = false; }
+    _jvLgAt = Date.now();
+    return _jvLgOn;
+  }
+
   async function logisticsDigestTick() {
+    if (await jarvisLogistics()) return;
     try {
       await reloadCfg();
       const hhmm = tzNow().toISOString().slice(11, 16);
