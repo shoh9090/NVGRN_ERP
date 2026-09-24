@@ -3798,6 +3798,9 @@ async function sdPaymentsPlan(date) {
   const sum = (st) => out.filter((x) => x.state === st).reduce((s, x) => s + x.amount, 0);
   return {
     date, crm_error: crmError, crm_count: crm.length,
+    // Отдаём и сами оплаты CRM: когда сверка чего-то не нашла, без них не понять,
+    // почему — не совпал контрагент, сумма или дата.
+    crm: crm.map((x) => ({ sd_id: x.sd_id, amount: x.amount, contragent_sd: x.contragent_sd, client_sd: x.client_sd, agent_sd: x.agent_sd, date: x.date })),
     items: out,
     totals: {
       all: out.length, all_sum: out.reduce((s, x) => s + x.amount, 0),
