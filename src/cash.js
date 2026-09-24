@@ -3833,6 +3833,73 @@ async function sdPaymentsPlan(date) {
   };
 }
 
+// Отправка оплат в CRM. Только по кнопке и только то, что разбор посчитал
+// готовым: состояние пересчитывается заново прямо перед отправкой, чтобы между
+// открытием экрана и нажатием никто не успел посадить ту же оплату руками.
+// Каждая уходит отдельным запросом — так при ошибке на третьей первые две
+// останутся отправленными и не уйдут повторно.
+async function sendSdPayments(date, ids, userId) {
+  const plan = await sdPaymentsPlan(date);
+  const want = new Set((Array.isArray(ids) ? ids : []).map(Number));
+  const list = plan.items.filter((x) => want.has(Number(x.id)) && x.state === 'ready');
+  const skipped = plan.items.filter((x) => want.has(Number(x.id)) && x.state !== 'ready')
+    .map((x) => ({ id: x.id, amount: x.amount, state: x.state, why: x.why }));
+  if (!list.length) return { sent: [], failed: [], skipped };
+
+  const cfg = await integrations.getSdConfig();
+  const auth = await integrations.sdLogin(cfg);
+  const sent = [], failed = [];
+  for (const it of list) {
+    // Шлём той же структурой, какой CRM отдаёт оплату: клиент и контрагент —
+    // один и тот же номер точки, вид оплаты «перечисление», направление 3.
+    const target = it.client_sd || it.contragent_sd;
+    const rec = {
+      amount: it.amount,
+      paymentDate: date + ' 12:00:00',
+      paymentType: { SD_id: SD_PAY_TYPE_TRANSFER },
+      transactionType: SD_TX_CLIENT_PAYMENT,
+      client: { SD_id: target },
+      contragent: { SD_id: it.contragent_sd || target },
+      agent: { SD_id: it.agent_sd },
+      comment: 'Из банковской выписки (ERP)',
+    };
+    let answer = null;
+    try {
+      const data = await integrations.sdRequest(cfg.url, {
+        method: 'setPayment',
+        auth: { userId: auth.userId, token: auth.token },
+        params: { payment: [rec] },
+      });
+      answer = data.result || data;
+      const done = Number(answer && answer.completed) || 0;
+      const errN = Number(answer && answer.error) || 0;
+      const row = (answer && Array.isArray(answer.data) && answer.data[0]) || null;
+      const sdId = row && String(row.SD_id || row.CS_id || row.id || '');
+      if (done > 0 && !errN) {
+        await db.pool.query(
+          'UPDATE cash_transactions SET sd_payment_id = $1, sd_sent_at = now() WHERE id = $2',
+          [sdId || 'sent', it.id]);
+        sent.push({ id: it.id, amount: it.amount, client: it.client, sd_id: sdId, answer });
+      } else {
+        failed.push({ id: it.id, amount: it.amount, client: it.client, answer, sent_record: rec });
+      }
+    } catch (e) {
+      failed.push({ id: it.id, amount: it.amount, client: it.client, error: e.message, sent_record: rec });
+    }
+  }
+  await db.log(userId, 'cash_sd_payments_send', `${date}: отправлено ${sent.length}, ошибок ${failed.length}`);
+  return { sent, failed, skipped };
+}
+
+router.post('/api/sd-payments/send', express.json(), async (req, res) => {
+  const b = req.body || {};
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(b.date || '') ? b.date : null;
+  if (!date) return res.status(400).json({ error: 'Укажите дату' });
+  if (!Array.isArray(b.ids) || !b.ids.length) return res.status(400).json({ error: 'Не выбрано ни одной оплаты' });
+  try { res.json(await sendSdPayments(date, b.ids, req.user && req.user.id)); }
+  catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 router.get('/api/sd-payments', async (req, res) => {
   const date = /^\d{4}-\d{2}-\d{2}$/.test(req.query.date || '') ? req.query.date : new Date(Date.now() + 5 * 3600000).toISOString().slice(0, 10);
   try { res.json(await sdPaymentsPlan(date)); }
