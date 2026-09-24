@@ -28,6 +28,7 @@ const DEFAULTS = {
   ai_enabled: false,         // можно ли спрашивать Джарвиса словами
   ai_provider: 'claude',     // claude | openai — ключ берётся из Railway
   complaints_owners: false,   // претензии руководителям звеньев ведёт Джарвис, а не внешний бот
+  logistics_digest: false,    // сводку по доставке логисту шлёт Джарвис, а не внешний бот
   complaint_crit_h: 1,        // критичная без решения руководителя: через столько рабочих часов напомнить
   complaint_crit_esc_h: 3,    // ... и через столько — сказать РОПу и админу
   complaint_simple_h: 3,      // простая без причины от руководителя: напомнить через столько рабочих часов
@@ -102,6 +103,7 @@ function normalizeRules(raw) {
   out.memory_days = Math.round(num(r.memory_days, DEFAULTS.memory_days, 0, 30));
   out.web_enabled = r.web_enabled === true || r.web_enabled === 'true';
   out.complaints_owners = r.complaints_owners === true || r.complaints_owners === 'true';
+  out.logistics_digest = r.logistics_digest === true || r.logistics_digest === 'true';
   out.complaint_crit_h = num(r.complaint_crit_h, DEFAULTS.complaint_crit_h, 0.25, 48);
   out.complaint_simple_h = num(r.complaint_simple_h, DEFAULTS.complaint_simple_h, 0.25, 48);
   // Эскалация не может быть раньше первого напоминания — иначе руководителя

@@ -831,6 +831,7 @@ async function remindAll(rules, scan, people, now) {
   await salesDigest(rules, now).catch((e) => console.warn('[ДЖАРВИС] сводка продаж:', e.message));
   await weeklyScore(rules, now).catch((e) => console.warn('[ДЖАРВИС] итог недели:', e.message));
   await complaintsTick(rules, now).catch((e) => console.warn('[ДЖАРВИС] претензии:', e.message));
+  await logisticsTick(rules, now).catch((e) => console.warn('[ДЖАРВИС] доставка:', e.message));
   await weeklySilent(rules, now).catch((e) => console.warn('[ДЖАРВИС] молчуны:', e.message));
 
   // 3. Карточки без движения — ОДНО сообщение списком на человека в неделю.
@@ -1083,6 +1084,28 @@ async function sdSalesTick() {
 // второй стал бы бардаком. Вместо этого РОП получает сводку, разложенную по
 // менеджерам: каждый кусок — отдельным сообщением, чтобы переслать его
 // менеджеру одним касанием, не переписывая руками.
+// ---------- Доставка: сводка логисту (решение Шоха 24.09.2026) ----------
+// Водители остаются в клиентском боте — он напоминает им отметить «Доставлен».
+// Логист сотрудник Hub, поэтому его сводку шлёт Джарвис: вечером итог дня,
+// утром итог вчерашнего (часть заказов закрывают ночью).
+async function logisticsTick(rules, now) {
+  if (!rules.logistics_digest || !rules.reminders_enabled) return;
+  const hhmm = new Date(now + 5 * 3600000).toISOString().slice(11, 16);
+  const morning = hhmm >= '08:00' && hhmm < '08:20';
+  const evening = hhmm >= '19:00' && hhmm < '19:20';
+  if (!morning && !evening) return;
+  const lg = require('./jarvis-logistics');
+  const key = `lgd:${lg.localDay(now)}:${morning ? 'am' : 'pm'}`;
+  if (await seen(key)) return;
+  const chats = await lg.recipients();
+  if (!chats.length) return;
+  const { text } = await lg.digestFor(now, morning);
+  if (!text) return;
+  let sent = 0;
+  for (const chat of chats) if (await send(chat, text)) sent++;
+  await log('logistics_digest', null, null, `Сводка доставки (${morning ? 'утро' : 'вечер'}) — ${sent} чел.`, sent > 0, key);
+}
+
 // ---------- Претензии: сторона компании (решение Шоха 24.09.2026) ----------
 // Клиент и торговый агент остаются во внешнем боте. Джарвис ведёт тех, кто
 // внутри: руководителю звена — карточка и решение, РОПу с админом — эскалация.

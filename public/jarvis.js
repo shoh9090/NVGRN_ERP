@@ -151,6 +151,7 @@
     const webOn = el('input', { type: 'checkbox', checked: r.web_enabled, disabled: dis });
     // Претензии: сторона компании. Клиент и агент остаются во внешнем боте.
     const cmplOn = el('input', { type: 'checkbox', checked: r.complaints_owners, disabled: dis });
+    const lgdOn = el('input', { type: 'checkbox', checked: r.logistics_digest, disabled: dis });
     const cmplCrit = numInp(r.complaint_crit_h, { step: '0.5' });
     const cmplCritEsc = numInp(r.complaint_crit_esc_h, { step: '0.5' });
     const cmplSimple = numInp(r.complaint_simple_h, { step: '0.5' });
@@ -212,6 +213,9 @@
           onoff('Претензии руководителям', cmplOn, r.complaints_owners
             ? ' карточки и решения по претензиям ведёт Джарвис'
             : ' пока их ведёт клиентский бот'),
+          onoff('Сводка доставки логисту', lgdOn, r.logistics_digest
+            ? ' итог дня в 19:00 и вчерашнего в 8:00 шлёт Джарвис'
+            : ' пока её шлёт клиентский бот'),
         ]),
       ]),
 
@@ -309,6 +313,7 @@
           voice_enabled: voiceOn.checked, voice_model: voiceModel.value, memory_days: memDays.value,
           web_enabled: webOn.checked,
           complaints_owners: cmplOn.checked,
+          logistics_digest: lgdOn.checked,
           complaint_crit_h: Number(cmplCrit.value),
           complaint_crit_esc_h: Number(cmplCritEsc.value),
           complaint_simple_h: Number(cmplSimple.value),
