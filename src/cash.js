@@ -3833,6 +3833,27 @@ async function sdPaymentsPlan(date) {
   };
 }
 
+// Возможные формы запроса setPayment: имя ключа-списка и то, как передаются
+// ссылки — объектом {SD_id} или просто строкой. Порядок от самого вероятного.
+function sdPayShapes(rec) {
+  const flat = {
+    amount: rec.amount, paymentDate: rec.paymentDate, comment: rec.comment,
+    transactionType: rec.transactionType,
+    paymentType: rec.paymentType.SD_id, client: rec.client.SD_id,
+    contragent: rec.contragent.SD_id, agent: rec.agent.SD_id,
+  };
+  return [
+    { name: 'payment[]', params: { payment: [rec] } },
+    { name: 'payments[]', params: { payments: [rec] } },
+    { name: 'data[]', params: { data: [rec] } },
+    { name: 'payment[]-flat', params: { payment: [flat] } },
+    { name: 'payments[]-flat', params: { payments: [flat] } },
+    { name: 'data[]-flat', params: { data: [flat] } },
+    { name: 'object', params: rec },
+    { name: 'object-flat', params: flat },
+  ];
+}
+
 // Отправка оплат в CRM. Только по кнопке и только то, что разбор посчитал
 // готовым: состояние пересчитывается заново прямо перед отправкой, чтобы между
 // открытием экрана и нажатием никто не успел посадить ту же оплату руками.
@@ -3864,27 +3885,42 @@ async function sendSdPayments(date, ids, userId) {
       comment: 'Из банковской выписки (ERP)',
     };
     let answer = null;
+    const tried = [];
     try {
-      const data = await integrations.sdRequest(cfg.url, {
-        method: 'setPayment',
-        auth: { userId: auth.userId, token: auth.token },
-        params: { payment: [rec] },
-      });
-      answer = data.result || data;
-      const done = Number(answer && answer.completed) || 0;
-      const errN = Number(answer && answer.error) || 0;
-      const row = (answer && Array.isArray(answer.data) && answer.data[0]) || null;
-      const sdId = row && String(row.SD_id || row.CS_id || row.id || '');
-      if (done > 0 && !errN) {
+      // Какой формат ждёт setPayment, в документации не написано, а на первый
+      // вариант CRM ответила «принято 0, ошибок 0» — просто проигнорировала.
+      // Поэтому перебираем формы, пока одна не сработает, и запоминаем её:
+      // дальше шлём сразу правильной. Перебор безопасен — форма, которую CRM
+      // не поняла, ничего не создаёт (принято 0).
+      const shapes = sdPayShapes(rec);
+      const savedName = (await db.getSettings()).sd_payment_shape || null;
+      const order = savedName ? shapes.filter((s) => s.name === savedName).concat(shapes.filter((s) => s.name !== savedName)) : shapes;
+      let okShape = null;
+      for (const shape of order) {
+        const data = await integrations.sdRequest(cfg.url, {
+          method: 'setPayment',
+          auth: { userId: auth.userId, token: auth.token },
+          params: shape.params,
+        });
+        answer = data.result || data;
+        const done = Number(answer && answer.completed) || 0;
+        const errN = Number(answer && answer.error) || 0;
+        tried.push({ shape: shape.name, completed: done, error: errN, answer });
+        if (done > 0 && !errN) { okShape = shape; break; }
+      }
+      if (okShape) {
+        if (savedName !== okShape.name) await db.setSetting('sd_payment_shape', okShape.name);
+        const row = (answer && Array.isArray(answer.data) && answer.data[0]) || null;
+        const sdId = row && String(row.SD_id || row.CS_id || row.id || '');
         await db.pool.query(
           'UPDATE cash_transactions SET sd_payment_id = $1, sd_sent_at = now() WHERE id = $2',
           [sdId || 'sent', it.id]);
-        sent.push({ id: it.id, amount: it.amount, client: it.client, sd_id: sdId, answer });
+        sent.push({ id: it.id, amount: it.amount, client: it.client, sd_id: sdId, shape: okShape.name, answer });
       } else {
-        failed.push({ id: it.id, amount: it.amount, client: it.client, answer, sent_record: rec });
+        failed.push({ id: it.id, amount: it.amount, client: it.client, tried, sent_record: rec });
       }
     } catch (e) {
-      failed.push({ id: it.id, amount: it.amount, client: it.client, error: e.message, sent_record: rec });
+      failed.push({ id: it.id, amount: it.amount, client: it.client, error: e.message, tried, sent_record: rec });
     }
   }
   await db.log(userId, 'cash_sd_payments_send', `${date}: отправлено ${sent.length}, ошибок ${failed.length}`);
