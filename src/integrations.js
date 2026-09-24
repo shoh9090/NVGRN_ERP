@@ -930,6 +930,12 @@ async function getPayments(from, to, opts = {}) {
     type: String((r.paymentType && (r.paymentType.code_1C || r.paymentType.SD_id)) || pick(r, ['type', 'cashType']) || ''),
     kind: r.transactionType == null ? null : Number(r.transactionType),
     client: (r.client && (r.client.clientName || r.client.name)) || r.clientName || '',
+    // Номера нужны, чтобы сверять с Кассой по конкретному плательщику, а не по
+    // сумме дня: иначе две одинаковые оплаты разных клиентов не различить.
+    contragent_sd: String((r.contragent && r.contragent.SD_id) || ''),
+    client_sd: String((r.client && r.client.SD_id) || ''),
+    agent_sd: String((r.agent && r.agent.SD_id) || ''),
+    sd_id: String(r.SD_id || r.CS_id || ''),
   }));
   return { from, to, count: items.length, items, truncated, sample: raw0 };
 }

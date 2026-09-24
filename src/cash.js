@@ -482,9 +482,11 @@ function cashTabOf(req) {
   if (p.startsWith('/api/wallet')) return 'wallets';
   if (p.startsWith('/api/report') || p.startsWith('/api/summary')) return 'cashflow';
   // Журнал транзакций: его же открывают импорт выписки, разбор и сверка.
+  // Оплаты в CRM идут из тех же приходов выписки — открываются там же.
   if (p.startsWith('/api/transactions') || p.startsWith('/api/tx')
     || p.startsWith('/api/import') || p.startsWith('/api/triage')
-    || p.startsWith('/api/pending') || p.startsWith('/api/reconcile')) return 'tx';
+    || p.startsWith('/api/pending') || p.startsWith('/api/reconcile')
+    || p.startsWith('/api/sd-payments') || p.startsWith('/api/sd-reconcile')) return 'tx';
   if (p.startsWith('/api/category') || p.startsWith('/api/group')
     || p.startsWith('/api/counterpart') || p.startsWith('/api/contract')
     || p.startsWith('/api/clients') || p.startsWith('/api/sync-clients')) return 'dicts';
@@ -3720,6 +3722,90 @@ router.get('/api/obligations/schedule-template.xlsx', async (req, res) => {
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition', 'attachment; filename="obligations_schedule_template.xlsx"');
   res.send(buf);
+});
+
+// ---------- Оплаты клиентов в SalesDoctor ----------
+// Арианна сажала их руками по выписке — до 20 минут в день. Здесь ERP считает,
+// что из приходов Кассы уже есть в CRM, а что нет, и почему остальное отправить
+// нельзя. Сама отправка — отдельным шагом и только по кнопке.
+//
+// Задвоить оплату нельзя двумя способами сразу:
+//   1) отметка sd_payment_id у транзакции — «эту я уже отправлял»;
+//   2) сверка с CRM перед отправкой — ловит то, что человек внёс руками
+//      и о чём ERP знать не может.
+// Без второй проверки запуск по расписанию задвоил бы всё, что уже внесено.
+const SD_PAY_TYPE_TRANSFER = 'd0_3';   // перечисление — у клиентов только оно
+const SD_TX_CLIENT_PAYMENT = 3;        // «живая» оплата клиента, не служебное разнесение
+
+async function ensureSdPayCols() {
+  await db.pool.query('ALTER TABLE cash_transactions ADD COLUMN IF NOT EXISTS sd_payment_id TEXT').catch(() => {});
+  await db.pool.query('ALTER TABLE cash_transactions ADD COLUMN IF NOT EXISTS sd_sent_at TIMESTAMPTZ').catch(() => {});
+}
+
+// Что из приходов дня уже в CRM, что готово к отправке, а что человеку разбирать.
+async function sdPaymentsPlan(date) {
+  await ensureSdPayCols();
+  const rows = (await db.pool.query(
+    `SELECT t.id, t.amount, t.payer_inn, t.payer_name, t.purpose, t.sd_payment_id,
+            to_char(t.tx_date,'YYYY-MM-DD') AS d,
+            k.id AS cp_id, k.name AS cp_name, k.sd_contragent_id, k.sd_client_id,
+            k.sd_agent_id, k.sd_agent_ambiguous
+       FROM cash_transactions t
+       JOIN cash_categories c ON c.id = t.category_id
+       LEFT JOIN cash_counterparties k
+              ON k.cp_role = 'client' AND k.status = 'active'
+             AND k.inn = NULLIF(trim(t.payer_inn), '')
+      WHERE t.tx_type = 'in' AND c.code = '200' AND t.source <> 'opening'
+        AND t.tx_date = $1::date
+      ORDER BY t.amount DESC`, [date])).rows;
+
+  // Оплаты CRM за этот день — по ним видно, что уже посажено руками.
+  let crm = [];
+  let crmError = null;
+  try {
+    const p = await integrations.getPayments(date, date);
+    crm = p.items.filter((x) => x.kind === SD_TX_CLIENT_PAYMENT);
+  } catch (e) { crmError = e.message; }
+  const near = (a, b) => Math.abs(Number(a) - Number(b)) < 1;      // копейки округления
+  const crmFor = (conId, amount) => crm.find((x) => x.contragent_sd && String(x.contragent_sd) === String(conId) && near(x.amount, amount));
+
+  const out = rows.map((r) => {
+    const item = {
+      id: r.id, amount: Number(r.amount), date: r.d,
+      payer_name: r.payer_name, payer_inn: r.payer_inn, purpose: r.purpose,
+      client: r.cp_name || null, contragent_sd: r.sd_contragent_id || null,
+      agent_sd: r.sd_agent_id || null, sent_id: r.sd_payment_id || null,
+    };
+    if (r.sd_payment_id) return { ...item, state: 'sent', why: 'уже отправлено из ERP' };
+    if (!String(r.payer_inn || '').trim()) return { ...item, state: 'manual', why: 'в приходе нет ИНН плательщика' };
+    if (!r.cp_id) return { ...item, state: 'manual', why: 'нет активного клиента с таким ИНН' };
+    if (!r.sd_contragent_id) return { ...item, state: 'manual', why: 'у клиента не заполнен контрагент SalesDoctor' };
+    if (r.sd_agent_ambiguous) return { ...item, state: 'manual', why: 'у клиента несколько агентов — от чьего имени проводить, решает человек' };
+    if (!r.sd_agent_id) return { ...item, state: 'manual', why: 'у клиента не указан агент' };
+    if (crmError) return { ...item, state: 'manual', why: 'CRM недоступна, сверить нельзя: ' + crmError };
+    const hit = crmFor(r.sd_contragent_id, r.amount);
+    if (hit) return { ...item, state: 'in_crm', why: 'такая оплата уже есть в CRM', crm_id: hit.sd_id };
+    return { ...item, state: 'ready', why: '' };
+  });
+
+  const sum = (st) => out.filter((x) => x.state === st).reduce((s, x) => s + x.amount, 0);
+  return {
+    date, crm_error: crmError, crm_count: crm.length,
+    items: out,
+    totals: {
+      all: out.length, all_sum: out.reduce((s, x) => s + x.amount, 0),
+      ready: out.filter((x) => x.state === 'ready').length, ready_sum: sum('ready'),
+      in_crm: out.filter((x) => x.state === 'in_crm').length, in_crm_sum: sum('in_crm'),
+      sent: out.filter((x) => x.state === 'sent').length, sent_sum: sum('sent'),
+      manual: out.filter((x) => x.state === 'manual').length, manual_sum: sum('manual'),
+    },
+  };
+}
+
+router.get('/api/sd-payments', async (req, res) => {
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(req.query.date || '') ? req.query.date : new Date(Date.now() + 5 * 3600000).toISOString().slice(0, 10);
+  try { res.json(await sdPaymentsPlan(date)); }
+  catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 // ---------- Возмещение затрат подотчётным лицам (простой список, не займы/кредиты) ----------
