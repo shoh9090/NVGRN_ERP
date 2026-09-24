@@ -12,6 +12,22 @@ let LO = null;
 // Руководитель звена пишет причину: ждём текст (chatId -> { id, name }).
 const ownerNote = new Map();
 
+// Руководителей звеньев может вести Джарвис — внутренний бот компании
+// (переключатель «Претензии руководителям» в плитке «Джарвис», решение Шоха
+// 24.09.2026). Тогда мы им ничего не шлём: иначе человек получит две карточки
+// с кнопками, а решение примет только одна. Клиент и агент остаются здесь.
+let _jvAt = 0, _jvOn = false;
+async function jarvisOwners() {
+  if (Date.now() - _jvAt < 60000) return _jvOn;
+  try {
+    const r = await db.query("SELECT value FROM public.settings WHERE key = 'jarvis_rules'");
+    const raw = JSON.parse((r.rows[0] && r.rows[0].value) || "{}");
+    _jvOn = raw.complaints_owners === true || raw.complaints_owners === "true";
+  } catch (e) { _jvOn = false; }
+  _jvAt = Date.now();
+  return _jvOn;
+}
+
 // Состояние мастера по chatId. Живёт в памяти — как draftCache у заказов.
 const sessions = new Map();
 
@@ -328,9 +344,11 @@ async function finalize(chatId, s, lang) {
       + (s.client_comment ? `\nКомментарий: ${s.client_comment}` : "");
     H.notifyAgentReact(s.point.sd_id, note, id).catch((e) => console.warn("[ПРЕТЕНЗИЯ notify]", e.message));
     // И лично руководителям звена: простая — для сведения, критичная — на решение.
-    getResolutions()
-      .then((resolutions) => LO.sendCard(id, { critical: CRITICAL_TYPES.has(s.type.code), resolutions }))
-      .catch((e) => console.warn("[ПРЕТЕНЗИЯ звено]", e.message));
+    jarvisOwners().then((jv) => {
+      if (jv) return null;   // руководителей ведёт Джарвис
+      return getResolutions()
+        .then((resolutions) => LO.sendCard(id, { critical: CRITICAL_TYPES.has(s.type.code), resolutions }));
+    }).catch((e) => console.warn("[ПРЕТЕНЗИЯ звено]", e.message));
   } catch (e) {
     console.error("[ПРЕТЕНЗИЯ save]", e.message);
     sessions.delete(chatId);
@@ -370,11 +388,13 @@ async function agentResolve(q, id, code, lang) {
   if (CRITICAL_TYPES.has(c.complaint_type)) {
     const point = c.point_name || c.firm_name || "";
     await H.notifyManagers(`🚨 Критическая претензия №${id}\nТочка: ${point}\nАгент принял в работу, предложил решение: ${resLabel}.\nНужен ваш разбор и закрытие в Hub.`);
-    LO.tell(id, `ℹ️ Претензия №${id}: агент принял в работу и предлагает — ${resLabel}. Решение за вами (кнопки под карточкой).`).catch(() => {});
+    if (!(await jarvisOwners())) {
+      LO.tell(id, `ℹ️ Претензия №${id}: агент принял в работу и предлагает — ${resLabel}. Решение за вами (кнопки под карточкой).`).catch(() => {});
+    }
     await bot.editMessageText(t(lang, "res_escalated", id), { chat_id: chatId, message_id: q.message.message_id }).catch(() => bot.sendMessage(chatId, t(lang, "res_escalated", id)));
   } else {
     await db.query("UPDATE tgbot.complaints SET status='resolved', resolved_at=now(), resolved_by=$1, updated_at=now() WHERE id=$2", ["Агент (бот)", id]);
-    LO.tell(id, `✅ Претензия №${id}: агент закрыл сам — ${resLabel}.`).catch(() => {});
+    if (!(await jarvisOwners())) LO.tell(id, `✅ Претензия №${id}: агент закрыл сам — ${resLabel}.`).catch(() => {});
     await bot.editMessageText(t(lang, "res_closed", id), { chat_id: chatId, message_id: q.message.message_id }).catch(() => bot.sendMessage(chatId, t(lang, "res_closed", id)));
   }
   return true;
@@ -468,6 +488,7 @@ async function reminderTick() {
           .catch((e) => console.warn("[ПРЕТЕНЗИЯ эскалация]", e.message));
       }
     } else {
+      if (await jarvisOwners()) continue;   // напоминания руководителям звеньев шлёт Джарвис
       await LO.sendCard(d.id, { critical: d.critical, resolutions: await getResolutions(), remind: true });
       if (d.escalate) {
         await H.notifyManagers(`⏰ Критичная претензия №${d.id} (${point}) подана ${since} — руководитель звена до сих пор не принял решение. Нужен ваш разбор.`)
