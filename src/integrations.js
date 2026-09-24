@@ -772,6 +772,18 @@ async function syncCashClients() {
     const con = cmap && (cmap.bySalepoint[String(c.SD_id)] || cmap.byInn[inn]);
     if (con && con.contragent_sd_id) pointsByInn[inn].add(String(con.contragent_sd_id));
   }
+  // Список клиентов выше берёт только активных и с ИНН. Но в CRM встречаются
+  // дубли карточек одного клиента: у «Южанина» оплаты лежали на точке, которой
+  // в этом списке нет, и сверка считала их неотправленными. Поэтому добавляем
+  // все точки, которые контрагент числит своими, — их ИНН берём у контрагента.
+  if (cmap && cmap.bySalepoint) {
+    for (const [spId, rec] of Object.entries(cmap.bySalepoint)) {
+      const inn = String((rec && rec.inn) || '').trim();
+      if (!inn) continue;
+      (pointsByInn[inn] = pointsByInn[inn] || new Set()).add(String(spId));
+      if (rec.contragent_sd_id) pointsByInn[inn].add(String(rec.contragent_sd_id));
+    }
+  }
   let created = 0, updated = 0;
   for (const c of clients) {
     const inn = String(c.inn).trim(); if (!inn) continue;

@@ -3805,6 +3805,13 @@ async function sdPaymentsPlan(date) {
     // оплата может сидеть на любой из них.
     const hit = crmFor(String(r.sd_ids || '').split(',').concat([r.sd_client_id, r.sd_contragent_id]), r.amount);
     if (hit) return { ...item, state: 'in_crm', why: 'такая оплата уже есть в CRM', crm_id: hit.sd_id };
+    // Страховка на случаи, которых мы не предвидели. В CRM встречаются дубли
+    // карточек клиента, и оплата может лежать на номере, которого мы за этим
+    // ИНН не знаем. Совпала сумма в тот же день — не отправляем молча, а просим
+    // человека взглянуть: ложная тревога стоит одного взгляда, а пропуск —
+    // двойной оплаты в CRM.
+    const same = crm.find((x) => near(x.amount, r.amount));
+    if (same) return { ...item, state: 'check', why: 'в CRM за этот день уже есть оплата на такую же сумму — проверьте, не она ли это', crm_id: same.sd_id };
     return { ...item, state: 'ready', why: '' };
   });
 
@@ -3818,6 +3825,7 @@ async function sdPaymentsPlan(date) {
     totals: {
       all: out.length, all_sum: out.reduce((s, x) => s + x.amount, 0),
       ready: out.filter((x) => x.state === 'ready').length, ready_sum: sum('ready'),
+      check: out.filter((x) => x.state === 'check').length, check_sum: sum('check'),
       in_crm: out.filter((x) => x.state === 'in_crm').length, in_crm_sum: sum('in_crm'),
       sent: out.filter((x) => x.state === 'sent').length, sent_sum: sum('sent'),
       manual: out.filter((x) => x.state === 'manual').length, manual_sum: sum('manual'),
