@@ -39,6 +39,25 @@ async function tg(method, body) {
     return d.ok ? d.result : null;
   } catch (e) { console.warn(`[ДЖАРВИС] Telegram ${method}: ${e.message}`); return null; }
 }
+// Файл в Telegram. Номер файла (file_id) привязан к принявшему его боту,
+// поэтому фото и видео клиента Джарвис не пересылает ссылкой — отдаёт байтами
+// своим токеном (фото из нашей базы, видео скачивается у клиентского бота).
+async function sendFile(chatId, kind, buf, name) {
+  if (!token()) return false;
+  const method = kind === 'photo' ? 'sendPhoto' : kind === 'video_note' ? 'sendVideoNote' : 'sendVideo';
+  const field = kind === 'photo' ? 'photo' : kind === 'video_note' ? 'video_note' : 'video';
+  try {
+    const fd = new FormData();
+    fd.append('chat_id', String(chatId));
+    fd.append(field, new Blob([buf]), name || 'file');
+    const r = await fetch(`https://api.telegram.org/bot${token()}/${method}`,
+      { method: 'POST', body: fd, signal: AbortSignal.timeout(120000) });
+    const d = await r.json().catch(() => ({}));
+    if (!d.ok) console.warn('[ДЖАРВИС] файл:', d.description || r.status);
+    return !!d.ok;
+  } catch (e) { console.warn('[ДЖАРВИС] файл:', e.message); return false; }
+}
+
 const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 // Модель пишет разметку markdown, а Telegram её не понимает: в чате были видны
 // сами звёздочки (замечание Шоха). Переводим в тот HTML, который Telegram знает.
@@ -177,6 +196,14 @@ async function handleUpdate(u) {
   const p = pending.get(chatId);
   if (p && text && !text.startsWith('/') && ![MENU_MY, MENU_TODO, MENU_PAY, MENU_SALES].includes(text)) {
     if (Date.now() > p.until) { pending.delete(chatId); return send(chatId, 'Время вышло — нажмите кнопку ещё раз.', await kb(chatId)); }
+    if (p.kind === 'cnote') {
+      pending.delete(chatId);
+      const r = await require('./jarvis-complaints').addNote(chatId, p.complaintId, text);
+      if (r.error) return send(chatId, esc(r.error), await kb(chatId));
+      await log('complaint_note', me.employee_id, null, `Претензия №${p.complaintId}: ${text.slice(0, 200)}`, true, null);
+      return send(chatId, `✍️ Записал причину по претензии №${p.complaintId}. Спасибо — это то, что потом объясняет цифры.`,
+        await kb(chatId));
+    }
     if (p.kind === 'due') {
       const due = R.parseDueDate(text, Date.now(), await loadRules());
       if (!due) return send(chatId, 'Не понял дату. Напишите так: 25.09 или 25.09.2026, либо «завтра». /cancel — отмена');
@@ -441,6 +468,23 @@ async function onCallback(cq) {
   if (!me) return send(chatId, 'Сначала нажмите «📱 Поделиться номером».', askContact);
   const data = String(cq.data || '');
   let target = null;
+  // Претензии: решение руководителя звена и причина (src/jarvis-complaints.js).
+  if (data.startsWith('cr:') || data.startsWith('cn:')) {
+    const cx = require('./jarvis-complaints');
+    const [, idStr, code] = data.split(':');
+    const id = parseInt(idStr, 10) || 0;
+    if (data.startsWith('cn:')) {
+      const who = await cx.ownerByChat(id, chatId);
+      if (!who) return send(chatId, 'Причину по претензии пишет руководитель звена.');
+      pending.set(chatId, { kind: 'cnote', complaintId: id, until: Date.now() + 30 * 60 * 1000 });
+      return send(chatId, `Напишите одним сообщением, в чём причина по претензии №${id} и что сделали. `
+        + 'Текст ляжет в карточку претензии в ERP.\n/cancel — отмена', { reply_markup: { force_reply: true } });
+    }
+    const r = await cx.resolve(chatId, id, code);
+    if (r.error) return send(chatId, esc(r.error));
+    await log('complaint_resolved', me.employee_id, null, `Претензия №${id}: ${r.label}`, true, `cres:${id}`);
+    return send(chatId, `✅ Претензия №${id}: ваше решение — ${esc(r.label)}. Записано в ERP, агенту передано.`);
+  }
   if (data.startsWith('jm:')) {
     const mt = (await pool.query('SELECT id, card_id, card_name, card_url FROM jarvis_mentions WHERE id = $1 AND employee_id = $2',
       [parseInt(data.slice(3), 10) || 0, me.employee_id])).rows[0];
@@ -786,6 +830,7 @@ async function remindAll(rules, scan, people, now) {
   await morning(rules, overdueBy, now, scan);
   await salesDigest(rules, now).catch((e) => console.warn('[ДЖАРВИС] сводка продаж:', e.message));
   await weeklyScore(rules, now).catch((e) => console.warn('[ДЖАРВИС] итог недели:', e.message));
+  await complaintsTick(rules, now).catch((e) => console.warn('[ДЖАРВИС] претензии:', e.message));
   await weeklySilent(rules, now).catch((e) => console.warn('[ДЖАРВИС] молчуны:', e.message));
 
   // 3. Карточки без движения — ОДНО сообщение списком на человека в неделю.
@@ -1038,6 +1083,48 @@ async function sdSalesTick() {
 // второй стал бы бардаком. Вместо этого РОП получает сводку, разложенную по
 // менеджерам: каждый кусок — отдельным сообщением, чтобы переслать его
 // менеджеру одним касанием, не переписывая руками.
+// ---------- Претензии: сторона компании (решение Шоха 24.09.2026) ----------
+// Клиент и торговый агент остаются во внешнем боте. Джарвис ведёт тех, кто
+// внутри: руководителю звена — карточка и решение, РОПу с админом — эскалация.
+// Пока переключатель в плитке выключен, здесь ничего не происходит и всё
+// работает по-старому.
+async function complaintsTick(rules, now) {
+  if (!rules.complaints_owners || !rules.reminders_enabled) return;
+  const cx = require('./jarvis-complaints');
+  const rows = await cx.openComplaints();
+  if (!rows.length) return;
+  const work = R.isWorkTime(now, rules);
+  // Новые претензии: карточка уходит сразу, даже если руководитель ещё не
+  // видел её в вебе. Ночью не дёргаем — утром первое же напоминание догонит.
+  for (const c of rows) {
+    if (!work) break;
+    const key = `cmpcard:${c.id}`;
+    if (await seen(key)) continue;
+    const sent = await cx.sendCard(c.id, {});
+    await log('complaint_card', null, null, `Претензия №${c.id}: карточка ушла ${sent} чел.`, sent > 0, key);
+  }
+  if (!work) return;
+  // Напоминания и эскалация — по рабочим часам из правил.
+  const admins = (await pool.query(
+    `SELECT DISTINCT u.jv_chat_id FROM users u
+       JOIN user_roles ur ON ur.user_id = u.id JOIN roles r ON r.id = ur.role_id
+      WHERE u.is_active = TRUE AND u.jv_chat_id IS NOT NULL
+        AND (r.is_admin = TRUE OR r.bot_role = 'head_of_sales')`)).rows.map((r) => r.jv_chat_id);
+  for (const d of cx.dueOwners(rows, now, rules, R)) {
+    const key = `cmprem:${d.id}:${d.stage}`;
+    if (await seen(key)) continue;
+    const sent = await cx.sendCard(d.id, { critical: d.critical, remind: true });
+    await log('complaint_remind', null, null, `Претензия №${d.id}: напоминание (${d.stage})`, sent > 0, key);
+    if (!d.escalate) continue;
+    const c = rows.find((x) => x.id === d.id) || {};
+    const point = c.point_name || c.firm_name || c.sd_id || '';
+    for (const chat of admins) {
+      await send(chat, `⏰ Критичная претензия <b>№${d.id}</b> (${esc(point)}) подана ${cx.sinceText(c.created_at)} — `
+        + 'руководитель звена до сих пор не принял решение. Нужен ваш разбор.');
+    }
+  }
+}
+
 // ---------- Итог недели (решение Шоха 24.09.2026) ----------
 // Люди должны слышать не только «вы просрочили», но и «это сделано хорошо».
 // В пятницу вечером — чем закончили неделю, в понедельник утром — с чем
@@ -1322,7 +1409,7 @@ function webhook(req, res) {
   if (pool) handleUpdate(req.body || {}).catch((e) => console.warn('[ДЖАРВИС] сообщение:', e.message));
 }
 
-module.exports = { start, webhook, tick, status };
+module.exports = { start, webhook, tick, status, send, sendFile };
 // Холостой прогон (test/jarvis-dryrun.test.js) гоняет такт целиком на
 // поддельной базе и поддельных ответах Trello и Telegram. Так ловятся ошибки,
 // которые видны только при запуске («opts is not defined»): проверка синтаксиса

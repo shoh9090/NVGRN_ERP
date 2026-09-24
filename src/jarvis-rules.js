@@ -27,6 +27,10 @@ const DEFAULTS = {
   reminders_enabled: false,  // бот пишет людям; выключено — только читает Trello и ведёт журнал
   ai_enabled: false,         // можно ли спрашивать Джарвиса словами
   ai_provider: 'claude',     // claude | openai — ключ берётся из Railway
+  complaints_owners: false,   // претензии руководителям звеньев ведёт Джарвис, а не внешний бот
+  complaint_crit_h: 1,        // критичная без решения руководителя: через столько рабочих часов напомнить
+  complaint_crit_esc_h: 3,    // ... и через столько — сказать РОПу и админу
+  complaint_simple_h: 3,      // простая без причины от руководителя: напомнить через столько рабочих часов
   done_lists: [],            // свои колонки Trello, которые тоже считаются закрытыми
   mute_clients: [],          // клиенты, о которых не напоминать (сменили формат работы, закрылись)
   sales_digest_days: 3,      // как часто РОП получает сводку по притихшим клиентам (0 — не слать)
@@ -97,6 +101,13 @@ function normalizeRules(raw) {
   out.ai_model = String(r.ai_model || '').trim().slice(0, 60);
   out.memory_days = Math.round(num(r.memory_days, DEFAULTS.memory_days, 0, 30));
   out.web_enabled = r.web_enabled === true || r.web_enabled === 'true';
+  out.complaints_owners = r.complaints_owners === true || r.complaints_owners === 'true';
+  out.complaint_crit_h = num(r.complaint_crit_h, DEFAULTS.complaint_crit_h, 0.25, 48);
+  out.complaint_simple_h = num(r.complaint_simple_h, DEFAULTS.complaint_simple_h, 0.25, 48);
+  // Эскалация не может быть раньше первого напоминания — иначе руководителя
+  // сдают наверх прежде, чем он вообще что-то увидел.
+  out.complaint_crit_esc_h = Math.max(out.complaint_crit_h,
+    num(r.complaint_crit_esc_h, DEFAULTS.complaint_crit_esc_h, 0.25, 72));
   out.voice_enabled = r.voice_enabled === undefined ? true : (r.voice_enabled === true || r.voice_enabled === 'true');
   out.voice_model = String(r.voice_model || '').trim().slice(0, 60) || DEFAULTS.voice_model;
   // Свои названия колонок, которые тоже считаются закрытыми.

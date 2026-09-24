@@ -149,6 +149,11 @@
     const voiceModel = inp(r.voice_model, { placeholder: 'whisper-1', style: 'min-width:200px' });
     const memDays = numInp(r.memory_days, { min: '0', max: '30' });
     const webOn = el('input', { type: 'checkbox', checked: r.web_enabled, disabled: dis });
+    // Претензии: сторона компании. Клиент и агент остаются во внешнем боте.
+    const cmplOn = el('input', { type: 'checkbox', checked: r.complaints_owners, disabled: dis });
+    const cmplCrit = numInp(r.complaint_crit_h, { step: '0.5' });
+    const cmplCritEsc = numInp(r.complaint_crit_esc_h, { step: '0.5' });
+    const cmplSimple = numInp(r.complaint_simple_h, { step: '0.5' });
 
     // Кто вносит: у дела цепочка ответственных — кто первый и кто подхватывает.
     const ownerChain = {};
@@ -204,6 +209,23 @@
             ? ' можно надиктовать вопрос'
             : (r.voice_enabled ? ' ⚠️ включено, но НЕ работает: в Railway нет ключа OPENAI_API_KEY' : ' нужен ключ OPENAI_API_KEY')),
           onoff('Штрафы', finesOn, r.fines_enabled ? ' нарушения идут в зарплату' : ' выключены: только напоминания'),
+          onoff('Претензии руководителям', cmplOn, r.complaints_owners
+            ? ' карточки и решения по претензиям ведёт Джарвис'
+            : ' пока их ведёт клиентский бот'),
+        ]),
+      ]),
+
+      // Претензии: что именно переехало к Джарвису и с какими сроками.
+      sec('Претензии', 'Клиент и торговый агент остаются в клиентском боте — там их заказы и точки. '
+        + 'Джарвис ведёт руководителей звеньев: карточка, решение, причина, напоминания. '
+        + 'Включайте, когда руководители звеньев открыли этого бота — иначе они не получат ничего.', [
+        el('div', { class: 'jv-grid' }, [
+          field('Критичная без решения', el('div', { class: 'jv-ctl' }, ['напомнить через ', cmplCrit, ' раб. ч']),
+            'Критичная — та, которую агент не закрывает сам (сейчас «живность»).'),
+          field('Критичная: сказать РОПу и админу', el('div', { class: 'jv-ctl' }, ['через ', cmplCritEsc, ' раб. ч']),
+            'Раньше первого напоминания не бывает.'),
+          field('Простая без причины', el('div', { class: 'jv-ctl' }, ['напомнить через ', cmplSimple, ' раб. ч']),
+            'Простую закрывает агент, от руководителя нужна причина.'),
         ]),
       ]),
 
@@ -276,6 +298,10 @@
           ai_enabled: aiOn.checked, ai_provider: aiProv.value, ai_model: aiModel.value,
           voice_enabled: voiceOn.checked, voice_model: voiceModel.value, memory_days: memDays.value,
           web_enabled: webOn.checked,
+          complaints_owners: cmplOn.checked,
+          complaint_crit_h: Number(cmplCrit.value),
+          complaint_crit_esc_h: Number(cmplCritEsc.value),
+          complaint_simple_h: Number(cmplSimple.value),
           done_lists: doneExtra.value,
           owners: Object.fromEntries(Object.entries(ownerChain).map(([k, c]) => [k,
             [c.first.value ? { role: c.first.value, after_h: 0 } : null,
