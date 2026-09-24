@@ -1683,6 +1683,18 @@ async function salesAutoTick() {
     const p = await integrations.syncPrices(null);
     console.log('[КАТАЛОГ] прайс-листы из SD:', p.summary || '');
   } catch (e) { console.warn('[КАТАЛОГ] обновление из SD не прошло:', e.message); }
+  // И покупатели. По их ИНН приход из банковской выписки находит клиента.
+  // Справочник обновлялся только по кнопке и отстал на три месяца: новые
+  // клиенты платили, а Касса их не узнавала — 12% сентябрьских поступлений
+  // остались без покупателя. После синхронизации перепривязываем приходы,
+  // как это делает кнопка: иначе новые клиенты подтянутся, а старые платежи
+  // так и останутся ничьими.
+  try {
+    const c = await integrations.syncCashClients();
+    await db.setSetting('cash_clients_synced_at', new Date().toISOString());
+    try { await runRelink(); } catch (e) { /* авто-разбор не критичен */ }
+    console.log('[КЛИЕНТЫ] из SD: +' + c.created + ', обновлено ' + c.updated);
+  } catch (e) { console.warn('[КЛИЕНТЫ] обновление из SD не прошло:', e.message); }
 }
 setInterval(() => { salesAutoTick().catch((e) => console.warn('[КАССА] автообновление продаж:', e.message)); }, 15 * 60 * 1000).unref();
 
