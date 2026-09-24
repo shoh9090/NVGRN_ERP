@@ -3740,6 +3740,13 @@ const SD_TX_CLIENT_PAYMENT = 3;        // «живая» оплата клиен
 async function ensureSdPayCols() {
   await db.pool.query('ALTER TABLE cash_transactions ADD COLUMN IF NOT EXISTS sd_payment_id TEXT').catch(() => {});
   await db.pool.query('ALTER TABLE cash_transactions ADD COLUMN IF NOT EXISTS sd_sent_at TIMESTAMPTZ').catch(() => {});
+  // Эти же колонки заводит синхронизация клиентов, но разбор не должен зависеть
+  // от того, запускали её после выкладки или ещё нет: иначе экран падает на
+  // «нет такой колонки» вместо того, чтобы честно показать пустые значения.
+  for (const col of ['sd_client_id TEXT', 'sd_contragent_id TEXT', 'sd_agent_id TEXT',
+    'sd_agent_ambiguous BOOLEAN DEFAULT FALSE']) {
+    await db.pool.query('ALTER TABLE cash_counterparties ADD COLUMN IF NOT EXISTS ' + col).catch(() => {});
+  }
 }
 
 // Что из приходов дня уже в CRM, что готово к отправке, а что человеку разбирать.
