@@ -3744,7 +3744,7 @@ async function ensureSdPayCols() {
   // от того, запускали её после выкладки или ещё нет: иначе экран падает на
   // «нет такой колонки» вместо того, чтобы честно показать пустые значения.
   for (const col of ['sd_client_id TEXT', 'sd_contragent_id TEXT', 'sd_agent_id TEXT',
-    'sd_agent_ambiguous BOOLEAN DEFAULT FALSE']) {
+    'sd_agent_ambiguous BOOLEAN DEFAULT FALSE', 'sd_ids TEXT']) {
     await db.pool.query('ALTER TABLE cash_counterparties ADD COLUMN IF NOT EXISTS ' + col).catch(() => {});
   }
 }
@@ -3756,7 +3756,7 @@ async function sdPaymentsPlan(date) {
     `SELECT t.id, t.amount, t.payer_inn, t.payer_name, t.purpose, t.sd_payment_id,
             to_char(t.tx_date,'YYYY-MM-DD') AS d,
             k.id AS cp_id, k.name AS cp_name, k.sd_contragent_id, k.sd_client_id,
-            k.sd_agent_id, k.sd_agent_ambiguous
+            k.sd_ids, k.sd_agent_id, k.sd_agent_ambiguous
        FROM cash_transactions t
        JOIN cash_categories c ON c.id = t.category_id
        LEFT JOIN cash_counterparties k
@@ -3801,7 +3801,9 @@ async function sdPaymentsPlan(date) {
     if (r.sd_agent_ambiguous) return { ...item, state: 'manual', why: 'у клиента несколько агентов — от чьего имени проводить, решает человек' };
     if (!r.sd_agent_id) return { ...item, state: 'manual', why: 'у клиента не указан агент' };
     if (crmError) return { ...item, state: 'manual', why: 'CRM недоступна, сверить нельзя: ' + crmError };
-    const hit = crmFor([r.sd_client_id, r.sd_contragent_id], r.amount);
+    // Все номера этого ИНН: под одним ИНН в CRM бывает несколько точек, и
+    // оплата может сидеть на любой из них.
+    const hit = crmFor(String(r.sd_ids || '').split(',').concat([r.sd_client_id, r.sd_contragent_id]), r.amount);
     if (hit) return { ...item, state: 'in_crm', why: 'такая оплата уже есть в CRM', crm_id: hit.sd_id };
     return { ...item, state: 'ready', why: '' };
   });

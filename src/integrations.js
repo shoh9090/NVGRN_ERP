@@ -748,18 +748,29 @@ async function syncCashClients() {
   // Под одним ИНН в CRM бывает несколько точек, и агенты у них могут отличаться.
   // Тогда за клиента расписаться некому — такие оплаты должен разобрать человек.
   await db.pool.query("ALTER TABLE cash_counterparties ADD COLUMN IF NOT EXISTS sd_agent_ambiguous BOOLEAN DEFAULT FALSE").catch(() => {});
+  // Все номера этого ИНН в CRM (точки и контрагент), через запятую: оплата
+  // может сидеть на любой из них, и сверка обязана узнавать их все.
+  await db.pool.query("ALTER TABLE cash_counterparties ADD COLUMN IF NOT EXISTS sd_ids TEXT").catch(() => {});
   const clients = (await sdGetAll(cfg, auth, 'getClient', 'client', {})).filter((c) => c.active === 'Y' && c.inn);
   const cmap = await getContragentMap(cfg, auth).catch(() => null);
   const existing = {};
   (await db.pool.query("SELECT id, inn FROM cash_counterparties WHERE cp_role='client'")).rows.forEach((r) => { existing[String(r.inn).trim()] = r.id; });
   // Собираем агентов по ИНН заранее: узнать про расхождение можно только
   // увидев все точки этого ИНН, а не по одной.
+  // Заодно все точки этого ИНН. Оплата в CRM сидит на КОНКРЕТНОЙ точке, а под
+  // одним ИНН их бывает несколько: у «Южанина» мы хранили z7_1882, а оплаты
+  // лежали на y3_1674 — и сверка считала их неотправленными.
   const agentsByInn = {};
+  const pointsByInn = {};
   for (const c of clients) {
     const inn = String(c.inn).trim(); if (!inn) continue;
     const ids = (Array.isArray(c.agents) ? c.agents : []).map((a) => String(a.id || '')).filter(Boolean);
     (agentsByInn[inn] = agentsByInn[inn] || new Set());
     ids.forEach((x) => agentsByInn[inn].add(x));
+    (pointsByInn[inn] = pointsByInn[inn] || new Set());
+    if (c.SD_id) pointsByInn[inn].add(String(c.SD_id));
+    const con = cmap && (cmap.bySalepoint[String(c.SD_id)] || cmap.byInn[inn]);
+    if (con && con.contragent_sd_id) pointsByInn[inn].add(String(con.contragent_sd_id));
   }
   let created = 0, updated = 0;
   for (const c of clients) {
@@ -771,18 +782,19 @@ async function syncCashClients() {
     const ags = [...(agentsByInn[inn] || [])];
     const agentId = ags.length === 1 ? ags[0] : null;
     const ambiguous = ags.length > 1;
+    const allIds = [...(pointsByInn[inn] || [])].join(',') || null;
     if (existing[inn]) {
       await db.pool.query(
         `UPDATE cash_counterparties SET name=$1, firm_name=COALESCE($3, firm_name), status='active',
            sd_client_id=COALESCE($4, sd_client_id), sd_contragent_id=COALESCE($5, sd_contragent_id),
-           sd_agent_id=$6, sd_agent_ambiguous=$7 WHERE id=$2`,
-        [name, existing[inn], firm, String(c.SD_id || '') || null, conId, agentId, ambiguous]);
+           sd_agent_id=$6, sd_agent_ambiguous=$7, sd_ids=$8 WHERE id=$2`,
+        [name, existing[inn], firm, String(c.SD_id || '') || null, conId, agentId, ambiguous, allIds]);
       updated++;
     } else {
       const r = await db.pool.query(
-        `INSERT INTO cash_counterparties (name, inn, firm_name, cp_role, status, sd_client_id, sd_contragent_id, sd_agent_id, sd_agent_ambiguous)
-         VALUES ($1,$2,$3,'client','active',$4,$5,$6,$7) RETURNING id`,
-        [name, inn, firm, String(c.SD_id || '') || null, conId, agentId, ambiguous]);
+        `INSERT INTO cash_counterparties (name, inn, firm_name, cp_role, status, sd_client_id, sd_contragent_id, sd_agent_id, sd_agent_ambiguous, sd_ids)
+         VALUES ($1,$2,$3,'client','active',$4,$5,$6,$7,$8) RETURNING id`,
+        [name, inn, firm, String(c.SD_id || '') || null, conId, agentId, ambiguous, allIds]);
       existing[inn] = r.rows[0].id; created++;
     }
   }
