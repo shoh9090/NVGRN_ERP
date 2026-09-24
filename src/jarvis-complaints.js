@@ -262,7 +262,43 @@ async function openComplaints() {
   } catch (e) { return []; }
 }
 
+// ---- Недельная сводка ----
+// Что было за неделю: по звеньям, с чем сравнивать и как быстро реагировал
+// агент. Считаем по дате подачи претензии: неделя, в которую её подали.
+async function weekStats(from, to) {
+  const by = (await pool.query(
+    `SELECT COALESCE(NULLIF(c.link_code, ''), 'other') AS link,
+            (SELECT label_ru FROM tgbot.complaint_dicts WHERE kind = 'link' AND code = c.link_code LIMIT 1) AS label,
+            COUNT(*)::int AS vsego,
+            COUNT(*) FILTER (WHERE c.status = 'resolved')::int AS zakryto,
+            AVG(EXTRACT(EPOCH FROM (c.agent_reacted_at - c.created_at)))
+              FILTER (WHERE c.agent_reacted_at IS NOT NULL) AS react_sec
+       FROM tgbot.complaints c
+      WHERE c.created_at >= $1::date AND c.created_at < ($2::date + 1)
+      GROUP BY 1, 2 ORDER BY 3 DESC`, [from, to])).rows;
+  const types = (await pool.query(
+    `SELECT (SELECT label_ru FROM tgbot.complaint_dicts WHERE kind = 'type' AND code = c.complaint_type LIMIT 1) AS label,
+            COUNT(*)::int AS n
+       FROM tgbot.complaints c
+      WHERE c.created_at >= $1::date AND c.created_at < ($2::date + 1)
+      GROUP BY 1 ORDER BY 2 DESC LIMIT 3`, [from, to])).rows;
+  const total = by.reduce((a, r) => a + r.vsego, 0);
+  return { by, types, total };
+}
+
+// Руководители звеньев, подключённые к Джарвису: кому какое звено показывать.
+async function ownersByLink() {
+  try {
+    return (await pool.query(
+      `SELECT d.code, d.label_ru, u.jv_chat_id AS chat_id, u.full_name
+         FROM tgbot.complaint_dicts d
+         JOIN public.user_roles ur ON ur.role_id = d.owner_role_id
+         JOIN public.users u ON u.id = ur.user_id AND u.is_active = TRUE
+        WHERE d.kind = 'link' AND d.active AND u.jv_chat_id IS NOT NULL`)).rows;
+  } catch (e) { return []; }
+}
+
 module.exports = {
   CRITICAL_TYPES, ownersOf, ownerByChat, loadCard, sendCard, tell, resolve, addNote, notifyAgent,
-  formatCard, ownerKeyboard, sinceText, resolutions, dueOwners, openComplaints,
+  formatCard, ownerKeyboard, sinceText, resolutions, dueOwners, openComplaints, weekStats, ownersByLink,
 };

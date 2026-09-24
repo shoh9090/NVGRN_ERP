@@ -832,6 +832,7 @@ async function remindAll(rules, scan, people, now) {
   await weeklyScore(rules, now).catch((e) => console.warn('[ДЖАРВИС] итог недели:', e.message));
   await complaintsTick(rules, now).catch((e) => console.warn('[ДЖАРВИС] претензии:', e.message));
   await logisticsTick(rules, now).catch((e) => console.warn('[ДЖАРВИС] доставка:', e.message));
+  await complaintsWeekly(rules, now).catch((e) => console.warn('[ДЖАРВИС] неделя претензий:', e.message));
   await weeklySilent(rules, now).catch((e) => console.warn('[ДЖАРВИС] молчуны:', e.message));
 
   // 3. Карточки без движения — ОДНО сообщение списком на человека в неделю.
@@ -1084,6 +1085,86 @@ async function sdSalesTick() {
 // второй стал бы бардаком. Вместо этого РОП получает сводку, разложенную по
 // менеджерам: каждый кусок — отдельным сообщением, чтобы переслать его
 // менеджеру одним касанием, не переписывая руками.
+// ---------- Претензии: итог недели (понедельник) ----------
+// Руководителю звена — его звено, РОПу и админу — картина целиком. Сравнение
+// с прошлой неделей: разница меньше 10% — шум, о ней не говорим.
+const minutesWord = (sec) => {
+  if (!sec && sec !== 0) return null;
+  const m = Math.round(Number(sec) / 60);
+  return m < 60 ? `${m} мин` : `${Math.round(m / 6) / 10} ч`;
+};
+async function complaintsWeekly(rules, now) {
+  if (!rules.complaints_owners || !rules.reminders_enabled) return;
+  const local = new Date(now + 5 * 3600000);
+  const dow = local.getUTCDay() === 0 ? 7 : local.getUTCDay();
+  const hour = (now + 5 * 3600000) % 86400000 / 3600000;
+  if (dow !== 1 || hour < rules.work_from || hour >= rules.work_from + 3) return;
+  const cx = require('./jarvis-complaints');
+  const w = R.weekWindows(now, 'monday');
+  const cur = await cx.weekStats(w.from, w.to);
+  const prev = await cx.weekStats(w.prev_from, w.prev_to);
+  if (!cur.total && !prev.total) return;
+  const t = R.trend(cur.total, prev.total);
+  const head = `📩 <b>Претензии за неделю</b> (${dateRu(w.from)}–${dateRu(w.to)})`;
+  const totalLine = `Всего: ${cur.total}` + (t.pct === null ? ''
+    : t.flat ? ` — как и неделю назад (было ${prev.total})`
+      : t.up ? ` — на ${t.pct}% больше прошлой недели (было ${prev.total})`
+        : ` — на ${Math.abs(t.pct)}% меньше прошлой недели (было ${prev.total})`);
+
+  // Руководителям звеньев — только их звено: чужие цифры им не нужны.
+  const owners = await cx.ownersByLink();
+  const byChat = new Map();
+  for (const o of owners) {
+    if (!byChat.has(o.chat_id)) byChat.set(o.chat_id, []);
+    byChat.get(o.chat_id).push(o);
+  }
+  for (const [chat, links] of byChat) {
+    const key = `cmpwk:${w.from}:${chat}`;
+    if (await seen(key)) continue;
+    const lines = [];
+    for (const l of links) {
+      const c = cur.by.find((x) => x.link === l.code);
+      const p = prev.by.find((x) => x.link === l.code);
+      const n = c ? c.vsego : 0, was = p ? p.vsego : 0;
+      if (!n && !was) continue;
+      const tl = R.trend(n, was);
+      let line = `• ${esc(l.label_ru)}: ${n}`;
+      if (tl.pct !== null && !tl.flat) line += tl.up ? ` (было ${was}, хуже)` : ` (было ${was}, лучше)`;
+      if (c && c.zakryto < c.vsego) line += `, не закрыто ${c.vsego - c.zakryto}`;
+      lines.push(line);
+    }
+    if (!lines.length) {
+      const ok = await send(chat, `${head}\nПо вашему звену за неделю ни одной претензии. Так и надо.`);
+      await log('complaint_week', null, null, 'Звено: пусто', ok, key);
+      continue;
+    }
+    const ok = await send(chat, `${head}\nПо вашему звену:\n${lines.join('\n')}`);
+    await log('complaint_week', null, null, 'Звено: ' + lines.length + ' строк', ok, key);
+  }
+
+  // РОПу и админам — вся картина: звенья и самые частые типы.
+  const chiefs = (await pool.query(
+    `SELECT DISTINCT u.jv_chat_id FROM users u
+       JOIN user_roles ur ON ur.user_id = u.id JOIN roles r ON r.id = ur.role_id
+      WHERE u.is_active = TRUE AND u.jv_chat_id IS NOT NULL
+        AND (r.is_admin = TRUE OR r.bot_role = 'head_of_sales')`)).rows.map((r) => r.jv_chat_id);
+  for (const chat of chiefs) {
+    const key = `cmpwkall:${w.from}:${chat}`;
+    if (await seen(key)) continue;
+    const links = cur.by.map((r) => {
+      const react = minutesWord(r.react_sec);
+      return `• ${esc(r.label || r.link)}: ${r.vsego}`
+        + (r.zakryto < r.vsego ? `, не закрыто ${r.vsego - r.zakryto}` : '')
+        + (react ? `, агент реагировал за ${react}` : '');
+    });
+    const types = cur.types.filter((x) => x.label).map((x) => `• ${esc(x.label)} — ${x.n}`);
+    const body = [head, totalLine, '', ...(links.length ? ['По звеньям:', ...links] : []),
+      ...(types.length ? ['', 'Чаще всего:', ...types] : [])].join('\n');
+    const ok = await send(chat, body);
+    await log('complaint_week', null, null, `Сводка руководству: ${cur.total}`, ok, key);
+  }
+}
+
 // ---------- Доставка: сводка логисту (решение Шоха 24.09.2026) ----------
 // Водители остаются в клиентском боте — он напоминает им отметить «Доставлен».
 // Логист сотрудник Hub, поэтому его сводку шлёт Джарвис: вечером итог дня,
