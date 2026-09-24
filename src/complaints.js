@@ -537,7 +537,17 @@ router.get('/api/stats', async (req, res) => {
   const byProduct = await sOne(`SELECT product_name name, count(*)::int n FROM tgbot.complaints WHERE ${inP} AND product_name IS NOT NULL AND product_name<>'' GROUP BY 1 ORDER BY n DESC LIMIT 8`, [from, to]);
   const byUsage = await sOne(`SELECT product_usage code, count(*)::int n FROM tgbot.complaints WHERE ${inP} AND product_usage IS NOT NULL AND product_usage<>'' GROUP BY 1 ORDER BY n DESC LIMIT 8`, [from, to]);
   const byDish = await sOne(`SELECT dish_form code, count(*)::int n FROM tgbot.complaints WHERE ${inP} AND dish_form IS NOT NULL AND dish_form<>'' GROUP BY 1 ORDER BY n DESC LIMIT 8`, [from, to]);
-  const byAgent = await sOne(`SELECT COALESCE(NULLIF(agent_name,''),'—') name, count(*)::int n FROM tgbot.complaints WHERE ${inP} GROUP BY 1 ORDER BY n DESC LIMIT 8`, [from, to]);
+  // Скорость реакции агента: сколько прошло от подачи до «Принял в работу».
+  // Медиана, а не среднее: один забытый на выходные случай не должен решать
+  // за всю неделю. Считаем только по тем, где реакция вообще была, и отдельно
+  // показываем, сколько претензий агент не взял в работу совсем.
+  const byAgent = await sOne(
+    `SELECT COALESCE(NULLIF(agent_name,''),'—') name, count(*)::int n,
+            PERCENTILE_CONT(0.5) WITHIN GROUP (
+              ORDER BY EXTRACT(EPOCH FROM (agent_reacted_at - created_at))
+            ) FILTER (WHERE agent_reacted_at IS NOT NULL) AS react_sec,
+            count(*) FILTER (WHERE agent_reacted_at IS NULL AND status = 'new')::int AS no_react
+       FROM tgbot.complaints WHERE ${inP} GROUP BY 1 ORDER BY n DESC LIMIT 8`, [from, to]);
   // Разбивка по СЕТЯМ (группировка по ИНН из point_contacts; подпись — фирма) и по ТОЧКАМ.
   const netParts = ['c.created_at >= $1', 'c.created_at < $2']; const netP = [from, to];
   if (fInn) { netP.push(fInn); netParts.push(`c.sd_id IN (SELECT sd_id FROM tgbot.point_contacts WHERE inn = $${netP.length})`); }

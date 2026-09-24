@@ -191,3 +191,6 @@ tr.cmp-clk:hover td { background: #f3f6f1; }
 /* Колонка «Закрыл»: кто довёл претензию до конца и чем. */
 .cmp-closed { font-size: 12px; }
 .cmp-wait { color: #b25b00; font-weight: 700; }
+
+/* Агент не взял претензию в работу — это надо видеть, а не искать. */
+.cmp-agent-t .cmp-bad{color:#b3261e;font-weight:600}

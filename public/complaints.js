@@ -178,7 +178,8 @@
 
     c.appendChild(panel('По назначению продукта', 'Для чего использовали продукт, по которому пожаловались.', usageBars(s.byUsage), true));
     c.appendChild(panel('По финальному виду в блюде', 'В каком виде продукт попадал в блюдо.', dishBars(s.byDish), true));
-    c.appendChild(panel('По агентам', 'В живой версии — имена из SalesDoctor и скорость реакции.', agentTable(s.byAgent), true));
+    c.appendChild(panel('По агентам', 'Реакция — сколько прошло от подачи претензии до «Принял в работу» (медиана).',
+      agentTable(s.byAgent), true));
   }
 
   function delta(d) { if (d == null) return ''; const up = d > 0; const arr = d === 0 ? '→' : up ? '↑' : '↓'; return `${arr} ${Math.abs(d)}%`; }
@@ -385,6 +386,14 @@
     return hit ? { agent: hit.id } : { q: name };
   }
 
+  // Время реакции словами: минуты до часа, дальше часы, дальше дни.
+  function reactTime(sec) {
+    if (sec == null) return '—';
+    const m = Math.round(Number(sec) / 60);
+    if (m < 60) return m + ' мин';
+    const h = m / 60;
+    return h < 24 ? (Math.round(h * 10) / 10) + ' ч' : (Math.round(h / 24 * 10) / 10) + ' дн';
+  }
   function agentTable(byAgent) {
     if (!byAgent || !byAgent.length) return el('div', { class: 'cmp-empty' }, 'Нет данных за период.');
     const max = Math.max(...byAgent.map((a) => a.n));
@@ -394,10 +403,15 @@
     }, [
       el('td', {}, a.name),
       el('td', { class: 'n' }, String(a.n)),
+      el('td', { class: 'n' }, reactTime(a.react_sec)),
+      el('td', { class: 'n' + (a.no_react ? ' cmp-bad' : '') }, a.no_react ? String(a.no_react) : '—'),
       el('td', {}, [el('span', { class: 'cmp-mini-track' }, [el('span', { class: 'cmp-mini-fill', style: `width:${Math.round(a.n / max * 100)}%` })])]),
     ]));
     return el('table', { class: 't cmp-agent-t' }, [
-      el('thead', {}, el('tr', {}, [el('th', {}, 'Агент'), el('th', {}, 'Претензий'), el('th', {}, 'Доля')])),
+      el('thead', {}, el('tr', {}, [el('th', {}, 'Агент'), el('th', {}, 'Претензий'),
+        el('th', { title: 'Медиана времени от подачи до «Принял в работу»' }, 'Реакция'),
+        el('th', { title: 'Претензии, которые агент так и не взял в работу' }, 'Без реакции'),
+        el('th', {}, 'Доля')])),
       el('tbody', {}, body),
     ]);
   }
