@@ -1104,6 +1104,26 @@ async function complaintsTick(rules, now) {
     await log('complaint_card', null, null, `Претензия №${c.id}: карточка ушла ${sent} чел.`, sent > 0, key);
   }
   if (!work) return;
+  // Что сделал агент — руководителю звена для сведения. Само событие
+  // происходит во внешнем боте, поэтому ловим его по состоянию претензии,
+  // а не по сообщению: так не важно, кто и где нажал кнопку.
+  for (const c of rows) {
+    const label = async (code) => ((await cx.resolutions()).find((x) => x.code === code) || {}).label_ru || code;
+    if (c.status === 'resolved' && String(c.resolved_by || '').includes('Агент')) {
+      const key = `cmpdone:${c.id}`;
+      if (await seen(key)) continue;
+      const n = await cx.tell(c.id, `✅ Претензия №${c.id}: агент закрыл сам — ${esc(await label(c.agent_resolution))}.`);
+      await log('complaint_done', null, null, `Претензия №${c.id}: агент закрыл`, n > 0, key);
+    } else if (c.status !== 'resolved' && c.agent_resolution && cx.CRITICAL_TYPES.has(c.complaint_type)) {
+      // Критичную агент не закрывает: он принял в работу и предложил решение,
+      // а последнее слово за руководителем звена.
+      const key = `cmpagres:${c.id}`;
+      if (await seen(key)) continue;
+      const n = await cx.tell(c.id, `ℹ️ Претензия №${c.id}: агент принял в работу и предлагает — `
+        + `${esc(await label(c.agent_resolution))}. Решение за вами (кнопки под карточкой).`);
+      await log('complaint_agent', null, null, `Претензия №${c.id}: агент предложил решение`, n > 0, key);
+    }
+  }
   // Напоминания и эскалация — по рабочим часам из правил.
   const admins = (await pool.query(
     `SELECT DISTINCT u.jv_chat_id FROM users u
