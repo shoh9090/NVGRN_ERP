@@ -1202,6 +1202,10 @@ async function complaintsTick(rules, now) {
   // видел её в вебе. Ночью не дёргаем — утром первое же напоминание догонит.
   for (const c of rows) {
     if (!work) break;
+    // Закрытую карточку слать незачем: по ней уже всё решено, а руководителю
+    // отдельно уходит короткий итог «агент закрыл сам» (проверка на проде
+    // 25.09.2026: по двум закрытым претензиям пришла и карточка, и итог).
+    if (c.status === 'resolved') continue;
     const key = `cmpcard:${c.id}`;
     if (await seen(key)) continue;
     const sent = await cx.sendCard(c.id, {});
@@ -1216,7 +1220,11 @@ async function complaintsTick(rules, now) {
     if (c.status === 'resolved' && String(c.resolved_by || '').includes('Агент')) {
       const key = `cmpdone:${c.id}`;
       if (await seen(key)) continue;
-      const n = await cx.tell(c.id, `✅ Претензия №${c.id}: агент закрыл сам — ${esc(await label(c.agent_resolution))}.`);
+      // Без карточки коротко напоминаем, о чём речь: одно «агент закрыл» без
+      // товара и точки руководителю ничего не говорит.
+      const about = [c.product_name, c.point_name || c.firm_name].filter(Boolean).map(esc).join(' · ');
+      const n = await cx.tell(c.id, `✅ Претензия №${c.id}: агент закрыл сам — ${esc(await label(c.agent_resolution))}.`
+        + (about ? `\n${about}` : ''));
       await log('complaint_done', null, null, `Претензия №${c.id}: агент закрыл`, n > 0, key);
     } else if (c.status !== 'resolved' && c.agent_resolution && cx.CRITICAL_TYPES.has(c.complaint_type)) {
       // Критичную агент не закрывает: он принял в работу и предложил решение,

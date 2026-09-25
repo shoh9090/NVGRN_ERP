@@ -254,7 +254,7 @@ async function openComplaints() {
   try {
     return (await pool.query(
       `SELECT id, created_at, status, complaint_type, internal_note, point_name, firm_name, sd_id,
-              agent_resolution, resolution, resolved_by
+              product_name, agent_resolution, resolution, resolved_by
          FROM tgbot.complaints
         WHERE source IN ('client_bot', 'agent') AND link_code IS NOT NULL
           AND created_at > now() - interval '3 days'
