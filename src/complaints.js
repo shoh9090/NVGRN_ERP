@@ -539,13 +539,18 @@ router.get('/api/stats', async (req, res) => {
   const byDish = await sOne(`SELECT dish_form code, count(*)::int n FROM tgbot.complaints WHERE ${inP} AND dish_form IS NOT NULL AND dish_form<>'' GROUP BY 1 ORDER BY n DESC LIMIT 8`, [from, to]);
   // Скорость реакции агента: сколько прошло от подачи до «Принял в работу».
   // Медиана, а не среднее: один забытый на выходные случай не должен решать
-  // за всю неделю. Считаем только по тем, где реакция вообще была, и отдельно
-  // показываем, сколько претензий агент не взял в работу совсем.
+  // за всю неделю.
+  // Считаем ТОЛЬКО по претензиям от клиента (source='client_bot'). Когда агент
+  // заводит претензию сам, он тут же её и «принимает» — в сентябре 2026 такая
+  // медиана вышла 3,6 секунды, и метрика измеряла скорость его пальцев, а не
+  // реакцию на клиента. Отдельно показываем, сколько претензий агент вообще
+  // не взял в работу.
   const byAgent = await sOne(
     `SELECT COALESCE(NULLIF(agent_name,''),'—') name, count(*)::int n,
             PERCENTILE_CONT(0.5) WITHIN GROUP (
               ORDER BY EXTRACT(EPOCH FROM (agent_reacted_at - created_at))
-            ) FILTER (WHERE agent_reacted_at IS NOT NULL) AS react_sec,
+            ) FILTER (WHERE agent_reacted_at IS NOT NULL AND source = 'client_bot') AS react_sec,
+            count(*) FILTER (WHERE source = 'client_bot')::int AS ot_klienta,
             count(*) FILTER (WHERE agent_reacted_at IS NULL AND status = 'new')::int AS no_react
        FROM tgbot.complaints WHERE ${inP} GROUP BY 1 ORDER BY n DESC LIMIT 8`, [from, to]);
   // Разбивка по СЕТЯМ (группировка по ИНН из point_contacts; подпись — фирма) и по ТОЧКАМ.
