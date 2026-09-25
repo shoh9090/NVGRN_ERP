@@ -304,7 +304,9 @@ const TOOLS = [
       if (kgAll) total.кг = Math.round(kgAll * 10) / 10;
       if (kgAll && !kgKnown) total.примечание = 'Килограммы — только по товарам, у которых вес указан в названии';
       if (withMoney) total.сумма = money(itog.сумма);
-      return { период: `${from} — ${to}`, выгружено_по: cov.last_day, товары: out, итого: total };
+      return { период: `${from} — ${to}`, выгружено_по: cov.last_day,
+        данные_обновлены: cov.last_sync, источник: 'наша ночная копия SalesDoctor (обновляется в 3:00)',
+        товары: out, итого: total };
     },
   },
   {

@@ -249,7 +249,8 @@ async function coverage() {
   await ensureSchema();
   const r = (await db.pool.query(
     `SELECT to_char(MIN(day), 'YYYY-MM-DD') AS first_day, to_char(MAX(day), 'YYYY-MM-DD') AS last_day,
-            COUNT(*)::int AS days, COALESCE(SUM(rows), 0)::int AS rows
+            COUNT(*)::int AS days, COALESCE(SUM(rows), 0)::int AS rows,
+            to_char(MAX(synced_at) AT TIME ZONE 'Asia/Tashkent', 'DD.MM HH24:MI') AS last_sync
        FROM sd_sales_days`)).rows[0];
   // Доставки появились позже продаж: если история залита до них, строк тут
   // будет мало — это видно в плитке, чтобы не гадать, почему Джарвис молчит.
