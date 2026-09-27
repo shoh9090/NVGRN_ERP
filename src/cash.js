@@ -3833,24 +3833,29 @@ async function sdPaymentsPlan(date) {
   };
 }
 
-// Возможные формы запроса setPayment: имя ключа-списка и то, как передаются
-// ссылки — объектом {SD_id} или просто строкой. Порядок от самого вероятного.
-function sdPayShapes(rec) {
-  const flat = {
-    amount: rec.amount, paymentDate: rec.paymentDate, comment: rec.comment,
-    transactionType: rec.transactionType,
-    paymentType: rec.paymentType.SD_id, client: rec.client.SD_id,
-    contragent: rec.contragent.SD_id, agent: rec.agent.SD_id,
+// Формы запроса. По документации SalesDoctor (Postman, сентябрь 2026) все
+// ПИШУЩИЕ методы берут данные в конверте `data`, а не `params`:
+//   {"method":"setConsumption","data":{"consumption":[…]}}
+//   {"method":"setBalance","data":{"balance":[…]}}
+// Раньше мы слали `params` — CRM отвечала «принято 0» и молчала о причине.
+//
+// `code_1C` — уникальный ключ записи на стороне CRM: повторная отправка с тем же
+// ключом ОБНОВЛЯЕТ запись, а не создаёт вторую. Это третья защита от задвоения,
+// и самая надёжная: она работает даже если наша отметка потерялась.
+function sdPayShapes(rec, txId) {
+  const code1c = 'erp_tx_' + txId;
+  const full = { CS_id: '', SD_id: '', code_1C: code1c, ...rec };
+  // setBalance документирован: «установить текущий баланс клиента». Контрагента
+  // он не знает — только клиента, поэтому шлём туда номер точки.
+  const balance = {
+    CS_id: '', SD_id: '', code_1C: code1c,
+    paymentDate: rec.paymentDate, amount: rec.amount, comment: rec.comment,
+    client: rec.client, paymentType: rec.paymentType, agent: rec.agent,
   };
   return [
-    { name: 'payment[]', params: { payment: [rec] } },
-    { name: 'payments[]', params: { payments: [rec] } },
-    { name: 'data[]', params: { data: [rec] } },
-    { name: 'payment[]-flat', params: { payment: [flat] } },
-    { name: 'payments[]-flat', params: { payments: [flat] } },
-    { name: 'data[]-flat', params: { data: [flat] } },
-    { name: 'object', params: rec },
-    { name: 'object-flat', params: flat },
+    { name: 'setPayment.data.payment', method: 'setPayment', data: { payment: [full] } },
+    { name: 'setPayment.data.payments', method: 'setPayment', data: { payments: [full] } },
+    { name: 'setBalance.data.balance', method: 'setBalance', data: { balance: [balance] } },
   ];
 }
 
@@ -3892,15 +3897,16 @@ async function sendSdPayments(date, ids, userId) {
       // Поэтому перебираем формы, пока одна не сработает, и запоминаем её:
       // дальше шлём сразу правильной. Перебор безопасен — форма, которую CRM
       // не поняла, ничего не создаёт (принято 0).
-      const shapes = sdPayShapes(rec);
+      const shapes = sdPayShapes(rec, it.id);
       const savedName = (await db.getSettings()).sd_payment_shape || null;
       const order = savedName ? shapes.filter((s) => s.name === savedName).concat(shapes.filter((s) => s.name !== savedName)) : shapes;
       let okShape = null;
       for (const shape of order) {
         const data = await integrations.sdRequest(cfg.url, {
-          method: 'setPayment',
+          method: shape.method,
           auth: { userId: auth.userId, token: auth.token },
-          params: shape.params,
+          filial: { filial_id: 0 },
+          data: shape.data,
         });
         answer = data.result || data;
         const done = Number(answer && answer.completed) || 0;
@@ -3910,8 +3916,12 @@ async function sendSdPayments(date, ids, userId) {
       }
       if (okShape) {
         if (savedName !== okShape.name) await db.setSetting('sd_payment_shape', okShape.name);
-        const row = (answer && Array.isArray(answer.data) && answer.data[0]) || null;
-        const sdId = row && String(row.SD_id || row.CS_id || row.id || '');
+        // Ответ CRM: data — объект вида { payment: [ {SD_id,…} ] } или { balance: […] }.
+        const box = answer && answer.data;
+        const arr = Array.isArray(box) ? box
+          : (box && typeof box === 'object' ? (Object.values(box).find(Array.isArray) || []) : []);
+        const row = arr[0] || null;
+        const sdId = row && String(row.SD_id || row.CS_id || row.code_1C || '');
         await db.pool.query(
           'UPDATE cash_transactions SET sd_payment_id = $1, sd_sent_at = now() WHERE id = $2',
           [sdId || 'sent', it.id]);
