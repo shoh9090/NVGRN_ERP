@@ -2639,9 +2639,12 @@
         // У юрлица несколько точек — человек выбирает один раз, дальше правило
         // работает само. Кнопка появляется только там, где выбор действительно
         // нужен: иначе она сбивала бы с толку на обычных оплатах.
-        if (x.state === 'manual' && (x.points || []).length > 1) {
+        // Уже отправленную тоже даём переназначить: если посадили не на ту
+        // точку, запись в CRM перезапишется по ключу, дубля не будет.
+        if ((x.state === 'manual' || x.state === 'sent') && (x.points || []).length > 1) {
           cell.push(el('button', { class: 'btn-ghost', style: 'margin-top:6px;padding:3px 9px;font-size:12px',
-            onclick: () => pickSdPoint(x, draw) }, 'Выбрать точку'));
+            onclick: () => pickSdPoint(x, draw) },
+          x.state === 'sent' ? 'Сменить точку' : 'Выбрать точку'));
         }
         return el('tr', {}, [
           el('td', { class: 'tnum' }, money(x.amount)),
@@ -2702,8 +2705,10 @@
           const name = (pts.find((p) => p.sd_id === sel.value) || {}).name || null;
           await post('/sd-payments/rule', { contract_no: item.contract, sd_client_id: sel.value, client_name: name, inn: item.payer_inn });
         }
-        await post('/sd-payments/send', { date: item.date, ids: [item.id], target_sd: sel.value });
-        toast('Отправлено'); closeModal(); if (after) after();
+        await post('/sd-payments/send', { date: item.date, ids: [item.id], target_sd: sel.value,
+          force: item.state === 'sent' });
+        toast(item.state === 'sent' ? 'Точка изменена' : 'Отправлено');
+        closeModal(); if (after) after();
       } catch (e) { toast(e.message, true); ok.disabled = false; }
     } }, 'Отправить на эту точку');
     modal('Какой точке засчитать оплату?', body, [
