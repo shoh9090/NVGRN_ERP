@@ -565,3 +565,15 @@ select.cb-cell { cursor: pointer; }
 }
 .cash-fold-arrow { display: inline-block; width: 12px; }
 .cash-fold-body { margin-top: 8px; }
+
+/* Оплаты в SalesDoctor: окно со списком приходов дня.
+   Колонки фиксированные — иначе длинное название плательщика растягивает
+   таблицу шире окна, и состояние уезжает за край (так и было 28.09.2026). */
+.cash-sd-t { border-collapse: collapse; width: 100%; table-layout: fixed; font-size: 13px; margin-top: 4px; }
+.cash-sd-t th { text-align: left; font-size: 11.5px; font-weight: 800; color: var(--muted);
+  padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.cash-sd-t td { padding: 8px; border-top: 1px solid #efeadc; vertical-align: top;
+  overflow-wrap: anywhere; }
+.cash-sd-t th:nth-child(1), .cash-sd-t td:nth-child(1) { width: 130px; text-align: right; font-weight: 700; }
+.cash-sd-t th:nth-child(3), .cash-sd-t td:nth-child(3) { width: 240px; }
+.cash-sd-acts { display: flex; gap: 10px; justify-content: flex-end; margin-top: 14px; }

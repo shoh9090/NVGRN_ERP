@@ -2605,8 +2605,8 @@
   };
   async function openSdPayments(date) {
     const day = date || todayStr();
-    const box = el('div', { style: 'min-width:min(900px,86vw)' }, 'Считаю…');
-    const m = modal('🧾 Оплаты в SalesDoctor', box, []);
+    const box = el('div', {}, 'Считаю…');
+    const m = modal('🧾 Оплаты в SalesDoctor', box, [], { wide: true });
     async function draw() {
       box.innerHTML = 'Считаю…';
       let d;
@@ -2641,10 +2641,10 @@
             x.sent_id ? el('div', { class: 'cash-sub' }, 'номер в CRM: ' + x.sent_id) : null]),
         ]);
       });
-      box.appendChild(el('div', { class: 'cash-ready-scroll' }, el('table', { class: 'cash-ready-t' }, [
+      box.appendChild(el('table', { class: 'cash-sd-t' }, [
         el('thead', {}, el('tr', {}, ['Сумма', 'Клиент', 'Состояние'].map((h) => el('th', {}, h)))),
         el('tbody', {}, rows),
-      ])));
+      ]));
       const ready = d.items.filter((x) => x.state === 'ready');
       const send = el('button', { class: 'btn-primary', disabled: ready.length ? null : 'disabled', onclick: async () => {
         send.disabled = true; send.textContent = 'Отправляю…';
@@ -2655,7 +2655,7 @@
           await draw();
         } catch (e) { toast(e.message, true); send.disabled = false; send.textContent = 'Отправить в SalesDoctor'; }
       } }, ready.length ? 'Отправить в SalesDoctor — ' + ready.length : 'Отправлять нечего');
-      box.appendChild(el('div', { style: 'display:flex;gap:10px;justify-content:flex-end;margin-top:12px' }, [
+      box.appendChild(el('div', { class: 'cash-sd-acts' }, [
         el('button', { class: 'btn-ghost', onclick: () => m.close() }, 'Закрыть'), send,
       ]));
     }
