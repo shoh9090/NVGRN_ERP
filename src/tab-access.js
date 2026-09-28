@@ -37,6 +37,7 @@ const TAB_REGISTRY = {
     { code: 'culinary', name: 'Кулинарка' },
     { code: 'cutveg', name: 'Резаные овощи' },
     { code: 'vinegar', name: 'Уксус' },
+    { code: 'microgreens', name: 'Микрозелень' },
   ],
   '/cash': [
     { code: 'cashbox', name: 'Наличная касса' },

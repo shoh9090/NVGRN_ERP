@@ -686,6 +686,12 @@ const SHEETS = {
   // производства зелени здесь нет, поэтому упаковка, производственные и ФОТ
   // вводятся на самом товаре (pack_cost / production_cost / labor_cost).
   vinegar: 'Уксус',
+  // Микрозелень покупают горшочками у поставщика: своего производства нет,
+  // труда — только наклейка для розницы. Сырьё при этом идёт через Закуп,
+  // как зелень, поэтому лист обычный, а не «ручной» как «Уксус»: цена должна
+  // обновляться сама. Производственные обнуляются долей 0, ФОТ вписывается
+  // у товара.
+  microgreens: 'Микрозелень',
 };
 // Листы, где производство не общее: себестоимость собирается из ручных строк.
 const MANUAL_SHEETS = new Set(['vinegar']);
@@ -954,6 +960,8 @@ async function sheetPayload(sheet) {
         pack_incomplete: tpl ? Number(tpl.missing_prices) > 0 : false,
         prod_factor: factor,
         unit_pcs: !!p.unit_pcs,
+        // Своя цифра ФОТ у товара: пусто — берётся общая с листа «Производство».
+        labor_cost: numOrNull(p.labor_cost),
         raw_material_id: p.raw_material_id,
         raw_material_name: rawMat ? rawMat.name : '',
         recipe_id: p.recipe_id || null,
