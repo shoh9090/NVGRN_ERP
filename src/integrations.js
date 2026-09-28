@@ -810,7 +810,22 @@ async function syncCashClients() {
       existing[inn] = r.rows[0].id; created++;
     }
   }
-  return { created, updated, total: created + updated };
+  // Клиента могли деактивировать в CRM. Тогда он просто исчезает из списка выше,
+  // и его запись у нас остаётся со СТАРЫМ номером точки — обновлять её стало
+  // некому. Именно так пять оплат 28.09.2026 ушли на «УЗБУМ (Неактив)».
+  // Чистим такие записи: номер убираем, пометку «непонятно, кому» ставим —
+  // такие приходы пойдут человеку на решение, а не молча не туда.
+  const activeInns = Object.keys(agentsByInn);
+  let stale = 0;
+  if (activeInns.length) {
+    const r = await db.pool.query(
+      `UPDATE cash_counterparties
+          SET sd_client_id = NULL, sd_agent_id = NULL, sd_agent_ambiguous = TRUE
+        WHERE cp_role = 'client' AND COALESCE(sd_client_id, '') <> ''
+          AND NOT (inn = ANY($1::text[]))`, [activeInns]);
+    stale = r.rowCount || 0;
+  }
+  return { created, updated, stale, total: created + updated };
 }
 
 // Какие заказы SalesDoctor считаются продажей: отгруженные и далее по цепочке.
