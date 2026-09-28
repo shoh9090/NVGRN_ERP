@@ -3734,10 +3734,45 @@ router.get('/api/obligations/schedule-template.xlsx', async (req, res) => {
 //   2) сверка с CRM перед отправкой — ловит то, что человек внёс руками
 //      и о чём ERP знать не может.
 // Без второй проверки запуск по расписанию задвоил бы всё, что уже внесено.
+// Номер договора из назначения платежа. У одного юрлица бывает несколько точек,
+// и долг в CRM ведётся ПО ТОЧКЕ — значит надо понять, чья это оплата.
+// Название плательщика для этого ненадёжно: одна и та же точка платит с разных
+// счетов. А номер договора стоит в назначении и не меняется:
+//   «…даги 182-сонли шартномага асосан тулов утказилмокда» → 182
+//   «оплата по дог № 51 от 02.01.2026 г за Микрозелень»    → 51
+// Возвращает строку с номером или null.
+function contractNo(purpose) {
+  const s = String(purpose || '');
+  // Узбекский: «182-сонли шартнома». Номер идёт прямо перед «-сонли».
+  let m = s.match(/(\d{1,6})\s*-?\s*сонли/i);
+  if (m) return m[1];
+  // Русский: «договор/дог. № 51», «по договору 147».
+  m = s.match(/дог(?:овор)?[а-яё.]*\s*(?:№|N|#)?\s*(\d{1,6})/i);
+  if (m) return m[1];
+  m = s.match(/shartnoma\w*\s*(?:№|N|#)?\s*(\d{1,6})/i);
+  if (m) return m[1];
+  return null;
+}
+
 const SD_PAY_TYPE_TRANSFER = 'd0_3';   // перечисление — у клиентов только оно
 const SD_TX_CLIENT_PAYMENT = 3;        // «живая» оплата клиента, не служебное разнесение
 
+// Правила «номер договора → точка в CRM». Заводятся не списком заранее, а по
+// ходу работы: человек один раз выбирает точку у спорной оплаты и ставит
+// галочку «запомнить». Дальше такие оплаты садятся сами.
+async function ensureSdRules() {
+  await db.pool.query(`CREATE TABLE IF NOT EXISTS cash_sd_contract_rules (
+    contract_no TEXT PRIMARY KEY,
+    sd_client_id TEXT NOT NULL,
+    client_name TEXT,
+    inn TEXT,
+    created_by INT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`).catch(() => {});
+}
+
 async function ensureSdPayCols() {
+  await ensureSdRules();
   await db.pool.query('ALTER TABLE cash_transactions ADD COLUMN IF NOT EXISTS sd_payment_id TEXT').catch(() => {});
   await db.pool.query('ALTER TABLE cash_transactions ADD COLUMN IF NOT EXISTS sd_sent_at TIMESTAMPTZ').catch(() => {});
   // Эти же колонки заводит синхронизация клиентов, но разбор не должен зависеть
@@ -3786,13 +3821,28 @@ async function sdPaymentsPlan(date) {
       && (mine.includes(String(x.client_sd || '')) || mine.includes(String(x.contragent_sd || '')))) || null;
   };
 
+  // Правила «договор → точка» и сколько всего точек у каждого ИНН: если точка
+  // одна, выбирать нечего; если несколько — нужен договор или решение человека.
+  const rules = new Map((await db.pool.query(
+    'SELECT contract_no, sd_client_id, client_name FROM cash_sd_contract_rules')).rows
+    .map((x) => [String(x.contract_no), x]));
+
   const out = rows.map((r) => {
+    const contract = contractNo(r.purpose);
+    const rule = contract ? rules.get(contract) : null;
+    const points = String(r.sd_ids || '').split(',').filter(Boolean);
     const item = {
       id: r.id, amount: Number(r.amount), date: r.d,
       payer_name: r.payer_name, payer_inn: r.payer_inn, purpose: r.purpose,
       client: r.cp_name || null, contragent_sd: r.sd_contragent_id || null,
       client_sd: r.sd_client_id || null,
       agent_sd: r.sd_agent_id || null, sent_id: r.sd_payment_id || null,
+      contract, points,
+      // Куда сажать. Правило по договору сильнее всего: одна и та же точка
+      // платит с разных счетов, а номер договора не меняется.
+      target_sd: rule ? rule.sd_client_id : (r.sd_contragent_id || r.sd_client_id),
+      target_name: rule ? (rule.client_name || null) : null,
+      by_rule: !!rule,
     };
     if (r.sd_payment_id) return { ...item, state: 'sent', why: 'уже отправлено из ERP' };
     if (!String(r.payer_inn || '').trim()) return { ...item, state: 'manual', why: 'в приходе нет ИНН плательщика' };
@@ -3812,6 +3862,15 @@ async function sdPaymentsPlan(date) {
     // двойной оплаты в CRM.
     const same = crm.find((x) => near(x.amount, r.amount));
     if (same) return { ...item, state: 'check', why: 'в CRM за этот день уже есть оплата на такую же сумму — проверьте, не она ли это', crm_id: same.sd_id };
+    // У юрлица несколько точек, а долг в CRM ведётся по точке. Без правила по
+    // договору угадывать нельзя: посадим не туда — у одной точки переплата,
+    // у другой долг. Пусть человек выберет один раз и запомнит.
+    if (!rule && points.length > 1) {
+      return { ...item, state: 'manual',
+        why: contract
+          ? ('у клиента несколько точек, договор ' + contract + ' ещё не привязан — выберите точку')
+          : 'у клиента несколько точек, а в назначении не видно номера договора — выберите точку' };
+    }
     return { ...item, state: 'ready', why: '' };
   });
 
@@ -3864,14 +3923,16 @@ function sdPayShapes(rec, txId) {
 // открытием экрана и нажатием никто не успел посадить ту же оплату руками.
 // Каждая уходит отдельным запросом — так при ошибке на третьей первые две
 // останутся отправленными и не уйдут повторно.
-async function sendSdPayments(date, ids, userId, force) {
+async function sendSdPayments(date, ids, userId, force, targetSd) {
   const plan = await sdPaymentsPlan(date);
   const want = new Set((Array.isArray(ids) ? ids : []).map(Number));
   // Обычно шлём только готовые. `force` — исправление уже отправленного: запись
   // уходит с тем же ключом code_1C, и CRM её ОБНОВЛЯЕТ, а не создаёт вторую.
   // Так чинили оплаты, ушедшие 28.09.2026 не на того контрагента.
-  const ok = (st) => st === 'ready' || (force && st === 'sent');
-  const list = plan.items.filter((x) => want.has(Number(x.id)) && ok(x.state));
+  const ok = (st) => st === 'ready' || (force && st === 'sent')
+    || (targetSd && st === 'manual');   // человек сам выбрал точку — значит решил
+  const list = plan.items.filter((x) => want.has(Number(x.id)) && ok(x.state))
+    .map((x) => (targetSd ? { ...x, target_sd: targetSd } : x));
   const skipped = plan.items.filter((x) => want.has(Number(x.id)) && !ok(x.state))
     .map((x) => ({ id: x.id, amount: x.amount, state: x.state, why: x.why }));
   if (!list.length) return { sent: [], failed: [], skipped };
@@ -3885,7 +3946,7 @@ async function sendSdPayments(date, ids, userId, force) {
     // несколько или точку деактивировали, разница решает всё: 28.09.2026 пять
     // оплат ушли на «УЗБУМ (Неактив)» вместо Hammersmith Group именно потому,
     // что отправляли на точку.
-    const target = it.contragent_sd || it.client_sd;
+    const target = it.target_sd || it.contragent_sd || it.client_sd;
     const rec = {
       amount: it.amount,
       paymentDate: date + ' 12:00:00',
@@ -3952,8 +4013,53 @@ router.post('/api/sd-payments/send', express.json(), async (req, res) => {
   // Переотправка уже отправленного — только администратору: это правка данных
   // в CRM, а не обычная работа.
   const force = !!b.force && !!(req.user && req.user.isAdmin);
-  try { res.json(await sendSdPayments(date, b.ids, req.user && req.user.id, force)); }
+  const targetSd = String(b.target_sd || '').trim() || null;
+  try { res.json(await sendSdPayments(date, b.ids, req.user && req.user.id, force, targetSd)); }
   catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Точки этого ИНН — для выбора, когда их несколько. Названия берём из CRM:
+// у нас в справочнике хранится только одна карточка на ИНН.
+router.get('/api/sd-payments/points', async (req, res) => {
+  const inn = String(req.query.inn || '').trim();
+  if (!inn) return res.status(400).json({ error: 'Не указан ИНН' });
+  try {
+    const row = (await db.pool.query(
+      "SELECT sd_ids, sd_client_id, sd_contragent_id, name FROM cash_counterparties WHERE cp_role='client' AND inn=$1 LIMIT 1",
+      [inn])).rows[0];
+    if (!row) return res.json({ items: [] });
+    const ids = [...new Set(String(row.sd_ids || '').split(',').concat([row.sd_client_id, row.sd_contragent_id])
+      .map((x) => String(x || '').trim()).filter(Boolean))];
+    let names = {};
+    try { names = await integrations.clientNamesBySdIds(ids); } catch (e) { names = {}; }
+    res.json({ items: ids.map((id) => ({ sd_id: id, name: names[id] || row.name || id })) });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Запомнить: этот договор — эта точка. Дальше такие оплаты садятся сами.
+router.post('/api/sd-payments/rule', express.json(), async (req, res) => {
+  const b = req.body || {};
+  const contract = String(b.contract_no || '').trim();
+  const sd = String(b.sd_client_id || '').trim();
+  if (!contract || !sd) return res.status(400).json({ error: 'Нужны номер договора и точка' });
+  try {
+    await ensureSdRules();
+    await db.pool.query(
+      `INSERT INTO cash_sd_contract_rules (contract_no, sd_client_id, client_name, inn, created_by)
+       VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (contract_no) DO UPDATE SET sd_client_id=$2, client_name=$3, inn=$4, created_by=$5`,
+      [contract, sd, b.client_name || null, b.inn || null, req.user && req.user.id]);
+    await db.log(req.user && req.user.id, 'cash_sd_rule', `договор ${contract} → ${sd}`);
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+router.get('/api/sd-payments/rules', async (req, res) => {
+  try {
+    await ensureSdRules();
+    res.json({ items: (await db.pool.query(
+      'SELECT contract_no, sd_client_id, client_name, inn FROM cash_sd_contract_rules ORDER BY contract_no')).rows });
+  } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 router.get('/api/sd-payments', async (req, res) => {
@@ -4066,5 +4172,8 @@ router.post('/api/reimbursements/:id(\\d+)/delete', async (req, res) => {
 module.exports = router;
 // Открыто для тестов: по этой примете возврат банка отличается от выручки.
 module.exports.looksLikeBankReturn = looksLikeBankReturn;
+// Открыто для тестов: по номеру договора решается, какой из точек клиента
+// засчитать оплату. Ошибка здесь посадит деньги не той точке.
+module.exports.contractNo = contractNo;
 // Остатки кошельков нужны и Джарвису (инструмент «остатки денег»): цифра одна, код один.
 module.exports.walletBalances = walletBalances;

@@ -2632,13 +2632,22 @@
       if (!d.items.length) { box.appendChild(el('p', { class: 'cash-empty' }, 'За этот день приходов от клиентов нет.')); return; }
       const rows = d.items.map((x) => {
         const [label, color] = SD_STATE[x.state] || [x.state, '#7c8579'];
+        const cell = [el('span', { style: 'font-weight:700;color:' + color }, label),
+          x.why ? el('div', { class: 'cash-sub' }, x.why) : null,
+          x.by_rule ? el('div', { class: 'cash-sub' }, 'по договору ' + x.contract) : null,
+          x.sent_id ? el('div', { class: 'cash-sub' }, 'номер в CRM: ' + x.sent_id) : null];
+        // У юрлица несколько точек — человек выбирает один раз, дальше правило
+        // работает само. Кнопка появляется только там, где выбор действительно
+        // нужен: иначе она сбивала бы с толку на обычных оплатах.
+        if (x.state === 'manual' && (x.points || []).length > 1) {
+          cell.push(el('button', { class: 'btn-ghost', style: 'margin-top:6px;padding:3px 9px;font-size:12px',
+            onclick: () => pickSdPoint(x, draw) }, 'Выбрать точку'));
+        }
         return el('tr', {}, [
           el('td', { class: 'tnum' }, money(x.amount)),
           el('td', {}, [el('div', { style: 'font-weight:600' }, x.client || '—'),
             el('div', { class: 'cash-sub' }, x.payer_name || '')]),
-          el('td', {}, [el('span', { style: 'font-weight:700;color:' + color }, label),
-            x.why ? el('div', { class: 'cash-sub' }, x.why) : null,
-            x.sent_id ? el('div', { class: 'cash-sub' }, 'номер в CRM: ' + x.sent_id) : null]),
+          el('td', {}, cell),
         ]);
       });
       box.appendChild(el('table', { class: 'cash-sd-t' }, [
@@ -2660,6 +2669,46 @@
       ]));
     }
     draw();
+  }
+
+  // Выбор точки у оплаты и запоминание правила «договор → точка».
+  // Правила копятся по ходу работы, а не заводятся заранее списком: так их
+  // заводят только для тех клиентов, где это реально нужно.
+  async function pickSdPoint(item, after) {
+    let pts = [];
+    try { pts = (await api('/sd-payments/points?inn=' + encodeURIComponent(item.payer_inn || ''))).items || []; }
+    catch (e) { return toast(e.message, true); }
+    if (!pts.length) return toast('У этого ИНН не нашлось точек в CRM', true);
+    const sel = el('select', { class: 'cashf-inp' },
+      [el('option', { value: '' }, '— выберите точку —')]
+        .concat(pts.map((p) => el('option', { value: p.sd_id }, p.name + ' · ' + p.sd_id))));
+    const remember = el('input', { type: 'checkbox' });
+    if (item.contract) remember.checked = true;
+    const body = el('div', { class: 'cashf' }, [
+      el('div', { class: 'cash-sub' }, item.payer_name + ' · ' + money(item.amount)),
+      el('div', { class: 'cash-sub' }, item.purpose || ''),
+      el('div', { class: 'cashf-row' }, [el('span', {}, 'Точка'), sel]),
+      item.contract
+        ? el('label', { style: 'display:flex;gap:8px;align-items:center;font-size:13px' },
+          [remember, el('span', {}, 'Запомнить: договор ' + item.contract + ' — это она')])
+        : el('div', { class: 'cash-sub' },
+          'Номера договора в назначении не видно, поэтому запомнить правило не получится — выбор только на эту оплату.'),
+    ]);
+    const ok = el('button', { class: 'btn-primary', onclick: async () => {
+      if (!sel.value) return toast('Выберите точку', true);
+      ok.disabled = true;
+      try {
+        if (item.contract && remember.checked) {
+          const name = (pts.find((p) => p.sd_id === sel.value) || {}).name || null;
+          await post('/sd-payments/rule', { contract_no: item.contract, sd_client_id: sel.value, client_name: name, inn: item.payer_inn });
+        }
+        await post('/sd-payments/send', { date: item.date, ids: [item.id], target_sd: sel.value });
+        toast('Отправлено'); closeModal(); if (after) after();
+      } catch (e) { toast(e.message, true); ok.disabled = false; }
+    } }, 'Отправить на эту точку');
+    modal('Какой точке засчитать оплату?', body, [
+      el('button', { class: 'btn-ghost', onclick: () => closeModal() }, 'Отмена'), ok,
+    ]);
   }
 
   let txItems = [];

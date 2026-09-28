@@ -657,6 +657,24 @@ async function probeContragent() {
   return { enabled: false, error: tried.join(' | ') };
 }
 
+// Названия точек по их номерам в CRM. Нужно, когда у юрлица несколько точек и
+// человек выбирает, на какую сажать оплату: номер вида «v7_1975» ему ни о чём
+// не говорит. В нашем справочнике хранится одна карточка на ИНН, поэтому имена
+// спрашиваем у самой CRM.
+async function clientNamesBySdIds(ids) {
+  const want = new Set((ids || []).map(String).filter(Boolean));
+  if (!want.size) return {};
+  const cfg = await getSdConfig();
+  const auth = await sdLogin(cfg);
+  const out = {};
+  const clients = await sdGetAll(cfg, auth, 'getClient', 'client', {});
+  for (const c of clients) {
+    const id = String(c.SD_id || '');
+    if (want.has(id)) out[id] = (c.name || c.firmName || id) + (c.active === 'Y' ? '' : ' (неактивна)');
+  }
+  return out;
+}
+
 // Умеет ли SalesDoctor ПРИНИМАТЬ оплату, а не только отдавать. Читать мы умеем
 // (getPayment), записи никогда не пробовали — а от ответа зависит, можно ли
 // вообще сажать оплаты из ERP.
@@ -1010,4 +1028,4 @@ async function probePayments(from, to) {
 }
 
 // sdRequest и sdLogin нужны подробной выгрузке продаж (src/sd-sales.js): ходим в SD одним кодом.
-module.exports = { SALES_STATUSES, sdRequest, sdLogin, sdHealth, getMonthlySalesUnits, getPayments, probePayments, getSdConfig, saveSdConfig, testConnection, syncFinishedGoods, syncPrices, diagSD, getHorecaPoints, getAgentCoverage, syncCrmAgents, syncCrmExpeditors, syncClientsToContacts, getSdProducts, syncCashClients, probeContragent, probePaymentWrite };
+module.exports = { SALES_STATUSES, sdRequest, sdLogin, sdHealth, getMonthlySalesUnits, getPayments, probePayments, getSdConfig, saveSdConfig, testConnection, syncFinishedGoods, syncPrices, diagSD, getHorecaPoints, getAgentCoverage, syncCrmAgents, syncCrmExpeditors, syncClientsToContacts, getSdProducts, syncCashClients, probeContragent, probePaymentWrite, clientNamesBySdIds };
