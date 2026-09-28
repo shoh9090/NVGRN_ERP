@@ -1480,12 +1480,20 @@ router.get('/api/timesheet', async (req, res) => {
     // Фильтр отделов умеет несколько значений и «Без отдела» — фильтруем тем же
     // помощником, что и остальные вкладки, чтобы вести себя одинаково.
     const emps = deptFilterMem(scopeDept(req.query.department, await hrScope(req)), (await db.pool.query(
+      // Уволенный не исчезает из табеля в тот же день: за отработанные дни ему
+      // надо начислить, а начисление считается по отметкам. Поэтому он остаётся
+      // до конца месяца увольнения и пропадает со следующего.
+      // Архив — состояние «убрать совсем», такие не показываются никогда.
       `SELECT e.id, e.full_name, e.schedule_type, e.base_salary, e.department_id, d.name AS department_name,
+              e.status, to_char(e.fire_date,'YYYY-MM-DD') AS fire_date,
               pr.plan_days, pr.plan_hours, pr.accr_fact, (pr.accrued_at IS NOT NULL) AS accrued
          FROM hr_employees e
          LEFT JOIN hr_departments d ON d.id = e.department_id
          LEFT JOIN hr_payroll pr ON pr.employee_id = e.id AND pr.period = $1
-        WHERE e.status = 'active' ORDER BY e.full_name`, [period])).rows);
+        WHERE e.status = 'active'
+           OR (e.status = 'fired'
+               AND (e.fire_date IS NULL OR to_char(e.fire_date,'YYYY-MM') >= $1))
+        ORDER BY e.full_name`, [period])).rows);
 
     const ids = emps.map((e) => e.id);
     const marks = ids.length ? (await db.pool.query(
@@ -1511,6 +1519,9 @@ router.get('/api/timesheet', async (req, res) => {
       const sch = SCHEDULES.find((s) => s.code === e.schedule_type) || null;
       return {
         emp_id: e.id, full_name: e.full_name, department_name: e.department_name || '—',
+        // Уволен в этом месяце — экран покажет это рядом с именем и не даст
+        // отмечать дни после даты увольнения.
+        fired: e.status === 'fired', fire_date: e.fire_date || null,
         schedule_type: e.schedule_type || '', schedule_name: sch ? sch.name : '—',
         hourly: POCHASOVOY.has(e.schedule_type), shift_hours: sch ? sch.shift_hours : 8,
         // Оклад и начисление — деньги. Кому их видеть не положено, тому их
@@ -1866,8 +1877,13 @@ router.post('/api/timesheet/mark-day', J, async (req, res) => {
   { const _e = await scopeGuardDept(req, one[0]); if (_e) return res.status(403).json({ error: _e }); }
   try {
     const emps = deptFilterMem(b.department, (await db.pool.query(
+      // Уволенный в табеле остаётся до конца месяца, но «отметить выход всем»
+      // его не касается: после даты увольнения он уже не работал.
       `SELECT e.id, e.schedule_type, e.department_id
-         FROM hr_employees e WHERE e.status = 'active' ORDER BY e.full_name`)).rows);
+         FROM hr_employees e
+        WHERE e.status = 'active'
+           OR (e.status = 'fired' AND e.fire_date IS NOT NULL AND e.fire_date >= $1::date)
+        ORDER BY e.full_name`, [date])).rows);
     if (!emps.length) return res.json({ ok: true, marked: 0 });
     const taken = new Set((await db.pool.query(
       'SELECT employee_id FROM hr_timesheet WHERE work_date = $1 AND employee_id = ANY($2)',

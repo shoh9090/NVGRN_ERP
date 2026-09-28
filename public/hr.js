@@ -1428,6 +1428,9 @@
         const m = r.marks[day.d] || null;
         const date = d.period + '-' + day.d;
         const future = date > d.today;
+        // После даты увольнения человек уже не работал — отмечать такие дни
+        // нечем и незачем. Закрываем ввод, как у будущих дней.
+        const afterFire = !!(r.fired && r.fire_date && date > r.fire_date);
         const txt = !m ? '' : m.mark === 'work'
           ? nH((Number(m.hours) || 0) + (Number(m.overtime) || 0))
           : TS_LETTER[m.mark];
@@ -1436,7 +1439,7 @@
         if (isThisMonth && day.d === today) cls.push('now');
         if (m && m.mark !== 'work') cls.push('mk-' + m.mark);
         if (m && m.overtime) cls.push('ot');
-        if (future) cls.push('future');
+        if (future || afterFire) cls.push('future');
         // Ввод прямо в ячейке, как в Excel: клик — набрал — Enter. Отдельное
         // окно на каждый день замедляло работу настолько, что табель проще
         // было не вести.
@@ -1444,8 +1447,9 @@
           class: cls.join(' '),
           'data-emp': r.emp_id, 'data-day': day.d,
           title: m ? (TS_MARK_NAME[m.mark] + (m.comment ? ' · ' + m.comment : ''))
-            : (future ? 'День ещё не наступил' : 'Впишите часы. Больше нормы смены — лишнее уйдёт в переработку. Или буква: в о б н'),
-          onclick: (future || d.locked) ? null : (e) => editCell(e.currentTarget, r, day, d),
+            : (afterFire ? 'Сотрудник уволен ' + ruDate(r.fire_date)
+              : (future ? 'День ещё не наступил' : 'Впишите часы. Больше нормы смены — лишнее уйдёт в переработку. Или буква: в о б н')),
+          onclick: (future || afterFire || d.locked) ? null : (e) => editCell(e.currentTarget, r, day, d),
           // Комментарий к дню нужен редко — прячем его за правый клик, чтобы
           // не мешать быстрому вводу с клавиатуры.
           oncontextmenu: (future || d.locked) ? null : (e) => { e.preventDefault(); openMarkDialog(r, day, d, load); },
@@ -1467,6 +1471,10 @@
         el('td', { class: 'hr-ts-name' }, [
           el('div', { style: 'font-weight:700' }, r.full_name),
           el('div', { class: 'muted', style: 'font-size:11px' }, r.schedule_name + ' · ' + r.department_name),
+          // Уволенный остаётся в табеле до конца месяца: за отработанные дни
+          // ему ещё начислять. Подписываем, чтобы не отмечали ему смены дальше.
+          r.fired ? el('div', { style: 'font-size:11px;color:#c0392b;font-weight:700' },
+            'уволен' + (r.fire_date ? ' ' + ruDate(r.fire_date) : '')) : null,
         ]),
       ].concat(d.days.map((x) => tsCell(r, x)))
         .concat([
