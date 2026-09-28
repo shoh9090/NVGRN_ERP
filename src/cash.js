@@ -3864,11 +3864,15 @@ function sdPayShapes(rec, txId) {
 // открытием экрана и нажатием никто не успел посадить ту же оплату руками.
 // Каждая уходит отдельным запросом — так при ошибке на третьей первые две
 // останутся отправленными и не уйдут повторно.
-async function sendSdPayments(date, ids, userId) {
+async function sendSdPayments(date, ids, userId, force) {
   const plan = await sdPaymentsPlan(date);
   const want = new Set((Array.isArray(ids) ? ids : []).map(Number));
-  const list = plan.items.filter((x) => want.has(Number(x.id)) && x.state === 'ready');
-  const skipped = plan.items.filter((x) => want.has(Number(x.id)) && x.state !== 'ready')
+  // Обычно шлём только готовые. `force` — исправление уже отправленного: запись
+  // уходит с тем же ключом code_1C, и CRM её ОБНОВЛЯЕТ, а не создаёт вторую.
+  // Так чинили оплаты, ушедшие 28.09.2026 не на того контрагента.
+  const ok = (st) => st === 'ready' || (force && st === 'sent');
+  const list = plan.items.filter((x) => want.has(Number(x.id)) && ok(x.state));
+  const skipped = plan.items.filter((x) => want.has(Number(x.id)) && !ok(x.state))
     .map((x) => ({ id: x.id, amount: x.amount, state: x.state, why: x.why }));
   if (!list.length) return { sent: [], failed: [], skipped };
 
@@ -3876,9 +3880,12 @@ async function sendSdPayments(date, ids, userId) {
   const auth = await integrations.sdLogin(cfg);
   const sent = [], failed = [];
   for (const it of list) {
-    // Шлём той же структурой, какой CRM отдаёт оплату: клиент и контрагент —
-    // один и тот же номер точки, вид оплаты «перечисление», направление 3.
-    const target = it.client_sd || it.contragent_sd;
+    // Сажаем на КОНТРАГЕНТА, а не на торговую точку — решение Арианны с самого
+    // начала. У большинства клиентов это один и тот же номер, но там, где точек
+    // несколько или точку деактивировали, разница решает всё: 28.09.2026 пять
+    // оплат ушли на «УЗБУМ (Неактив)» вместо Hammersmith Group именно потому,
+    // что отправляли на точку.
+    const target = it.contragent_sd || it.client_sd;
     const rec = {
       amount: it.amount,
       paymentDate: date + ' 12:00:00',
@@ -3942,7 +3949,10 @@ router.post('/api/sd-payments/send', express.json(), async (req, res) => {
   const date = /^\d{4}-\d{2}-\d{2}$/.test(b.date || '') ? b.date : null;
   if (!date) return res.status(400).json({ error: 'Укажите дату' });
   if (!Array.isArray(b.ids) || !b.ids.length) return res.status(400).json({ error: 'Не выбрано ни одной оплаты' });
-  try { res.json(await sendSdPayments(date, b.ids, req.user && req.user.id)); }
+  // Переотправка уже отправленного — только администратору: это правка данных
+  // в CRM, а не обычная работа.
+  const force = !!b.force && !!(req.user && req.user.isAdmin);
+  try { res.json(await sendSdPayments(date, b.ids, req.user && req.user.id, force)); }
   catch (e) { res.status(400).json({ error: e.message }); }
 });
 
