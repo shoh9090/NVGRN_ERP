@@ -1205,9 +1205,12 @@
   // Подсказки с настоящими числами товара — то же объяснение, но подставленное.
   const num = (v, dec) => (v === null || v === undefined ? '?' : money(v, dec === undefined ? 2 : dec));
   const CELL_HINTS = {
-    'зелень в упаковке': (x) => (x.net_weight_g && x.raw_price_per_kg
-      ? numAuto(x.net_weight_g) + ' г ÷ 1000 × ' + num(x.raw_price_per_kg, 0) + ' = ' + num(x.calc.components.raw)
-      : 'Укажите граммаж и стоимость зелени'),
+    'зелень в упаковке': (x) => (x.unit_pcs
+      ? (x.raw_price_per_kg ? 'Цена за штуку: ' + num(x.raw_price_per_kg, 0) + ' — товар не взвешивается'
+        : 'Товар считается за штуку — укажите цену позиции')
+      : (x.net_weight_g && x.raw_price_per_kg
+        ? numAuto(x.net_weight_g) + ' г ÷ 1000 × ' + num(x.raw_price_per_kg, 0) + ' = ' + num(x.calc.components.raw)
+        : 'Укажите граммаж и стоимость зелени')),
     'Стоимость зелени': (x) => (x.raw_price_source === 'purchase'
       ? 'Последняя принятая цена в Закупе' + (x.raw_price_at ? ' от ' + x.raw_price_at : '')
       : (x.raw_material_id ? 'В Закупе по этой позиции цены пока нет — цифра вписана вручную'
@@ -1388,6 +1391,10 @@
               onClick: () => openApproveProduct(x) },
             ...((x.approval && x.approval.has) ? [{ label: 'История утверждений', onClick: () => openProductHistory(x) }] : []),
             { label: x.sd_product_id ? 'Изменить ID в СД' : 'Указать ID в СД', onClick: () => openSdId(x) },
+            // Микрозелень покупают горшочками и не взвешивают: обычный расчёт
+            // «граммаж ÷ 1000 × цена за кг» для неё бессмысленный.
+            { label: x.unit_pcs ? 'Считать по весу (кг)' : 'Считать за штуку',
+              onClick: () => toggleUnitPcs(x) },
             { label: 'Убрать с листа', danger: true, onClick: () => confirmRemoveProduct(x, d) },
           ]);
         },
@@ -1399,7 +1406,10 @@
     // сырьё там покупное и вводится суммой на бутылку.
     const manualSheet = d.sheet === 'vinegar';
     if (!manualSheet) rows.push(skuRow('Граммаж', 'гр', (x) => el('div', {}, [
-      cell(x.net_weight_g, (v) => save(x.id, { net_weight_g: v }), { dec: 'auto', placeholder: 'гр' }),
+      // Штучный товар не взвешивают — граммаж у него в расчёте не участвует,
+      // и поле для ввода тут только сбивало бы с толку.
+      x.unit_pcs ? el('span', { class: 'calc-dim' }, 'за штуку')
+        : cell(x.net_weight_g, (v) => save(x.id, { net_weight_g: v }), { dec: 'auto', placeholder: 'гр' }),
       // Сверка с рецептурой: расхождение почти всегда означает опечатку в граммах.
       (x.recipe_id && x.net_weight_g && x.recipe_total_g && Math.abs(x.recipe_total_g - x.net_weight_g) > 1)
         ? el('div', { class: 'calc-warn-mini' }, 'рецептура даёт ' + numAuto(x.recipe_total_g) + ' гр')
@@ -1851,6 +1861,28 @@
       } catch (e) { toast(e.message, true); ok.disabled = false; }
     } }, 'Сохранить');
     const m = calcModal('ID в SalesDoctor', body, [
+      el('button', { class: 'calc-btn', onclick: () => m.close() }, 'Отмена'), ok,
+    ]);
+  }
+
+  // Переключение «за штуку / по весу». Спрашиваем подтверждение: это меняет
+  // саму формулу себестоимости товара, а не одну цифру.
+  function toggleUnitPcs(x) {
+    const toPcs = !x.unit_pcs;
+    const body = el('div', {}, [
+      el('div', { class: 'calc-modal-facts' }, x.name),
+      el('p', { class: 'calc-modal-note' }, toPcs
+        ? 'Стоимость сырья станет равна цене позиции как есть — граммаж в расчёте участвовать не будет. Для товаров, которые покупают поштучно и не взвешивают: микрозелень в горшочках.'
+        : 'Вернём обычный расчёт: граммаж ÷ 1000 × цена за килограмм.'),
+    ]);
+    const ok = el('button', { class: 'calc-btn primary', onclick: async () => {
+      ok.disabled = true;
+      try {
+        await save(x.id, { unit_pcs: toPcs });
+        m.close(); toast(toPcs ? 'Товар считается за штуку' : 'Товар считается по весу'); await loadSku();
+      } catch (e) { toast(e.message, true); ok.disabled = false; }
+    } }, toPcs ? 'Считать за штуку' : 'Считать по весу');
+    const m = calcModal(toPcs ? 'Считать за штуку?' : 'Вернуть расчёт по весу?', body, [
       el('button', { class: 'calc-btn', onclick: () => m.close() }, 'Отмена'), ok,
     ]);
   }

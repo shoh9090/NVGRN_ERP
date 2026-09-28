@@ -898,11 +898,16 @@ async function sheetPayload(sheet) {
       // Ни у одного компонента нет цены — это не «ноль», а «неизвестно»:
       // иначе микс выглядел бы бесплатным и занижал себестоимость.
       const recipePriced = recipe ? recipe.items.length - recipe.missing_prices : 0;
+      // Штучный товар (микрозелень в горшочках): не взвешивается, покупается
+      // поштучно. Цена позиции и есть стоимость сырья — делить на килограммы
+      // нечего, граммаж у такой карточки не нужен.
       const rawCost = recipe
         ? (recipePriced > 0 ? recipe.total : null)
-        : ((weight !== null && rawPricePerKg !== null)
-          ? (weight / 1000) * rawPricePerKg
-          : numOrNull(p.raw_cost));
+        : (p.unit_pcs
+          ? (rawPricePerKg !== null ? rawPricePerKg : numOrNull(p.raw_cost))
+          : ((weight !== null && rawPricePerKg !== null)
+            ? (weight / 1000) * rawPricePerKg
+            : numOrNull(p.raw_cost)));
 
       // Себестоимость и ставки общие, отличается только отпускная цена,
       // поэтому считаем один и тот же расчёт дважды — по каждому прайсу.
@@ -948,6 +953,7 @@ async function sheetPayload(sheet) {
         // Комплект выбран, но в нём есть строки без цены — стоимость неполная.
         pack_incomplete: tpl ? Number(tpl.missing_prices) > 0 : false,
         prod_factor: factor,
+        unit_pcs: !!p.unit_pcs,
         raw_material_id: p.raw_material_id,
         raw_material_name: rawMat ? rawMat.name : '',
         recipe_id: p.recipe_id || null,
@@ -1980,6 +1986,11 @@ router.post('/api/sheet-product/:id(\\d+)', J, async (req, res) => {
         else if (['defect_pct', 'retro_pct', 'vat_pct', 'profit_tax_pct'].includes(f)) out = 0;
       }
       vals.push(out); sets.push(`${f} = $${vals.length}`);
+    }
+    // Штучный товар — переключатель, а не число: у такой карточки граммаж
+    // не участвует в расчёте вовсе.
+    if (b.unit_pcs !== undefined) {
+      vals.push(!!b.unit_pcs); sets.push(`unit_pcs = $${vals.length}`);
     }
     if (b.pack_template_id !== undefined) {
       vals.push(intOrNull(b.pack_template_id)); sets.push(`pack_template_id = $${vals.length}`);

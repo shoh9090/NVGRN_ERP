@@ -563,6 +563,10 @@ async function ensureCalculationSchema(pool) {
     // а производство уксуса не связано с общим выпуском зелени.
     ['pack_cost', 'NUMERIC'],
     ['production_cost', 'NUMERIC'],
+    // Штучный товар: микрозелень покупают горшочками и не взвешивают вовсе.
+    // Обычный расчёт (граммаж ÷ 1000 × цена за кг) для них бессмысленный —
+    // у такой карточки цена позиции и есть стоимость сырья, без деления.
+    ['unit_pcs', 'BOOLEAN DEFAULT FALSE'],
   ]) {
     await q(`ALTER TABLE calc_sheet_products ADD COLUMN IF NOT EXISTS ${col} ${type}`)
       .catch((e) => console.error('calc_sheet_products ' + col + ':', e.message));
