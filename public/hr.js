@@ -2509,6 +2509,84 @@
       el('span', { class: 'muted' }, String(d.sort_order)),
       el('span', {}, '✏️'),
     ]))]));
+    renderSchedules(c);
+  }
+
+  // ---------- Графики работы ----------
+  // Раньше список был зашит в программе: новый график мог добавить только
+  // разработчик. Теперь это обычный справочник рядом с отделами.
+  async function renderSchedules(c) {
+    const box = el('div', { style: 'margin-top:26px' });
+    c.appendChild(box);
+    box.appendChild(el('div', { class: 'hr-head' }, [
+      el('div', {}, [el('div', { class: 'hr-h2' }, 'Графики работы'),
+        el('div', { class: 'hr-sub' }, 'Длина смены подставляется в табеле при отметке выхода. Почасовые считаются от часов и умеют переработку.')]),
+      el('button', { class: 'btn-primary hr-add', onclick: () => openSchedule(null) }, '+ График'),
+    ]));
+    let d;
+    try { d = await api('/schedules'); }
+    catch (e) { box.appendChild(el('div', { class: 'hr-empty' }, 'Ошибка: ' + e.message)); return; }
+    const head = el('div', { class: 'hr-row head hr-dept' }, ['#', 'График', 'Смена, ч', 'Сотрудников', ''].map((h) => el('span', {}, h)));
+    box.appendChild(el('div', { class: 'hr-list' }, [head, ...(d.items || []).map((s, i) => el('div', {
+      class: 'hr-row hr-dept' + (s.status === 'archived' ? ' dim' : ''), style: 'cursor:pointer',
+      onclick: () => openSchedule(s),
+    }, [
+      el('span', { class: 'hr-idx' }, String(i + 1)),
+      el('span', { style: 'font-weight:700' }, [s.name,
+        s.hourly ? el('span', { class: 'hr-sub' }, ' · почасовой') : null,
+        s.status === 'archived' ? el('span', { class: 'hr-sub' }, ' · в архиве') : null]),
+      el('span', { class: 'tnum' }, String(s.shift_hours)),
+      el('span', { class: 'tnum' }, String(s.emp_count || 0)),
+      el('span', {}, '✏️'),
+    ]))]));
+  }
+
+  function openSchedule(s) {
+    s = s || {};
+    const name = finp(s.name, { placeholder: 'например 6/1 по 8 часов' });
+    const hours = finp(s.shift_hours != null ? s.shift_hours : 8, { type: 'number', min: '1', max: '24', step: '0.5' });
+    const hourly = el('input', { type: 'checkbox' });
+    if (s.hourly) hourly.checked = true;
+    const sort = finp(s.sort != null ? s.sort : 100, { type: 'number' });
+    const body = el('div', { class: 'hrf' }, [
+      frow('Название *', name),
+      frow('Длина смены, ч *', hours),
+      frow('Оплата', el('label', { style: 'display:flex;gap:8px;align-items:center' },
+        [hourly, el('span', {}, 'почасовая (считается от часов, есть переработка)')])),
+      frow('Порядок', sort),
+      el('div', { class: 'hr-sub' },
+        'Почасовая — как у производства: оклад делится на норму часов, а часы сверх смены идут в переработку в двойном размере. '
+        + 'Без галочки — как у офиса: оклад делится на рабочие дни.'),
+      s.code && s.emp_count ? el('div', { class: 'hr-note' }, 'На этом графике сейчас ' + s.emp_count + ' сотрудн.') : null,
+    ]);
+    const acts = [];
+    if (s.code) {
+      const arch = s.status === 'archived';
+      acts.push(el('button', { class: 'btn-ghost hrf-warn', onclick: async () => {
+        try {
+          await post('/schedule/' + encodeURIComponent(s.code) + '/archive', { restore: arch });
+          toast(arch ? 'График возвращён' : 'График в архиве'); closeModal(); render();
+        } catch (e) {
+          // Пока на графике есть люди, убирать его нельзя молча: иначе у них
+          // пропадёт основание расчёта, а карточки останутся с мёртвым кодом.
+          if (e.data && e.data.error === 'in_use') {
+            if (!confirm('На этом графике ' + e.data.count + ' сотрудн. Убрать его из списка всё равно?\n\nУ них график останется прежним, но выбрать его новым уже будет нельзя.')) return;
+            try {
+              await post('/schedule/' + encodeURIComponent(s.code) + '/archive', { force: true });
+              toast('График в архиве'); closeModal(); render();
+            } catch (e2) { toast(e2.message, true); }
+          } else toast(e.message, true);
+        }
+      } }, arch ? 'Вернуть в список' : 'В архив'));
+    }
+    acts.push(el('button', { class: 'btn-primary', onclick: async () => {
+      if (!name.value.trim()) return toast('Укажите название', true);
+      try {
+        await post('/schedule', { code: s.code || null, name: name.value, shift_hours: hours.value, hourly: hourly.checked, sort: sort.value });
+        toast('Сохранено'); closeModal(); await reloadDicts(); render();
+      } catch (e) { toast(e.message, true); }
+    } }, 'Сохранить'));
+    modal(s.code ? 'График — ' + s.name : 'Новый график', body, acts);
   }
   function openDept(d) {
     d = d || {};

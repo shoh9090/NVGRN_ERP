@@ -11,16 +11,36 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 16 
 const intOrNull = (v) => (v === '' || v == null ? null : parseInt(v, 10));
 const numOrNull = (v) => (v === '' || v == null ? null : Number(v));
 
-// Типы графика — фиксированный набор (не текстом, чтобы не расползалось).
+// Графики работы — справочник в базе, а не список в коде: новый график должны
+// заводить Кадры сами, без разработчика (правило «справочники в БД»).
 // shift_hours — длина смены по умолчанию: столько подставляется в табеле, когда
 // отмечают выход. Правится в самой отметке, если день был короче или длиннее.
-const SCHEDULES = [
-  { code: 'day5', name: '5-дневка', shift_hours: 8 },
-  { code: 'day6', name: '6-дневка', shift_hours: 8 },
-  { code: 'day6h10', name: '6/1 по 10 ч', shift_hours: 10 },
-  { code: 'shift22', name: 'Смена 2/2', shift_hours: 12 },
+// hourly — почасовая оплата: считается от часов и умеет переработку.
+//
+// В памяти держим копию: график спрашивают в каждом расчёте и в каждой строке
+// табеля, ходить за ним в базу каждый раз незачем. Копия обновляется при
+// старте и после любой правки справочника.
+const SCHEDULES_SEED = [
+  { code: 'day5', name: '5-дневка', shift_hours: 8, hourly: false, sort: 10 },
+  { code: 'day6', name: '6-дневка', shift_hours: 8, hourly: false, sort: 20 },
+  { code: 'day6h10', name: '6/1 по 10 ч', shift_hours: 10, hourly: true, sort: 30 },
+  { code: 'shift22', name: 'Смена 2/2', shift_hours: 12, hourly: true, sort: 40 },
 ];
-const SCHEDULE_CODES = SCHEDULES.map((s) => s.code);
+let SCHEDULES = SCHEDULES_SEED.slice();
+let SCHEDULE_CODES = SCHEDULES.map((s) => s.code);
+async function reloadSchedules() {
+  try {
+    const r = await db.pool.query(
+      "SELECT code, name, shift_hours, hourly, sort FROM hr_schedules WHERE status='active' ORDER BY sort, name");
+    if (r.rows.length) {
+      SCHEDULES = r.rows.map((x) => ({
+        code: x.code, name: x.name, shift_hours: Number(x.shift_hours) || 8,
+        hourly: !!x.hourly, sort: x.sort,
+      }));
+      SCHEDULE_CODES = SCHEDULES.map((s) => s.code);
+    }
+  } catch (e) { /* таблицы ещё нет — работаем на списке по умолчанию */ }
+}
 const STATUSES = ['active', 'fired', 'archived'];
 
 let _ready = false;
@@ -235,6 +255,23 @@ async function ensureSchema() {
     const n = await require('./person-link').autoLinkByPhone(db.pool);
     if (n) console.log(`[КАДРЫ] связано с учётками ERP по телефону: ${n}`);
   } catch (e) { console.warn('[КАДРЫ] связь с учётками:', e.message); }
+  // Справочник графиков. Заводится из прежнего списка в коде — так у всех
+  // сотрудников сохраняются их графики, а дальше Кадры правят сами.
+  await q(`CREATE TABLE IF NOT EXISTS hr_schedules (
+    code TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    shift_hours NUMERIC NOT NULL DEFAULT 8,
+    hourly BOOLEAN NOT NULL DEFAULT FALSE,
+    sort INT NOT NULL DEFAULT 100,
+    status TEXT NOT NULL DEFAULT 'active'
+  )`);
+  for (const s of SCHEDULES_SEED) {
+    await db.pool.query(
+      `INSERT INTO hr_schedules (code, name, shift_hours, hourly, sort)
+       VALUES ($1,$2,$3,$4,$5) ON CONFLICT (code) DO NOTHING`,
+      [s.code, s.name, s.shift_hours, s.hourly, s.sort]).catch(() => {});
+  }
+  await reloadSchedules();
   _ready = true;
 }
 const EVENT_TYPES = ['hire', 'fire', 'vacation', 'sick', 'transfer', 'position', 'salary', 'schedule', 'other'];
@@ -260,7 +297,9 @@ const PAYROLL_NUM = [...ACCR_ALL, ...DED, ...PAID, 'plan_days', 'fact_days', 'pl
 // (её оплачиваем в двойном размере), остальные — по дням.
 // «6/1 по 12 ч» — производство: смена длинная, переработки бывают каждую неделю,
 // а по дням переработку учесть нечем.
-const POCHASOVOY = new Set(['shift22', 'day6h10']);
+// Почасовой ли график — берётся из справочника, а не из зашитого списка:
+// Кадры заводят новые графики сами и сами решают, почасовой он или нет.
+const POCHASOVOY = { has: (code) => !!(SCHEDULES.find((s) => s.code === code) || {}).hourly };
 // Авторасчёт оклада-начисления (accr_fact) ПО ФАКТУ. Нет факта → 0 (не начисляем).
 // Почасовые: оклад/план_часы × (факт_часы + переработка×2).
 // Окладники: дневная ставка × факт-дни = (оклад / план_дни) × факт_дни.
@@ -507,7 +546,7 @@ function hrTabOf(req) {
   // Зарплата или Выплаты (аудит A03: раньше адрес не был привязан ни к одной вкладке).
   if (p.startsWith('/api/cards')) return ['salary', 'payouts'];
   if (p.startsWith('/api/events')) return 'events';
-  if (p.startsWith('/api/department')) return 'departments';
+  if (p.startsWith('/api/department') || p.startsWith('/api/schedule')) return 'departments';
   if (p.startsWith('/api/mass-op')) return 'massops';
   // Список ведомости открывают ДВА экрана — «Зарплата» и «Массовые операции».
   // Привязать его к одной вкладке нельзя, иначе второй экран перестанет работать.
@@ -567,6 +606,8 @@ const SCOPED_WRITES = [
 const COMPANY_WRITES = [
   // выдача доступа в ERP — только администратор
   /^\/api\/employee\/\d+\/access\/(link|unlink|create)$/,
+  // Графики работы — общий справочник компании, не отдельский
+  /^\/api\/schedule(\/|$)/,
   /^\/api\/period-lock$/,
   /^\/api\/payroll\/apply-recurring$/,
   /^\/api\/payroll\/import$/,
@@ -2709,6 +2750,60 @@ router.post('/api/department/:id(\\d+)/users', J, async (req, res) => {
         [uid, req.params.id]);
     }
     await db.log(req.user.id, 'hr_dept_users', `отдел ${req.params.id}: ${ids.length}`);
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// ---------- Графики работы ----------
+// Справочник, а не список в коде: новый график заводят Кадры сами.
+// Удалять нельзя — только в архив: код графика стоит в карточках сотрудников
+// и в истории, и стереть его значило бы потерять, по какому графику человек
+// работал и как ему считали зарплату.
+router.get('/api/schedules', async (req, res) => {
+  try {
+    const rows = (await db.pool.query(
+      `SELECT s.code, s.name, s.shift_hours, s.hourly, s.sort, s.status,
+              (SELECT COUNT(*)::int FROM hr_employees e
+                WHERE e.schedule_type = s.code AND e.status <> 'archived') AS emp_count
+         FROM hr_schedules s ORDER BY s.status, s.sort, s.name`)).rows;
+    res.json({ items: rows });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+router.post('/api/schedule', J, async (req, res) => {
+  const b = req.body || {};
+  const name = String(b.name || '').trim();
+  if (!name) return res.status(400).json({ error: 'Укажите название графика' });
+  const hours = numOrNull(b.shift_hours);
+  if (!(hours > 0) || hours > 24) return res.status(400).json({ error: 'Длина смены — от 1 до 24 часов' });
+  // Код нового графика придумываем сами: человеку он не нужен, а руками его
+  // вписывают с опечатками, и тогда график молча теряет связь с карточками.
+  const code = String(b.code || '').trim() || 'sched_' + Date.now().toString(36);
+  try {
+    await db.pool.query(
+      `INSERT INTO hr_schedules (code, name, shift_hours, hourly, sort, status)
+       VALUES ($1,$2,$3,$4,COALESCE($5,100),'active')
+       ON CONFLICT (code) DO UPDATE SET name=$2, shift_hours=$3, hourly=$4,
+         sort=COALESCE($5, hr_schedules.sort), status='active'`,
+      [code, name, hours, !!b.hourly, intOrNull(b.sort)]);
+    await reloadSchedules();
+    await db.log(req.user.id, 'hr_schedule_save', `${code} · ${name} · ${hours}ч`);
+    res.json({ ok: true, code });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+router.post('/api/schedule/:code/archive', J, async (req, res) => {
+  const code = String(req.params.code || '');
+  try {
+    const n = (await db.pool.query(
+      "SELECT COUNT(*)::int AS n FROM hr_employees WHERE schedule_type=$1 AND status<>'archived'", [code])).rows[0].n;
+    if (n > 0 && !(req.body || {}).force) {
+      return res.status(409).json({ error: 'in_use', count: n });
+    }
+    const back = (req.body || {}).restore;
+    await db.pool.query("UPDATE hr_schedules SET status=$2 WHERE code=$1", [code, back ? 'active' : 'archived']);
+    await reloadSchedules();
+    await db.log(req.user.id, back ? 'hr_schedule_restore' : 'hr_schedule_archive', code);
     res.json({ ok: true });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
