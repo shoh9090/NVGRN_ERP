@@ -3754,6 +3754,19 @@ function contractNo(purpose) {
   return null;
 }
 
+// Оплаты CRM за вычетом тех, что мы сами же туда и посадили: их номер записан
+// у нас в транзакции, они уже учтены. Считать их «чужими» нельзя — иначе наша
+// собственная отправка поднимает тревогу на соседней оплате с такой же суммой.
+// 28.09.2026 так и застряли две оплаты по 3 000 000: третий клиент заплатил
+// ровно столько же, мы его провели — и страховка «в CRM уже есть такая сумма»
+// закрыла дорогу двум оставшимся. Страховка нужна, но только против того, что
+// внесли РУКАМИ мимо ERP.
+function crmMinusOurs(crm, rows) {
+  const ours = new Set((rows || []).map((r) => r && r.sd_payment_id).filter(Boolean).map(String));
+  if (!ours.size) return crm || [];
+  return (crm || []).filter((x) => !ours.has(String(x && x.sd_id)));
+}
+
 const SD_PAY_TYPE_TRANSFER = 'd0_3';   // перечисление — у клиентов только оно
 const SD_TX_CLIENT_PAYMENT = 3;        // «живая» оплата клиента, не служебное разнесение
 
@@ -3809,6 +3822,8 @@ async function sdPaymentsPlan(date) {
     crm = p.items.filter((x) => x.kind === SD_TX_CLIENT_PAYMENT);
   } catch (e) { crmError = e.message; }
   const near = (a, b) => Math.abs(Number(a) - Number(b)) < 1;      // копейки округления
+  // Сверяемся только с ЧУЖИМИ записями CRM — свои уже сидят в наших же строках.
+  const crmElse = crmMinusOurs(crm, rows);
   // Проверено на оплатах 24.09.2026: в CRM у оплаты клиент и контрагент — это
   // ОДИН И ТОТ ЖЕ номер точки (y3_1674), а отдельный справочник контрагентов
   // (getContragent) даёт совсем другие номера (z7_1882) и в оплатах не
@@ -3817,7 +3832,7 @@ async function sdPaymentsPlan(date) {
   const crmFor = (ids, amount) => {
     const mine = ids.filter(Boolean).map(String);
     if (!mine.length) return null;
-    return crm.find((x) => near(x.amount, amount)
+    return crmElse.find((x) => near(x.amount, amount)
       && (mine.includes(String(x.client_sd || '')) || mine.includes(String(x.contragent_sd || '')))) || null;
   };
 
@@ -3860,7 +3875,7 @@ async function sdPaymentsPlan(date) {
     // ИНН не знаем. Совпала сумма в тот же день — не отправляем молча, а просим
     // человека взглянуть: ложная тревога стоит одного взгляда, а пропуск —
     // двойной оплаты в CRM.
-    const same = crm.find((x) => near(x.amount, r.amount));
+    const same = crmElse.find((x) => near(x.amount, r.amount));
     if (same) return { ...item, state: 'check', why: 'в CRM за этот день уже есть оплата на такую же сумму — проверьте, не она ли это', crm_id: same.sd_id };
     // У юрлица несколько точек, а долг в CRM ведётся по точке. Без правила по
     // договору угадывать нельзя: посадим не туда — у одной точки переплата,
@@ -4175,5 +4190,8 @@ module.exports.looksLikeBankReturn = looksLikeBankReturn;
 // Открыто для тестов: по номеру договора решается, какой из точек клиента
 // засчитать оплату. Ошибка здесь посадит деньги не той точке.
 module.exports.contractNo = contractNo;
+// Открыто для тестов: из сверки надо выкинуть наши же отправки, иначе они
+// блокируют соседние оплаты с такой же суммой.
+module.exports.crmMinusOurs = crmMinusOurs;
 // Остатки кошельков нужны и Джарвису (инструмент «остатки денег»): цифра одна, код один.
 module.exports.walletBalances = walletBalances;
