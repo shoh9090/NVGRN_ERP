@@ -391,20 +391,40 @@
       const head = [el('b', {}, 'Сверка с CRM: '), el('span', { class: 'cash-ready-n' },
         'CRM ' + money(d.totals.crm) + ' · Касса ' + money(d.totals.erp)
         + (Math.abs(diff) < 1000 ? ' · сходится ✓' : ' · разница ' + money(diff)))];
-      const rows = d.days.map((x) => el('tr', { class: Math.abs(x.diff) > 1000000 ? 'cash-ready-v' : '' }, [
-        el('td', {}, x.date.split('-').reverse().join('.')),
-        el('td', { class: 'tnum' }, money(x.crm)),
-        el('td', { class: 'tnum' }, money(x.erp)),
-        el('td', { class: 'tnum' }, Math.abs(x.diff) < 1000 ? '✓' : money(x.diff)),
-      ]));
+      // Строка дня кликабельна: расхождение бесполезно, пока не видно, какая
+      // именно оплата не села. Клик открывает разбор этого дня — там и кнопка
+      // отправки. Порог «плохого дня» — тысяча сум: миллион пропускал те самые
+      // 320 600, из-за которых 21.09 разошлось.
+      const rows = d.days.map((x) => {
+        const bad = Math.abs(x.diff) >= 1000;
+        const noBank = !x.erp_n && x.crm_n;
+        const why = !bad ? '' : (noBank ? 'выписка не загружена'
+          : (x.diff > 0 ? 'в CRM больше — наличные, другой счёт или лишняя запись'
+            : 'в CRM меньше — оплаты не посажены'));
+        return el('tr', {
+          class: bad ? 'cash-ready-v' : '', style: 'cursor:pointer',
+          title: 'Открыть оплаты за ' + x.date.split('-').reverse().join('.'),
+          onclick: () => openSdPayments(x.date),
+        }, [
+          el('td', {}, x.date.split('-').reverse().join('.')),
+          el('td', { class: 'tnum' }, [el('div', {}, money(x.crm)),
+            el('div', { class: 'cash-sub' }, (x.crm_n || 0) + ' опл.')]),
+          el('td', { class: 'tnum' }, [el('div', {}, money(x.erp)),
+            el('div', { class: 'cash-sub' }, (x.erp_n || 0) + ' прих.')]),
+          el('td', { class: 'tnum' }, Math.abs(x.diff) < 1000 ? '✓' : money(x.diff)),
+          el('td', { class: 'cash-sub' }, why),
+        ]);
+      });
       wrap.innerHTML = '';
       wrap.appendChild(pnlFold('crm', 'cash-ready', head, [
         el('div', { class: 'cash-ready-sub' },
           'Слева — оплаты клиентов в CRM, справа — поступления в Кассе по статье «Выручка от продаж». '
           + 'Разница в один день обычно означает, что выписка за этот день ещё не загружена, '
-          + 'а «плюс сегодня и минус вчера» — оплату отметили в CRM вечером, а в банк она попала утром.'),
+          + 'а «плюс сегодня и минус вчера» — оплату отметили в CRM вечером, а в банк она попала утром. '
+          + 'Нажмите на день, чтобы разобрать его по оплатам. Каждое утро система сверяет два прошедших '
+          + 'дня сама и пишет в колокольчик, только если разошлось.'),
         el('div', { class: 'cash-ready-scroll' }, el('table', { class: 'cash-ready-t' }, [
-          el('thead', {}, el('tr', {}, ['День', 'CRM', 'Касса', 'Разница'].map((h) => el('th', {}, h)))),
+          el('thead', {}, el('tr', {}, ['День', 'CRM', 'Касса', 'Разница', ''].map((h) => el('th', {}, h)))),
           el('tbody', {}, rows),
         ])),
       ]));

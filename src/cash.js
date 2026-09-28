@@ -8,6 +8,7 @@ const db = require('./db');
 const integrations = require('./integrations');
 const { buildPnl, pnlFor, buildTrend, UNITS_KEY, SALES_KEY, SKU_KEY, SNAP_KEY, saveSnapshot, loadSnapshot, monthReadiness } = require('./cash-pnl');
 const pfin = require('./purchase-finance'); // общий расчёт долга поставщикам (read-only в «Обязательствах»)
+const { notify } = require('./notifications');   // колокольчик: ежедневная сверка приходов
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 16 * 1024 * 1024 } });
@@ -1699,6 +1700,72 @@ async function salesAutoTick() {
   } catch (e) { console.warn('[КЛИЕНТЫ] обновление из SD не прошло:', e.message); }
 }
 setInterval(() => { salesAutoTick().catch((e) => console.warn('[КАССА] автообновление продаж:', e.message)); }, 15 * 60 * 1000).unref();
+
+// ===== Ежедневная сверка приходов с SalesDoctor =====
+// Оплаты сажаются в CRM руками и из ERP, и раз в несколько дней что-то теряется:
+// 21–23.09.2026 разошлись три дня подряд, самый крупный — на 8,8 млн. Пока никто
+// не сверяет день целиком, это видно только случайно и спустя месяц.
+// Считаем две цифры за день: приходы от клиентов в банке (статья 200) и «живые»
+// оплаты клиентов в CRM. Совпали — вопросов нет.
+async function sdDayTotals(date) {
+  const b = (await db.pool.query(
+    `SELECT COALESCE(SUM(t.amount), 0) AS s, COUNT(*)::int AS n
+       FROM cash_transactions t JOIN cash_categories c ON c.id = t.category_id
+      WHERE t.tx_type = 'in' AND c.code = '200' AND t.source <> 'opening'
+        AND t.tx_date = $1::date`, [date])).rows[0] || { s: 0, n: 0 };
+  const p = await integrations.getPayments(date, date);
+  const crm = p.items.filter((x) => x.kind === SD_TX_CLIENT_PAYMENT);
+  return {
+    date, bank: Number(b.s) || 0, bank_n: b.n || 0,
+    crm: crm.reduce((s, x) => s + x.amount, 0), crm_n: crm.length,
+  };
+}
+
+const sumRu = (v) => Math.round(Number(v) || 0).toLocaleString('ru-RU').replace(/ /g, ' ');
+
+// Утром в 9:00 по Ташкенту сверяем два предыдущих дня: выписку часто загружают
+// вечером или на следующий день, и сверять только вчерашний день мало.
+// Когда сошлось — МОЛЧИМ. Уведомление «всё хорошо» каждый день перестают читать
+// через неделю, а на экране Кассы сверка по дням видна и так, в любой момент.
+async function sdReconcileTick() {
+  const now = new Date(Date.now() + 5 * 3600000);                 // Ташкент
+  if (now.getUTCHours() !== 9) return;
+  const day = now.toISOString().slice(0, 10);
+  const done = ((await db.pool.query("SELECT value FROM settings WHERE key = 'cash_sd_reconcile_day'")).rows[0] || {}).value;
+  if (done === day) return;
+  await db.setSetting('cash_sd_reconcile_day', day);
+  for (let back = 1; back <= 2; back++) {
+    const d = new Date(now.getTime() - back * 86400000).toISOString().slice(0, 10);
+    try {
+      const r = await sdDayTotals(d);
+      if (!r.bank_n && !r.crm_n) continue;                        // выходной — говорить не о чем
+      const ru = d.split('-').reverse().join('.');
+      // Выписки нет — это не расхождение, а несделанная работа. Формулировка
+      // важна: иначе человек идёт искать «пропавшие» деньги, которых нет.
+      if (!r.bank_n) {
+        await notify({
+          tile: '/cash', kind: 'warn', link: '/cash#tx',
+          title: 'Выписка за ' + ru + ' не загружена',
+          body: 'В SalesDoctor за этот день ' + r.crm_n + ' оплат на ' + sumRu(r.crm)
+            + ' сум, а приходов в Кассе нет — сверить не с чем.',
+        });
+        continue;
+      }
+      const diff = Math.round(r.bank - r.crm);
+      if (Math.abs(diff) < 1) continue;                           // сошлось
+      await notify({
+        tile: '/cash', kind: 'warn', link: '/cash#tx',
+        title: 'Сверка за ' + ru + ': расхождение ' + sumRu(Math.abs(diff)) + ' сум',
+        body: 'В банке ' + r.bank_n + ' на ' + sumRu(r.bank) + ' сум, в SalesDoctor '
+          + r.crm_n + ' на ' + sumRu(r.crm) + ' сум. '
+          + (diff > 0
+            ? 'В банке больше — похоже, часть оплат не посажена в CRM. Откройте «Оплаты в SalesDoctor» за этот день.'
+            : 'В CRM больше — это наличные, другой счёт или лишняя запись в CRM. ERP тут только показывает.'),
+      });
+    } catch (e) { console.warn('[КАССА] сверка за ' + d + ' не прошла:', e.message); }
+  }
+}
+setInterval(() => { sdReconcileTick().catch((e) => console.warn('[КАССА] ежедневная сверка:', e.message)); }, 15 * 60 * 1000).unref();
 
 router.post('/api/pnl/units', express.json(), async (req, res) => {
   const period = /^\d{4}-\d{2}$/.test((req.body || {}).period || '')
