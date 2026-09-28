@@ -2571,6 +2571,7 @@
         el('button', { class: 'btn-ghost cash-add', onclick: openMatchTransfers }, '🔗 Найти переводы'),
         el('button', { class: 'btn-ghost cash-add', onclick: openOpeningForm }, '💼 Начальные остатки'),
         el('button', { class: 'btn-ghost cash-add', onclick: openImport }, '📥 Импорт выписки'),
+        el('button', { class: 'btn-ghost cash-add', onclick: () => openSdPayments() }, '🧾 Оплаты в SalesDoctor'),
       ]),
     ]));
     const reload1 = () => { txState.page = 1; loadTx(); };
@@ -2589,6 +2590,78 @@
     c.appendChild(el('div', { id: 'cash-tx-wrap' }));
     loadTx();
   }
+  // ---------- Оплаты клиентов в SalesDoctor ----------
+  // Раньше Арианна сажала их руками по выписке — до 20 минут в день. Здесь видно,
+  // что из приходов дня уже есть в CRM, а что нет, и почему остальное отправить
+  // нельзя. Отправляются только «готовые», и состояние пересчитывается заново
+  // прямо перед отправкой — между открытием окна и нажатием человек мог посадить
+  // ту же оплату руками.
+  const SD_STATE = {
+    ready: ['Готова к отправке', '#3d8b52'],
+    sent: ['Отправлена', '#2f6fb0'],
+    in_crm: ['Уже в CRM', '#7c8579'],
+    check: ['Проверьте', '#c98306'],
+    manual: ['Нужен человек', '#bf3f28'],
+  };
+  async function openSdPayments(date) {
+    const day = date || todayStr();
+    const box = el('div', { style: 'min-width:min(900px,86vw)' }, 'Считаю…');
+    const m = modal('🧾 Оплаты в SalesDoctor', box, []);
+    async function draw() {
+      box.innerHTML = 'Считаю…';
+      let d;
+      try { d = await api('/sd-payments?date=' + day); }
+      catch (e) { box.innerHTML = ''; box.appendChild(el('p', { class: 'cash-empty' }, 'Ошибка: ' + e.message)); return; }
+      const t = d.totals;
+      box.innerHTML = '';
+      const dayInp = el('input', { type: 'date', class: 'cashf-inp', value: day, max: todayStr(),
+        onchange: (e) => { if (e.target.value) { m.close(); openSdPayments(e.target.value); } } });
+      box.appendChild(el('div', { class: 'cash-filters' }, [
+        el('span', { class: 'cash-sub' }, 'День:'), dayInp,
+      ]));
+      box.appendChild(el('div', { class: 'cash-sub', style: 'margin:4px 0 10px' },
+        'Всего приходов от клиентов: ' + t.all + ' на ' + money(t.all_sum)
+        + ' · готовы: ' + t.ready + ' на ' + money(t.ready_sum)
+        + ' · уже в CRM: ' + (t.in_crm + t.sent)
+        + (t.manual ? ' · нужен человек: ' + t.manual : '')
+        + (t.check ? ' · проверьте: ' + t.check : '')));
+      if (d.crm_error) {
+        box.appendChild(el('div', { class: 'cash-ready cash-ready-sub' },
+          'CRM недоступна, сверить нельзя: ' + d.crm_error + '. Отправка закрыта, пока связь не вернётся.'));
+      }
+      if (!d.items.length) { box.appendChild(el('p', { class: 'cash-empty' }, 'За этот день приходов от клиентов нет.')); return; }
+      const rows = d.items.map((x) => {
+        const [label, color] = SD_STATE[x.state] || [x.state, '#7c8579'];
+        return el('tr', {}, [
+          el('td', { class: 'tnum' }, money(x.amount)),
+          el('td', {}, [el('div', { style: 'font-weight:600' }, x.client || '—'),
+            el('div', { class: 'cash-sub' }, x.payer_name || '')]),
+          el('td', {}, [el('span', { style: 'font-weight:700;color:' + color }, label),
+            x.why ? el('div', { class: 'cash-sub' }, x.why) : null,
+            x.sent_id ? el('div', { class: 'cash-sub' }, 'номер в CRM: ' + x.sent_id) : null]),
+        ]);
+      });
+      box.appendChild(el('div', { class: 'cash-ready-scroll' }, el('table', { class: 'cash-ready-t' }, [
+        el('thead', {}, el('tr', {}, ['Сумма', 'Клиент', 'Состояние'].map((h) => el('th', {}, h)))),
+        el('tbody', {}, rows),
+      ])));
+      const ready = d.items.filter((x) => x.state === 'ready');
+      const send = el('button', { class: 'btn-primary', disabled: ready.length ? null : 'disabled', onclick: async () => {
+        send.disabled = true; send.textContent = 'Отправляю…';
+        try {
+          const r = await post('/sd-payments/send', { date: day, ids: ready.map((x) => x.id) });
+          const bad = (r.failed || []).length;
+          toast('Отправлено: ' + (r.sent || []).length + (bad ? ', не прошло: ' + bad : ''), !!bad);
+          await draw();
+        } catch (e) { toast(e.message, true); send.disabled = false; send.textContent = 'Отправить в SalesDoctor'; }
+      } }, ready.length ? 'Отправить в SalesDoctor — ' + ready.length : 'Отправлять нечего');
+      box.appendChild(el('div', { style: 'display:flex;gap:10px;justify-content:flex-end;margin-top:12px' }, [
+        el('button', { class: 'btn-ghost', onclick: () => m.close() }, 'Закрыть'), send,
+      ]));
+    }
+    draw();
+  }
+
   let txItems = [];
   function updateBulk() {
     const bar = $('#cash-bulk'); if (!bar) return;
