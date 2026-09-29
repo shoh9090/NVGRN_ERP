@@ -160,7 +160,10 @@ router.get('/api/receipt/:id(\\d+)', async (req, res) => {
   const items = await db.pool.query(
     `SELECT i.id, i.qty AS plan_qty, i.fact_qty,
             COALESCE(rm.name, pk.name) AS item_name, COALESCE(rm.code, pk.code) AS item_code,
-            COALESCE(u1.short_name, u2.short_name) AS unit, i.item_kind, i.item_id
+            COALESCE(u1.short_name, u2.short_name) AS unit, i.item_kind, i.item_id,
+            -- Характеристика сорта («Рукола 2 — без корней, срезанная»). У сырья
+            -- по три похожих карточки, и по одному названию их не различить.
+            rm.characteristics AS item_char
      FROM purchase_order_items i
      LEFT JOIN ref_raw_materials rm ON i.item_kind = 'raw' AND rm.id = i.item_id
      LEFT JOIN ref_packaging pk ON i.item_kind = 'packaging' AND pk.id = i.item_id
@@ -364,7 +367,7 @@ async function receiptRows({ from, to, item, supplier }) {
   if (supplier) { p.push(supplier); w += ` AND po.supplier_id = $${p.length}`; }
   return (await db.pool.query(
     `SELECT to_char(m.moved_at,'DD.MM.YYYY') AS day, rm.name, u.short_name AS unit,
-            m.qty, m.price, m.reason, po.number AS order_no, c.name AS supplier
+            rm.characteristics, m.qty, m.price, m.reason, po.number AS order_no, c.name AS supplier
        FROM stock_movements m
        JOIN ref_raw_materials rm ON rm.id = m.item_id
        LEFT JOIN ref_units u ON u.id = rm.unit_id
@@ -403,11 +406,11 @@ router.get('/api/receipts/export.xlsx', async (req, res) => {
     const rows = await receiptRows({ from, to, item });
     const wb = XLSX.utils.book_new();
     const sh = XLSX.utils.aoa_to_sheet([
-      ['Дата приёмки', 'Наименование сырья', 'Ед. изм.', 'Количество', 'Вид', 'Поставщик', 'Заявка'],
-      ...rows.map((r) => [r.day, r.name, r.unit || '', Number(r.qty) || 0,
+      ['Дата приёмки', 'Наименование сырья', 'Характеристика', 'Ед. изм.', 'Количество', 'Вид', 'Поставщик', 'Заявка'],
+      ...rows.map((r) => [r.day, r.name, r.characteristics || '', r.unit || '', Number(r.qty) || 0,
         r.reason === 'receive_waste' ? 'Отход' : 'Сырьё', r.supplier || '', r.order_no || '']),
     ]);
-    sh['!cols'] = [{ wch: 13 }, { wch: 34 }, { wch: 9 }, { wch: 12 }, { wch: 9 }, { wch: 26 }, { wch: 14 }];
+    sh['!cols'] = [{ wch: 13 }, { wch: 28 }, { wch: 46 }, { wch: 9 }, { wch: 12 }, { wch: 9 }, { wch: 26 }, { wch: 14 }];
     XLSX.utils.book_append_sheet(wb, sh, 'Приёмка');
     const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -448,7 +451,7 @@ router.post('/api/wipe', express.json(), async (req, res) => {
 router.get('/api/available', async (req, res) => {
   const r = await db.pool.query(
     `WITH mats AS (
-       SELECT 'raw' AS kind, rm.id, rm.code, rm.name, u.short_name AS unit,
+       SELECT 'raw' AS kind, rm.id, rm.code, rm.name, u.short_name AS unit, rm.characteristics,
               rm.category_id, c.name AS category_name, c.parent_id AS pc_id, pc.name AS pc_name
        FROM ref_raw_materials rm
        LEFT JOIN ref_units u ON u.id = rm.unit_id
@@ -561,7 +564,7 @@ router.get('/api/issue/:id(\\d+)', async (req, res) => {
   const items = await db.pool.query(
     `SELECT pii.id, pii.qty, pii.fact_qty, pii.diff_comment, pii.item_kind, pii.item_id,
             COALESCE(rm.name, pk.name) AS item_name, COALESCE(rm.code, pk.code) AS item_code,
-            COALESCE(u1.short_name, u2.short_name) AS unit
+            COALESCE(u1.short_name, u2.short_name) AS unit, rm.characteristics AS item_char
      FROM production_issue_items pii
      LEFT JOIN ref_raw_materials rm ON pii.item_kind='raw' AND rm.id=pii.item_id
      LEFT JOIN ref_packaging pk ON pii.item_kind='packaging' AND pk.id=pii.item_id
@@ -834,7 +837,8 @@ router.get('/api/writeoff/list', async (req, res) => {
         WHERE w.moved_at BETWEEN $1 AND $2 ORDER BY w.moved_at DESC, w.id DESC`, [from, to])).rows;
     const ids = docs.map((d) => d.id);
     const items = ids.length ? (await db.pool.query(
-      `SELECT i.*, COALESCE(rm.name, pk.name) AS name, COALESCE(ur.short_name, up.short_name) AS unit
+      `SELECT i.*, COALESCE(rm.name, pk.name) AS name, COALESCE(ur.short_name, up.short_name) AS unit,
+              rm.characteristics AS item_char
          FROM stock_writeoff_items i
          LEFT JOIN ref_raw_materials rm ON i.item_kind='raw' AND rm.id = i.item_id
          LEFT JOIN ref_packaging pk ON i.item_kind='packaging' AND pk.id = i.item_id

@@ -372,16 +372,16 @@ router.get('/api/orders-export.xlsx', async (req, res) => {
     });
     const wb = XLSX.utils.book_new();
     const sh = XLSX.utils.aoa_to_sheet([
-      ['Дата приёмки', 'Наименование сырья', 'Ед. изм.', 'Количество', 'Цена', 'Сумма', 'Вид', 'Поставщик', 'Заявка'],
+      ['Дата приёмки', 'Наименование сырья', 'Характеристика', 'Ед. изм.', 'Количество', 'Цена', 'Сумма', 'Вид', 'Поставщик', 'Заявка'],
       ...rows.map((r) => {
         const qty = Number(r.qty) || 0;
         const price = r.price === null ? null : Number(r.price);
-        return [r.day, r.name, r.unit || '', qty,
+        return [r.day, r.name, r.characteristics || '', r.unit || '', qty,
           price === null ? '' : price, price === null ? '' : Math.round(qty * price),
           r.reason === 'receive_waste' ? 'Отход' : 'Сырьё', r.supplier || '', r.order_no || ''];
       }),
     ]);
-    sh['!cols'] = [{ wch: 13 }, { wch: 34 }, { wch: 9 }, { wch: 12 }, { wch: 12 }, { wch: 14 },
+    sh['!cols'] = [{ wch: 13 }, { wch: 28 }, { wch: 46 }, { wch: 9 }, { wch: 12 }, { wch: 12 }, { wch: 14 },
       { wch: 9 }, { wch: 26 }, { wch: 14 }];
     XLSX.utils.book_append_sheet(wb, sh, 'Принятые заявки');
     const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
@@ -515,13 +515,16 @@ router.get('/api/materials', async (req, res) => {
   }
   const r = await db.pool.query(
     `WITH mats AS (
-       SELECT 'raw' AS kind, rm.id, rm.code, rm.name, u.short_name AS unit, c.name AS category
+       -- Характеристика сорта: в списке выбора по одному «Рукола 2» не понять,
+       -- какая это из трёх. Описания давно заведены в справочнике сырья.
+       SELECT 'raw' AS kind, rm.id, rm.code, rm.name, u.short_name AS unit, c.name AS category,
+              rm.characteristics
        FROM ref_raw_materials rm
        LEFT JOIN ref_units u ON u.id = rm.unit_id
        LEFT JOIN ref_categories c ON c.id = rm.category_id
        WHERE rm.status = 'active' AND rm.is_waste = false
        UNION ALL
-       SELECT 'packaging', pk.id, pk.code, pk.name, u.short_name, c.name
+       SELECT 'packaging', pk.id, pk.code, pk.name, u.short_name, c.name, NULL
        FROM ref_packaging pk
        LEFT JOIN ref_units u ON u.id = pk.unit_id
        LEFT JOIN ref_categories c ON c.id = pk.category_id
@@ -575,8 +578,8 @@ router.get('/api/filter-options', async (req, res) => {
     "SELECT id, name, color FROM ref_parent_categories WHERE status = 'active' ORDER BY name"
   );
   const items = await db.pool.query(
-    `SELECT 'raw' AS kind, id, code, name FROM ref_raw_materials WHERE status='active'
-     UNION ALL SELECT 'packaging', id, code, name FROM ref_packaging WHERE status='active'
+    `SELECT 'raw' AS kind, id, code, name, characteristics FROM ref_raw_materials WHERE status='active'
+     UNION ALL SELECT 'packaging', id, code, name, NULL FROM ref_packaging WHERE status='active'
      ORDER BY name`
   );
   // Статьи ДДС из Кассы (для присвоения поставщику) — ВСЕ активные (не только группа «Сырьё»),
@@ -842,8 +845,8 @@ router.get('/api/spec-products', async (req, res) => {
   if (q) { params.push('%' + q + '%'); qSQL = ` AND (m.name ILIKE $1 OR m.code ILIKE $1)`; }
   const r = await db.pool.query(
     `WITH mats AS (
-       SELECT 'raw' AS kind, id, code, name FROM ref_raw_materials WHERE status='active'
-       UNION ALL SELECT 'packaging', id, code, name FROM ref_packaging WHERE status='active'
+       SELECT 'raw' AS kind, id, code, name, characteristics FROM ref_raw_materials WHERE status='active'
+       UNION ALL SELECT 'packaging', id, code, name, NULL FROM ref_packaging WHERE status='active'
      )
      SELECT m.*, s.id AS spec_id,
             (SELECT COUNT(*) FROM specification_params sp WHERE sp.spec_id = s.id)::int AS param_count

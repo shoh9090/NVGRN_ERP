@@ -185,3 +185,7 @@
 .pur-pager-btns{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .pur-pager .pur-tbtn:disabled{opacity:.45;cursor:default}
 .pur-pager .pur-tbtn:disabled:hover{background:#fff;border-color:#cdd6cc}
+
+/* Характеристика сорта под названием сырья. Серым и мельче: это подсказка,
+   а не второе название — глаз должен цепляться за товар, а не за описание. */
+.pur-char{font-size:12px;color:var(--ink-faint,#8a8878);line-height:1.35;margin-top:2px;max-width:420px}

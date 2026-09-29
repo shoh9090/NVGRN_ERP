@@ -79,3 +79,6 @@
 /* инвентаризация: мини-кнопки действий */
 .inv-mini{font-size:12px;padding:4px 8px;border:1px solid var(--line);background:var(--surface);border-radius:8px;cursor:pointer;white-space:nowrap}
 .inv-mini:hover{border-color:var(--lime-d);background:var(--lime-soft)}
+
+/* Характеристика сорта под названием сырья — см. .pur-char в Закупе. */
+.stk-char{font-size:12px;color:var(--ink-faint,#8a8878);line-height:1.35;margin-top:2px;max-width:420px}

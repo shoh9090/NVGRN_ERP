@@ -29,6 +29,21 @@
     return data;
   }
 
+  // Характеристика сорта под названием сырья. У рукколы, шпината, романо и
+  // базилика по две-три карточки, и по названию «Рукола 2» их не различить.
+  // Описания давно лежали в справочнике, но на рабочих экранах не показывались.
+  function charNote(text) {
+    const s = String(text || '').trim();
+    if (!s) return null;
+    return el('div', { class: 'pur-char', title: s }, s);
+  }
+  // Для <option>: вложенные элементы там не работают, поэтому подрезаем.
+  function charShort(text, max) {
+    const s = String(text || '').trim();
+    if (!s) return '';
+    return ' · ' + (s.length > (max || 45) ? s.slice(0, (max || 45) - 1) + '…' : s);
+  }
+
   function toast(msg, isErr) {
     const t = el('div', { class: 'toast' + (isErr ? ' toast-err' : '') }, msg);
     document.body.appendChild(t);
@@ -422,7 +437,10 @@
         });
         return el('tr', { class: entered[key] ? 'oe-row-on' : '' }, [
           el('td', { class: 'tnum' }, m.code || ''),
-          el('td', { style: 'font-weight:600' }, m.name + (m.kind === 'packaging' ? ' 📦' : '')),
+          el('td', {}, [
+            el('div', { style: 'font-weight:600' }, m.name + (m.kind === 'packaging' ? ' 📦' : '')),
+            charNote(m.characteristics),
+          ]),
           el('td', {}, m.unit || ''),
           el('td', { class: 'tnum muted' }, m.stock > 0 ? fmt.format(Number(m.stock)) : '—'),
           el('td', {}, qtyIn),
@@ -704,7 +722,8 @@
       mats = (await api('/materials?supplier_id=' + (supSel.value || 0))).items || [];
       matSel.innerHTML = '';
       matSel.appendChild(el('option', { value: '' }, '— выбрать товар —'));
-      mats.forEach((mm) => matSel.appendChild(el('option', { value: mm.kind + ':' + mm.id }, mm.name + (mm.kind === 'packaging' ? ' 📦' : '') + (mm.unit ? ' (' + mm.unit + ')' : ''))));
+      mats.forEach((mm) => matSel.appendChild(el('option', { value: mm.kind + ':' + mm.id, title: mm.characteristics || null },
+        mm.name + (mm.kind === 'packaging' ? ' 📦' : '') + charShort(mm.characteristics) + (mm.unit ? ' (' + mm.unit + ')' : ''))));
     }
     const addQty = el('input', { type: 'number', step: 'any', min: '0', placeholder: 'кол-во', style: 'width:90px;text-align:right' });
     const addPrice = el('input', { type: 'number', step: 'any', min: '0', placeholder: 'цена', style: 'width:100px;text-align:right' });
@@ -1113,7 +1132,10 @@
           return el('tr', {}, [
             el('td', { style: 'width:34px' }, cb),
             el('td', { class: 'tnum' }, m.code || ''),
-            el('td', { style: 'font-weight:600' }, m.name + (m.kind === 'packaging' ? ' 📦' : '')),
+            el('td', {}, [
+              el('div', { style: 'font-weight:600' }, m.name + (m.kind === 'packaging' ? ' 📦' : '')),
+              charNote(m.characteristics),
+            ]),
             el('td', {}, m.unit || ''),
           ]);
         });
@@ -1815,7 +1837,10 @@
       el('tbody', {}, data.items.map((m) =>
         el('tr', { onclick: () => openSpecEditor(m) }, [
           el('td', { class: 'tnum muted' }, m.code || ''),
-          el('td', { style: 'font-weight:600' }, m.name + (m.kind === 'packaging' ? ' 📦' : '')),
+          el('td', {}, [
+            el('div', { style: 'font-weight:600' }, m.name + (m.kind === 'packaging' ? ' 📦' : '')),
+            charNote(m.characteristics),
+          ]),
           el('td', { class: 'tnum' }, m.param_count ? String(m.param_count) : '—'),
           el('td', { style: 'text-align:right' }, el('button', {}, m.param_count ? 'Изменить' : '+ Задать')),
         ])

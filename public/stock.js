@@ -35,6 +35,16 @@
     setTimeout(() => t.classList.add('show'), 10);
     setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 300); }, 4000);
   }
+  // Характеристика сорта под названием сырья. У рукколы, шпината, романо и
+  // базилика по две-три карточки, различить их по названию («Рукола 2»)
+  // нельзя — описание лежало в справочнике и на рабочих экранах не показывалось.
+  // Пусто — ничего не рисуем, чтобы не плодить пустые строки у овощей.
+  function charNote(text) {
+    const s = String(text || '').trim();
+    if (!s) return null;
+    return el('div', { class: 'stk-char', title: s }, s);
+  }
+
   function modal(title, bodyNode, actions) {
     const root = $('#stk-modal-root');
     root.innerHTML = '';
@@ -205,7 +215,10 @@
           const inp = el('input', { type: 'number', step: 'any', min: '0', class: 'stk-fact', style: 'width:120px', placeholder: '0' });
           qtyInputs[i.id] = inp;
           return el('div', { style: 'display:flex;align-items:center;gap:10px;margin-bottom:8px' }, [
-            el('span', { style: 'flex:1;font-weight:600' }, i.item_name),
+            el('div', { style: 'flex:1' }, [
+              el('div', { style: 'font-weight:600' }, i.item_name),
+              charNote(i.item_char),
+            ]),
             inp, el('span', { class: 'muted' }, i.unit || ''),
           ]);
         }));
@@ -253,7 +266,10 @@
       });
       inputs[i.id] = { inp, plan: Number(i.plan_qty) };
       rowsNodes.push(el('tr', {}, [
-        el('td', { style: 'font-weight:600;font-size:16px' }, i.item_name + (i.item_code ? ' (' + i.item_code + ')' : '')),
+        el('td', {}, [
+          el('div', { style: 'font-weight:600;font-size:16px' }, i.item_name + (i.item_code ? ' (' + i.item_code + ')' : '')),
+          charNote(i.item_char),
+        ]),
         el('td', { class: 'tnum', style: 'font-size:16px' }, fmtQty(i.plan_qty)),
         el('td', {}, [inp, overHint]),
         el('td', {}, i.unit || ''),
@@ -435,7 +451,10 @@
           },
         });
         return el('tr', {}, [
-          el('td', { style: 'font-weight:600;font-size:15px' }, m.name + (m.kind === 'packaging' ? ' 📦' : '')),
+          el('td', {}, [
+            el('div', { style: 'font-weight:600;font-size:15px' }, m.name + (m.kind === 'packaging' ? ' 📦' : '')),
+            charNote(m.characteristics),
+          ]),
           el('td', { class: 'tnum muted' }, m.code || ''),
           el('td', { class: 'tnum' }, fmtQty(m.balance)),
           el('td', { class: 'tnum', style: 'color:var(--amber-d,#b9770a)' }, Number(m.in_transit) ? fmtQty(m.in_transit) : '—'),
@@ -969,7 +988,7 @@
           w.supplier_claim ? el('div', { class: 'muted', style: 'font-size:12px' }, 'предъявлено поставщику') : null,
           w.comment ? el('div', { class: 'muted', style: 'font-size:12px' }, w.comment) : null,
         ]),
-        el('td', {}, w.items.map((i) => el('div', { style: 'font-size:13px' },
+        el('td', {}, w.items.map((i) => el('div', { style: 'font-size:13px', title: i.item_char || null },
           i.name + ' — ' + fmtQty(i.qty) + ' ' + (i.unit || '')
           + (i.price ? '' : '  (нет цены прихода)')))),
         el('td', { class: 'tnum' }, fmtQty(w.qty)),
@@ -998,8 +1017,14 @@
       [el('option', { value: '' }, '— статья списания —')]
         .concat(woReasons.map((r) => el('option', { value: r.id }, r.name))));
     const itemSel = el('select', { class: 'hrf-inp', style: 'flex:1;min-width:220px' },
-      [el('option', { value: '' }, '— позиция —')].concat(avail.items.map((m) =>
-        el('option', { value: m.kind + '|' + m.id }, m.name + ' (есть ' + fmtQty(m.balance) + ' ' + (m.unit || '') + ')'))));
+      // В <option> вложенные элементы не работают, поэтому характеристику
+      // вписываем в ту же строку и подрезаем: длинная сделала бы список нечитаемым.
+      [el('option', { value: '' }, '— позиция —')].concat(avail.items.map((m) => {
+        const c = String(m.characteristics || '').trim();
+        const short = c.length > 45 ? c.slice(0, 44) + '…' : c;
+        return el('option', { value: m.kind + '|' + m.id, title: c || null },
+          m.name + (short ? ' · ' + short : '') + ' (есть ' + fmtQty(m.balance) + ' ' + (m.unit || '') + ')');
+      })));
     const qtyInp = el('input', { class: 'hrf-inp', type: 'number', step: '0.01', min: '0', placeholder: 'кол-во', style: 'width:110px' });
     const list = el('div', { style: 'margin:8px 0' });
     const comment = el('input', { class: 'hrf-inp', placeholder: 'Комментарий (что случилось)' });
@@ -1015,7 +1040,7 @@
       list.innerHTML = '';
       if (!picked.length) { list.appendChild(el('div', { class: 'muted' }, 'Позиции не добавлены.')); return; }
       picked.forEach((p, i) => list.appendChild(el('div', { style: 'display:flex;gap:8px;align-items:center;padding:4px 0;border-bottom:0.5px solid var(--line,#e3e0d4)' }, [
-        el('span', { style: 'flex:1' }, p.name),
+        el('div', { style: 'flex:1' }, [el('div', {}, p.name), charNote(p.char)]),
         el('b', {}, fmtQty(p.qty) + ' ' + (p.unit || '')),
         el('button', { class: 'inv-mini', onclick: () => { picked.splice(i, 1); drawList(); } }, '✕'),
       ])));
@@ -1029,7 +1054,7 @@
       const m = avail.items.find((x) => x.kind === kind && String(x.id) === id);
       if (!m) return;
       if (qty > Number(m.balance)) return toast('На складе всего ' + fmtQty(m.balance) + ' ' + (m.unit || ''), true);
-      picked.push({ item_kind: kind, item_id: Number(id), name: m.name, unit: m.unit, qty });
+      picked.push({ item_kind: kind, item_id: Number(id), name: m.name, char: m.characteristics, unit: m.unit, qty });
       qtyInp.value = ''; itemSel.value = ''; drawList();
     } }, '+ Добавить');
 
