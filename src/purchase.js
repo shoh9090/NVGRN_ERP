@@ -355,6 +355,42 @@ router.get('/api/fx-rate', async (req, res) => {
   catch (e) { res.json({ date, rate: null }); }
 });
 // Экспорт Взаиморасчётов в Excel с учётом фильтров и выбранных столбцов.
+// Выгрузка принятых заявок построчно, с ценами. Отличается от такой же выгрузки
+// в Складе только колонками цены и суммы: строки берём тем же запросом
+// (stock.receiptRows), чтобы два файла не могли разойтись. Цены живут здесь,
+// а не в Складе, потому что здесь и доступ правильный — зав складу они ни к чему.
+router.get('/api/orders-export.xlsx', async (req, res) => {
+  const XLSX = require('xlsx');
+  const stock = require('./stock');
+  const d = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? v : null);
+  const from = d(req.query.from) || new Date().toISOString().slice(0, 8) + '01';
+  const to = d(req.query.to) || new Date().toISOString().slice(0, 10);
+  const num = (v) => (/^\d+$/.test(String(v || '')) ? Number(v) : null);
+  try {
+    const rows = await stock.receiptRows({
+      from, to, item: num(req.query.item), supplier: num(req.query.supplier),
+    });
+    const wb = XLSX.utils.book_new();
+    const sh = XLSX.utils.aoa_to_sheet([
+      ['Дата приёмки', 'Наименование сырья', 'Ед. изм.', 'Количество', 'Цена', 'Сумма', 'Вид', 'Поставщик', 'Заявка'],
+      ...rows.map((r) => {
+        const qty = Number(r.qty) || 0;
+        const price = r.price === null ? null : Number(r.price);
+        return [r.day, r.name, r.unit || '', qty,
+          price === null ? '' : price, price === null ? '' : Math.round(qty * price),
+          r.reason === 'receive_waste' ? 'Отход' : 'Сырьё', r.supplier || '', r.order_no || ''];
+      }),
+    ]);
+    sh['!cols'] = [{ wch: 13 }, { wch: 34 }, { wch: 9 }, { wch: 12 }, { wch: 12 }, { wch: 14 },
+      { wch: 9 }, { wch: 26 }, { wch: 14 }];
+    XLSX.utils.book_append_sheet(wb, sh, 'Принятые заявки');
+    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="prinyato_${from}_${to}.xlsx"`);
+    res.send(buf);
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 router.get('/api/settlements-export.xlsx', async (req, res) => {
   try {
     const XLSX = require('xlsx');

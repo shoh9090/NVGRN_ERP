@@ -350,6 +350,32 @@ router.delete('/api/reasons/:id(\\d+)', async (req, res) => {
 // Отход («<товар> отх», цена 0) — отдельной колонкой «Вид»: он тоже приход и
 // тоже занимает место на складе, но это не купленный вес, и складывать их в
 // одну сумму нельзя.
+//
+// Строки приёмок за период — ОДИН запрос на две выгрузки: здесь без цен
+// (складу они не нужны и видеть их ему незачем) и в Закупе с ценами.
+// Два отдельных запроса рано или поздно разошлись бы на пару строк, и никто
+// не смог бы сказать, какой файл правильный.
+async function receiptRows({ from, to, item, supplier }) {
+  const p = [from, to];
+  let w = '';
+  // Выбран товар — берём и его отход тоже: «Айсберг отх» это тот же айсберг,
+  // и в выгрузке по айсбергу он должен быть виден.
+  if (item) { p.push(item); w += ` AND (rm.id = $${p.length} OR rm.waste_of_id = $${p.length})`; }
+  if (supplier) { p.push(supplier); w += ` AND po.supplier_id = $${p.length}`; }
+  return (await db.pool.query(
+    `SELECT to_char(m.moved_at,'DD.MM.YYYY') AS day, rm.name, u.short_name AS unit,
+            m.qty, m.price, m.reason, po.number AS order_no, c.name AS supplier
+       FROM stock_movements m
+       JOIN ref_raw_materials rm ON rm.id = m.item_id
+       LEFT JOIN ref_units u ON u.id = rm.unit_id
+       LEFT JOIN purchase_orders po ON m.ref_type = 'purchase_order' AND po.id = m.ref_id
+       LEFT JOIN ref_counterparties c ON c.id = po.supplier_id
+      WHERE m.item_kind = 'raw' AND m.direction = 'in'
+        AND m.reason IN ('receive', 'receive_waste')
+        AND m.moved_at BETWEEN $1::date AND $2::date${w}
+      ORDER BY m.moved_at, rm.name`, p)).rows;
+}
+
 // Что предлагать в фильтре выгрузки. Не весь справочник сырья, а только то,
 // что хоть раз принимали: список из полусотни позиций, половина которых никогда
 // не приходила, искать в нём мучительно. Карточки отхода прячем — отход
@@ -372,25 +398,9 @@ router.get('/api/receipts/export.xlsx', async (req, res) => {
   const d = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? v : null);
   const from = d(req.query.from) || new Date().toISOString().slice(0, 8) + '01';
   const to = d(req.query.to) || new Date().toISOString().slice(0, 10);
-  // Выбран товар — берём и его отход тоже: «Айсберг отх» это тот же айсберг,
-  // и в выгрузке по айсбергу он должен быть виден.
   const item = /^\d+$/.test(String(req.query.item || '')) ? Number(req.query.item) : null;
-  const p = [from, to];
-  let itemW = '';
-  if (item) { p.push(item); itemW = ` AND (rm.id = $${p.length} OR rm.waste_of_id = $${p.length})`; }
   try {
-    const rows = (await db.pool.query(
-      `SELECT to_char(m.moved_at,'DD.MM.YYYY') AS day, rm.name, u.short_name AS unit,
-              m.qty, m.reason, po.number AS order_no, c.name AS supplier
-         FROM stock_movements m
-         JOIN ref_raw_materials rm ON rm.id = m.item_id
-         LEFT JOIN ref_units u ON u.id = rm.unit_id
-         LEFT JOIN purchase_orders po ON m.ref_type = 'purchase_order' AND po.id = m.ref_id
-         LEFT JOIN ref_counterparties c ON c.id = po.supplier_id
-        WHERE m.item_kind = 'raw' AND m.direction = 'in'
-          AND m.reason IN ('receive', 'receive_waste')
-          AND m.moved_at BETWEEN $1::date AND $2::date${itemW}
-        ORDER BY m.moved_at, rm.name`, p)).rows;
+    const rows = await receiptRows({ from, to, item });
     const wb = XLSX.utils.book_new();
     const sh = XLSX.utils.aoa_to_sheet([
       ['Дата приёмки', 'Наименование сырья', 'Ед. изм.', 'Количество', 'Вид', 'Поставщик', 'Заявка'],
@@ -992,3 +1002,6 @@ router.post('/api/writeoff/:id(\\d+)/cancel', express.json(), async (req, res) =
 
 module.exports = router;
 module.exports.applySpecVerdict = applySpecVerdict;
+// Строки приёмок отдаём Закупу: там та же выгрузка, но с ценами. Источник
+// обязан быть один, иначе два файла разойдутся и не выяснить, какой верный.
+module.exports.receiptRows = receiptRows;

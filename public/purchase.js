@@ -119,6 +119,7 @@
       // Итог держим в той же строке и прижимаем вправо: раньше он жил
       // отдельной полосой, и его перекрывала выпадашка товаров.
       el('div', { id: 'ord-total', class: 'pur-bar-total' }, ''),
+      el('button', { class: 'pur-tbtn', onclick: openReceiptsExport, title: 'Принятое сырьё построчно, с ценами' }, '📥 Выгрузить принятое'),
       el('button', { class: 'btn-primary', onclick: () => openOrderEditor(null) }, '+ Новая заявка'),
       // Кнопки «Очистить все заявки» здесь больше нет: она стирала всю историю
       // закупок одним нажатием и стояла рядом с обычными фильтрами.
@@ -126,6 +127,44 @@
     main.appendChild(ordStatus);
     main.appendChild(el('div', { id: 'ord-list', class: 'pur-content' }));
     await loadOrders();
+  }
+
+  // Выгрузка принятого сырья за период — построчно, с ценами. Экран заявок
+  // живёт списком документов, а вопрос «сколько и почём приняли за месяц»
+  // отвечается по строкам, поэтому период и фильтры спрашиваем в окне.
+  // Тот же файл без цен есть в Складе сырья: строки берутся одним запросом,
+  // поэтому разойтись они не могут.
+  function openReceiptsExport() {
+    const st = { from: new Date().toISOString().slice(0, 8) + '01', to: new Date().toISOString().slice(0, 10), item: '', supplier: '' };
+    const supSel = el('select', { onchange: (e) => { st.supplier = e.target.value; } },
+      [el('option', { value: '' }, 'Все поставщики')]
+        .concat(FOPTS.suppliers.map((s) => el('option', { value: s.id }, s.name))));
+    // Только сырьё: в общем списке фильтров лежит ещё и упаковка, а id у них
+    // свои в каждом справочнике — упаковка с тем же номером дала бы чужие строки.
+    const itemSel = el('select', { onchange: (e) => { st.item = e.target.value; } },
+      [el('option', { value: '' }, 'Все товары')]
+        .concat(FOPTS.items.filter((i) => i.kind === 'raw')
+          .map((i) => el('option', { value: i.id }, i.name))));
+    const body = el('div', {}, [
+      el('p', { style: 'margin:0 0 10px;font-size:13px;color:#5b655b' },
+        'Выгрузится принятое сырьё построчно: дата приёмки, наименование, единица измерения, '
+        + 'количество, цена и сумма. Берётся из приёмок — откатили приёмку, строки не будет. '
+        + 'Отход помечен в колонке «Вид».'),
+      el('div', { class: 'pur-bar' }, [HubDateRange.create({
+        mode: 'range', from: st.from, to: st.to,
+        onChange: (v) => { st.from = v.from; st.to = v.to; },
+      }), supSel, itemSel]),
+    ]);
+    const m = modal('📥 Выгрузить принятое', body, [
+      el('button', { class: 'pur-tbtn', onclick: () => m.close() }, 'Отмена'),
+      el('button', { class: 'btn-primary', onclick: () => {
+        const p = new URLSearchParams({ from: st.from, to: st.to });
+        if (st.item) p.set('item', st.item);
+        if (st.supplier) p.set('supplier', st.supplier);
+        window.location = '/purchase/api/orders-export.xlsx?' + p.toString();
+        m.close();
+      } }, 'Скачать Excel'),
+    ]);
   }
 
   // Массовое удаление заявок из интерфейса убрано: одно нажатие стирало всю
