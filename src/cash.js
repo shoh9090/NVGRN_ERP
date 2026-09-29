@@ -1705,28 +1705,40 @@ setInterval(() => { salesAutoTick().catch((e) => console.warn('[КАССА] ав
 // Оплаты сажаются в CRM руками и из ERP, и раз в несколько дней что-то теряется:
 // 21–23.09.2026 разошлись три дня подряд, самый крупный — на 8,8 млн. Пока никто
 // не сверяет день целиком, это видно только случайно и спустя месяц.
-// Считаем две цифры за день: приходы от клиентов в банке (статья 200) и «живые»
-// оплаты клиентов в CRM. Совпали — вопросов нет.
-async function sdDayTotals(date) {
-  const b = (await db.pool.query(
-    `SELECT COALESCE(SUM(t.amount), 0) AS s, COUNT(*)::int AS n
-       FROM cash_transactions t JOIN cash_categories c ON c.id = t.category_id
-      WHERE t.tx_type = 'in' AND c.code = '200' AND t.source <> 'opening'
-        AND t.tx_date = $1::date`, [date])).rows[0] || { s: 0, n: 0 };
-  const p = await integrations.getPayments(date, date);
-  const crm = p.items.filter((x) => x.kind === SD_TX_CLIENT_PAYMENT);
-  return {
-    date, bank: Number(b.s) || 0, bank_n: b.n || 0,
-    crm: crm.reduce((s, x) => s + x.amount, 0), crm_n: crm.length,
-  };
+// Сигнал — НЕ разница сумм за день. Проверено на сентябре: оплату отмечают в
+// CRM вечером, а в банк она падает утром, и день расходится сам собой — 2 и 3
+// сентября разошлись ровно на одну и ту же сумму 16 688 600 в разные стороны.
+// По сумме уведомление приходило бы почти каждое утро, и его перестали бы
+// читать. Поэтому считаем поимённо: какие оплаты из выписки не нашлись в CRM,
+// с запасом в сутки в обе стороны. На тех же данных запас убрал ложные срабатывания
+// 2, 7 и 9 сентября и оставил настоящие — там, где оплаты правда не посадили.
+// Запас нужен ТОЛЬКО для сигнала: отправкой по-прежнему занимается разбор дня,
+// у него окно строгое, иначе он принял бы вчерашнюю оплату за сегодняшнюю.
+async function sdDayTodo(date) {
+  const plan = await sdPaymentsPlan(date);
+  const todo = plan.items.filter((x) => ['ready', 'manual', 'check'].includes(x.state));
+  const noBank = !plan.items.length;
+  if (!todo.length) return { date, todo: [], noBank, crm_n: (plan.crm || []).length };
+  const shift = (k) => new Date(new Date(date + 'T00:00:00Z').getTime() + k * 86400000).toISOString().slice(0, 10);
+  let near = [];
+  try {
+    const p = await integrations.getPayments(shift(-1), shift(1));
+    near = p.items.filter((x) => x.kind === SD_TX_CLIENT_PAYMENT && x.date !== date);
+  } catch (e) { /* соседние дни не достались — тогда просто без запаса */ }
+  const left = todo.filter((t) => {
+    const ids = [t.contragent_sd, t.client_sd].concat(t.points || []).filter(Boolean).map(String);
+    return !near.some((c) => Math.abs(c.amount - t.amount) < 1
+      && (ids.includes(String(c.client_sd)) || ids.includes(String(c.contragent_sd))));
+  });
+  return { date, todo: left, noBank, crm_n: (plan.crm || []).length };
 }
 
 const sumRu = (v) => Math.round(Number(v) || 0).toLocaleString('ru-RU').replace(/ /g, ' ');
 
-// Утром в 9:00 по Ташкенту сверяем два предыдущих дня: выписку часто загружают
-// вечером или на следующий день, и сверять только вчерашний день мало.
-// Когда сошлось — МОЛЧИМ. Уведомление «всё хорошо» каждый день перестают читать
-// через неделю, а на экране Кассы сверка по дням видна и так, в любой момент.
+// Утром в 9:00 по Ташкенту проверяем два предыдущих дня: выписку часто загружают
+// вечером или на следующий день, и смотреть только вчерашний мало.
+// Когда всё посажено — МОЛЧИМ. Уведомление «всё хорошо» каждый день перестают
+// читать через неделю, а сверка по дням на экране Кассы видна и так, в любой момент.
 async function sdReconcileTick() {
   const now = new Date(Date.now() + 5 * 3600000);                 // Ташкент
   if (now.getUTCHours() !== 9) return;
@@ -1737,30 +1749,31 @@ async function sdReconcileTick() {
   for (let back = 1; back <= 2; back++) {
     const d = new Date(now.getTime() - back * 86400000).toISOString().slice(0, 10);
     try {
-      const r = await sdDayTotals(d);
-      if (!r.bank_n && !r.crm_n) continue;                        // выходной — говорить не о чем
+      const r = await sdDayTodo(d);
       const ru = d.split('-').reverse().join('.');
       // Выписки нет — это не расхождение, а несделанная работа. Формулировка
       // важна: иначе человек идёт искать «пропавшие» деньги, которых нет.
-      if (!r.bank_n) {
+      if (r.noBank) {
+        if (!r.crm_n) continue;                                   // выходной — говорить не о чем
         await notify({
           tile: '/cash', kind: 'warn', link: '/cash#tx',
           title: 'Выписка за ' + ru + ' не загружена',
-          body: 'В SalesDoctor за этот день ' + r.crm_n + ' оплат на ' + sumRu(r.crm)
-            + ' сум, а приходов в Кассе нет — сверить не с чем.',
+          body: 'В SalesDoctor за этот день ' + r.crm_n + ' оплат, а приходов в Кассе нет — сверить не с чем.',
         });
         continue;
       }
-      const diff = Math.round(r.bank - r.crm);
-      if (Math.abs(diff) < 1) continue;                           // сошлось
+      if (!r.todo.length) continue;                               // всё посажено
+      const sum = r.todo.reduce((s, x) => s + x.amount, 0);
+      // Имена в теле, а не только счётчик: по ним сразу видно, своя это работа
+      // или разбираться с CRM. Больше трёх не перечисляем — остальное на экране.
+      const who = r.todo.slice(0, 3)
+        .map((x) => (x.client || x.payer_name || 'без плательщика') + ' — ' + sumRu(x.amount))
+        .join('; ');
       await notify({
         tile: '/cash', kind: 'warn', link: '/cash#tx',
-        title: 'Сверка за ' + ru + ': расхождение ' + sumRu(Math.abs(diff)) + ' сум',
-        body: 'В банке ' + r.bank_n + ' на ' + sumRu(r.bank) + ' сум, в SalesDoctor '
-          + r.crm_n + ' на ' + sumRu(r.crm) + ' сум. '
-          + (diff > 0
-            ? 'В банке больше — похоже, часть оплат не посажена в CRM. Откройте «Оплаты в SalesDoctor» за этот день.'
-            : 'В CRM больше — это наличные, другой счёт или лишняя запись в CRM. ERP тут только показывает.'),
+        title: 'За ' + ru + ' не посажено оплат: ' + r.todo.length + ' на ' + sumRu(sum) + ' сум',
+        body: who + (r.todo.length > 3 ? ' и ещё ' + (r.todo.length - 3) : '')
+          + '. Откройте «Оплаты в SalesDoctor» за этот день.',
       });
     } catch (e) { console.warn('[КАССА] сверка за ' + d + ' не прошла:', e.message); }
   }
