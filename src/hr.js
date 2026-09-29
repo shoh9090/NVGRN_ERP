@@ -1573,10 +1573,19 @@ router.get('/api/timesheet', async (req, res) => {
       days.push({ d: String(i).padStart(2, '0'), n: i, dow: dn[dt.getUTCDay()], weekend: dt.getUTCDay() === 0 });
     }
 
-    // Утверждение табеля — по одному отделу. Показываем его, только когда выбран
-    // ровно один отдел: иначе непонятно, чей табель утверждён.
+    // Утверждение табеля, прогноз и лимит — по одному отделу. Показываем их,
+    // только когда отдел понятен: иначе непонятно, чей табель утверждён и чей
+    // ФОТ прогнозируем.
+    // Отдел берём из фильтра, а если фильтр пуст — из привязки человека к
+    // отделу. Начальник производства привязан ровно к одному отделу, и именно
+    // для него прогноз с лимитом и делались, но он их не видел: фильтр по
+    // умолчанию пуст, отдел не определялся, и блок просто не появлялся.
     const one = String(req.query.department || '').split(',').filter(Boolean);
-    const dept = (one.length === 1 && /^\d+$/.test(one[0])) ? Number(one[0]) : null;
+    let dept = (one.length === 1 && /^\d+$/.test(one[0])) ? Number(one[0]) : null;
+    if (!dept && !one.length) {
+      const sc = await hrScope(req);
+      if (sc && sc.size === 1) dept = [...sc][0];
+    }
     const sub = dept ? (await db.pool.query(
       'SELECT * FROM hr_timesheet_submits WHERE period=$1 AND department_id=$2', [period, dept])).rows[0] : null;
 
