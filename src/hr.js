@@ -342,6 +342,27 @@ async function recomputeAccrFact(empId, period) {
     `SELECT e.base_salary, e.schedule_type, pr.plan_days, pr.fact_days, pr.plan_hours, pr.fact_hours, pr.overtime_hours
      FROM hr_employees e LEFT JOIN hr_payroll pr ON pr.employee_id = e.id AND pr.period = $2 WHERE e.id = $1`, [empId, period])).rows[0];
   if (!r) return 0;
+  // Норма месяца задана один раз на график (hr_norms) — значит она относится и
+  // к тем, кого завели позже. Раньше нормы раздавала только кнопка «Заполнить
+  // нормы», и она проходила по сотрудникам, существовавшим В МОМЕНТ нажатия:
+  // заведённый после неё оставался без плана, а зарплата = оклад ÷ план × факт
+  // молча давала ноль. В сентябре 2026 так обнулились шестеро с отмеченным
+  // табелем. Плана нет — берём норму его графика и записываем; заданный план
+  // не трогаем, он мог быть выставлен человеку руками.
+  if (r.plan_days == null && r.plan_hours == null && r.schedule_type) {
+    const n = (await db.pool.query(
+      'SELECT plan_days, plan_hours FROM hr_norms WHERE period = $1 AND schedule_type = $2',
+      [period, r.schedule_type])).rows[0];
+    if (n && (n.plan_days != null || n.plan_hours != null)) {
+      await db.pool.query(
+        `INSERT INTO hr_payroll (employee_id, period, plan_days, plan_hours) VALUES ($1,$2,$3,$4)
+         ON CONFLICT (employee_id, period) DO UPDATE
+            SET plan_days = COALESCE(hr_payroll.plan_days, EXCLUDED.plan_days),
+                plan_hours = COALESCE(hr_payroll.plan_hours, EXCLUDED.plan_hours), updated_at = now()`,
+        [empId, period, n.plan_days, n.plan_hours]);
+      r.plan_days = n.plan_days; r.plan_hours = n.plan_hours;
+    }
+  }
   const effOklad = await effectiveOklad(empId, period, r.base_salary);
   const pay = computePay(Object.assign({}, r, { base_salary: effOklad }));
   await db.pool.query(
@@ -1486,10 +1507,16 @@ router.get('/api/timesheet', async (req, res) => {
       // Архив — состояние «убрать совсем», такие не показываются никогда.
       `SELECT e.id, e.full_name, e.schedule_type, e.base_salary, e.department_id, d.name AS department_name,
               e.status, to_char(e.fire_date,'YYYY-MM-DD') AS fire_date,
-              pr.plan_days, pr.plan_hours, pr.accr_fact, (pr.accrued_at IS NOT NULL) AS accrued
+              -- Плана у человека может ещё не быть (завели после «Заполнить
+              -- нормы»). Норма месяца задана на график и относится и к нему —
+              -- показываем её, чтобы в табеле не было пустой клетки и нуля.
+              COALESCE(pr.plan_days, n.plan_days) AS plan_days,
+              COALESCE(pr.plan_hours, n.plan_hours) AS plan_hours,
+              pr.accr_fact, (pr.accrued_at IS NOT NULL) AS accrued
          FROM hr_employees e
          LEFT JOIN hr_departments d ON d.id = e.department_id
          LEFT JOIN hr_payroll pr ON pr.employee_id = e.id AND pr.period = $1
+         LEFT JOIN hr_norms n ON n.period = $1 AND n.schedule_type = e.schedule_type
         WHERE e.status = 'active'
            OR (e.status = 'fired'
                AND (e.fire_date IS NULL OR to_char(e.fire_date,'YYYY-MM') >= $1))
