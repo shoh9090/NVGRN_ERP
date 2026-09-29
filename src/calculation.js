@@ -2020,6 +2020,19 @@ router.post('/api/sheet-product/:id(\\d+)', J, async (req, res) => {
     vals.push(req.params.id);
     await db.pool.query(
       `UPDATE calc_sheet_products SET ${sets.join(', ')} WHERE id = $${vals.length}`, vals);
+    // Возвращаем пересчитанный товар. Раньше отвечали просто «ок», и экран
+    // после каждой цифры загружал лист целиком и строил заново — отсюда
+    // мигание и прыжок к первому товару: таблице нечего было «помнить».
+    // Считать всё равно приходится, так что отдать результат ничего не стоит.
+    try {
+      const row = (await db.pool.query(
+        'SELECT sheet FROM calc_sheet_products WHERE id = $1', [req.params.id])).rows[0];
+      if (row && SHEETS[row.sheet]) {
+        const payload = await sheetPayload(row.sheet);
+        const p = (payload.products || []).find((x) => x.id === Number(req.params.id));
+        if (p) return res.json({ ok: true, product: p, base: payload.base || null });
+      }
+    } catch (e) { /* не смогли пересчитать — экран перезагрузит лист сам */ }
     res.json({ ok: true });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });

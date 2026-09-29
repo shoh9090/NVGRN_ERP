@@ -502,7 +502,13 @@ input.calc-cell:focus, input.calc-name:focus {
 /* Столбцов бывает восемь и больше, поэтому прокрутка по горизонтали здесь
    неизбежна. Первый столбец при этом остаётся на месте — иначе, докрутив до
    айсберга, уже не понять, какая это строка расчёта. */
-.calc-sku-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+/* Лист прокручивается внутри рамки, а не страницей: только так строка с
+   названиями товаров может «примерзать» сверху. Промотав к десятому салату
+   вниз, иначе не видно, чей это столбец. */
+.calc-sku-wrap {
+  overflow: auto; max-height: calc(100vh - 230px);
+  border: 1px solid var(--line); border-radius: 12px; background: var(--surface);
+}
 .calc-sku-t { border-collapse: separate; border-spacing: 0; font-size: 13px; width: 100%; }
 .calc-sku-t th, .calc-sku-t td {
   border-right: 1px solid var(--line); border-bottom: 1px solid var(--line);
@@ -546,7 +552,11 @@ input.calc-cell:focus, input.calc-name:focus {
 
 /* Шапка: название товара и штрих-код */
 .calc-sku-head th { background: var(--surface-2); padding: 7px 8px; text-align: left; vertical-align: top; }
-.calc-sku-head th { position: relative; }
+/* Шапка с названиями товаров держится сверху при вертикальной прокрутке.
+   Два левых столбца в ней приклеены и сверху, и слева — это угол таблицы,
+   поэтому слой выше остальных. */
+.calc-sku-head th { position: sticky; top: 0; z-index: 3; }
+.calc-sku-head th.calc-sku-h, .calc-sku-head th.calc-sku-u { z-index: 4; }
 .calc-sku-head input.calc-name { font-size: 12.5px; padding: 5px 6px; width: 100%; }
 .calc-sku-head .calc-del { position: absolute; top: 3px; right: 3px; }
 .calc-bar {

@@ -181,7 +181,9 @@
       const was = value === null || value === undefined ? null : Number(value);
       inp.value = v === null ? '' : fmtCell(v, opts);
       if (v === was) return;
-      try { await onSave(v); await load(); } catch (e) { toast(e.message, true); }
+      // Если сохранение само обновило экран (вернуло true) — не перезагружаем
+      // лист: именно эта перезагрузка и отбрасывала к первому товару.
+      try { if (await onSave(v) !== true) await load(); } catch (e) { toast(e.message, true); }
     });
     inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') inp.blur(); });
     return inp;
@@ -1166,6 +1168,47 @@
 
   const save = (id, patch) => post('/sheet-product/' + id, patch);
 
+  // Сохранить ячейку и обновить экран, НЕ теряя места. Сервер возвращает
+  // пересчитанный товар, поэтому второй запрос за листом не нужен: подменяем
+  // товар в памяти и перерисовываем таблицу, вернув прокрутку и курсор.
+  // Раньше каждая цифра стоила двух запросов и полной перестройки листа —
+  // экран мигал и уезжал к первому товару, и приходилось мотать заново.
+  // Возвращает true, если экран уже обновлён — тогда вызывающему перезагружать
+  // лист не нужно. false значит «не получилось», и работает прежний путь.
+  async function saveCell(id, patch) {
+    const r = await save(id, patch);
+    if (r && r.product && SKU && Array.isArray(SKU.products)) {
+      const i = SKU.products.findIndex((x) => x.id === r.product.id);
+      if (i >= 0) {
+        SKU.products[i] = r.product;
+        if (r.base) SKU.base = r.base;
+        keepView(render);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Перерисовать, оставшись на месте: запоминаем прокрутку таблицы и страницы
+  // и поле, в котором стоял курсор. Поля помечены data-cell, потому что после
+  // перерисовки это уже другие элементы — найти их можно только по имени.
+  function keepView(fn) {
+    const wrap = $('.calc-sku-wrap');
+    const sl = wrap ? wrap.scrollLeft : 0;
+    const st = wrap ? wrap.scrollTop : 0;
+    const py = window.scrollY;
+    const act = document.activeElement;
+    const key = act && act.dataset ? act.dataset.cell : null;
+    fn();
+    const w2 = $('.calc-sku-wrap');
+    if (w2) { w2.scrollLeft = sl; w2.scrollTop = st; }
+    window.scrollTo(0, py);
+    if (key) {
+      const n = document.querySelector('[data-cell="' + key + '"]');
+      if (n && n.focus) n.focus();
+    }
+  }
+
   // Ставка в процентах внутри ячейки товара: у мангольда брак 20%, у остальных 50%,
   // поэтому ставка живёт у каждого товара, а не одна на строку.
   function pctCell(value, onSave) {
@@ -1180,7 +1223,7 @@
       const v = clean();
       inp.value = money(v, 0);
       if (v === Number(value)) return;
-      try { await onSave(v); await load(); } catch (e) { toast(e.message, true); }
+      try { if (await onSave(v) !== true) await load(); } catch (e) { toast(e.message, true); }
     });
     inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') inp.blur(); });
     return el('span', { class: 'calc-rate' }, [inp, '%']);
@@ -1285,7 +1328,12 @@
         try { calc = cellHint(x, SKU); } catch (e) { calc = ''; }
         if (calc) t = hint ? hint + '\n\n' + calc : calc;
       }
-      return el('td', { 'data-hint': t }, cells(x));
+      const node = cells(x);
+      const td = el('td', { 'data-hint': t }, node);
+      // Помечаем поля ввода «товар + строка». После перерисовки это уже другие
+      // элементы, и вернуть курсор туда, где он стоял, можно только по метке.
+      td.querySelectorAll('input').forEach((i) => { i.dataset.cell = x.id + '|' + label; });
+      return td;
     })));
   }
 
@@ -1423,7 +1471,7 @@
       // Штучный товар не взвешивают — граммаж у него в расчёте не участвует,
       // и поле для ввода тут только сбивало бы с толку.
       x.unit_pcs ? el('span', { class: 'calc-dim' }, 'за штуку')
-        : cell(x.net_weight_g, (v) => save(x.id, { net_weight_g: v }), { dec: 'auto', placeholder: 'гр' }),
+        : cell(x.net_weight_g, (v) => saveCell(x.id, { net_weight_g: v }), { dec: 'auto', placeholder: 'гр' }),
       // Сверка с рецептурой: расхождение почти всегда означает опечатку в граммах.
       (x.recipe_id && x.net_weight_g && x.recipe_total_g && Math.abs(x.recipe_total_g - x.net_weight_g) > 1)
         ? el('div', { class: 'calc-warn-mini' }, 'рецептура даёт ' + numAuto(x.recipe_total_g) + ' гр')
@@ -1508,7 +1556,7 @@
         ]);
       }
       return el('div', {}, [
-        cell(x.raw_price_per_kg, (v) => save(x.id, { raw_price_per_kg: v }), { dec: 0, placeholder: 'цена/кг' }),
+        cell(x.raw_price_per_kg, (v) => saveCell(x.id, { raw_price_per_kg: v }), { dec: 0, placeholder: 'цена/кг' }),
         x.raw_material_id ? el('div', { class: 'calc-src-mini' }, 'в Закупе цены нет — «⋯» → указать вручную') : null,
       ]);
     }));
@@ -1516,15 +1564,15 @@
     // На уксусе сырьё — покупной концентрат, вводится суммой на бутылку.
     rows.push(skuRow(manualSheet ? 'Сырьё (концентрат на бутылку)' : 'зелень в упаковке', 'сум',
       (x) => (manualSheet
-        ? cell(x.raw_cost, (v) => save(x.id, { raw_cost: v }), { dec: 2, placeholder: 'сум' })
+        ? cell(x.raw_cost, (v) => saveCell(x.id, { raw_cost: v }), { dec: 2, placeholder: 'сум' })
         : auto(x.calc.components.raw))));
     if (manualSheet) {
       rows.push(skuRow('Упаковка (бутылка + этикетка)', 'сум',
-        (x) => cell(x.pack_cost, (v) => save(x.id, { pack_cost: v }), { dec: 2, placeholder: 'сум' })));
+        (x) => cell(x.pack_cost, (v) => saveCell(x.id, { pack_cost: v }), { dec: 2, placeholder: 'сум' })));
       rows.push(skuRow('Производ.затраты', 'сум',
-        (x) => cell(x.production_cost, (v) => save(x.id, { production_cost: v }), { dec: 2, placeholder: 'сум' })));
+        (x) => cell(x.production_cost, (v) => saveCell(x.id, { production_cost: v }), { dec: 2, placeholder: 'сум' })));
       rows.push(skuRow('ФОТ', 'сум',
-        (x) => cell(x.labor_cost, (v) => save(x.id, { labor_cost: v }), { dec: 2, placeholder: 'сум' })));
+        (x) => cell(x.labor_cost, (v) => saveCell(x.id, { labor_cost: v }), { dec: 2, placeholder: 'сум' })));
     }
 
     if (!manualSheet) rows.push(skuRow('Тип упаковки', '', (x) => {
@@ -1558,7 +1606,7 @@
       // поэтому на штуку приходится половина затрат. У Латука доля 0.
       canEdit() ? el('div', { class: 'calc-factor' }, [
         el('span', { class: 'calc-dim' }, 'доля '),
-        cell(x.prod_factor, (v) => save(x.id, { prod_factor: v }), { cls: 'calc-rate-inp' }),
+        cell(x.prod_factor, (v) => saveCell(x.id, { prod_factor: v }), { cls: 'calc-rate-inp' }),
       ]) : (x.prod_factor === 1 ? null : el('div', { class: 'calc-factor' }, 'доля ' + money(x.prod_factor))),
     ]));
 
@@ -1576,7 +1624,7 @@
         : auto(x.calc.components.labor),
       canEdit() ? el('div', { class: 'calc-factor' }, [
         el('span', { class: 'calc-dim' }, 'своё '),
-        cell(x.labor_cost, (v) => save(x.id, { labor_cost: v }), { cls: 'calc-rate-inp', dec: 2 }),
+        cell(x.labor_cost, (v) => saveCell(x.id, { labor_cost: v }), { cls: 'calc-rate-inp', dec: 2 }),
       ]) : null,
     ]));
 
@@ -1587,7 +1635,7 @@
     ], 'calc-sku-sum'));
 
     rows.push(skuRow('с\\с с браком', 'сум', (x) => [
-      pctCell(x.defect_pct, (v) => save(x.id, { defect_pct: v })),
+      pctCell(x.defect_pct, (v) => saveCell(x.id, { defect_pct: v })),
       auto(x.calc.cost_defect),
     ], 'calc-sku-accent', allRowBtn('defect_pct', 'Процент брака всем товарам листа', () => numCtl('%'), readNum)));
 
@@ -1999,7 +2047,7 @@
         }, [el('span', { class: 'calc-grp-arrow' }, open ? '▾' : '▸'), g.title])),
       el('th', { class: 'calc-sku-u' }, 'сум'),
     ].concat(d.products.map((x) => el('td', { 'data-hint': GROUP_HINT }, [
-      cell(g.value(x), (v) => save(x.id, { [g.priceField]: v }), { dec: 0, placeholder: 'цена' }),
+      cell(g.value(x), (v) => saveCell(x.id, { [g.priceField]: v }), { dec: 0, placeholder: 'цена' }),
       open ? null : el('div', { class: 'calc-grp-mini' },
         g.calc(x).net_profit === null ? 'нет расчёта'
           : 'ЧП ' + money(g.calc(x).net_profit) + ' · ' + money(g.calc(x).net_pct, 0) + '%'),
@@ -2044,7 +2092,7 @@
   // Ретро, НДС и налог в рознице обычно одинаковы, и проставлять их по одному —
   // потеря времени. Ставка у товара своя, кнопка лишь копирует её остальным.
   function rateCell(x, field, value) {
-    const inp = pctCell(value, (v) => save(x.id, { [field]: v }));
+    const inp = pctCell(value, (v) => saveCell(x.id, { [field]: v }));
     if (!canEdit()) return inp;
     const btn = el('button', {
       class: 'calc-rate-all',
