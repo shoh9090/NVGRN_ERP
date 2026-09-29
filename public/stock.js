@@ -112,7 +112,7 @@
           el('span', { style: 'color:var(--amber-d,#b9770a)' }, '⏳ Осталось: ' + data.left),
         ]),
       ]),
-      el('div', {}, [el('button', { class: 'btn-ghost', onclick: openReceiptsExport }, '📥 Выгрузить приёмку')]),
+      el('div', {}, [el('button', { class: 'btn-primary', onclick: openReceiptsExport }, '📥 Выгрузить приёмку')]),
     ]);
 
     // Панель навигации по датам: прыжок к любой дате + перелистывание недель.
