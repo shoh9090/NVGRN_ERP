@@ -255,13 +255,21 @@ input.calc-cell:focus, input.calc-name:focus {
   position: fixed; inset: 0; z-index: 200; background: rgba(20, 36, 27, .38);
   display: flex; align-items: center; justify-content: center; padding: 20px;
 }
+/* Окно не выше экрана, а длинный список прокручивается ВНУТРИ него.
+   Раньше высота не ограничивалась: окно центрировалось по вертикали, и если
+   содержимое было выше экрана, оно вылезало и сверху, и снизу поровну.
+   Верх уезжал за край, доскроллить до него было нельзя (overflow:hidden), —
+   в списке непривязанных товаров так пропадал первый товар. */
 .calc-panel {
   background: var(--surface); border-radius: 16px; box-shadow: var(--shadow-lg);
   width: 100%; max-width: 480px; overflow: hidden;
+  max-height: calc(100vh - 40px); display: flex; flex-direction: column;
 }
-.calc-panel-h { padding: 17px 22px 0; font-size: 16px; font-weight: 800; color: var(--ink); line-height: 1.35; }
-.calc-panel-b { padding: 12px 22px 4px; }
-.calc-panel-a { padding: 14px 22px 18px; display: flex; gap: 9px; justify-content: flex-end; }
+.calc-panel-h { padding: 17px 22px 0; font-size: 16px; font-weight: 800; color: var(--ink); line-height: 1.35; flex: 0 0 auto; }
+/* min-height:0 обязателен: без него флекс-элемент не даёт себя сжать и
+   прокрутка не появляется — содержимое снова вылезает за окно. */
+.calc-panel-b { padding: 12px 22px 4px; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.calc-panel-a { padding: 14px 22px 18px; display: flex; gap: 9px; justify-content: flex-end; flex: 0 0 auto; }
 .calc-modal-facts { font-size: 13px; color: var(--ink-soft); background: var(--surface-2); border-radius: 9px; padding: 9px 12px; }
 .calc-modal-note { font-size: 13px; color: var(--ink-soft); line-height: 1.5; margin: 10px 0 0; }
 .calc-btn {
