@@ -897,6 +897,59 @@
   }
 
 
+  // Реквизиты для авто-привязки банковских оплат к поставщику. Маршруты на
+  // сервере есть с самого начала, а этой функции в коде не было вовсе — из-за
+  // чего «✏️ Изменить» у СУЩЕСТВУЮЩЕГО поставщика падал с ReferenceError и окно
+  // просто закрывалось. У нового поставщика блок реквизитов не рисуется (нет id),
+  // поэтому «+ Поставщик» работал, и поломку было легко не заметить.
+  const BANK_KEY_LABEL = {
+    inn: 'ИНН', account: 'Расчётный счёт', name: 'Имя плательщика',
+    keyword: 'Слово из назначения', tx: 'Привязано вручную',
+  };
+  async function loadBankKeys(supId, box) {
+    box.innerHTML = '';
+    let items = [];
+    try { items = (await api('/suppliers/' + supId + '/bank-keys')).items || []; }
+    catch (e) { box.appendChild(el('div', { class: 'muted' }, 'Не удалось загрузить реквизиты: ' + e.message)); return; }
+
+    const list = el('div', { style: 'display:flex;flex-direction:column;gap:6px;margin-bottom:8px' },
+      items.length ? items.map((k) => el('div', { style: 'display:flex;gap:8px;align-items:center' }, [
+        el('span', { class: 'muted', style: 'min-width:140px;font-size:12px' }, BANK_KEY_LABEL[k.key_type] || k.key_type),
+        el('span', { style: 'flex:1;font-weight:600' }, k.key_value),
+        // Ручную привязку одной оплаты отсюда не снимаем: это не реквизит
+        // поставщика, а решение по конкретной транзакции.
+        k.key_type === 'tx' ? null : el('button', {
+          class: 'inv-mini', title: 'Убрать реквизит', style: 'color:#c0392b',
+          onclick: async () => {
+            try {
+              await api('/suppliers/' + supId + '/bank-keys/' + k.id + '/delete', { method: 'POST' });
+              loadBankKeys(supId, box);
+            } catch (e) { toast(e.message, true); }
+          },
+        }, '🗑'),
+      ])) : [el('div', { class: 'muted', style: 'font-size:12px' }, 'Дополнительных реквизитов нет.')]);
+
+    const type = el('select', {}, ['inn', 'account', 'name', 'keyword']
+      .map((t) => el('option', { value: t }, BANK_KEY_LABEL[t])));
+    const val = el('input', { type: 'text', placeholder: 'Значение', style: 'flex:1' });
+    const add = el('button', { onclick: async () => {
+      if (!val.value.trim()) return toast('Укажите значение', true);
+      add.disabled = true;
+      try {
+        await api('/suppliers/' + supId + '/bank-keys', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ key_type: type.value, key_value: val.value.trim() }),
+        });
+        val.value = '';
+        loadBankKeys(supId, box);
+      } catch (e) { toast(e.message, true); }
+      add.disabled = false;
+    } }, '+ Добавить');
+
+    box.appendChild(list);
+    box.appendChild(el('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap' }, [type, val, add]));
+  }
+
   async function openSupplierEdit(sup) {
     await ensureOpts();
     const f = {};
