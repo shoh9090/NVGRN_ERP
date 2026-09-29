@@ -2626,7 +2626,10 @@
   async function openSdPayments(date) {
     const day = date || todayStr();
     const box = el('div', {}, 'Считаю…');
-    const m = modal('🧾 Оплаты в SalesDoctor', box, [], { wide: true });
+    // modal() ничего не возвращает и сама очищает окно при открытии нового.
+    // Раньше здесь висело `const m = modal(...)` и потом `m.close()` — смена дня
+    // молча падала на TypeError, и окно показывало старый день с новой датой в поле.
+    modal('🧾 Оплаты в SalesDoctor', box, [], { wide: true });
     async function draw() {
       box.innerHTML = 'Считаю…';
       let d;
@@ -2635,7 +2638,7 @@
       const t = d.totals;
       box.innerHTML = '';
       const dayInp = el('input', { type: 'date', class: 'cashf-inp', value: day, max: todayStr(),
-        onchange: (e) => { if (e.target.value) { m.close(); openSdPayments(e.target.value); } } });
+        onchange: (e) => { if (e.target.value) openSdPayments(e.target.value); } });
       box.appendChild(el('div', { class: 'cash-filters' }, [
         el('span', { class: 'cash-sub' }, 'День:'), dayInp,
       ]));
@@ -2688,7 +2691,7 @@
         } catch (e) { toast(e.message, true); send.disabled = false; send.textContent = 'Отправить в SalesDoctor'; }
       } }, ready.length ? 'Отправить в SalesDoctor — ' + ready.length : 'Отправлять нечего');
       box.appendChild(el('div', { class: 'cash-sd-acts' }, [
-        el('button', { class: 'btn-ghost', onclick: () => m.close() }, 'Закрыть'), send,
+        el('button', { class: 'btn-ghost', onclick: closeModal }, 'Закрыть'), send,
       ]));
     }
     draw();
