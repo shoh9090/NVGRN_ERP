@@ -1200,13 +1200,16 @@
     const act = document.activeElement;
     const key = act && act.dataset ? act.dataset.cell : null;
     fn();
+    if (key) {
+      const n = document.querySelector('[data-cell="' + key + '"]');
+      // preventScroll обязателен: обычный focus подтягивает поле в видимую
+      // область и сам сбрасывает прокрутку — строка «Граммаж» уезжала к верху.
+      if (n && n.focus) { try { n.focus({ preventScroll: true }); } catch (e) { n.focus(); } }
+    }
+    // Прокрутку возвращаем ПОСЛЕ фокуса — иначе её тут же сбивает браузер.
     const w2 = $('.calc-sku-wrap');
     if (w2) { w2.scrollLeft = sl; w2.scrollTop = st; }
     window.scrollTo(0, py);
-    if (key) {
-      const n = document.querySelector('[data-cell="' + key + '"]');
-      if (n && n.focus) n.focus();
-    }
   }
 
   // Ставка в процентах внутри ячейки товара: у мангольда брак 20%, у остальных 50%,
