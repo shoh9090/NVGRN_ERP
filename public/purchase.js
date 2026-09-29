@@ -189,11 +189,18 @@
     if (ORD_ITEMS && ORD_ITEMS.size) params.set('item_ids', [...ORD_ITEMS].join(','));
     if (ordPeriod.from) params.set('from', ordPeriod.from);
     if (ordPeriod.to) params.set('to', ordPeriod.to);
+    // Сменили фильтр — возвращаемся на первую страницу. Иначе после «Стр. 4»
+    // выбор поставщика показывал бы пустоту: у него столько заявок нет.
+    // Сторожим здесь, а не в каждом фильтре: про один однажды забудут.
+    const sig = params.toString();
+    if (sig !== ordPage.sig) { ordPage.sig = sig; ordPage.page = 1; }
+    params.set('page', ordPage.page);
+    params.set('pageSize', ordPage.size);
     const data = await api('/orders?' + params.toString());
     box.innerHTML = '';
     // Итог по отобранным заявкам показываем в строке фильтров: считается на
-    // сервере по всей выборке, а не по показанным строкам — список обрезан
-    // тремястами, и сумма по ним вводила бы в заблуждение.
+    // сервере по всей выборке, а не по показанной странице — иначе сумма
+    // менялась бы при перелистывании.
     if (ORD_CHIPS && data.counts) ORD_CHIPS.setCounts(data.counts);
     const totalBox = $('#ord-total');
     if (totalBox && data.totals) {
@@ -203,11 +210,11 @@
       totalBox.appendChild(el('b', {}, Math.round(data.totals.total).toLocaleString('ru-RU') + ' сум'));
       totalBox.title = (ordPeriod.from || ordPeriod.to)
         ? 'За выбранный период' : 'За всё время — выберите период слева';
-      if (data.truncated) {
-        totalBox.appendChild(el('span', { class: 'pur-bar-total-w', title: 'Сумма посчитана по всем заявкам, в таблице показаны первые 300' }, ' · показаны первые 300'));
-      }
     }
     if (!data.items.length) {
+      // Пустая страница — не всегда «заявок нет»: могли уйти на последнюю
+      // страницу и сменить фильтр. Возвращаемся на первую и перечитываем.
+      if (ordPage.page > 1) { ordPage.page = 1; return loadOrders(); }
       box.appendChild(el('p', { class: 'dict-empty' },
         (ordPeriod.from || ordPeriod.to) ? 'За выбранный период заявок нет.' : 'Заявок пока нет. Нажмите «+ Новая заявка».'));
       return;
@@ -234,6 +241,34 @@
       )),
     ]);
     box.appendChild(table);
+    box.appendChild(ordPager(data));
+  }
+
+  // Переключатель страниц. Вид и подписи — как в Кассе: одинаковые вещи должны
+  // выглядеть одинаково, иначе на каждом экране заново учишься листать.
+  const ordPage = { page: 1, size: 100 };
+  function ordPager(data) {
+    const total = Number(data.total) || 0;
+    const size = Number(data.pageSize) || ordPage.size;
+    const pages = Math.max(1, Math.ceil(total / size));
+    if (ordPage.page > pages) ordPage.page = pages;
+    const from = total ? (ordPage.page - 1) * size + 1 : 0;
+    const to = Math.min(total, ordPage.page * size);
+    const go = (pg) => { ordPage.page = Math.min(pages, Math.max(1, pg)); loadOrders(); };
+    const pbtn = (label, pg, dis) => el('button', { class: 'pur-tbtn', disabled: dis || null, onclick: () => go(pg) }, label);
+    const sizeSel = el('select', { onchange: (e) => { ordPage.size = Number(e.target.value); ordPage.page = 1; loadOrders(); } },
+      [50, 100, 200, 500].map((n) => el('option', { value: n, selected: n === size || null }, 'по ' + n)));
+    return el('div', { class: 'pur-pager' }, [
+      el('span', { class: 'muted' }, total ? from + '–' + to + ' из ' + total : 'Нет заявок'),
+      el('div', { class: 'pur-pager-btns' }, [
+        pbtn('« Первая', 1, ordPage.page <= 1),
+        pbtn('‹ Назад', ordPage.page - 1, ordPage.page <= 1),
+        el('span', { class: 'muted' }, 'Стр. ' + ordPage.page + ' из ' + pages),
+        pbtn('Вперёд ›', ordPage.page + 1, ordPage.page >= pages),
+        pbtn('Последняя »', pages, ordPage.page >= pages),
+        sizeSel,
+      ]),
+    ]);
   }
   const condLabel = (c, d) => ({ prepay: 'Предоплата', on_fact: 'По факту', defer: 'Отсрочка' + (d ? ' ' + d + 'д' : '') }[c] || '—');
   function payStatusPill(s) {

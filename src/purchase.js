@@ -1152,6 +1152,12 @@ router.get('/api/orders', async (req, res) => {
     params.push(itemIds);
     where += ` AND EXISTS (SELECT 1 FROM purchase_order_items pi WHERE pi.order_id = po.id AND pi.item_id = ANY($${params.length}))`;
   }
+  // Страницы. Раньше список жёстко обрезался тремястами строками, и 315 заявок
+  // показывались как 300: оставшиеся было не открыть вообще. Итог и таблетки
+  // и тогда считались по всей выборке, поэтому расхождение выглядело ошибкой счёта.
+  const pageSize = Math.min(500, Math.max(20, parseInt(req.query.pageSize, 10) || 100));
+  const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+
   // Здесь фильтры закончились. Запоминаем условие БЕЗ статуса — по нему
   // считаются количества для таблеток, чтобы соседние цифры не обнулялись.
   const whereNoStatus = where;
@@ -1176,11 +1182,12 @@ router.get('/api/orders', async (req, res) => {
      LEFT JOIN purchase_order_items i ON i.order_id = po.id
      WHERE ${where}
      GROUP BY po.id, c.name, pc.name, pc.color
-     ORDER BY po.id DESC LIMIT 300`, // po.* в GROUP BY не нужен: группируем по первичному ключу po.id
+     ORDER BY po.id DESC LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}`, // po.* в GROUP BY не нужен: группируем по первичному ключу po.id
     params
   );
-  // Итог по ОТФИЛЬТРОВАННЫМ заявкам, а не по показанным: список обрезан
-  // тремястами строками, и сумма по нему вводила бы в заблуждение.
+  // Итог по ОТФИЛЬТРОВАННЫМ заявкам, а не по показанным: на экране одна
+  // страница, и сумма по ней вводила бы в заблуждение. Это же число —
+  // сколько всего строк — считает и количество страниц.
   const tot = (await db.pool.query(
     `SELECT COUNT(DISTINCT po.id)::int AS orders,
             COALESCE(SUM(CASE WHEN po.status = 'received' THEN COALESCE(i.fact_qty, 0) ELSE i.qty END * i.price), 0) AS total
@@ -1203,7 +1210,9 @@ router.get('/api/orders', async (req, res) => {
     items: (await pfin.withAllocatedPaid(r.rows)).map(enrichOrderFinance),
     totals: { orders: Number(tot.orders) || 0, total: Number(tot.total) || 0 },
     counts,
-    truncated: r.rows.length >= 300,
+    page,
+    pageSize,
+    total: Number(tot.orders) || 0,
   });
 });
 

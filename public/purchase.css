@@ -178,3 +178,10 @@
   .pur-bar-q { width: 150px; }
   .pur-bar-total { margin-left: 0; }
 }
+
+/* Страницы в списке заявок. Раньше список жёстко обрезался тремястами строками:
+   315 заявок показывались как 300, и до остальных было не добраться. */
+.pur-pager{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:12px;padding:8px 4px}
+.pur-pager-btns{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.pur-pager .pur-tbtn:disabled{opacity:.45;cursor:default}
+.pur-pager .pur-tbtn:disabled:hover{background:#fff;border-color:#cdd6cc}
