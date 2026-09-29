@@ -73,6 +73,29 @@
   }
 
   // ================= ВКЛАДКА 1: ПРИЁМКА СЕГОДНЯ =================
+  // Выгрузка приёмок за период в Excel. Экран приёмки живёт одним днём, а
+  // отчёт нужен за месяц или квартал, поэтому период спрашиваем в окне — тем же
+  // компонентом, что и везде в Hub.
+  function openReceiptsExport() {
+    const st = { from: new Date().toISOString().slice(0, 8) + '01', to: todayISO() };
+    const body = el('div', {}, [
+      el('p', { class: 'dict-empty', style: 'text-align:left;margin:0 0 10px' },
+        'Выгрузится всё принятое сырьё за выбранный период: дата приёмки, наименование, '
+        + 'единица измерения и количество. Отход идёт отдельной строкой с пометкой в колонке «Вид».'),
+      el('div', { class: 'pur-bar' }, [HubDateRange.create({
+        mode: 'range', from: st.from, to: st.to,
+        onChange: (v) => { st.from = v.from; st.to = v.to; },
+      })]),
+    ]);
+    const m = modal('📥 Выгрузить приёмку', body, [
+      el('button', { class: 'btn-ghost', onclick: () => m.close() }, 'Отмена'),
+      el('button', { class: 'btn-primary', onclick: () => {
+        window.location = '/stock/api/receipts/export.xlsx?from=' + st.from + '&to=' + st.to;
+        m.close();
+      } }, 'Скачать Excel'),
+    ]);
+  }
+
   async function viewReceiving() {
     const main = $('#stk-main');
     main.innerHTML = '';
@@ -89,6 +112,7 @@
           el('span', { style: 'color:var(--amber-d,#b9770a)' }, '⏳ Осталось: ' + data.left),
         ]),
       ]),
+      el('div', {}, [el('button', { class: 'btn-ghost', onclick: openReceiptsExport }, '📥 Выгрузить приёмку')]),
     ]);
 
     // Панель навигации по датам: прыжок к любой дате + перелистывание недель.

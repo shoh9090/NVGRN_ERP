@@ -1,6 +1,7 @@
 // stock.js — блок «Склад сырья»: рабочее место кладовщика (приёмка, передача в производство, итоги дня)
 const express = require('express');
 const multer = require('multer');
+const XLSX = require('xlsx');
 const db = require('./db');
 const { notify } = require('./notifications');
 
@@ -340,6 +341,45 @@ router.delete('/api/reasons/:id(\\d+)', async (req, res) => {
   if (!req.user.isAdmin) return res.status(403).json({ error: 'Только администратор' });
   await db.pool.query("UPDATE reject_reasons SET status='archived' WHERE id=$1", [req.params.id]);
   res.json({ ok: true });
+});
+
+// ===== Выгрузка приёмок за период в Excel =====
+// Берём из реестра движений, а не из заявок: остаток склада = сумма движений,
+// и выгрузка обязана показывать ровно то, что этот остаток сформировало.
+// Откатили приёмку — строка исчезнет и здесь, сама собой.
+// Отход («<товар> отх», цена 0) — отдельной колонкой «Вид»: он тоже приход и
+// тоже занимает место на складе, но это не купленный вес, и складывать их в
+// одну сумму нельзя.
+router.get('/api/receipts/export.xlsx', async (req, res) => {
+  const d = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? v : null);
+  const from = d(req.query.from) || new Date().toISOString().slice(0, 8) + '01';
+  const to = d(req.query.to) || new Date().toISOString().slice(0, 10);
+  try {
+    const rows = (await db.pool.query(
+      `SELECT to_char(m.moved_at,'DD.MM.YYYY') AS day, rm.name, u.short_name AS unit,
+              m.qty, m.reason, po.number AS order_no, c.name AS supplier
+         FROM stock_movements m
+         JOIN ref_raw_materials rm ON rm.id = m.item_id
+         LEFT JOIN ref_units u ON u.id = rm.unit_id
+         LEFT JOIN purchase_orders po ON m.ref_type = 'purchase_order' AND po.id = m.ref_id
+         LEFT JOIN ref_counterparties c ON c.id = po.supplier_id
+        WHERE m.item_kind = 'raw' AND m.direction = 'in'
+          AND m.reason IN ('receive', 'receive_waste')
+          AND m.moved_at BETWEEN $1::date AND $2::date
+        ORDER BY m.moved_at, rm.name`, [from, to])).rows;
+    const wb = XLSX.utils.book_new();
+    const sh = XLSX.utils.aoa_to_sheet([
+      ['Дата приёмки', 'Наименование сырья', 'Ед. изм.', 'Количество', 'Вид', 'Поставщик', 'Заявка'],
+      ...rows.map((r) => [r.day, r.name, r.unit || '', Number(r.qty) || 0,
+        r.reason === 'receive_waste' ? 'Отход' : 'Сырьё', r.supplier || '', r.order_no || '']),
+    ]);
+    sh['!cols'] = [{ wch: 13 }, { wch: 34 }, { wch: 9 }, { wch: 12 }, { wch: 9 }, { wch: 26 }, { wch: 14 }];
+    XLSX.utils.book_append_sheet(wb, sh, 'Приёмка');
+    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="priemka_${from}_${to}.xlsx"`);
+    res.send(buf);
+  } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 // ===== Откат приёмки (отмена-возврат): убирает приход со склада, возвращает статус заявки =====
