@@ -76,21 +76,33 @@
   // Выгрузка приёмок за период в Excel. Экран приёмки живёт одним днём, а
   // отчёт нужен за месяц или квартал, поэтому период спрашиваем в окне — тем же
   // компонентом, что и везде в Hub.
-  function openReceiptsExport() {
-    const st = { from: new Date().toISOString().slice(0, 8) + '01', to: todayISO() };
+  async function openReceiptsExport() {
+    const st = { from: new Date().toISOString().slice(0, 8) + '01', to: todayISO(), item: '' };
+    let list = [];
+    try { list = (await api('/receipts/items')).items || []; } catch (e) { /* без списка выгрузим всё */ }
+    // Первый пункт сам говорит, что это за фильтр, — подписи сверху не нужны,
+    // как и в остальных строках фильтров Hub.
+    const sel = el('select', { class: 'dict-inp', style: 'min-width:220px',
+      onchange: (e) => { st.item = e.target.value; } },
+    [el('option', { value: '' }, 'Все товары')]
+      .concat(list.map((x) => el('option', { value: x.id }, x.name))));
     const body = el('div', {}, [
       el('p', { class: 'dict-empty', style: 'text-align:left;margin:0 0 10px' },
-        'Выгрузится всё принятое сырьё за выбранный период: дата приёмки, наименование, '
-        + 'единица измерения и количество. Отход идёт отдельной строкой с пометкой в колонке «Вид».'),
+        'Выгрузится принятое сырьё за выбранный период: дата приёмки, наименование, '
+        + 'единица измерения и количество. Отход идёт отдельной строкой с пометкой в колонке «Вид». '
+        + 'В списке только то сырьё, которое хоть раз принимали.'),
       el('div', { class: 'pur-bar' }, [HubDateRange.create({
         mode: 'range', from: st.from, to: st.to,
         onChange: (v) => { st.from = v.from; st.to = v.to; },
-      })]),
+      }), sel]),
     ]);
     const m = modal('📥 Выгрузить приёмку', body, [
-      el('button', { class: 'btn-ghost', onclick: () => m.close() }, 'Отмена'),
+      // Не btn-ghost: глобальный стиль у него белый текст без фона — на светлом
+      // окне кнопку не видно. В Закупе для этого случая уже есть .pur-tbtn.
+      el('button', { class: 'pur-tbtn', onclick: () => m.close() }, 'Отмена'),
       el('button', { class: 'btn-primary', onclick: () => {
-        window.location = '/stock/api/receipts/export.xlsx?from=' + st.from + '&to=' + st.to;
+        window.location = '/stock/api/receipts/export.xlsx?from=' + st.from + '&to=' + st.to
+          + (st.item ? '&item=' + st.item : '');
         m.close();
       } }, 'Скачать Excel'),
     ]);
