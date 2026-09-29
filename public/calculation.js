@@ -45,6 +45,15 @@
   });
 
   let toastTimer = null;
+  // Характеристика сорта в выпадашке сырья: «Шпинат 1/2/3» по названию не
+  // различить, а в <option> вложенные элементы не работают — поэтому дописываем
+  // в ту же строку и подрезаем. Полный текст остаётся в подсказке.
+  function charShort(text, max) {
+    const s = String(text || '').trim();
+    if (!s) return '';
+    return ' · ' + (s.length > (max || 45) ? s.slice(0, (max || 45) - 1) + '…' : s);
+  }
+
   function toast(message, bad) {
     const old = $('.calc-toast'); if (old) old.remove();
     const t = el('div', { class: 'calc-toast' + (bad ? ' bad' : '') }, message);
@@ -952,7 +961,8 @@
     const lines = r.items.map((line) => {
       const sel = el('select', { class: 'calc-sel' }, [el('option', { value: '' }, '— сырьё —')]
         .concat(raws.map((m) => {
-          const o = el('option', { value: String(m.id) }, m.name);
+          const o = el('option', { value: String(m.id) }, m.name + charShort(m.characteristics));
+          if (m.characteristics) o.title = m.characteristics;
           if (Number(line.raw_material_id) === m.id) o.setAttribute('selected', 'selected');
           return o;
         })));
@@ -1451,7 +1461,8 @@
       if (!canEdit()) return el('span', {}, x.raw_material_name || '—');
       const sel = el('select', { class: 'calc-sel' }, [el('option', { value: '' }, '— не выбрано —')]
         .concat(rawOptions.map((m) => {
-          const o = el('option', { value: String(m.id) }, m.name);
+          const o = el('option', { value: String(m.id) }, m.name + charShort(m.characteristics));
+          if (m.characteristics) o.title = m.characteristics;
           if (Number(x.raw_material_id) === m.id) o.setAttribute('selected', 'selected');
           return o;
         })));

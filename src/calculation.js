@@ -576,7 +576,7 @@ async function recipesData() {
 router.get('/api/recipes', async (req, res) => {
   try {
     const rawMats = (await db.pool.query(
-      "SELECT id, name FROM ref_raw_materials WHERE status = 'active' ORDER BY name")).rows;
+      "SELECT id, name, characteristics FROM ref_raw_materials WHERE status = 'active' ORDER BY name")).rows;
     res.json({ recipes: await recipesData(), raw_materials: rawMats, can_edit: canEdit(req) });
   } catch (e) {
     console.error('[КАЛЬКУЛЯЦИЯ] рецептуры:', e.message);
@@ -862,8 +862,10 @@ async function sheetPayload(sheet) {
 
     // Справочник сырья — для выпадашки «Наименование». Цена берётся из
     // Закупа (последняя принятая), а не хранится тут отдельной колонкой.
+    // Характеристика — чтобы в списке было видно, какой это из сортов:
+    // «Шпинат 1/2/3» друг от друга по названию не отличить.
     const rawMats = (await db.pool.query(
-      "SELECT id, name FROM ref_raw_materials WHERE status = 'active' ORDER BY name")).rows;
+      "SELECT id, name, characteristics FROM ref_raw_materials WHERE status = 'active' ORDER BY name")).rows;
     const rawPrices = await lastRawPrices();
     const manualRaw = await manualRawPrices();
     // Рецептуры (миксы) с листа «Рецептуры»: у товара может стоять либо одно
