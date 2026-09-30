@@ -2231,7 +2231,11 @@
     box.appendChild(el('div', { class: 'calc-sheet-head' }, [
       el('div', { class: 'calc-sheet-top' }, [
         el('h1', { class: 'calc-h1' }, 'Песочница'),
-        el('button', { class: 'calc-add', onclick: openSbPicker }, '+ позиция'),
+        el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' }, [
+          sb.lines.length > 1
+            ? el('button', { class: 'calc-tbtn', onclick: openSbBulk }, 'Проставить всем') : null,
+          el('button', { class: 'calc-add', onclick: openSbPicker }, '+ позиция'),
+        ]),
       ]),
       el('div', { class: 'calc-sub' },
         'Черновик: двигаем цену и объём и смотрим, что будет с деньгами. '
@@ -2290,6 +2294,37 @@
       wrap.appendChild(sbLevers());
     }
     return wrap;
+  }
+
+  // Проставить объём сразу всем позициям. Когда в сделке десяток товаров,
+  // одинаковый объём по каждому вбивать вручную — потеря времени.
+  // Пустое поле не трогаем: так можно проставить только одно из двух.
+  function openSbBulk() {
+    const now = el('input', { type: 'number', class: 'calc-sb-in wide', min: '0', step: '10', placeholder: 'не менять' });
+    const promised = el('input', { type: 'number', class: 'calc-sb-in wide', min: '0', step: '10', placeholder: 'не менять' });
+    const row = (label, node, hint) => el('div', { style: 'margin-bottom:12px' }, [
+      el('div', { style: 'font-size:13px;font-weight:700;margin-bottom:4px' }, label),
+      node,
+      el('div', { class: 'calc-dim', style: 'font-size:12px;margin-top:3px' }, hint),
+    ]);
+    const body = el('div', {}, [
+      el('div', { class: 'calc-dim', style: 'font-size:13px;margin-bottom:12px' },
+        'Проставится всем ' + sb.lines.length + ' позициям сценария.'),
+      row('Берут сейчас, шт/мес', now, 'Сколько клиент берёт по обычной цене. Для нового клиента — 0.'),
+      row('Будут брать, шт/мес', promised, 'Сколько обещает брать за новую цену.'),
+    ]);
+    const m = calcModal('Проставить объём всем', body, [
+      el('button', { class: 'calc-tbtn', onclick: () => m.close() }, 'Отмена'),
+      el('button', { class: 'calc-add', onclick: () => {
+        const a = now.value.trim(), b = promised.value.trim();
+        if (a === '' && b === '') return toast('Впишите хотя бы одно число', true);
+        sb.lines.forEach((l) => {
+          if (a !== '') l.qty = Number(a);
+          if (b !== '') l.qty_new = Number(b);
+        });
+        m.close(); sbRecalc();
+      } }, 'Проставить'),
+    ]);
   }
 
   // Что останется компании при такой цене. Формула повторяет серверную —
@@ -2372,8 +2407,19 @@
       el('div', { class: 'calc-sb-card-top' }, [
         el('div', {}, [
           el('div', { class: 'calc-sb-name' }, x.name),
-          el('div', { class: 'calc-dim calc-sb-sub' }, x.sheet_title + ' · прайс ' + money0(base)
-            + (x.qty > 0 ? ' · сейчас берут ' + money0(x.qty) + ' шт' : ' · новый клиент')),
+          el('div', { class: 'calc-dim calc-sb-sub' }, x.sheet_title + ' · прайс ' + money0(base)),
+          // Без «берут сейчас» сравнивать не с чем: 0 значит нового клиента,
+          // и тогда вопрос другой — не «окупится ли скидка», а «выгодна ли сделка».
+          el('div', { class: 'calc-sb-nowq' }, [
+            el('span', {}, 'Берут сейчас'),
+            el('input', {
+              type: 'number', class: 'calc-sb-in', min: '0', step: '10',
+              value: line.qty === '' || line.qty === null || line.qty === undefined ? '' : line.qty,
+              placeholder: '0',
+              onchange: (e) => { line.qty = e.target.value === '' ? 0 : Number(e.target.value); sbRecalc(); },
+            }),
+            el('span', {}, x.qty > 0 ? 'шт/мес' : 'шт/мес · пусто = новый клиент'),
+          ]),
         ]),
         el('button', { class: 'calc-dots', title: 'Убрать позицию',
           onclick: () => { sb.lines.splice(i, 1); sbRecalc(); } }, '✕'),

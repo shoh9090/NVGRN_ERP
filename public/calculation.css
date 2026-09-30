@@ -781,3 +781,6 @@ input.calc-rate-inp:focus { border-color: var(--lime-d); background: var(--surfa
 .calc-sb-card-h { font-size: 12px; font-weight: 800; text-transform: none; margin-bottom: 3px; }
 .calc-sb-card-n { font-family: 'Lora', serif; font-size: 22px; font-weight: 600; }
 .calc-sb-card-t { font-size: 13px; color: var(--ink-soft); line-height: 1.5; margin-top: 4px; }
+.calc-sb-nowq { display: flex; align-items: center; gap: 8px; margin-top: 7px;
+  font-size: 12px; color: var(--ink-faint); flex-wrap: wrap; }
+.calc-sb-nowq .calc-sb-in { width: 92px; }
