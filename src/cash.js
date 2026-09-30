@@ -3921,6 +3921,21 @@ async function sdPaymentsPlan(date) {
       && (mine.includes(String(x.client_sd || '')) || mine.includes(String(x.contragent_sd || '')))) || null;
   };
 
+  // Куда оплата села НА САМОМ ДЕЛЕ. Наш выбор точки нигде не хранился, и после
+  // отправки экран рисовал предложение по умолчанию — контрагента. Человек
+  // выбирал правильную точку, оплата уходила туда, а экран показывал другую,
+  // и выглядело это как «садится не туда». Спрашиваем у CRM по номеру оплаты.
+  const crmById = new Map(crm.map((x) => [String(x.sd_id), x]));
+  const landedIds = new Set();
+  for (const r of rows) {
+    const c = r.sd_payment_id ? crmById.get(String(r.sd_payment_id)) : null;
+    if (c && c.client_sd) landedIds.add(String(c.client_sd));
+  }
+  let landedNames = {};
+  if (landedIds.size) {
+    try { landedNames = await integrations.clientNamesBySdIds([...landedIds]); } catch (e) { landedNames = {}; }
+  }
+
   // Правила «договор → точка» и сколько всего точек у каждого ИНН: если точка
   // одна, выбирать нечего; если несколько — нужен договор или решение человека.
   const rules = new Map((await db.pool.query(
@@ -3944,7 +3959,14 @@ async function sdPaymentsPlan(date) {
       target_name: rule ? (rule.client_name || null) : null,
       by_rule: !!rule,
     };
-    if (r.sd_payment_id) return { ...item, state: 'sent', why: 'уже отправлено из ERP' };
+    if (r.sd_payment_id) {
+      const c = crmById.get(String(r.sd_payment_id));
+      const on = c && c.client_sd ? String(c.client_sd) : null;
+      return {
+        ...item, state: 'sent', why: 'уже отправлено из ERP',
+        landed_sd: on, landed_name: on ? (landedNames[on] || on) : null,
+      };
+    }
     if (!String(r.payer_inn || '').trim()) return { ...item, state: 'manual', why: 'в приходе нет ИНН плательщика' };
     if (!r.cp_id) return { ...item, state: 'manual', why: 'нет активного клиента с таким ИНН' };
     if (!r.sd_contragent_id && !r.sd_client_id) return { ...item, state: 'manual', why: 'у клиента нет номера в SalesDoctor' };

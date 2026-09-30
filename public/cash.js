@@ -2658,6 +2658,10 @@
         const cell = [el('span', { style: 'font-weight:700;color:' + color }, label),
           x.why ? el('div', { class: 'cash-sub' }, x.why) : null,
           x.by_rule ? el('div', { class: 'cash-sub' }, 'по договору ' + x.contract) : null,
+          // Куда реально село — из CRM, а не наше предположение. До этого
+          // экран показывал предложение по умолчанию, и выбранная человеком
+          // точка выглядела «не той».
+          x.landed_name ? el('div', { class: 'cash-sub', style: 'font-weight:700' }, 'сидит на: ' + x.landed_name) : null,
           x.sent_id ? el('div', { class: 'cash-sub' }, 'номер в CRM: ' + x.sent_id) : null];
         // У юрлица несколько точек — человек выбирает один раз, дальше правило
         // работает само. Кнопка появляется только там, где выбор действительно
