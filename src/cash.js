@@ -4075,7 +4075,14 @@ async function sendSdPayments(date, ids, userId, force, targetSd) {
       paymentType: { SD_id: SD_PAY_TYPE_TRANSFER },
       transactionType: SD_TX_CLIENT_PAYMENT,
       client: { SD_id: target },
-      contragent: { SD_id: it.contragent_sd || target },
+      // Контрагент обязан идти ЗА выбранной точкой. Раньше при смене точки
+      // менялся только «клиент», а контрагент оставался прежним — и оплата в
+      // CRM никуда не переезжала: человек менял точку, жал отправить, и ничего
+      // не происходило. Проверено на оплатах Hammersmith 30.09.2026.
+      // У SD в оплате оба поля — это один и тот же номер точки (проверено
+      // 24.09.2026), поэтому подставлять разные номера было неправильно и само
+      // по себе.
+      contragent: { SD_id: it.target_sd ? target : (it.contragent_sd || target) },
       agent: { SD_id: it.agent_sd },
       comment: 'Из банковской выписки (ERP)',
     };
@@ -4115,7 +4122,9 @@ async function sendSdPayments(date, ids, userId, force, targetSd) {
         await db.pool.query(
           'UPDATE cash_transactions SET sd_payment_id = $1, sd_sent_at = now() WHERE id = $2',
           [sdId || 'sent', it.id]);
-        sent.push({ id: it.id, amount: it.amount, client: it.client, sd_id: sdId, shape: okShape.name, answer });
+        // target — на какую карточку отправляли. Без него после отправки не
+        // выяснить, сработала ли смена точки: экран показывал предположение.
+        sent.push({ id: it.id, amount: it.amount, client: it.client, target, sd_id: sdId, shape: okShape.name, answer });
       } else {
         failed.push({ id: it.id, amount: it.amount, client: it.client, tried, sent_record: rec });
       }
