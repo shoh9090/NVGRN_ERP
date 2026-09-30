@@ -459,7 +459,9 @@ router.get('/api/available', async (req, res) => {
        LEFT JOIN ref_parent_categories pc ON pc.id = c.parent_id
        WHERE rm.status='active'
        UNION ALL
-       SELECT 'packaging', pk.id, pk.code, pk.name, u.short_name,
+       -- NULL вместо характеристики: у упаковки такого поля нет, но число
+       -- колонок в обеих половинах UNION обязано совпадать.
+       SELECT 'packaging', pk.id, pk.code, pk.name, u.short_name, NULL,
               pk.category_id, c.name, c.parent_id, pc.name
        FROM ref_packaging pk
        LEFT JOIN ref_units u ON u.id = pk.unit_id
