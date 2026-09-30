@@ -449,6 +449,7 @@ router.post('/api/wipe', express.json(), async (req, res) => {
 
 // ===== Вкладка 2: ПЕРЕДАЧА В ПРОИЗВОДСТВО =====
 router.get('/api/available', async (req, res) => {
+ try {
   const r = await db.pool.query(
     `WITH mats AS (
        SELECT 'raw' AS kind, rm.id, rm.code, rm.name, u.short_name AS unit, rm.characteristics,
@@ -493,6 +494,12 @@ router.get('/api/available', async (req, res) => {
   const parents = await db.pool.query("SELECT id, name FROM ref_parent_categories WHERE status='active' ORDER BY name");
   const cats = await db.pool.query("SELECT id, name, parent_id FROM ref_categories WHERE kind='категория' AND (sd_sd_id IS NULL OR sd_sd_id='') ORDER BY name");
   res.json({ items: r.rows, zones, parents: parents.rows, categories: cats.rows });
+ } catch (e) {
+  // Своя обработка, а не общая сетка в server.js: экран должен показать
+  // внятную ошибку, а не молча остаться пустым.
+  console.error('[СКЛАД] остатки и передача:', e.message);
+  res.status(400).json({ error: 'Не удалось загрузить остатки: ' + e.message });
+ }
 });
 
 router.post('/api/issue', express.json({ limit: '2mb' }), async (req, res) => {
