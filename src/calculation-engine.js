@@ -514,6 +514,20 @@ function sandboxLine(input, opts) {
 // ровно target. Вклад = цена × (1 − ретро% − НДС%) − переменные, поэтому цена
 // выражается формулой, а не подбирается перебором.
 // varFixed — переменные, не зависящие от цены (сырьё и упаковка с браком).
+// Цена, при которой маржа получается ровно заданной. Порог в процентах человеку
+// ничего не говорит — «ниже 20 235 нельзя» говорит всё, поэтому границу всегда
+// переводим в сумы. Вывод: маржа = (1−налог)×(цена×(1−ретро−НДС) − себестоимость
+// с браком) ÷ цена, отсюда цена и выражается.
+function priceForMargin(costDefect, retroPct, vatPct, taxPct, marginPct) {
+  if (costDefect === null || costDefect === undefined) return null;
+  const t = 1 - num(taxPct) / 100;
+  const k = 1 - (num(retroPct) + num(vatPct)) / 100;
+  const m = num(marginPct) / 100;
+  const denom = t * k - m;
+  if (!(denom > 0)) return null;      // такой маржи не достичь ни при какой цене
+  return (t * num(costDefect)) / denom;
+}
+
 function priceForContribution(target, varFixed, retroPct, vatPct) {
   if (target === null || target === undefined || varFixed === null || varFixed === undefined) return null;
   const k = 1 - (num(retroPct) + num(vatPct)) / 100;
@@ -524,6 +538,7 @@ function priceForContribution(target, varFixed, retroPct, vatPct) {
 module.exports = {
   FORMULA_VERSION,
   priceForContribution,
+  priceForMargin,
   perUnit,
   SKU_COMPONENTS,
   SKU_SHEET_COMPONENTS,

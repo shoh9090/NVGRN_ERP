@@ -2182,7 +2182,7 @@
   // Черновик поверх утверждённого расчёта: меняем цену и объём, смотрим, что
   // будет с деньгами. Ничего не сохраняется — закрыл вкладку, и сценария нет.
   // Все цифры считает сервер тем же двигателем, что и лист.
-  const sb = { mode: 'approved', priceList: 'price', lines: [], open: {}, outputNew: null };
+  const sb = { mode: 'approved', priceList: 'price', lines: [], open: {}, outputNew: null, setOpen: false };
   let SB = null;        // каталог товаров со всех листов
   let SB_CALC = null;   // посчитанный сценарий
 
@@ -2234,48 +2234,160 @@
         el('button', { class: 'calc-add', onclick: openSbPicker }, '+ позиция'),
       ]),
       el('div', { class: 'calc-sub' },
-        'Черновик «а что если»: меняем цену и объём и смотрим, что будет с деньгами. '
+        'Черновик: двигаем цену и объём и смотрим, что будет с деньгами. '
         + 'Ничего не сохраняется и на утверждённый расчёт не влияет.'),
-      sbSteps(),
     ]));
 
-    // Панель: от какой версии считаем и по какому прайсу.
-    const modes = el('div', { class: 'calc-appr-modes' }, [
-      el('button', { class: 'calc-appr-mode' + (sb.mode === 'approved' ? ' on' : ''),
-        onclick: () => { if (sb.mode !== 'approved') { sb.mode = 'approved'; loadSandbox(); } } }, 'Утверждённый'),
-      el('button', { class: 'calc-appr-mode' + (sb.mode === 'current' ? ' on' : ''),
-        onclick: () => { if (sb.mode !== 'current') { sb.mode = 'current'; loadSandbox(); } } }, 'Текущий'),
-    ]);
-    const priceSel = el('select', { class: 'calc-sel', onchange: (e) => { sb.priceList = e.target.value; sbRecalc(); } },
-      (SB.price_lists || []).map((p) => el('option', { value: p.code, selected: sb.priceList === p.code }, p.label)));
-    box.appendChild(el('div', { class: 'calc-appr' }, [
-      modes,
-      el('div', { class: 'calc-appr-info' }, sb.mode === 'approved'
-        ? 'считаем от утверждённых версий листов'
-        : 'считаем по сегодняшним ценам — цифры могут поехать завтра'),
-      el('div', { class: 'calc-appr-btns' }, [
-        el('span', { class: 'calc-dim' }, 'Прайс'), priceSel,
-        el('button', { class: 'calc-tbtn', title: 'Выгрузить сценарий в Excel', onclick: sbExport }, '⬇ Excel'),
-      ]),
-    ]));
-
-    box.appendChild(sbLevers());
+    // Настройки свёрнуты. Их меняют раз в сто заходов, а раньше человек читал
+    // их первыми — до того, как понимал, зачем вообще сюда пришёл.
+    box.appendChild(sbSettings());
 
     if (sb.mode === 'approved' && (SB.not_approved || []).length) {
       box.appendChild(el('div', { class: 'calc-msg warn' },
-        '⚠️ Не утверждали: ' + SB.not_approved.join(', ') + ' — по этим листам взят текущий расчёт.'));
+        'Не утверждали: ' + SB.not_approved.join(', ') + ' — по этим листам взят текущий расчёт.'));
     }
 
     if (!sb.lines.length) {
       box.appendChild(el('div', { class: 'calc-empty' }, el('div', {},
-        'Добавьте товар кнопкой «+ позиция» вверху. Впишите объём и новую цену — посчитаем, окупается ли скидка.')));
+        'Добавьте товар кнопкой «+ позиция» вверху — и двигайте цену с объёмом.')));
       return box;
     }
     if (!SB_CALC) { box.appendChild(el('div', { class: 'calc-empty' }, 'Считаем…')); return box; }
 
-    box.appendChild(sbTable());
+    (SB_CALC.lines || []).forEach((x, i) => {
+      const line = sb.lines.find((l) => Number(l.product_id) === Number(x.product_id));
+      if (line) box.appendChild(sbCard(x, line, i));
+    });
     box.appendChild(sbTotals());
     return box;
+  }
+
+  // Настройки одной свёрнутой строкой. Открываются по клику; закрыты по
+  // умолчанию, потому что к вопросу «давать ли скидку» отношения не имеют.
+  function sbSettings() {
+    const wrap = el('div', { class: 'calc-sb-set' });
+    const line = el('div', { class: 'calc-sb-set-h' }, [
+      el('span', {}, (sb.setOpen ? '▾ ' : '▸ ') + 'Настройки'),
+      el('span', { class: 'calc-dim' }, (sb.mode === 'approved' ? 'утверждённый расчёт' : 'текущий расчёт')
+        + ' · ' + ((SB.price_lists || []).find((p) => p.code === sb.priceList) || {}).label
+        + ' · выпуск ' + money0(sb.outputNew === null ? (SB.output_now || 0) : sb.outputNew) + ' шт/мес'),
+    ]);
+    line.addEventListener('click', () => { sb.setOpen = !sb.setOpen; render(); });
+    wrap.appendChild(line);
+    if (sb.setOpen) {
+      const modes = el('div', { class: 'calc-appr-modes' }, [
+        el('button', { class: 'calc-appr-mode' + (sb.mode === 'approved' ? ' on' : ''),
+          onclick: () => { if (sb.mode !== 'approved') { sb.mode = 'approved'; loadSandbox(); } } }, 'Утверждённый'),
+        el('button', { class: 'calc-appr-mode' + (sb.mode === 'current' ? ' on' : ''),
+          onclick: () => { if (sb.mode !== 'current') { sb.mode = 'current'; loadSandbox(); } } }, 'Текущий'),
+      ]);
+      const priceSel = el('select', { class: 'calc-sel', onchange: (e) => { sb.priceList = e.target.value; sbRecalc(); } },
+        (SB.price_lists || []).map((p) => el('option', { value: p.code, selected: sb.priceList === p.code }, p.label)));
+      wrap.appendChild(el('div', { class: 'calc-sb-set-b' }, [
+        modes, el('span', { class: 'calc-dim' }, 'Прайс'), priceSel,
+        el('button', { class: 'calc-tbtn', onclick: sbExport }, '⬇ Excel'),
+      ]));
+      wrap.appendChild(sbLevers());
+    }
+    return wrap;
+  }
+
+  // Что останется компании при такой цене. Формула повторяет серверную —
+  // иначе ползунок показывал бы одно, а вердикт внизу другое. Ставки и обе
+  // себестоимости приходят с сервера вместе со строкой.
+  function sbLive(x, price) {
+    const r = x.rates || { retro: 0, vat: 0, tax: 0 };
+    const k = 1 - (r.retro + r.vat) / 100;
+    const left = price * k - (x.now.var_cost || 0);          // после затрат на сам товар
+    const profit = price * k - (x.now.cost_defect || 0);
+    const net = profit - Math.max(0, profit) * r.tax / 100;
+    return { left, margin: price > 0 ? (net / price) * 100 : null };
+  }
+
+  // Карточка позиции: три ценовые зоны и два ползунка. Проценты человеку не
+  // говорят ничего, поэтому обе границы показываем ЦЕНОЙ в сумах.
+  function sbCard(x, line, i) {
+    const base = x.price || 0;
+    const zero = x.price_zero || 0;                            // ниже — убыток при любом объёме
+    const minP = x.price_min_margin || null;                   // ниже — ниже вашей границы
+    const priceNow = line.price_new === '' || line.price_new === null || line.price_new === undefined
+      ? base : Number(line.price_new);
+    const qtyNow = Number(line.qty_new || line.qty || 0);
+
+    const hi = Math.max(base * 1.15, priceNow * 1.05, (minP || 0) * 1.1, 1);
+    const lo = Math.max(0, Math.min(zero * 0.9, priceNow * 0.9));
+
+    const priceOut = el('span', { class: 'calc-sb-out' }, money0(priceNow));
+    const qtyOut = el('span', { class: 'calc-sb-out' }, money0(qtyNow) + ' шт');
+    const zoneNote = el('div', { class: 'calc-sb-zn' });
+    const verdict = el('div', { class: 'calc-sb-card-v' });
+    const fill = el('div', { class: 'calc-sb-zfill' });
+
+    function paint(price, qty) {
+      const live = sbLive(x, price);
+      const wasLeft = x.was_total === null ? null : x.was_total;
+      const nowLeft = live.left * qty;
+      const delta = wasLeft === null ? nowLeft : nowLeft - wasLeft;
+      const pos = Math.max(0, Math.min(100, ((price - lo) / Math.max(1, hi - lo)) * 100));
+      fill.style.width = pos + '%';
+      let cls = 'ok', head = 'Обычная цена';
+      if (price < zero) { cls = 'bad'; head = 'Так нельзя никогда'; }
+      else if (minP !== null && price < minP) { cls = 'warn'; head = 'Только под объём'; }
+      fill.className = 'calc-sb-zfill ' + cls;
+      verdict.className = 'calc-sb-card-v ' + cls;
+      verdict.innerHTML = '';
+      verdict.appendChild(el('div', { class: 'calc-sb-card-h' }, head));
+      verdict.appendChild(el('div', { class: 'calc-sb-card-n' },
+        (delta >= 0 ? '+' : '−') + money0(Math.abs(delta)) + ' сум в месяц'));
+      verdict.appendChild(el('div', { class: 'calc-sb-card-t' },
+        price < zero
+          ? 'Каждая упаковка обходится дороже, чем вы за неё берёте. Чем больше продадите, тем больше потеряете.'
+          : (minP !== null && price < minP
+            ? 'Деньги приносит, но цена ниже обычной. Давайте её под обещанный объём и не ставьте в прайс.'
+            : 'Такую цену можно давать кому угодно и держать в прайсе.')));
+      zoneNote.innerHTML = '';
+      zoneNote.appendChild(el('span', {}, 'никогда ниже ' + money0(zero)));
+      if (minP !== null) zoneNote.appendChild(el('span', {}, 'обычная от ' + money0(minP)));
+      zoneNote.appendChild(el('span', {}, 'прайс ' + money0(base)));
+    }
+
+    const pInp = el('input', { type: 'range', class: 'calc-sb-range',
+      min: String(Math.round(lo)), max: String(Math.round(hi)), step: '100', value: String(Math.round(priceNow)) });
+    const qInp = el('input', { type: 'range', class: 'calc-sb-range',
+      min: '0', max: String(Math.max(100, Math.round(qtyNow * 3) || 1000)), step: '10', value: String(Math.round(qtyNow)) });
+    pInp.addEventListener('input', () => {
+      priceOut.textContent = money0(Number(pInp.value)); paint(Number(pInp.value), Number(qInp.value));
+    });
+    qInp.addEventListener('input', () => {
+      qtyOut.textContent = money0(Number(qInp.value)) + ' шт'; paint(Number(pInp.value), Number(qInp.value));
+    });
+    // Пересчёт на сервере — по отпусканию ползунка, а не на каждое движение.
+    const commit = () => { line.price_new = Number(pInp.value); line.qty_new = Number(qInp.value); sbRecalc(); };
+    pInp.addEventListener('change', commit);
+    qInp.addEventListener('change', commit);
+
+    paint(priceNow, qtyNow);
+
+    return el('div', { class: 'calc-sb-card' }, [
+      el('div', { class: 'calc-sb-card-top' }, [
+        el('div', {}, [
+          el('div', { class: 'calc-sb-name' }, x.name),
+          el('div', { class: 'calc-dim calc-sb-sub' }, x.sheet_title + ' · прайс ' + money0(base)
+            + (x.qty > 0 ? ' · сейчас берут ' + money0(x.qty) + ' шт' : ' · новый клиент')),
+        ]),
+        el('button', { class: 'calc-dots', title: 'Убрать позицию',
+          onclick: () => { sb.lines.splice(i, 1); sbRecalc(); } }, '✕'),
+      ]),
+      el('div', { class: 'calc-sb-row2' }, [el('span', { class: 'calc-sb-lab' }, 'Цена'), pInp, priceOut]),
+      el('div', { class: 'calc-sb-row2' }, [el('span', { class: 'calc-sb-lab' }, 'Объём'), qInp, qtyOut]),
+      el('div', { class: 'calc-sb-zone' }, fill),
+      zoneNote,
+      verdict,
+      el('button', { class: 'calc-link', style: 'font-size:12px;margin-top:8px',
+        onclick: () => { sb.open[x.product_id] = !sb.open[x.product_id]; render(); } },
+      (sb.open[x.product_id] ? 'Скрыть' : 'Из чего складывается цена')),
+      sb.open[x.product_id] ? sbParts(x) : null,
+    ]);
   }
 
   // Сценарий нигде не хранится, поэтому показать его Шоху можно только файлом.
@@ -2376,23 +2488,6 @@
           : 'Ниже этой маржи скидку давать нельзя. Менять цифру может финансовый сотрудник или администратор.',
         '%'),
     ]);
-  }
-
-  // Четыре шага прямо на экране. Экран новый и непривычный: без порядка
-  // действий человек вписывает цифры не в те поля и получает неверный вывод.
-  const SB_STEPS = [
-    ['Добавьте товар', 'Кнопка «+ позиция» вверху. Ищите по названию — товары со всех листов в одном списке.'],
-    ['Впишите объём', 'Слева — сколько клиент берёт СЕЙЧАС. Справа — сколько обещает брать за скидку. Без левого числа сравнивать не с чем.'],
-    ['Впишите цену, которую просит', 'Слева цена по прайсу подставится сама. Справа — та, о которой торгуетесь.'],
-    ['Смотрите вывод внизу', 'Он скажет не только «да/нет», но и какой объём вернёт прежние деньги и до какой цены можно опуститься.'],
-  ];
-  function sbSteps() {
-    return el('div', { class: 'calc-sb-steps' }, SB_STEPS.map((s, i) => el('div', {
-      class: 'calc-sb-step', 'data-hint': s[1],
-    }, [
-      el('span', { class: 'calc-sb-step-n' }, String(i + 1)),
-      el('span', {}, s[0]),
-    ])));
   }
 
   // Пара «было → стало» с подписями под полями. Без подписей непонятно, какое

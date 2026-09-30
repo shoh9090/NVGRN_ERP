@@ -749,3 +749,35 @@ input.calc-rate-inp:focus { border-color: var(--lime-d); background: var(--surfa
 /* Окно «Товары из продаж без пары»: строка — товар из SD, выбор пары, кнопка. */
 .calc-miss-row { display: flex; gap: 10px; align-items: center; padding: 8px 0; border-top: 1px solid #eee7d6; flex-wrap: wrap; }
 .calc-miss-name { flex: 1; min-width: 200px; }
+
+/* ===== Песочница: карточка позиции с зонами и ползунками =====
+   Проценты человеку ничего не говорят, поэтому обе границы показаны ценой
+   в сумах, а цвет полосы отвечает на вопрос «так можно или нет». */
+.calc-sb-set { border: 1px solid var(--line); border-radius: 12px; margin: 10px 0 14px; background: var(--surface); }
+.calc-sb-set-h { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  padding: 9px 14px; cursor: pointer; font-size: 13px; font-weight: 700; }
+.calc-sb-set-b { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 0 14px 12px; }
+
+.calc-sb-card { border: 1px solid var(--line); border-radius: 14px; background: var(--surface);
+  padding: 14px 16px; margin-bottom: 12px; }
+.calc-sb-card-top { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; margin-bottom: 12px; }
+.calc-sb-row2 { display: flex; align-items: center; gap: 12px; margin-bottom: 9px; }
+.calc-sb-lab { min-width: 54px; font-size: 13px; color: var(--ink-soft); }
+.calc-sb-range { flex: 1; }
+.calc-sb-out { min-width: 96px; text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+.calc-sb-zone { height: 9px; border-radius: 5px; background: var(--line-soft); overflow: hidden; margin-top: 4px; }
+.calc-sb-zfill { height: 100%; width: 0; transition: width .08s linear; }
+.calc-sb-zfill.ok { background: var(--lime-d); }
+.calc-sb-zfill.warn { background: var(--amber-d, #b9770a); }
+.calc-sb-zfill.bad { background: var(--red); }
+.calc-sb-zn { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+  font-size: 11.5px; color: var(--ink-faint); margin-top: 5px; }
+
+.calc-sb-card-v { border-radius: 10px; padding: 11px 13px; margin-top: 11px; }
+.calc-sb-card-v.ok { background: var(--lime-soft); }
+.calc-sb-card-v.warn { background: var(--amber-soft, #fff3df); }
+.calc-sb-card-v.bad { background: #fdecea; }
+.calc-sb-card-h { font-size: 12px; font-weight: 800; text-transform: none; margin-bottom: 3px; }
+.calc-sb-card-n { font-family: 'Lora', serif; font-size: 22px; font-weight: 600; }
+.calc-sb-card-t { font-size: 13px; color: var(--ink-soft); line-height: 1.5; margin-top: 4px; }

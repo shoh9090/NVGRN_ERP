@@ -1706,6 +1706,20 @@ async function sandboxScenario(b) {
         price_floor: floor,
         max_discount_pct: (floor !== null && basePrice > 0) ? ((floor - basePrice) / basePrice) * 100 : null,
         below_min: minMargin !== null && now.net_pct !== null && now.net_pct < minMargin,
+        // Три ценовые границы в СУМАХ — экран показывает их вместо процентов.
+        // «Никогда ниже» — цена, при которой не покрываются даже зелень,
+        // упаковка, ретро и НДС: такая продажа отнимает деньги при любом объёме.
+        // «Обычная цена от» — цена, при которой маржа выходит на минимальную.
+        price_zero: now.incomplete ? null
+          : engine.priceForContribution(0, now.var_cost, it.retro_pct, it.vat_pct),
+        price_min_margin: (minMargin === null || now.incomplete) ? null
+          : engine.priceForMargin(now.cost_defect, it.retro_pct, it.vat_pct, it.profit_tax_pct, minMargin),
+        // Ставки — чтобы ползунки на экране считали мгновенно, без запроса
+        // на каждое движение. Формула та же, что на сервере.
+        rates: {
+          defect: asNum(it.defect_pct), retro: asNum(it.retro_pct),
+          vat: asNum(it.vat_pct), tax: asNum(it.profit_tax_pct),
+        },
       });
     }
 
