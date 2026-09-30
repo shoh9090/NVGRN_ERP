@@ -2339,6 +2339,13 @@
     return { left, margin: price > 0 ? (net / price) * 100 : null };
   }
 
+  // Как называется выбранный прайс-лист. Их три, и на карточке надо писать
+  // именно название: «прайс 5 500» не отвечает на вопрос, какой это прайс.
+  function sbPriceLabel() {
+    const p = (SB && SB.price_lists || []).find((x) => x.code === sb.priceList);
+    return p ? p.label : 'прайс';
+  }
+
   // Три цены, которые продажник может назвать вслух: что просит клиент, что
   // предложить в ответ и ниже чего нельзя. Нажатие ставит ползунок на эту цену —
   // сразу видно, что с ней будет.
@@ -2420,7 +2427,7 @@
       zoneNote.innerHTML = '';
       zoneNote.appendChild(el('span', {}, 'никогда ниже ' + money0(zero)));
       if (minP !== null) zoneNote.appendChild(el('span', {}, 'обычная от ' + money0(minP)));
-      zoneNote.appendChild(el('span', {}, 'прайс ' + money0(base)));
+      zoneNote.appendChild(el('span', {}, sbPriceLabel() + ' ' + money0(base)));
     }
 
     const pInp = el('input', { type: 'range', class: 'calc-sb-range',
@@ -2444,7 +2451,9 @@
       el('div', { class: 'calc-sb-card-top' }, [
         el('div', {}, [
           el('div', { class: 'calc-sb-name' }, x.name),
-          el('div', { class: 'calc-dim calc-sb-sub' }, x.sheet_title + ' · прайс ' + money0(base)),
+          // Не просто «прайс», а КАКОЙ: их три, и выбор спрятан в настройках.
+          el('div', { class: 'calc-dim calc-sb-sub' },
+            x.sheet_title + ' · ' + sbPriceLabel() + ' — ' + money0(base)),
           // Без «берут сейчас» сравнивать не с чем: 0 значит нового клиента,
           // и тогда вопрос другой — не «окупится ли скидка», а «выгодна ли сделка».
           el('div', { class: 'calc-sb-nowq' }, [
