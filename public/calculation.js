@@ -2339,6 +2339,43 @@
     return { left, margin: price > 0 ? (net / price) * 100 : null };
   }
 
+  // Три цены, которые продажник может назвать вслух: что просит клиент, что
+  // предложить в ответ и ниже чего нельзя. Нажатие ставит ползунок на эту цену —
+  // сразу видно, что с ней будет.
+  function sbOffers(x, pInp, priceOut, paint, qInp) {
+    const asked = Number(pInp.value);
+    // Встречная не может оказаться ниже запретной границы: иначе «предложите»
+    // советовало бы то, что сама же система запрещает.
+    const keep = x.price_keep === null || x.price_keep === undefined ? null
+      : Math.max(x.price_keep, x.price_min_margin || 0);
+    const minP = x.price_min_margin === null || x.price_min_margin === undefined ? null : x.price_min_margin;
+
+    const card = (label, price, note, cls) => {
+      const c = el('div', { class: 'calc-sb-offer' + (cls ? ' ' + cls : '') }, [
+        el('div', { class: 'calc-sb-offer-l' }, label),
+        el('div', { class: 'calc-sb-offer-p' }, price === null ? '—' : money0(price)),
+        el('div', { class: 'calc-sb-offer-n' }, note),
+      ]);
+      if (price !== null) {
+        c.title = 'Поставить эту цену';
+        c.addEventListener('click', () => {
+          pInp.value = String(Math.round(price));
+          priceOut.textContent = money0(Math.round(price));
+          paint(Math.round(price), Number(qInp.value));
+          pInp.dispatchEvent(new Event('change'));
+        });
+      }
+      return c;
+    };
+
+    return el('div', { class: 'calc-sb-offers' }, [
+      card('Просит клиент', asked, 'то, что стоит на ползунке'),
+      card('Предложите это', keep, keep === null ? 'нужна цена и себестоимость'
+        : 'прибыль останется как сегодня', 'pick'),
+      card('Ниже нельзя', minP, minP === null ? 'граница не задана' : 'дальше запрещено', 'stop'),
+    ]);
+  }
+
   // Карточка позиции: три ценовые зоны и два ползунка. Проценты человеку не
   // говорят ничего, поэтому обе границы показываем ЦЕНОЙ в сумах.
   function sbCard(x, line, i) {
@@ -2428,6 +2465,7 @@
       el('div', { class: 'calc-sb-row2' }, [el('span', { class: 'calc-sb-lab' }, 'Объём'), qInp, qtyOut]),
       el('div', { class: 'calc-sb-zone' }, fill),
       zoneNote,
+      sbOffers(x, pInp, priceOut, paint, qInp),
       verdict,
       el('button', { class: 'calc-link', style: 'font-size:12px;margin-top:8px',
         onclick: () => { sb.open[x.product_id] = !sb.open[x.product_id]; render(); } },

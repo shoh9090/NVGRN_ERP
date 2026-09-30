@@ -793,3 +793,17 @@ input.calc-rate-inp:focus { border-color: var(--lime-d); background: var(--surfa
 .calc-sb-profit-l { font-weight: 800; font-size: 13px; }
 .calc-sb-profit-v { font-family: 'Lora', serif; font-size: 20px; font-weight: 600; color: #3f6a16; }
 .calc-sb-profit-v.down { color: var(--red); }
+
+/* Три цены для переговоров: что просят, что предложить, ниже чего нельзя.
+   Нажатие ставит ползунок на эту цену. */
+.calc-sb-offers { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 9px; margin-top: 11px; }
+.calc-sb-offer { border: 1px solid var(--line); border-radius: 11px; padding: 9px 11px;
+  background: var(--surface); cursor: pointer; transition: .12s; }
+.calc-sb-offer:hover { border-color: var(--lime-d); background: var(--lime-soft); }
+.calc-sb-offer.pick { border: 2px solid var(--lime-d); }
+.calc-sb-offer.stop { border-color: #e6c9c4; }
+.calc-sb-offer.stop:hover { border-color: var(--red); background: #fdecea; }
+.calc-sb-offer-l { font-size: 11.5px; font-weight: 700; color: var(--ink-faint); }
+.calc-sb-offer-p { font-family: 'Lora', serif; font-size: 20px; font-weight: 600; margin: 3px 0 2px; }
+.calc-sb-offer-n { font-size: 11.5px; color: var(--ink-faint); line-height: 1.35; }

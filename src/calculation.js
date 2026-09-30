@@ -1714,6 +1714,12 @@ async function sandboxScenario(b) {
           : engine.priceForContribution(0, now.var_cost, it.retro_pct, it.vat_pct),
         price_min_margin: (minMargin === null || now.incomplete) ? null
           : engine.priceForMargin(now.cost_defect, it.retro_pct, it.vat_pct, it.profit_tax_pct, minMargin),
+        // Встречная цена: при ней процент прибыли остаётся таким же, как сегодня.
+        // Клиент получает скидку, компания не теряет в качестве сделки — весь
+        // выигрыш от объёма достаётся клиенту, но не за ваш счёт. Это то, что
+        // продажник может назвать вслух, а не просто «нельзя».
+        price_keep: (now.incomplete || was.net_pct === null) ? null
+          : engine.priceForMargin(now.cost_defect, it.retro_pct, it.vat_pct, it.profit_tax_pct, was.net_pct),
         // Ставки — чтобы ползунки на экране считали мгновенно, без запроса
         // на каждое движение. Формула та же, что на сервере.
         rates: {
