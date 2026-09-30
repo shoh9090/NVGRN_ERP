@@ -4154,8 +4154,21 @@ router.get('/api/sd-payments/points', async (req, res) => {
       .map((x) => String(x || '').trim()).filter(Boolean))];
     let names = {};
     try { names = await integrations.clientNamesBySdIds(ids); } catch (e) { names = {}; }
-    res.json({ items: ids.map((id) => ({ sd_id: id, name: names[id] || row.name || id })) });
+    // Не подставляем СВОЁ название, когда карточки нет в справочнике SD: так
+    // неактивная или чужая карточка выглядела нормальной, и было не понять,
+    // почему оплата «села не туда». Честнее сказать, что мы её не нашли.
+    res.json({ items: ids.map((id) => ({ sd_id: id, name: names[id] || (row.name ? row.name + ' — нет в справочнике SD' : id) })) });
   } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Поиск карточки в SD по названию. Нужен, когда оплата села не туда: в списке
+// точек по ИНН нужной карточки может не быть вовсе — у неё другой ИНН или его
+// нет совсем. Только чтение.
+router.get('/api/sd-payments/find', async (req, res) => {
+  const q = String(req.query.q || '').trim();
+  if (q.length < 3) return res.status(400).json({ error: 'Введите хотя бы три буквы названия' });
+  try { res.json({ items: await integrations.findClients(q) }); }
+  catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 // Запомнить: этот договор — эта точка. Дальше такие оплаты садятся сами.

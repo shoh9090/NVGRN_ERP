@@ -661,6 +661,29 @@ async function probeContragent() {
 // человек выбирает, на какую сажать оплату: номер вида «v7_1975» ему ни о чём
 // не говорит. В нашем справочнике хранится одна карточка на ИНН, поэтому имена
 // спрашиваем у самой CRM.
+// Поиск карточки клиента в SD по куску названия. Нужен, когда оплата села не
+// туда: в списке точек по ИНН нужной карточки может не быть вовсе — например,
+// у неё другой ИНН или его нет совсем. Читает и ничего не меняет.
+async function findClients(q, limit) {
+  const s = String(q || '').trim().toLowerCase();
+  if (s.length < 3) return [];
+  const cfg = await getSdConfig();
+  const auth = await sdLogin(cfg);
+  const clients = await sdGetAll(cfg, auth, 'getClient', 'client', {});
+  const out = [];
+  for (const c of clients) {
+    const name = String(c.name || c.firmName || '');
+    if (!name.toLowerCase().includes(s)) continue;
+    out.push({
+      sd_id: String(c.SD_id || ''), name,
+      inn: String(c.inn || ''), active: c.active === 'Y',
+      firm: String(c.firmName || ''),
+    });
+    if (out.length >= (limit || 40)) break;
+  }
+  return out;
+}
+
 async function clientNamesBySdIds(ids) {
   const want = new Set((ids || []).map(String).filter(Boolean));
   if (!want.size) return {};
@@ -1028,4 +1051,4 @@ async function probePayments(from, to) {
 }
 
 // sdRequest и sdLogin нужны подробной выгрузке продаж (src/sd-sales.js): ходим в SD одним кодом.
-module.exports = { SALES_STATUSES, sdRequest, sdLogin, sdHealth, getMonthlySalesUnits, getPayments, probePayments, getSdConfig, saveSdConfig, testConnection, syncFinishedGoods, syncPrices, diagSD, getHorecaPoints, getAgentCoverage, syncCrmAgents, syncCrmExpeditors, syncClientsToContacts, getSdProducts, syncCashClients, probeContragent, probePaymentWrite, clientNamesBySdIds };
+module.exports = { SALES_STATUSES, sdRequest, sdLogin, sdHealth, getMonthlySalesUnits, getPayments, probePayments, getSdConfig, saveSdConfig, testConnection, syncFinishedGoods, syncPrices, diagSD, getHorecaPoints, getAgentCoverage, syncCrmAgents, syncCrmExpeditors, syncClientsToContacts, getSdProducts, syncCashClients, probeContragent, probePaymentWrite, clientNamesBySdIds, findClients };
