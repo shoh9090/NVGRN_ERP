@@ -2645,7 +2645,7 @@
       return el('div', { class: 'calc-msg warn' },
         '⚠️ Расчёт неполный — не хватает: '
         + (x.now.missing_keys || []).map((k) => COMP_NAMES[k] || k).join(', ')
-        + '. Пока не заполнят, доли и вклад посчитать не из чего.');
+        + '. Пока не заполнят, считать не из чего.');
     }
     const wasBy = new Map((x.was.parts || []).map((p) => [p.key, p]));
     const rows = (x.now.parts || []).map((p) => {
@@ -2698,12 +2698,29 @@
       el('div', { class: 'calc-tile-l' }, label),
       el('div', { class: 'calc-tile-v' }, value === null || value === undefined ? '—' : money0(value)),
     ]);
+    // Слова «вклад» и «разница» на экране не место: даже владелец читал их и
+    // не понимал. Оставляем то, что человек может пересказать вслух — сколько
+    // денег в месяц и сколько процентов от выручки остаётся чистыми.
+    const pctTxt = (v) => (v === null || v === undefined ? '—' : money(v, 1) + '%');
     const box = el('div', { class: 'calc-tiles calc-sb-tiles' }, [
-      tile('Вклад сейчас', t.was),
-      tile('Вклад в сценарии', t.now),
-      tile('Разница', t.delta, bad ? 'calc-tile-red' : ''),
+      tile('Сейчас в месяц', t.was),
+      tile('Станет в месяц', t.now),
+      tile(t.delta !== null && t.delta < 0 ? 'Потеряете' : 'Заработаете сверх',
+        t.delta === null ? null : Math.abs(t.delta), bad ? 'calc-tile-red' : ''),
     ]);
     const wrap = el('div', {}, box);
+    wrap.appendChild(el('div', { class: 'calc-sb-money-note' },
+      'Это деньги, которые остаются после затрат на сами товары — зелень, упаковку, брак, '
+      + 'ретро и НДС. Из них платятся аренда, зарплаты и прибыль.'));
+    wrap.appendChild(el('div', { class: 'calc-sb-profit' }, [
+      el('span', { class: 'calc-sb-profit-l' }, 'Чистая прибыль'),
+      el('span', { class: 'calc-dim' }, pctTxt(t.profit_pct_was)),
+      el('span', { class: 'calc-dim' }, '→'),
+      el('span', { class: 'calc-sb-profit-v'
+        + (t.profit_pct_now !== null && t.profit_pct_was !== null && t.profit_pct_now < t.profit_pct_was ? ' down' : '') },
+      pctTxt(t.profit_pct_now)),
+      el('span', { class: 'calc-dim' }, 'от выручки · ' + money0(t.profit_now || 0) + ' сум в месяц'),
+    ]));
     const v = SB_CALC.verdict;
     if (v) {
       wrap.appendChild(el('div', { class: 'calc-sb-verdict ' + v.level },

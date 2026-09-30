@@ -1611,22 +1611,22 @@ function sandboxVerdict(lines, delta, minMargin) {
     return {
       level: delta > 0 ? 'good' : 'bad',
       text: delta > 0
-        ? 'Новый товар: принесёт ' + sumRu(delta) + ' сум вклада в месяц — это деньги на аренду, зарплаты и прибыль.'
-        : 'Новый товар по этой цене отнимает ' + sumRu(-delta) + ' сум в месяц: каждая проданная единица дешевле того, во что обходится.',
+        ? 'Сделка принесёт ' + sumRu(delta) + ' сум в месяц — это деньги на аренду, зарплаты и прибыль.'
+        : 'По этой цене сделка отнимает ' + sumRu(-delta) + ' сум в месяц: каждая упаковка дешевле того, во что обходится.',
     };
   }
   if (delta >= 0) {
     return {
       level: 'good',
       text: delta > 0
-        ? 'Скидка окупается: вклад вырастет на ' + sumRu(delta) + ' сум.'
-        : 'Вклад не изменится — сделка равнозначна прежней.',
+        ? 'Скидка окупается: денег станет больше на ' + sumRu(delta) + ' сум в месяц.'
+        : 'Денег будет столько же — сделка равнозначна прежней.',
     };
   }
   // Не окупается: советуем по позиции, которая теряет больше всех.
   const worst = lines.filter((x) => x.delta_total !== null && x.delta_total < 0)
     .sort((a, b) => a.delta_total - b.delta_total)[0];
-  const parts = ['Скидка не окупается: не хватает ' + sumRu(-delta) + ' сум.'];
+  const parts = ['Скидка не окупается: не хватает ' + sumRu(-delta) + ' сум в месяц.'];
   if (worst) {
     const how = [];
     if (worst.need_qty !== null) how.push('объём ' + sumRu(worst.need_qty) + ' вместо ' + sumRu(worst.qty_new));
@@ -1730,6 +1730,17 @@ async function sandboxScenario(b) {
     const wasSum = sum('was_total');
     const nowSum = sum('now_total');
     const delta = (wasSum === null || nowSum === null) ? null : nowSum - wasSum;
+    // Чистая прибыль в процентах по всей сделке. По одной позиции процент есть,
+    // но складывать проценты нельзя — считаем деньги и делим одно на другое.
+    const money2 = (pick) => out.reduce((s, x) => {
+      const v = pick(x);
+      return v === null || v === undefined ? s : s + v;
+    }, 0);
+    const revWas = money2((x) => (x.price === null ? null : x.price * x.qty));
+    const revNow = money2((x) => (x.price_new === null ? null : x.price_new * x.qty_new));
+    const profWas = money2((x) => (x.was.net_profit === null ? null : x.was.net_profit * x.qty));
+    const profNow = money2((x) => (x.now.net_profit === null ? null : x.now.net_profit * x.qty_new));
+    const pct = (p, r) => (r > 0 ? (p / r) * 100 : null);
     return {
       mode: approved ? 'approved' : 'current',
       price_list: String(b.price_list || 'price'),
@@ -1738,6 +1749,9 @@ async function sandboxScenario(b) {
       lines: out,
       totals: {
         was: wasSum, now: nowSum, delta,
+        revenue_was: revWas, revenue_now: revNow,
+        profit_was: profWas, profit_now: profNow,
+        profit_pct_was: pct(profWas, revWas), profit_pct_now: pct(profNow, revNow),
         incomplete: out.some((x) => x.was.incomplete || x.now.incomplete),
         below_min: out.filter((x) => x.below_min).map((x) => x.name),
       },
@@ -1771,8 +1785,8 @@ router.post('/api/sandbox/export.xlsx', J, async (req, res) => {
       ['Минимальная маржа, %', s.min_margin_pct === null ? 'не задана' : s.min_margin_pct],
       [],
       ['Товар', 'Направление', 'Объём было', 'Объём стало', 'Цена было', 'Цена стало', 'Скидка, %',
-        'Маржа было, %', 'Маржа стало, %', 'Вклад с ед. было', 'Вклад с ед. стало',
-        'Вклад всего было', 'Вклад всего стало', 'Разница', 'Предельная цена', 'Нужный объём'],
+        'Чистая прибыль было, %', 'Чистая прибыль стало, %', 'Остаётся с упаковки было', 'Остаётся с упаковки стало',
+        'Остаётся всего было', 'Остаётся всего стало', 'Разница', 'Предельная цена', 'Нужный объём'],
     ];
     s.lines.forEach((x) => aoa.push([
       x.name, x.sheet_title, rnd(x.qty), rnd(x.qty_new), rnd(x.price), rnd(x.price_new),

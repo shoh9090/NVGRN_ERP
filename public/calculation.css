@@ -784,3 +784,12 @@ input.calc-rate-inp:focus { border-color: var(--lime-d); background: var(--surfa
 .calc-sb-nowq { display: flex; align-items: center; gap: 8px; margin-top: 7px;
   font-size: 12px; color: var(--ink-faint); flex-wrap: wrap; }
 .calc-sb-nowq .calc-sb-in { width: 92px; }
+
+/* Итог сделки: деньги в месяц и чистая прибыль в процентах. Слов «вклад» и
+   «разница» здесь больше нет — их не понимали. */
+.calc-sb-money-note { font-size: 12px; color: var(--ink-faint); line-height: 1.5; margin: 6px 2px 10px; }
+.calc-sb-profit { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap;
+  border: 1px solid var(--line); border-radius: 12px; padding: 11px 14px; background: var(--surface); }
+.calc-sb-profit-l { font-weight: 800; font-size: 13px; }
+.calc-sb-profit-v { font-family: 'Lora', serif; font-size: 20px; font-weight: 600; color: #3f6a16; }
+.calc-sb-profit-v.down { color: var(--red); }
