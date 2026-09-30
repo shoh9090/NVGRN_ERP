@@ -1617,17 +1617,20 @@
     // делённый на среднемесячный выпуск. Руками не вводится.
     // В себестоимость НЕ входит — так в файле Шоха: с/с = зелень в упаковке
     // + упаковка + производ.затраты (сумма ячеек E6;E8;E9).
-    // ФОТ обычно общий, но не у всех товаров. Микрозелень приходит готовой, и
-    // труда в ней — только наклейка: общий ФОТ завода тут не при чём. Поэтому
-    // рядом с общей цифрой можно вписать свою; пусто — считается общий.
+    // ФОТ обычно общий, но не у всех товаров: микрозелень приходит готовой, и
+    // труда в ней — только наклейка. Поэтому товар берёт ДОЛЮ от общего ФОТ, а
+    // не свою цифру в сумах. Своя цифра ломала главное: фонд оплаты труда — одна
+    // сумма из Кадров, а сумма вписанных вручную значений с ней не сходится и
+    // не меняется вслед за зарплатами.
     if (!manualSheet) rows.push(skuRow('ФОТ', 'сум', (x) => [
-      (x.labor_cost === null || x.labor_cost === undefined)
-        ? (d.base.payroll_fund ? auto(d.base.labor_per_unit)
-          : el('div', { class: 'calc-warn-mini' }, 'в Персонале нет окладов'))
-        : auto(x.calc.components.labor),
+      d.base.payroll_fund
+        ? auto(x.calc.components.labor)
+        : el('div', { class: 'calc-warn-mini' }, 'в Персонале нет окладов'),
       canEdit() ? el('div', { class: 'calc-factor' }, [
-        el('span', { class: 'calc-dim' }, 'своё '),
-        cell(x.labor_cost, (v) => saveCell(x.id, { labor_cost: v }), { cls: 'calc-rate-inp', dec: 2 }),
+        el('span', { class: 'calc-dim' }, 'доля '),
+        cell(x.labor_pct === null || x.labor_pct === undefined ? 100 : x.labor_pct,
+          (v) => saveCell(x.id, { labor_pct: v }), { cls: 'calc-rate-inp', dec: 0 }),
+        el('span', { class: 'calc-dim' }, '%'),
       ]) : null,
     ]));
 

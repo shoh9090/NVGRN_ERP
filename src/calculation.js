@@ -924,14 +924,25 @@ async function sheetPayload(sheet) {
       // товара, а не приходят с листов «Упаковка» и «Производство».
       const packManual = numOrNull(p.pack_cost);
       const prodManual = numOrNull(p.production_cost);
-      const laborManual = numOrNull(p.labor_cost);
+      // Доля от ФОТ: 100 — весь средний труд завода на упаковку.
+      const laborPct = p.labor_pct === null || p.labor_pct === undefined ? 100 : Number(p.labor_pct);
       const inputs = {
         pack: tpl ? Number(tpl.total) : packManual,
         raw: rawCost,
         production: prodManual !== null ? prodManual : scale(base.combined),
-        // ФОТ на штуку одинаков для всех товаров листа: доля производственных
-        // затрат к нему не применяется — так описал Шох (ФОТ / выпуск).
-        labor: laborManual !== null ? laborManual : base.labor,
+        // ФОТ приходит одной суммой из Кадров и делится на выпуск. Товар может
+        // брать не весь этот труд, а свою ДОЛЮ: микрозелень приходит готовой, и
+        // работы в ней — только наклейка. Раньше здесь можно было вписать свою
+        // цифру в сумах; так делать нельзя — сумма по товарам переставала
+        // сходиться с настоящим фондом и не менялась вслед за зарплатами.
+        // Доля производственных затрат (prod_factor) к ФОТ по-прежнему не
+        // применяется — так описал Шох, у ФОТ своя доля.
+        // Уксус — лист с ручным вводом: там производство не общее, и ФОТ
+        // вписывают целиком. Доля к нему не применяется.
+        labor: MANUAL_SHEETS.has(sheet)
+          ? numOrNull(p.labor_cost)
+          : (base.labor === null || base.labor === undefined
+            ? base.labor : base.labor * (laborPct / 100)),
         defect_pct: p.defect_pct,
         retro_pct: p.retro_pct,
         vat_pct: p.vat_pct,
@@ -962,8 +973,8 @@ async function sheetPayload(sheet) {
         pack_incomplete: tpl ? Number(tpl.missing_prices) > 0 : false,
         prod_factor: factor,
         unit_pcs: !!p.unit_pcs,
-        // Своя цифра ФОТ у товара: пусто — берётся общая с листа «Производство».
-        labor_cost: numOrNull(p.labor_cost),
+        // Доля от общего ФОТ. 100 — весь средний труд завода на упаковку.
+        labor_pct: laborPct,
         raw_material_id: p.raw_material_id,
         raw_material_name: rawMat ? rawMat.name : '',
         recipe_id: p.recipe_id || null,
@@ -987,8 +998,9 @@ async function sheetPayload(sheet) {
         raw_price_diff_pct: rawInfo.diff_pct,
         raw_price_stale: rawInfo.diff_pct !== null && Math.abs(rawInfo.diff_pct) >= RAW_PRICE_DIFF_PCT,
         raw_cost: rawCost,
-        labor_cost: numOrNull(p.labor_cost),
+        labor_pct: laborPct,
         // Ручные строки листа «Уксус»
+        labor_cost: numOrNull(p.labor_cost),
         pack_cost: packManual,
         production_cost: prodManual,
         defect_pct: Number(p.defect_pct) || 0,
@@ -1990,7 +2002,7 @@ router.post('/api/sheet/:sheet/product', J, async (req, res) => {
 // Правка одного значения товара. Список полей закрытый: что не перечислено —
 // через этот маршрут не меняется.
 const SKU_TEXT_FIELDS = ['name', 'barcode', 'sd_product_id'];
-const SKU_NUM_FIELDS = ['prod_factor', 'raw_cost', 'net_weight_g', 'raw_price_per_kg', 'labor_cost',
+const SKU_NUM_FIELDS = ['prod_factor', 'raw_cost', 'net_weight_g', 'raw_price_per_kg', 'labor_pct', 'labor_cost',
   'pack_cost', 'production_cost',
   'defect_pct', 'price', 'price2', 'retro_pct', 'vat_pct', 'profit_tax_pct'];
 
