@@ -765,6 +765,22 @@ test('закрытый месяц: и экран, и график берут с�
   assert.strictEqual((await pnlFor(pool, '2026-07')).net_profit, 300);
 });
 
+test('разница с отгрузкой считается по деньгам ЗА ТОВАР, без прочих доходов', async () => {
+  const r = await buildPnl(makePool({
+    cash: [
+      { code: '200', name: 'Выручка от продаж', group_name: 'Доходы и поступления', flow_type: 'operating', inc: 70000000, exp: 0, cnt: 5 },
+      // Компенсация от поставщика по доходной статье — это не оплата отгрузки.
+      { code: '201', name: 'Прочие доходы', group_name: 'Доходы и поступления', flow_type: 'operating', inc: 20000000, exp: 0, cnt: 1 },
+      { code: '10', name: 'Сырьё', group_name: '1. Сырьё и переменные затраты', flow_type: 'operating', inc: 0, exp: 30000000, cnt: 3 },
+    ],
+    settings: [{ key: 'pnl_sales_2026-08', value: '100000000' }],
+  }), '2026-08');
+  assert.strictEqual(r.revenue.cash_in, 90000000);        // всего поступлений — для сверки с Кэш-флоу
+  assert.strictEqual(r.revenue.cash_in_sales, 70000000);  // из них за товар
+  // Раньше разница была 10 млн: прочие доходы молча закрывали отгрузку.
+  assert.strictEqual(r.revenue.receivable, 30000000);
+});
+
 test('готовность месяца: один и тот же светофор для любого месяца', async () => {
   const { monthReadiness } = require('../src/cash-pnl');
   // Месяц без склада, без SD и без зарплаты — прибыли верить нельзя.

@@ -763,7 +763,8 @@ function monthReadiness(r) {
   else add('open', 'Месяц закончился', 'ok', 'да');
 
   // 1. Продажи из SalesDoctor.
-  if (r.revenue.source === 'shipped' && !(r.revenue.total > 0) && r.revenue.cash_in > 0) {
+  const cashForGoods = r.revenue.cash_in_sales === undefined ? r.revenue.cash_in : r.revenue.cash_in_sales;
+  if (r.revenue.source === 'shipped' && !(r.revenue.total > 0) && cashForGoods > 0) {
     add('sales', 'Продажи из SalesDoctor', 'bad', 'сохранён ноль, хотя деньги от клиентов пришли — обновится ночью или кнопкой');
   } else if (r.revenue.source === 'shipped') add('sales', 'Продажи из SalesDoctor', 'ok', mln(r.revenue.total));
   else add('sales', 'Продажи из SalesDoctor', 'bad', 'не подтянуты — выручка взята по деньгам');
@@ -860,6 +861,10 @@ async function buildPnl(pool, period) {
   // Поступления денег остаются в отчёте, но как справка: это Кэш-флоу.
   // Разница между ними — то, что отгрузили и ещё не получили (отсрочка).
   const cashIn = cash.revenue.total;
+  // Деньги за товар отдельно от всех поступлений: статья 200 минус возвраты
+  // покупателям. Прочие доходы — компенсации, продажа тары — к отгрузкам
+  // отношения не имеют, и раньше они молча уменьшали разницу с реализацией.
+  const salesCash = num(cash.revenue.sales) - num(cash.revenue.refunds);
   const revenue = shippedLoaded ? shipped : cashIn;
   const revenueSource = shippedLoaded ? 'shipped' : 'cash';
   // Себестоимость: сырьё, принятое за месяц в Закупе (или оплаченное, если Закупа
@@ -921,10 +926,15 @@ async function buildPnl(pool, period) {
       total: revenue,
       source: revenueSource,
       shipped,                 // реализация из SalesDoctor
-      cash_in: cashIn,         // поступило денег (как в Кэш-флоу)
-      // Отгрузили, но денег ещё не получили. При отсрочке это норма,
-      // но если растёт месяц к месяцу — деньги зависают у клиентов.
-      receivable: shippedLoaded ? shipped - cashIn : null,
+      cash_in: cashIn,         // поступило денег всего (как в Кэш-флоу)
+      // Деньги ИМЕННО за товар: статья 200 минус возвраты покупателям.
+      // Прочие доходы (компенсации, продажа тары) сюда не входят — они не
+      // платежи за отгрузки, и в разнице с отгрузкой им делать нечего.
+      cash_in_sales: salesCash,
+      // Разница между отгрузкой месяца и деньгами за товар, пришедшими в этом
+      // же месяце. Долгом клиентов это НЕ является: в поступлениях есть оплаты
+      // прошлых месяцев и авансы за следующий.
+      receivable: shippedLoaded ? shipped - salesCash : null,
     },
     cogs: {
       fact,
