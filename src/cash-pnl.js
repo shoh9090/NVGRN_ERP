@@ -37,6 +37,12 @@ const SALES_KEY = (period) => 'pnl_sales_' + period;
 // Продажи по товарам SalesDoctor за месяц: [[sd_id, штук, название], …].
 // Нужны, чтобы план считался по ассортименту, а не по «средней пачке».
 const SKU_KEY = (period) => 'pnl_sku_' + period;
+// НДС. Ставка и признак «цена с налогом внутри» — одни на всю систему
+// (settings). Начисленный налог за месяц можно вписать из декларации: тогда
+// берётся он, а не расчёт по ставке. Расчёт по ставке — оценка, и так помечен.
+const VAT_RATE_KEY = 'vat_rate';
+const VAT_IN_PRICE_KEY = 'vat_in_price';
+const VAT_ACCRUED_KEY = (period) => 'vat_accrued_' + period;
 // Снимок отчёта за закрытый месяц. Пока месяц открыт, отчёт считается заново из
 // движений; при закрытии месяца в Кассе цифры сохраняются и дальше показываются
 // как есть — закрытый месяц не должен меняться от новых закупок и правок
@@ -77,7 +83,17 @@ const isCapex = (g) => String(g || '').startsWith(GRP_CAPEX);
 //   • налоги от ЗП, НДС, прочие налоги, % банка, % за обнал — операционные расходы;
 //   • налог на прибыль — отдельной строкой ПОСЛЕ операционной прибыли;
 //   • кредиты, займы, возвраты долгов, резервы — по-прежнему вне прибыли.
-const OPEX_FROM_FINANCE = new Set(['62', '64', '65', '66', '68']);
+// Решение Шоха (02.10.2026): цена в SalesDoctor — С НДС внутри. Значит налог в
+// выручке нам не принадлежит: мы собираем его с клиента и отдаём в бюджет.
+// Поэтому:
+//   • выручка в прибыли считается БЕЗ НДС (налог вычитается из реализации);
+//   • статья 66 «НДС» — это уплата в бюджет, а НЕ расход компании. Вычитать её
+//     вторым разом нельзя: налог уже вынут из выручки. Она уходит в отдельный
+//     блок «Расчёты с бюджетом по НДС» (начислено / уплачено / разница);
+//   • закупочные цены — БЕЗ НДС и в зачёт не идут: агропродукция освобождена
+//     (постановление), поэтому входного налога к вычету у нас нет.
+const VAT_PAID_CODE = '66';
+const OPEX_FROM_FINANCE = new Set(['62', '64', '65', '68']);
 const PROFIT_TAX_CODE = '67';
 // Проценты по кредитам (статья 60) — настоящий расход компании, в отличие от
 // возврата тела кредита (61): тело — это отданные свои деньги, проценты — плата
@@ -108,6 +124,7 @@ function classifyRows(rows) {
   const conversion = [];   // конверсия валюты: обе ноги, деньги никуда не делись
   const profitTax = [];    // налог на прибыль — после операционной прибыли
   const interest = [];     // проценты по кредитам — тоже после операционной прибыли
+  const vatPaid = [];      // уплата НДС в бюджет — не расход, налог сидел в цене
 
   // Приход и расход по одной статье разбираем ОТДЕЛЬНО. Раньше статья целиком
   // уходила в одну корзину, и возврат от поставщика сырья пропадал из сверки:
@@ -142,6 +159,7 @@ function classifyRows(rows) {
       const code = String(r.code);
       if (code === PROFIT_TAX_CODE) profitTax.push(item);
       else if (code === LOAN_INTEREST_CODE) interest.push(item);
+      else if (code === VAT_PAID_CODE) vatPaid.push(item);
       else if (OPEX_FROM_FINANCE.has(code)) {
         // Налоги и комиссии банка — расход, хоть статья и в группе «Финансы».
         if (!opex.has(GRP_TAXES)) opex.set(GRP_TAXES, { group_name: GRP_TAXES, amount: 0, items: [] });
@@ -169,9 +187,10 @@ function classifyRows(rows) {
   const sum = (list, f) => list.reduce((s, x) => s + x[f], 0);
   const refundsTotal = sum(refunds, 'exp');
   return {
-    revenue, opex, materials, finance, capex, otherIn, otherIncome, refunds, conversion, profitTax, interest,
+    revenue, opex, materials, finance, capex, otherIn, otherIncome, refunds, conversion, profitTax, interest, vatPaid,
     profitTaxTotal: sum(profitTax, 'exp'),
     interestTotal: sum(interest, 'exp'),
+    vatPaidTotal: sum(vatPaid, 'exp'),
     // Выручка от продаж — ровно статья 200, как в Кэш-флоу
     salesTotal: sum(revenue, 'inc'),
     otherIncomeTotal: sum(otherIncome, 'inc'),
@@ -248,6 +267,7 @@ async function cashSide(pool, from, to) {
     conversion: { in: convIn, out: sum(conversion, 'exp'), items: conversion },
     profit_tax: { total: c.profitTaxTotal, items: c.profitTax },
     interest: { total: c.interestTotal, items: c.interest },
+    vat_paid: { total: c.vatPaidTotal, items: c.vatPaid },
     unclassified: { inc: num(un.inc), exp: num(un.exp), cnt: Number(un.cnt) },
     // Сверка: из чего складывается расхождение с приходом в Кэш-флоу.
     // Показываем арифметикой, чтобы не выяснять это в переписке.
@@ -836,7 +856,8 @@ async function buildPnl(pool, period) {
   // Настройки читаем через ПЕРЕДАННЫЙ пул, а не через глобальный: иначе
   // функцию нельзя проверить тестом, не поднимая настоящую базу.
   const st = (await pool.query('SELECT key, value FROM settings WHERE key = ANY($1)',
-    [[UNITS_KEY(period), UNITS_KEY(period) + '_at', SALES_KEY(period), SKU_KEY(period)]])).rows;
+    [[UNITS_KEY(period), UNITS_KEY(period) + '_at', SALES_KEY(period), SKU_KEY(period),
+      VAT_RATE_KEY, VAT_IN_PRICE_KEY, VAT_ACCRUED_KEY(period)]])).rows;
   const byKey = new Map(st.map((x) => [x.key, x.value]));
   const units = Number(byKey.get(UNITS_KEY(period))) || 0;
   const unitsAt = byKey.get(UNITS_KEY(period) + '_at') || '';
@@ -862,13 +883,36 @@ async function buildPnl(pool, period) {
   // ВЫРУЧКА В P&L = РЕАЛИЗАЦИЯ (отгружено за месяц по SalesDoctor).
   // Поступления денег остаются в отчёте, но как справка: это Кэш-флоу.
   // Разница между ними — то, что отгрузили и ещё не получили (отсрочка).
+  // --- НДС -----------------------------------------------------------------
+  // Цена в SalesDoctor с налогом внутри (решение Шоха 02.10.2026), поэтому из
+  // реализации его надо вынуть: эти деньги не наши. Ставка и признак — в
+  // настройках; начисленный налог за месяц можно вписать из декларации, тогда
+  // берётся он, а не расчёт по всей выручке.
+  const vatRate = (() => {
+    const v = Number(byKey.get(VAT_RATE_KEY));
+    return Number.isFinite(v) && v >= 0 ? v : 12;
+  })();
+  const vatInPrice = String(byKey.get(VAT_IN_PRICE_KEY) || 'yes') !== 'no';
+  const vatDeclared = (() => {
+    const raw = byKey.get(VAT_ACCRUED_KEY(period));
+    const v = Number(raw);
+    return (raw !== undefined && raw !== null && String(raw).trim() !== '' && Number.isFinite(v)) ? v : null;
+  })();
+
   const cashIn = cash.revenue.total;
   // Деньги за товар отдельно от всех поступлений: статья 200 минус возвраты
   // покупателям. Прочие доходы — компенсации, продажа тары — к отгрузкам
   // отношения не имеют, и раньше они молча уменьшали разницу с реализацией.
   const salesCash = num(cash.revenue.sales) - num(cash.revenue.refunds);
-  const revenue = shippedLoaded ? shipped : cashIn;
+  const revenueGross = shippedLoaded ? shipped : cashIn;
   const revenueSource = shippedLoaded ? 'shipped' : 'cash';
+  // Начисленный НДС: из декларации, если вписан, иначе расчётом по ставке.
+  const vatAccrued = vatDeclared !== null ? vatDeclared
+    : (vatInPrice && vatRate > 0 ? revenueGross * vatRate / (100 + vatRate) : 0);
+  const vatSource = vatDeclared !== null ? 'declaration' : (vatInPrice && vatRate > 0 ? 'estimate' : 'none');
+  const vatPaid = num(cash.vat_paid && cash.vat_paid.total);
+  // Выручка в прибыли — БЕЗ налога: он собран для бюджета, а не заработан.
+  const revenue = revenueGross - vatAccrued;
   // Себестоимость: сырьё, принятое за месяц в Закупе (или оплаченное, если Закупа
   // ещё не было), + упаковка, оплаченная за месяц. Склад — только контроль.
   const mc = materialsCost(receivedMap.get(period), cash.materials_paid.items);
@@ -924,8 +968,10 @@ async function buildPnl(pool, period) {
     period, from, to: toStr,
     revenue: {
       ...cash.revenue,
-      // total — то, что реально идёт в прибыль
+      // total — то, что реально идёт в прибыль: реализация БЕЗ НДС
       total: revenue,
+      // Реализация как есть, с налогом внутри — для сверки с SalesDoctor.
+      gross: revenueGross,
       source: revenueSource,
       shipped,                 // реализация из SalesDoctor
       cash_in: cashIn,         // поступило денег всего (как в Кэш-флоу)
@@ -969,6 +1015,23 @@ async function buildPnl(pool, period) {
     operating_margin_pct: operating === null ? null : pct(operating, revenue),
     profit_tax: cash.profit_tax,
     interest: cash.interest,
+    // Расчёты с бюджетом по НДС. На прибыль не влияют: начисленный налог уже
+    // вынут из выручки, а уплата — погашение долга перед бюджетом, не расход.
+    // Разница между начисленным и уплаченным — долг (плюс) или переплата (минус).
+    vat: {
+      rate: vatRate,
+      in_price: vatInPrice,
+      accrued: vatAccrued,
+      accrued_source: vatSource,       // declaration — из декларации, estimate — расчёт по ставке
+      paid: vatPaid,
+      balance: vatAccrued - vatPaid,
+      note: vatSource === 'declaration'
+        ? 'Начислено — из декларации за этот месяц.'
+        : (vatSource === 'estimate'
+          ? `Начислено посчитано по ставке ${vatRate}% со ВСЕЙ реализации — это оценка. `
+            + 'Если часть продукции освобождена от налога, впишите сумму из декларации.'
+          : 'Налог в цене не выделяется (настройка).'),
+    },
     net_profit: net,
     net_margin_pct: net === null ? null : pct(net, revenue),
     reconcile: cash.reconcile,

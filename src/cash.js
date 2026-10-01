@@ -1756,6 +1756,41 @@ router.post('/api/pnl/accrual/confirm-date', express.json(), async (req, res) =>
   }
 });
 
+// Настройки НДС и начисленный налог за месяц.
+// Правило Шоха (02.10.2026): цена в SalesDoctor — с НДС внутри, закупки без НДС
+// и в зачёт не идут (агропродукция освобождена), статья 66 — уплата в бюджет.
+// Начисленный налог за месяц лучше вписывать из декларации: расчёт по ставке со
+// ВСЕЙ реализации — оценка, и если часть продукции освобождена, она завышена.
+router.post('/api/pnl/vat', express.json(), async (req, res) => {
+  if (!canFin(req)) return res.status(403).json({ error: 'Настройки НДС меняет финансовый сотрудник или администратор' });
+  const b = req.body || {};
+  try {
+    if (b.rate !== undefined) {
+      const rate = Number(b.rate);
+      if (!Number.isFinite(rate) || rate < 0 || rate > 100) return res.status(400).json({ error: 'Ставка от 0 до 100' });
+      await db.setSetting('vat_rate', String(rate));
+    }
+    if (b.in_price !== undefined) await db.setSetting('vat_in_price', b.in_price ? 'yes' : 'no');
+    if (b.period !== undefined) {
+      if (!/^\d{4}-\d{2}$/.test(String(b.period))) return res.status(400).json({ error: 'Период указывается как 2026-08' });
+      const v = b.accrued;
+      // Пустое значение убирает цифру из декларации — вернётся расчёт по ставке.
+      if (v === null || v === undefined || String(v).trim() === '') {
+        await db.pool.query('DELETE FROM settings WHERE key = $1', ['vat_accrued_' + b.period]);
+      } else {
+        const n = Number(v);
+        if (!Number.isFinite(n) || n < 0) return res.status(400).json({ error: 'Начисленный НДС — число, не меньше нуля' });
+        await db.setSetting('vat_accrued_' + b.period, String(Math.round(n)));
+      }
+    }
+    await db.log(req.user.id, 'pnl_vat_setup', JSON.stringify(b));
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[КАССА] настройки НДС:', e.message);
+    res.status(400).json({ error: e.message });
+  }
+});
+
 // Журнал событий, влияющих на прибыль месяца: когда обновляли продажи SD,
 // когда фиксировали нормы, закрывали месяц, меняли подтверждённые даты приёмок.
 // Только чтение: по нему видно, ПОЧЕМУ цифра месяца изменилась задним числом.

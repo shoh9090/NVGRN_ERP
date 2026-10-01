@@ -25,7 +25,13 @@ function makePool(opts) {
       if (/to_char/.test(q) && /INTERVAL/.test(q)) return { rows: [{ d: '2026-08-31' }] };
       // а голую колонку date драйвер отдал бы объектом Date
       if (/INTERVAL '1 month'/.test(q)) return { rows: [{ d: new Date('2026-08-31T00:00:00+05:00') }] };
-      if (/FROM settings WHERE key/.test(q)) return { rows: o.settings || [] };
+      if (/FROM settings WHERE key/.test(q)) {
+        // НДС по умолчанию выключен: эти проверки про остальную формулу, и
+        // вычет налога из выручки только мешал бы сверять суммы вручную.
+        // Правило «цена с НДС» проверяется отдельными тестами ниже.
+        const base = o.settings || [];
+        return { rows: base.some((x) => x.key === 'vat_in_price') ? base : base.concat([{ key: 'vat_in_price', value: 'no' }]) };
+      }
       if (/FROM cash_transactions t JOIN cash_categories/.test(q)) return { rows: o.cash || [] };
       if (/AND t\.category_id IS NULL/.test(q)) return { rows: [o.unclassified || { inc: 0, exp: 0, cnt: 0 }] };
       if (/direction_hint = 'transfer'/.test(q)) return { rows: [{ inc: o.transfersIn || 0 }] };
@@ -626,12 +632,78 @@ test('налоги и комиссии банка — расход; налог �
   });
   const r = await buildPnl(pool, '2026-08');
   const taxes = r.opex.groups.find((g) => g.group_name === 'Налоги и комиссии банка');
-  assert.strictEqual(taxes.amount, 55000);                       // 65 + 66 + 62
-  assert.strictEqual(r.opex.total, 55000);                       // кредит в расходы не попал
-  assert.strictEqual(r.operating_profit, 1000000 - 100000 - 55000);
+  // Решение Шоха 02.10.2026: НДС (статья 66) больше НЕ расход — налог сидит в
+  // цене и вынимается из выручки, а уплата в бюджет гасит долг перед ним.
+  assert.strictEqual(taxes.amount, 35000);                       // 65 + 62, без НДС
+  assert.strictEqual(r.opex.total, 35000);                       // кредит и НДС в расходы не попали
+  assert.strictEqual(r.vat.paid, 20000);                         // уплата видна отдельным блоком
+  assert.strictEqual(r.operating_profit, 1000000 - 100000 - 35000);
   assert.strictEqual(r.profit_tax.total, 40000);
   assert.strictEqual(r.net_profit, r.operating_profit - 40000);
   assert.strictEqual(r.excluded.finance.out, 99000);             // кредит — справочно, вне прибыли
+});
+
+// --- Правило «цена в SalesDoctor с НДС» (решение Шоха 02.10.2026) -----------
+// Налог в цене не наш: собрали с клиента и отдали в бюджет. Поэтому выручка в
+// прибыли считается без него, а уплата в бюджет не вычитается вторым разом.
+test('цена с НДС: выручка в прибыли без налога, уплата в бюджет не расход', async () => {
+  const r = await buildPnl(makePool({
+    cash: [
+      { code: '200', name: 'Выручка', group_name: 'Доходы и поступления', flow_type: 'operating', inc: 1120000, exp: 0, cnt: 1 },
+      { code: '66', name: 'НДС', group_name: '6. Финансы', flow_type: 'financing', inc: 0, exp: 100000, cnt: 1 },
+    ],
+    settings: [{ key: 'pnl_sales_2026-08', value: '1120000' }, { key: 'vat_in_price', value: 'yes' }],
+    received: [{ m: '2026-08', orders: 1, total: 100000 }],
+  }), '2026-08');
+
+  // 1 120 000 с налогом 12% внутри: налог 120 000, выручка 1 000 000.
+  assert.strictEqual(r.revenue.gross, 1120000);
+  assert.strictEqual(Math.round(r.vat.accrued), 120000);
+  assert.strictEqual(Math.round(r.revenue.total), 1000000);
+  assert.strictEqual(r.vat.accrued_source, 'estimate');
+  // Уплата в бюджет — отдельно, в расходы не попадает.
+  assert.strictEqual(r.vat.paid, 100000);
+  assert.strictEqual(r.opex.total, 0);
+  // Долг перед бюджетом: начислили 120 000, отдали 100 000.
+  assert.strictEqual(Math.round(r.vat.balance), 20000);
+  assert.strictEqual(Math.round(r.operating_profit), 1000000 - 100000);
+});
+
+test('начисленный НДС из декларации сильнее расчёта по ставке', async () => {
+  const r = await buildPnl(makePool({
+    cash: [{ code: '200', name: 'Выручка', group_name: 'Доходы и поступления', flow_type: 'operating', inc: 1120000, exp: 0, cnt: 1 }],
+    // Часть продукции освобождена (агропродукция), поэтому начислено меньше,
+    // чем 12% со всей реализации. Цифра из декларации — главнее оценки.
+    settings: [{ key: 'pnl_sales_2026-08', value: '1120000' }, { key: 'vat_in_price', value: 'yes' },
+      { key: 'vat_accrued_2026-08', value: '40000' }],
+    received: [{ m: '2026-08', orders: 1, total: 100000 }],
+  }), '2026-08');
+  assert.strictEqual(r.vat.accrued, 40000);
+  assert.strictEqual(r.vat.accrued_source, 'declaration');
+  assert.strictEqual(r.revenue.total, 1120000 - 40000);
+  assert.match(r.vat.note, /из декларации/);
+});
+
+test('налог в цене выключен — выручка остаётся как есть', async () => {
+  const r = await buildPnl(makePool({
+    cash: [{ code: '200', name: 'Выручка', group_name: 'Доходы и поступления', flow_type: 'operating', inc: 1120000, exp: 0, cnt: 1 }],
+    settings: [{ key: 'pnl_sales_2026-08', value: '1120000' }, { key: 'vat_in_price', value: 'no' }],
+    received: [{ m: '2026-08', orders: 1, total: 100000 }],
+  }), '2026-08');
+  assert.strictEqual(r.vat.accrued, 0);
+  assert.strictEqual(r.revenue.total, 1120000);
+});
+
+test('ставка НДС берётся из настроек, а не зашита в код', async () => {
+  const r = await buildPnl(makePool({
+    cash: [{ code: '200', name: 'Выручка', group_name: 'Доходы и поступления', flow_type: 'operating', inc: 1200000, exp: 0, cnt: 1 }],
+    settings: [{ key: 'pnl_sales_2026-08', value: '1200000' }, { key: 'vat_in_price', value: 'yes' },
+      { key: 'vat_rate', value: '20' }],
+    received: [{ m: '2026-08', orders: 1, total: 100000 }],
+  }), '2026-08');
+  assert.strictEqual(r.vat.rate, 20);
+  assert.strictEqual(Math.round(r.vat.accrued), 200000);     // 1 200 000 × 20/120
+  assert.strictEqual(Math.round(r.revenue.total), 1000000);
 });
 
 test('отход не прибавляется к себестоимости — он уже внутри купленного веса', async () => {
