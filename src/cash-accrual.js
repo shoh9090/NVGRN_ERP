@@ -494,20 +494,24 @@ async function profitToCash(pool, period, pnl) {
     "SELECT to_char(($1::date + INTERVAL '1 month') - INTERVAL '1 day', 'YYYY-MM-DD') AS d",
     [from])).rows[0].d;
 
-  // Деньги на начало и конец — по всем кошелькам вместе.
-  // Перевод между своими счетами даёт списание и зачисление, в сумме по всем
-  // кошелькам они гасятся, поэтому обычные переводы здесь не нужны. Исключение —
-  // обнал, который ещё не подтвердили: с банка деньги ушли, в кассу не пришли,
-  // и на эту сумму денег у компании действительно меньше.
-  // Начальные остатки (source='opening') записаны как обычные in/out, поэтому
-  // попадают сюда сами — без них остаток уходил в глубокий минус.
+  // Деньги на начало и конец — тем же выражением, каким Касса считает остаток
+  // кошелька на дату (walletBalanceUpTo): приход плюс, расход минус, перевод —
+  // плюс получателю и минус отправителю, а неподтверждённый обнал получателю не
+  // зачисляется (с банка ушло, в кассу не пришло).
+  //
+  // Считаем ТОЛЬКО по активным кошелькам. Первая версия складывала все движения
+  // подряд и давала минус 2,3 млрд вместо 80 млн: в журнале есть операции без
+  // кошелька и по отключённым счетам, и они в остаток не входят.
   const bal = async (d) => num((await pool.query(
     `SELECT COALESCE(SUM(CASE
-              WHEN tx_type = 'in' THEN amount
-              WHEN tx_type = 'out' THEN -amount
-              WHEN tx_type = 'transfer' AND needs_cash_confirm THEN -amount
+              WHEN t.tx_type = 'in' AND t.wallet_id = w.id THEN t.amount
+              WHEN t.tx_type = 'out' AND t.wallet_id = w.id THEN -t.amount
+              WHEN t.tx_type = 'transfer' AND t.wallet_to_id = w.id AND NOT t.needs_cash_confirm THEN t.amount
+              WHEN t.tx_type = 'transfer' AND t.wallet_id = w.id THEN -t.amount
               ELSE 0 END), 0) AS b
-       FROM cash_transactions WHERE tx_date <= $1`, [d])).rows[0].b);
+       FROM cash_wallets w
+       LEFT JOIN cash_transactions t ON t.tx_date <= $1
+      WHERE w.status = 'active'`, [d])).rows[0].b);
   const opening = await bal((await pool.query(
     "SELECT to_char($1::date - INTERVAL '1 day', 'YYYY-MM-DD') AS d", [from])).rows[0].d);
   const closing = await bal(to);

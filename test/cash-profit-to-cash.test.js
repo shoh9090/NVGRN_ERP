@@ -14,7 +14,7 @@ function pool(o) {
       const q = String(sql).replace(/\s+/g, ' ');
       if (/INTERVAL '1 month'/.test(q)) return { rows: [{ d: '2026-08-31' }] };
       if (/- INTERVAL '1 day'/.test(q)) return { rows: [{ d: '2026-07-31' }] };
-      if (/FROM cash_transactions WHERE tx_date <= /.test(q)) {
+      if (/FROM cash_wallets w/.test(q)) {
         balCall++;
         return { rows: [{ b: balCall === 1 ? opts.opening : opts.closing }] };
       }
