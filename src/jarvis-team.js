@@ -25,6 +25,9 @@ const db = require('./db');
 
 const REAL = ['trello', 'telegram'];                 // реакция человека
 const AUTO = ['moved', 'stale', 'done', 'ack'];      // ожидание снято системой
+// 'stale' встречается только в старых записях: с 01.10.2026 давность гасит
+// напоминания (muted_at), а обращение остаётся открытым. Старые помечаем
+// отдельно и в заслугу человеку не ставим.
 
 // Строка охвата для SQL: null — вся компания, Set — список отделов.
 function scopeWhere(scope, p) {
@@ -54,12 +57,18 @@ async function teamReport({ from, to, scope, department }) {
               COUNT(*) FILTER (WHERE answered_via IN (${real}))::int AS real_reply,
               COUNT(*) FILTER (WHERE answered_via IN (${auto}))::int AS auto_closed,
               COUNT(*) FILTER (WHERE answered_at IS NOT NULL AND answered_via IS NULL)::int AS unknown_closed,
-              COUNT(*) FILTER (WHERE answered_at IS NULL)::int AS still_open
+              COUNT(*) FILTER (WHERE answered_at IS NULL)::int AS still_open,
+              COUNT(*) FILTER (WHERE answered_at IS NULL AND muted_at IS NOT NULL)::int AS muted,
+              COUNT(*) FILTER (WHERE answered_via = 'stale')::int AS stale_old,
+              COUNT(DISTINCT card_id)::int AS cards,
+              COUNT(DISTINCT card_id) FILTER (WHERE answered_at IS NULL)::int AS cards_open,
+              MIN(created_at) FILTER (WHERE answered_at IS NULL) AS oldest_open
          FROM jarvis_mentions
         WHERE created_at >= $1::date AND created_at < ($2::date + 1)
         GROUP BY employee_id),
      old AS (
-       SELECT employee_id, COUNT(*)::int AS n, MIN(created_at) AS oldest
+       SELECT employee_id, COUNT(*)::int AS n, MIN(created_at) AS oldest,
+              COUNT(DISTINCT card_id)::int AS cards
          FROM jarvis_mentions
         WHERE answered_at IS NULL AND created_at < $1::date
         GROUP BY employee_id),
@@ -74,8 +83,11 @@ async function teamReport({ from, to, scope, department }) {
             (u.jv_chat_id IS NOT NULL) AS in_bot,
             COALESCE(per.got, 0) AS got, COALESCE(per.real_reply, 0) AS real_reply,
             COALESCE(per.auto_closed, 0) AS auto_closed, COALESCE(per.unknown_closed, 0) AS unknown_closed,
-            COALESCE(per.still_open, 0) AS still_open,
-            COALESCE(old.n, 0) AS old_open, old.oldest,
+            COALESCE(per.still_open, 0) AS still_open, COALESCE(per.muted, 0) AS muted,
+            COALESCE(per.stale_old, 0) AS stale_old,
+            COALESCE(per.cards, 0) AS cards, COALESCE(per.cards_open, 0) AS cards_open,
+            per.oldest_open,
+            COALESCE(old.n, 0) AS old_open, old.oldest, COALESCE(old.cards, 0) AS old_cards,
             COALESCE(vio.n, 0) AS violations, COALESCE(vio.not_delivered, 0) AS not_delivered
        FROM hr_employees e
        LEFT JOIN hr_departments d ON d.id = e.department_id
@@ -99,8 +111,17 @@ async function teamReport({ from, to, scope, department }) {
     снято_системой: r.auto_closed,
     не_определено: r.unknown_closed,
     открыто_из_них: r.still_open,
+    карточек_затронуто: (r.cards || 0),
+    карточек_открыто: (r.cards_open || 0) + (r.old_cards || 0),
+    напоминания_прекращены: (r.muted || 0),
+    снято_по_давности_старые: (r.stale_old || 0),
     старых_открытых: r.old_open,
-    дней_самое_старое: r.oldest ? Math.floor((Date.now() - new Date(r.oldest).getTime()) / day) : null,
+    // Возраст считаем от ПЕРВОГО неотвеченного обращения: повторное «???»
+    // не обнуляет счётчик (задание J01, кейс Асилбека).
+    дней_самое_старое: (() => {
+      const dates = [r.oldest, r.oldest_open].filter(Boolean).map((x) => new Date(x).getTime());
+      return dates.length ? Math.floor((Date.now() - Math.min(...dates)) / day) : null;
+    })(),
     нарушений: r.violations,
     не_дошло_до_него: r.not_delivered,
     // Нулевая нагрузка — не отличная работа. Говорим прямо, что мерить нечего.
@@ -113,6 +134,8 @@ async function teamReport({ from, to, scope, department }) {
   const totals = {
     людей: people.length,
     обращений: sum('обращений'),
+    карточек_открыто: sum('карточек_открыто'),
+    напоминания_прекращены: sum('напоминания_прекращены'),
     ответили_сами: sum('ответил_сам'),
     снято_системой: sum('снято_системой'),
     не_определено: sum('не_определено'),
@@ -135,6 +158,11 @@ async function teamReport({ from, to, scope, department }) {
     снимок_открытых_на: new Date(Date.now() + 5 * 3600000).toISOString().slice(0, 10),
     определения: {
       обращение: 'одно упоминание человека в карточке Trello',
+      карточек_открыто: 'сколько РАЗНЫХ карточек ждут его реакции — четыре обращения могут быть в двух карточках',
+      напоминания_прекращены: 'бот перестал напоминать по давности, но ответа так и нет — вопрос открыт',
+      снято_по_давности_старые: 'старые записи до 01.10.2026, когда давность закрывала вопрос целиком; '
+        + 'в заслугу человеку не ставятся, но полную историю по ним восстановить нельзя',
+      дней_самое_старое: 'считается от первого неотвеченного обращения; повторное напоминание возраст не обнуляет',
       ответил_сам: 'написал комментарий в карточке или ответил кнопкой из бота',
       снято_системой: 'вопрос ушёл другому, протух по давности, карточку закрыли или это было подтверждение',
       не_определено: 'старые записи, где способ закрытия не сохранён',

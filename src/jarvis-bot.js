@@ -697,6 +697,12 @@ async function syncComments(rules, scan, people) {
       }
       continue;
     }
+    // Все, к кому обращаются в ЭТОМ комментарии: ожидание любого из них снимать
+    // нельзя — обращение адресовано и ему тоже (задание J01, кейс Асилбека:
+    // «обращение к двум сотрудникам не должно снять ожидание одного из них
+    // только из-за порядка обработки адресатов»).
+    const addressed = R.parseMentions(via ? via.text : d.text)
+      .map((x) => byUser.get(x)).filter(Boolean).map((x) => x.employee_id);
     for (const u of R.parseMentions(via ? via.text : d.text)) {
       const p = byUser.get(u);
       if (!p || p.trello_member_id === authorMember) continue;
@@ -705,8 +711,9 @@ async function syncComments(rules, scan, people) {
       // «Абдушукур написал Угилой, почему это снова у меня?»).
       await pool.query(
         `UPDATE jarvis_mentions SET answered_at = $3, answered_via = 'moved'
-          WHERE card_id = $1 AND answered_at IS NULL AND created_at < $3 AND employee_id <> $2`,
-        [card.id, p.employee_id, a.date]);
+          WHERE card_id = $1 AND answered_at IS NULL AND created_at < $3
+            AND NOT (employee_id = ANY($2::int[]))`,
+        [card.id, addressed, a.date]);
       await pool.query(
         `INSERT INTO jarvis_mentions (action_id, member_id, employee_id, card_id, card_name, card_url, board_name,
            author_member_id, author_name, text, created_at)
@@ -718,11 +725,15 @@ async function syncComments(rules, scan, people) {
   }
   await setSetting('jarvis_sync_since', maxDate);
   if (deep) await setSetting('jarvis_sync_deep', new Date().toISOString());
-  // Упоминание старше mention_stale_days — протухло. Если за две недели
-  // никто о нём не вспомнил, это не задача, а история переписки.
+  // Обращение старше mention_stale_days: ПЕРЕСТАЁМ НАПОМИНАТЬ, но вопрос не
+  // закрываем. Раньше здесь ставился answered_at — и открытая проблема
+  // исчезала из отчёта вместе с напоминаниями, хотя человек так и не ответил
+  // (задание J01/J02 от 01.10.2026). Теперь это разные вещи: muted_at гасит
+  // напоминания, а «ответа нет» остаётся правдой, пока ответа нет.
   await pool.query(
-    `UPDATE jarvis_mentions SET answered_at = now(), answered_via = 'stale'
-      WHERE answered_at IS NULL AND created_at < now() - ($1 || ' days')::interval`,
+    `UPDATE jarvis_mentions SET muted_at = now()
+      WHERE answered_at IS NULL AND muted_at IS NULL
+        AND created_at < now() - ($1 || ' days')::interval`,
     [String(rules.mention_stale_days)]);
 
   // Карточка сделана — ждать ответа больше не от кого: её перенесли в колонку
@@ -789,7 +800,9 @@ async function remindAll(rules, scan, people, now) {
   // Решаем только в рабочее время и только когда напоминания включены —
   // иначе ночью или «в тихом режиме» всё ушло бы в журнал без отправки.
   if (canSend) {
-    const open = (await pool.query('SELECT * FROM jarvis_mentions WHERE answered_at IS NULL AND employee_id IS NOT NULL')).rows;
+    const open = (await pool.query(
+      `SELECT * FROM jarvis_mentions
+        WHERE answered_at IS NULL AND muted_at IS NULL AND employee_id IS NOT NULL`)).rows;
     for (const m of open) {
       const step = R.mentionStep(m, now, rules);
       if (!step) continue;

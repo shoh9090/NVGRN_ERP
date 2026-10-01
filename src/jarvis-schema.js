@@ -28,6 +28,12 @@ async function ensureJarvisSchema(pool) {
     violation_at TIMESTAMPTZ,
     UNIQUE (action_id, member_id)
   )`);
+  // Прекращение напоминаний — НЕ ответ. Раньше протухшее обращение закрывалось
+  // как отвеченное, и открытый вопрос исчезал из отчёта: «ему написали 15.09,
+  // он молчит, а через две недели проблема просто пропала» (задание J01/J02,
+  // кейс Асилбека). Теперь давность ставит muted_at: бот перестаёт дёргать
+  // человека, но обращение остаётся незакрытым, пока он не ответит.
+  await q('ALTER TABLE jarvis_mentions ADD COLUMN IF NOT EXISTS muted_at TIMESTAMPTZ');
   await q('CREATE INDEX IF NOT EXISTS idx_jv_mentions_open ON jarvis_mentions (card_id, member_id) WHERE answered_at IS NULL');
 
   // Карточки в работе: нужен ли срок и сколько раз его переносили.

@@ -15,7 +15,8 @@ function withFakeDb(row, fn) {
     sql = String(q);
     return { rows: [{ id: 1, full_name: 'Тестов Тест', position: 'Технолог', department: 'Производство',
       in_trello: true, in_bot: true, got: 0, real_reply: 0, auto_closed: 0, unknown_closed: 0,
-      still_open: 0, old_open: 0, oldest: null, violations: 0, not_delivered: 0, ...row }] };
+      still_open: 0, old_open: 0, oldest: null, violations: 0, not_delivered: 0,
+      muted: 0, stale_old: 0, cards: 0, cards_open: 0, old_cards: 0, oldest_open: null, ...row }] };
   };
   return fn(() => sql).finally(() => { db.pool.query = real; });
 }
@@ -114,4 +115,46 @@ test('Персонал без привязки видит всю компани�
     const r = await t.run({}, { user: { id: 8, isAdmin: false }, employee_id: 8 });
     assert.strictEqual(r.охват, 'вся компания');
   } finally { db.pool.query = real; }
+});
+
+// Кейс Асилбека (задание 01.10.2026): обращение от 15.09 без ответа не должно
+// исчезать из статистики только потому, что ему исполнилось 14 дней.
+test('давность гасит напоминания, но вопрос остаётся открытым', () => {
+  const R = require('../src/jarvis-rules');
+  const rules = R.normalizeRules({ work_from: 9, work_to: 20, work_days: [1, 2, 3, 4, 5, 6, 7] });
+  const старое = { created_at: '2026-09-15T06:00:00Z', answered_at: null, muted_at: '2026-09-29T06:00:00Z' };
+  // Бота это больше не заставляет писать человеку...
+  assert.strictEqual(R.mentionStep(старое, Date.parse('2026-10-01T06:00:00Z'), rules), null);
+  // ...но ответа нет, и это видно: answered_at пустой.
+  assert.strictEqual(старое.answered_at, null, 'прекращение напоминаний не является ответом');
+});
+
+test('повторное напоминание не обнуляет возраст первого обращения', async () => {
+  // Первое неотвеченное — 15.09, повторное — 23.09. Возраст считаем от 15.09.
+  await withFakeDb({ got: 2, still_open: 2, oldest_open: '2026-09-15T06:00:00Z', cards: 1, cards_open: 1 }, async () => {
+    const r = await teamReport({ from: '2026-09-01', to: '2026-09-30', scope: { depts: null } });
+    const p = r.по_людям[0];
+    const days = Math.floor((Date.now() - Date.parse('2026-09-15T06:00:00Z')) / 86400000);
+    assert.strictEqual(p.дней_самое_старое, days, 'возраст от первого обращения, а не от последнего напоминания');
+  });
+});
+
+test('четыре обращения в двух карточках — это две карточки, а не четыре', async () => {
+  await withFakeDb({ got: 4, still_open: 4, cards: 2, cards_open: 2 }, async () => {
+    const r = await teamReport({ from: '2026-09-01', to: '2026-09-30', scope: { depts: null } });
+    const p = r.по_людям[0];
+    assert.strictEqual(p.обращений, 4);
+    assert.strictEqual(p.карточек_открыто, 2, 'уникальные карточки считаются отдельно');
+  });
+});
+
+test('затихшие и старые «протухшие» показаны отдельно, а не как ответ', async () => {
+  await withFakeDb({ got: 3, still_open: 2, muted: 2, stale_old: 1, auto_closed: 1 }, async () => {
+    const r = await teamReport({ from: '2026-09-01', to: '2026-09-30', scope: { depts: null } });
+    const p = r.по_людям[0];
+    assert.strictEqual(p.ответил_сам, 0, 'ни один из этих случаев не является ответом');
+    assert.strictEqual(p.напоминания_прекращены, 2);
+    assert.strictEqual(p.снято_по_давности_старые, 1);
+    assert.match(r.определения.снято_по_давности_старые, /в заслугу человеку не ставятся/);
+  });
 });

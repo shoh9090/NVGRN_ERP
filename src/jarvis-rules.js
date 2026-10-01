@@ -162,6 +162,9 @@ function clockStart(ms, r) {
 // Что пора сделать с упоминанием без ответа: 'violation' | 'remind' | null.
 function mentionStep(m, nowMs, r) {
   if (m.answered_at) return null;
+  // Напоминания прекращены по давности: человека больше не дёргаем, но из
+  // отчёта вопрос не исчезает — это разные вещи (задание J01).
+  if (m.muted_at) return null;
   const h = workHours(clockStart(Date.parse(m.created_at), r), nowMs, r);
   if (!m.violation_at && h >= r.mention_violation_h) return 'violation';
   if (!m.reminded_at && !m.violation_at && h >= r.mention_remind_h) return 'remind';
