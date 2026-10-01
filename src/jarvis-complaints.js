@@ -197,7 +197,7 @@ async function resolve(chatId, complaintId, code) {
   const sdId = upd.rows[0].sd_id;
   if (sdId) {
     await notifyAgent(sdId, `✅ Претензия №${complaintId} ({name}): ${who.full_name} принял(а) решение — ${label}. `
-      + 'Свяжитесь с клиентом и отметьте, когда сделаете.')
+      + 'Свяжитесь с клиентом и нажмите «Сделано», когда выполните.', complaintId)
       .catch((e) => console.warn('[ПРЕТЕНЗИИ агенту]', e.message));
   }
   return { ok: true, label, who: who.full_name };
@@ -220,7 +220,10 @@ async function addNote(chatId, complaintId, text) {
 
 // Сообщение агенту точки уходит ЧЕРЕЗ ВНЕШНИЙ бот: агент подключён к нему,
 // у Джарвиса его чата нет. Токен клиентского бота уже есть в ERP (tg-files.js).
-async function notifyAgent(sdId, template) {
+// buttonForComplaint — номер претензии: тогда под сообщением появится кнопка
+// «Сделано». Её обрабатывает клиентский бот (cmpl:adone), у которого агент и
+// живёт: нажатие закрывает претензию с отметкой, кто и когда выполнил.
+async function notifyAgent(sdId, template, buttonForComplaint) {
   const token = String(process.env.TELEGRAM_BOT_TOKEN || '').trim();
   if (!token) return false;
   const row = (await pool.query(
@@ -231,9 +234,13 @@ async function notifyAgent(sdId, template) {
       ORDER BY s.id DESC LIMIT 1`, [sdId])).rows[0];
   if (!row) return false;
   const text = template.replace('{name}', row.point_name || row.firm_name || sdId);
+  const body = { chat_id: row.chat_id, text };
+  if (buttonForComplaint) {
+    body.reply_markup = { inline_keyboard: [[{ text: '✅ Сделано', callback_data: 'cmpl:adone:' + buttonForComplaint }]] };
+  }
   const resp = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: row.chat_id, text }), signal: AbortSignal.timeout(15000),
+    body: JSON.stringify(body), signal: AbortSignal.timeout(15000),
   });
   const d = await resp.json().catch(() => ({}));
   return !!d.ok;
