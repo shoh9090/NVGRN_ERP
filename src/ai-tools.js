@@ -312,13 +312,32 @@ const TOOLS = [
       if (String(args.product || '').trim()) { p.push('%' + String(args.product).trim() + '%'); w += ` AND product_name ILIKE $${p.length}`; }
       if (String(args.client || '').trim()) { p.push('%' + String(args.client).trim() + '%'); w += ` AND client_name ILIKE $${p.length}`; }
       const n = Math.min(Math.max(parseInt(args.limit, 10) || 10, 1), 30);
+      // Полный итог считается по ВСЕМ строкам периода, а короткий список —
+      // отдельно. Раньше «итого» складывалось по показанным 10–30 товарам, и
+      // при 80 позициях ответ занижал продажи, никак об этом не сообщая (J04).
+      const all = (await db.pool.query(
+        `SELECT COUNT(*)::int AS позиций, COALESCE(SUM(штук), 0)::numeric AS штук,
+                COALESCE(SUM(сумма), 0)::numeric AS сумма
+           FROM (SELECT product_name, SUM(qty) AS штук, SUM(amount - returned) AS сумма
+                   FROM sd_sales WHERE day BETWEEN $1 AND $2${w}
+                  GROUP BY product_name) t`, p)).rows[0];
+      // Килограммы по всем позициям, а не только по показанным.
+      const everyRow = (await db.pool.query(
+        `SELECT product_name AS товар, SUM(qty)::numeric AS штук
+           FROM sd_sales WHERE day BETWEEN $1 AND $2${w} GROUP BY product_name`, p)).rows;
       const rows = (await db.pool.query(
         `SELECT product_name AS товар, SUM(qty)::numeric AS штук, SUM(amount - returned)::numeric AS сумма
            FROM sd_sales WHERE day BETWEEN $1 AND $2${w}
           GROUP BY product_name ORDER BY 2 DESC LIMIT ${n}`, p)).rows;
       if (!rows.length) {
-        return { период: `${from} — ${to}`, итог: cov.days ? 'За этот период таких продаж нет'
-          : 'Продажи из SalesDoctor ещё не выгружены' };
+        // «Продаж нет» и «выгрузки за этот период не было» — разные вещи (J05).
+        const covered = cov.last_day && to <= cov.last_day && cov.first_day && from >= cov.first_day;
+        return { период: `${from} — ${to}`,
+          итог: !cov.days ? 'Продажи из SalesDoctor ещё не выгружены — это не значит, что их не было'
+            : !covered ? `Этот период не покрыт выгрузкой (есть ${cov.first_day} — ${cov.last_day}), `
+              + 'поэтому сказать «продаж нет» я не могу'
+              : 'За этот период таких продаж нет',
+          выгружено_по: cov.last_day, данные_обновлены: cov.last_sync };
       }
       // Килограммы считаем здесь, из фасовки в названии: раньше это делала
       // модель в уме, и проверить её было нечем.
@@ -331,14 +350,28 @@ const TOOLS = [
         if (withMoney) line.сумма = money(r.сумма);
         return line;
       });
-      const itog = rows.reduce((s, r) => ({ штук: s.штук + Number(r.штук), сумма: s.сумма + Number(r.сумма) }), { штук: 0, сумма: 0 });
-      const total = { штук: Math.round(itog.штук) };
-      if (kgAll) total.кг = Math.round(kgAll * 10) / 10;
-      if (kgAll && !kgKnown) total.примечание = 'Килограммы — только по товарам, у которых вес указан в названии';
-      if (withMoney) total.сумма = money(itog.сумма);
+      // Итог — по всем позициям периода. kgAll выше считался по показанным,
+      // поэтому пересчитываем по полному списку.
+      let kgTotal = 0, kgAllKnown = true;
+      for (const r of everyRow) {
+        const kg = unitKg(r.товар);
+        if (kg === null) kgAllKnown = false; else kgTotal += kg * Number(r.штук);
+      }
+      const total = { позиций: all.позиций, штук: Math.round(Number(all.штук)) };
+      if (kgTotal) total.кг = Math.round(kgTotal * 10) / 10;
+      if (kgTotal && !kgAllKnown) total.про_килограммы = 'Только по товарам, у которых вес указан в названии';
+      if (withMoney) total.сумма = money(all.сумма);
+      const partial = all.позиций > rows.length;
       return { период: `${from} — ${to}`, выгружено_по: cov.last_day,
         данные_обновлены: cov.last_sync, источник: 'наша ночная копия SalesDoctor (обновляется в 3:00)',
-        товары: out, итого: total };
+        итого_за_период: total,
+        показано_позиций: rows.length,
+        товары: out,
+        полнота: partial
+          ? `Это топ ${rows.length} из ${all.позиций} позиций. Итог выше посчитан по всем ${all.позиций}, `
+            + 'полный список — в Excel'
+          : 'показаны все позиции периода',
+        группировка: 'по названию товара из SalesDoctor; разные фасовки — разные строки' };
     },
   },
   {
