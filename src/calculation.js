@@ -997,13 +997,19 @@ async function sheetPayload(sheet) {
       // Штучный товар (микрозелень в горшочках): не взвешивается, покупается
       // поштучно. Цена позиции и есть стоимость сырья — делить на килограммы
       // нечего, граммаж у такой карточки не нужен.
-      const rawCost = recipe
+      const rawBase = recipe
         ? (recipePriced > 0 ? recipe.total : null)
         : (p.unit_pcs
           ? (rawPricePerKg !== null ? rawPricePerKg : numOrNull(p.raw_cost))
           : ((weight !== null && rawPricePerKg !== null)
             ? (weight / 1000) * rawPricePerKg
             : numOrNull(p.raw_cost)));
+      // Потери при обработке: в упаковку попадает не весь купленный вес.
+      // Чтобы получить граммаж при потерях 30%, купить надо в 1/0,7 раза
+      // больше — поэтому делим на остаток, а не накручиваем процент сверху.
+      // Поле по умолчанию 0: пока выход не замерен, расчёт прежний.
+      const rawLossPct = Number(p.raw_loss_pct) || 0;
+      const rawCost = engine.applyYieldLoss(rawBase, rawLossPct);
 
       // Себестоимость и ставки общие, отличается только отпускная цена,
       // поэтому считаем один и тот же расчёт дважды — по каждому прайсу.
@@ -1071,8 +1077,8 @@ async function sheetPayload(sheet) {
         // Средняя цена за кг самого микса: итог рецептуры ÷ её вес. Нужна, чтобы
         // строка «Стоимость зелени» показывала цифру в своих единицах (сум/кг),
         // а не пустое «по рецептуре» — иначе непонятно, дорогой микс или нет.
-        recipe_price_per_kg: (recipe && recipe.total_g > 0 && rawCost !== null)
-          ? rawCost / (recipe.total_g / 1000) : null,
+        recipe_price_per_kg: (recipe && recipe.total_g > 0 && rawBase !== null)
+          ? rawBase / (recipe.total_g / 1000) : null,
         recipe_missing_prices: recipe ? recipe.missing_prices : 0,
         recipe_empty: !!(recipe && !recipe.items.length),
         net_weight_g: weight,
@@ -1086,6 +1092,10 @@ async function sheetPayload(sheet) {
         raw_price_diff_pct: rawInfo.diff_pct,
         raw_price_stale: rawInfo.diff_pct !== null && Math.abs(rawInfo.diff_pct) >= RAW_PRICE_DIFF_PCT,
         raw_cost: rawCost,
+        // Стоимость зелени до потерь и сами потери — чтобы на экране было
+        // видно, из чего получилась цифра, а не только итог.
+        raw_cost_base: rawBase,
+        raw_loss_pct: rawLossPct,
         labor_pct: laborPct,
         // Ручные строки листа «Уксус»
         labor_cost: numOrNull(p.labor_cost),
@@ -2090,7 +2100,7 @@ router.post('/api/sheet/:sheet/product', J, async (req, res) => {
 // Правка одного значения товара. Список полей закрытый: что не перечислено —
 // через этот маршрут не меняется.
 const SKU_TEXT_FIELDS = ['name', 'barcode', 'sd_product_id'];
-const SKU_NUM_FIELDS = ['prod_factor', 'raw_cost', 'net_weight_g', 'raw_price_per_kg', 'labor_pct', 'labor_cost',
+const SKU_NUM_FIELDS = ['prod_factor', 'raw_cost', 'net_weight_g', 'raw_price_per_kg', 'raw_loss_pct', 'labor_pct', 'labor_cost',
   'pack_cost', 'production_cost',
   'defect_pct', 'price', 'price2', 'retro_pct', 'vat_pct', 'profit_tax_pct'];
 
@@ -2185,7 +2195,7 @@ router.delete('/api/sheet-product/:id(\\d+)', async (req, res) => {
 // Применить значение сразу ко всем товарам листа. Ставки, граммаж и комплект
 // упаковки в рознице обычно одинаковы, и проставлять их по одному — потеря
 // времени. Список полей закрытый: цены и сырьё так менять нельзя.
-const SKU_BULK_FIELDS = ['defect_pct', 'retro_pct', 'vat_pct', 'profit_tax_pct', 'net_weight_g', 'pack_template_id'];
+const SKU_BULK_FIELDS = ['defect_pct', 'raw_loss_pct', 'retro_pct', 'vat_pct', 'profit_tax_pct', 'net_weight_g', 'pack_template_id'];
 
 router.post('/api/sheet/:sheet/apply-rate', J, async (req, res) => {
   if (!canEdit(req)) return denyEdit(res);
