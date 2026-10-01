@@ -108,22 +108,38 @@ const MENU_MY = '📋 Мои карточки';
 const MENU_TODO = '📌 Мои дела';
 const MENU_PAY = '💰 Моя зарплата';
 const MENU_SALES = '📊 Клиенты';
+const MENU_TEAM = '👥 Отчёт по команде';
+const MENU_GOODS = '🥬 Что с товаром';
 const menu = { reply_markup: { keyboard: [[{ text: MENU_MY }, { text: MENU_TODO }], [{ text: MENU_PAY }]], resize_keyboard: true } };
-const menuBoss = { reply_markup: { keyboard: [[{ text: MENU_MY }, { text: MENU_TODO }], [{ text: MENU_PAY }, { text: MENU_SALES }]], resize_keyboard: true } };
+const menuBoss = { reply_markup: { keyboard: [[{ text: MENU_MY }, { text: MENU_TODO }],
+  [{ text: MENU_PAY }, { text: MENU_SALES }], [{ text: MENU_TEAM }, { text: MENU_GOODS }]], resize_keyboard: true } };
+// Кнопки для тех, у кого есть Закуп или Склад: им нужен товар, а не клиенты.
+const menuGoods = { reply_markup: { keyboard: [[{ text: MENU_MY }, { text: MENU_TODO }],
+  [{ text: MENU_PAY }, { text: MENU_GOODS }]], resize_keyboard: true } };
 // Кнопка «Клиенты» — только руководителю продаж и админу: остальным этот
 // разрез не открыт, и в клавиатуре ему делать нечего.
 const bossCache = new Map();               // chatId → { boss, at }
+// Клавиатура по роли (задание J08): человек должен видеть то, чем реально
+// пользуется, а не учить названия инструментов. Руководителю — команда и
+// клиенты, Закупу со Складом — товар, остальным базовые три кнопки.
 async function kb(chatId) {
   const c = bossCache.get(chatId);
-  if (c && Date.now() - c.at < 3600000) return c.boss ? menuBoss : menu;
-  let boss = false;
+  if (c && Date.now() - c.at < 3600000) return c.menu;
+  let menuFor = menu;
   try {
-    boss = (await pool.query(
-      `SELECT 1 FROM users u JOIN user_roles ur ON ur.user_id = u.id JOIN roles r ON r.id = ur.role_id
-        WHERE u.jv_chat_id = $1 AND (r.is_admin = TRUE OR r.bot_role = 'head_of_sales') LIMIT 1`, [chatId])).rows.length > 0;
-  } catch (e) { boss = false; }
-  bossCache.set(chatId, { boss, at: Date.now() });
-  return boss ? menuBoss : menu;
+    const r = (await pool.query(
+      `SELECT BOOL_OR(r.is_admin OR r.bot_role = 'head_of_sales') AS boss,
+              BOOL_OR(t.url IN ('/purchase', '/stock')) AS goods
+         FROM users u
+         JOIN user_roles ur ON ur.user_id = u.id
+         JOIN roles r ON r.id = ur.role_id
+         LEFT JOIN role_tiles rt ON rt.role_id = r.id
+         LEFT JOIN tiles t ON t.id = rt.tile_id
+        WHERE u.jv_chat_id = $1`, [chatId])).rows[0] || {};
+    menuFor = r.boss ? menuBoss : (r.goods ? menuGoods : menu);
+  } catch (e) { menuFor = menu; }
+  bossCache.set(chatId, { menu: menuFor, at: Date.now() });
+  return menuFor;
 }
 const askContact = { reply_markup: { keyboard: [[{ text: '📱 Поделиться номером', request_contact: true }]], resize_keyboard: true, one_time_keyboard: true } };
 // Кнопки под сообщением о карточке: ответить и открыть.
@@ -198,7 +214,7 @@ async function handleUpdate(u) {
   const text = String(m.text || '').trim();
   if (text === '/cancel') { pending.delete(chatId); return send(chatId, 'Отменено.', await kb(chatId)); }
   const p = pending.get(chatId);
-  if (p && text && !text.startsWith('/') && ![MENU_MY, MENU_TODO, MENU_PAY, MENU_SALES].includes(text)) {
+  if (p && text && !text.startsWith('/') && ![MENU_MY, MENU_TODO, MENU_PAY, MENU_SALES, MENU_TEAM, MENU_GOODS].includes(text)) {
     if (Date.now() > p.until) { pending.delete(chatId); return send(chatId, 'Время вышло — нажмите кнопку ещё раз.', await kb(chatId)); }
     if (p.kind === 'cnote') {
       pending.delete(chatId);
@@ -225,6 +241,17 @@ async function handleUpdate(u) {
     return send(chatId, '🧹 Забыл наш разговор. Начнём с чистого листа.', await kb(chatId));
   }
   if (text === MENU_SALES || /^(клиенты|сводка по клиентам)$/i.test(text)) return salesNow(chatId, me);
+  // Кнопки-подсказки: превращаются в обычный вопрос, чтобы ответ был такой же,
+  // как если бы человек спросил словами (задание J08).
+  if (text === MENU_TEAM) {
+    const rules0 = await loadRules();
+    if (!rules0.ai_enabled) return send(chatId, 'Вопросы словами сейчас выключены — включите их в плитке «Джарвис».', await kb(chatId));
+    return aiAnswer(chatId, me, 'Покажи отчёт по команде за текущий месяц: кто отвечает на карточки, а кто нет', rules0);
+  }
+  if (text === MENU_GOODS) {
+    return send(chatId, 'Напишите, что за товар — например «что с айсбергом» или «остаток и продажи рукколы». '
+      + 'Покажу остаток на складе, продажи за неделю и что уже заказано.', await kb(chatId));
+  }
   if (/^(\/help|\/start|помощь|что (ты )?(умеешь|можешь)|чем поможешь|nima qila olasan|yordam)\??$/i.test(text)) return sendHelp(chatId, me);
   if (text) {
     const rules = await loadRules();
@@ -327,6 +354,16 @@ const SYSTEM = [
   'при ночной выгрузке» — и назови время из «данные_обновлены». Не сочиняй других причин.',
   'Про устройство системы, сроки, планы и чужие решения НЕ ГАДАЙ. Не знаешь — так и скажи:',
   '«точно не знаю, это вопрос к разработчикам» — это честнее, чем правдоподобная выдумка.',
+  // Как отвечать на просьбы об отчётах (задание J08).
+  'ОТЧЁТЫ. Всегда называй период, за который посчитал: «за 1–30 сентября». Если человек период не назвал,',
+  'возьми разумный (текущий месяц или последние 7 дней для продаж) и прямо скажи, какой взял.',
+  'Переспрашивай только когда выбор сильно меняет ответ — и предлагай варианты, а не пустой вопрос.',
+  'Узбекский и русский вопрос понимай одинаково: один и тот же период, отдел и формат.',
+  'Названия товаров и имена людей пиши как в системе, не переводи.',
+  'Если инструмента для просьбы нет или не хватает прав — объясни КОНКРЕТНО, чего нельзя и почему,',
+  'и сразу предложи ближайшее доступное: «по всей компании не покажу, по вашему отделу — да, показать?».',
+  'Не отправляй человека к разработчикам без следующего шага.',
+  'Просят «в Excel», «файлом», «пришли таблицей» — вызывай otchet_excel, он пришлёт тот же отчёт файлом.',
   'Нет инструмента или данных — так и скажи: «таких данных у меня нет».',
   // Живой разговор: «ты тут?», «вернулся?», «спасибо» — это не запрос данных.
   // Переспрашивать в ответ на них — как скрепка из старого Office (замечание Шоха).
