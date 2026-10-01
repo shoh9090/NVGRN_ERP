@@ -222,6 +222,12 @@ router.get('/api/production', async (req, res) => {
         plan: outputPlan,
       },
       blocks,
+      // Контроль: разложены ли доли ФОТ на весь фонд. На себестоимость не влияет,
+      // но без него «красивая» себестоимость получается вычитанием зарплат.
+      labor_coverage: await laborCoverage().catch((e) => {
+        console.error('[КАЛЬКУЛЯЦИЯ] покрытие ФОТ:', e.message);
+        return null;
+      }),
       cash_categories: cats,
       can_edit: canEdit(req),
       no_output_reason: output > 0 ? null : 'Укажите среднемесячное производство — на это число делятся затраты.',
@@ -764,6 +770,88 @@ async function perUnitByKind() {
     // («Производ.затраты / накладные расходы»), поэтому считаем их вместе.
     combined: output > 0 ? (Number(production) || 0) + (Number(overhead) || 0) : null,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Покрывают ли доли ФОТ весь фонд
+// ---------------------------------------------------------------------------
+// У товара стоит ДОЛЯ от общего труда: 100 — обычная упаковка, у микрозелени
+// меньше, она приходит готовой. Но доля сама по себе ничего не гарантирует:
+// поставь всем 50% — и в себестоимость уйдёт половина фонда, а зарплату
+// платить придётся целиком. Недостающая часть не исчезает, она просто
+// перестаёт быть видна в цене.
+//
+// Поэтому считаем средневзвешенную долю по фактическим продажам месяца (что
+// продали, то и делали — зелень не хранится) и показываем остаток фонда,
+// который не разложен ни на один товар. Это контроль, а не формула: на
+// себестоимость он не влияет.
+async function laborCoverage() {
+  const base = await perUnitByKind();
+  const out = {
+    fund: base.payroll_fund, output: base.output, labor_per_unit: base.labor,
+    avg_pct: null, distributed: null, rest: null, source: null, period: null,
+    units: 0, unmatched: 0, reduced: 0, products: 0, reason: null,
+  };
+  if (!(out.fund > 0)) { out.reason = 'В Персонале нет окладов — фонд неизвестен.'; return out; }
+
+  // «Уксус» считается отдельно: там своё производство и ФОТ вписывают целиком,
+  // доля к нему не применяется — в этот контроль он не идёт.
+  const rows = (await db.pool.query(
+    `SELECT id, name, barcode, sd_product_id, finished_good_id, sheet, labor_pct
+       FROM calc_sheet_products WHERE status = 'active'`)).rows
+    .filter((p) => !MANUAL_SHEETS.has(p.sheet));
+  out.products = rows.length;
+  if (!rows.length) { out.reason = 'В Калькуляции нет товаров.'; return out; }
+  const pctOf = (p) => (p.labor_pct === null || p.labor_pct === undefined ? 100 : Number(p.labor_pct));
+  out.reduced = rows.filter((p) => pctOf(p) < 100).length;
+
+  // Продажи по товарам — те же, что в P&L: их подтягивает из SalesDoctor
+  // ночная выгрузка. Берём последний месяц, где они есть.
+  let sold = null;
+  for (const r of (await db.pool.query(
+    "SELECT key, value FROM settings WHERE key LIKE 'pnl_sku_%' ORDER BY key DESC")).rows) {
+    try {
+      const v = JSON.parse(r.value);
+      if (Array.isArray(v) && v.length) { sold = v; out.period = String(r.key).replace('pnl_sku_', ''); break; }
+    } catch (e) { /* испорченная запись — смотрим следующий месяц */ }
+  }
+
+  if (sold) {
+    const goods = (await db.pool.query('SELECT id, name, barcode, sd_sd_id FROM ref_finished_goods')).rows;
+    // Сшивка товаров Калькуляции с товарами SalesDoctor — ровно та же, что в
+    // P&L. Второй такой же, но свой, означал бы два разных ответа на вопрос
+    // «это один и тот же товар?».
+    const { costBySd } = require('./cash-pnl').linkProducts(
+      rows.map((p) => ({ ...p, cost: pctOf(p) })), sold, goods);
+    let units = 0, weighted = 0, unmatched = 0;
+    for (const line of sold) {
+      const sd = String(line[0] || '');
+      const qty = Number(line[1]) || 0;
+      if (!(qty > 0)) continue;
+      units += qty;
+      const hit = costBySd.get(sd);
+      // Товара нет в Калькуляции — считаем его обычным, с полной долей.
+      // Занижать нельзя: иначе непосчитанный товар «улучшал» бы покрытие.
+      weighted += qty * ((hit ? Number(hit.cost) : 100) / 100);
+      if (!hit) unmatched += qty;
+    }
+    if (units > 0) {
+      out.units = units;
+      out.unmatched = unmatched;
+      out.avg_pct = (weighted / units) * 100;
+      out.source = 'sales';
+    }
+  }
+  if (out.avg_pct === null) {
+    // Продаж по товарам ещё нет — считаем простое среднее по карточкам.
+    // Это грубее: товар, который почти не продают, весит столько же, сколько
+    // основной. Так и пишем на экране.
+    out.avg_pct = rows.reduce((s, p) => s + pctOf(p), 0) / rows.length;
+    out.source = 'flat';
+  }
+  out.distributed = out.fund * (out.avg_pct / 100);
+  out.rest = out.fund - out.distributed;
+  return out;
 }
 
 // Последняя принятая цена по сырью (кг) — из закупок, статус «получено».
@@ -2160,3 +2248,6 @@ module.exports.calcTabOf = calcTabOf;
 // Открыто для тестов: вердикт песочницы — это то, на что смотрит продажник,
 // решая, давать скидку или нет.
 module.exports.sandboxVerdict = sandboxVerdict;
+// Открыто для теста: контроль покрытия ФОТ — цифра, по которой видно, что
+// себестоимость стала «красивее» за счёт заниженных долей труда.
+module.exports.laborCoverage = laborCoverage;
