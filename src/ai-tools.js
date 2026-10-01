@@ -668,6 +668,37 @@ const TOOLS = [
     },
   },
   {
+    // Раскрытие по человеку (задание J02/J07, кейс Асилбека): не «четыре
+    // упоминания», а какие именно карточки, с какого числа и кто обращался.
+    name: 'kartochki_sotrudnika',
+    tile: null,
+    description: 'Какие карточки Trello ждут реакции конкретного сотрудника: название, ссылка, '
+      + 'с какого числа висит, кто обращался, когда напоминали последний раз. '
+      + 'Спрашивают по имени: «карточки Асилбека», «что висит на Угилой».',
+    schema: { type: 'object', properties: {
+      name: { type: 'string', description: 'имя или фамилия сотрудника, как в Персонале' },
+    }, additionalProperties: false },
+    run: async (args, ctx) => {
+      const scope = await teamScope(ctx);
+      if (scope.error) return { итог: scope.error };
+      const q = String(args.name || '').trim();
+      if (!q) return { итог: 'Назовите, чьи карточки показать' };
+      // Имя → один человек. Нашлось несколько — спрашиваем, кого именно,
+      // а не берём первого попавшегося.
+      const found = (await db.pool.query(
+        `SELECT e.id, e.full_name, COALESCE(d.name, '— без отдела —') AS отдел
+           FROM hr_employees e LEFT JOIN hr_departments d ON d.id = e.department_id
+          WHERE e.status = 'active' AND e.full_name ILIKE $1 LIMIT 5`, ['%' + q + '%'])).rows;
+      if (!found.length) return { итог: `В Персонале нет активного сотрудника по запросу «${q}»` };
+      if (found.length > 1) {
+        return { итог: 'Таких несколько — уточните, кто именно',
+          варианты: found.map((x) => `${x.full_name} (${x.отдел})`) };
+      }
+      const r = await require('./jarvis-team').personCards({ employeeId: found[0].id, scope });
+      return r.error ? { итог: r.error } : r;
+    },
+  },
+  {
     // Тот же отчёт книгой Excel, прямо в чат: «пришли это файлом».
     name: 'otchet_excel',
     tile: null,

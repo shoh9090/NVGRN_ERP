@@ -158,3 +158,51 @@ test('затихшие и старые «протухшие» показаны �
     assert.match(r.определения.снято_по_давности_старые, /в заслугу человеку не ставятся/);
   });
 });
+
+// Раскрытие по человеку: «сколько открытых карточек у Асилбека и как долго».
+test('карточки сотрудника: список со ссылками и датой первого обращения', async () => {
+  const { personCards } = require('../src/jarvis-team');
+  const real = db.pool.query;
+  db.pool.query = async (q, p) => {
+    const sql = String(q);
+    if (/FROM hr_employees e LEFT JOIN hr_departments/.test(sql)) {
+      return { rows: [{ id: 5, full_name: 'Рахматуллаев Асилбек', position: 'Маркетолог',
+        department: 'АУП', in_trello: true, department_id: 2 }] };
+    }
+    if (/GROUP BY card_id/.test(sql)) {
+      return { rows: [
+        { card_id: 'a', card_name: '3 салата с САЛОМ фит', card_url: 'https://trello.com/c/a', board_name: '01.Marketing',
+          обращений: 2, без_ответа: 2, первое_без_ответа: '2026-09-15T06:00:00Z',
+          последнее_напоминание: '2026-09-23T06:00:00Z', последняя_реакция: null,
+          напоминания_прекращены: null, кто_обращался: 'Шох' },
+        { card_id: 'b', card_name: 'Аналог Spring 365', card_url: 'https://trello.com/c/b', board_name: '01.Marketing',
+          обращений: 2, без_ответа: 2, первое_без_ответа: '2026-09-15T07:00:00Z',
+          последнее_напоминание: '2026-09-29T07:00:00Z', последняя_реакция: null,
+          напоминания_прекращены: '2026-09-29T07:00:00Z', кто_обращался: 'Шох' },
+      ] };
+    }
+    return { rows: [] };
+  };
+  try {
+    const r = await personCards({ employeeId: 5, scope: { depts: null } });
+    assert.strictEqual(r.открытых_карточек, 2, 'две карточки, а не четыре обращения');
+    assert.strictEqual(r.обращений_без_ответа, 4);
+    const first = r.карточки[0];
+    assert.strictEqual(first.первое_обращение_без_ответа, '2026-09-15', 'дата первого обращения сохранена');
+    assert.strictEqual(first.последнее_напоминание, '2026-09-23', 'повторное напоминание показано отдельно');
+    assert.ok(first.ссылка, 'цифру можно проверить по ссылке');
+    assert.ok(r.карточки[1].напоминания_прекращены, 'видно, что бот замолчал, хотя вопрос открыт');
+    assert.match(r.чего_здесь_нет, /Срок задачи/, 'прямо сказано, чего в этих данных нет');
+  } finally { db.pool.query = real; }
+});
+
+test('чужого сотрудника вне своей зоны не показываем', async () => {
+  const { personCards } = require('../src/jarvis-team');
+  const real = db.pool.query;
+  db.pool.query = async () => ({ rows: [{ id: 5, full_name: 'Чужой Человек', position: '', department: 'Продажи',
+    in_trello: true, department_id: 9 }] });
+  try {
+    const r = await personCards({ employeeId: 5, scope: { depts: new Set([2]) } });
+    assert.match(r.error, /не в вашей зоне/);
+  } finally { db.pool.query = real; }
+});

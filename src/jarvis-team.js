@@ -174,4 +174,57 @@ async function teamReport({ from, to, scope, department }) {
   };
 }
 
-module.exports = { teamReport, REAL, AUTO };
+// ---- Раскрытие по человеку: какие именно карточки и с какого числа ----
+// Задание 01.10.2026: «Сколько открытых карточек у Асилбека и как долго он на
+// них не реагирует?» должно давать список со ссылками, а не одно число.
+// По каждой карточке видно, когда к нему обратились впервые, когда напомнили
+// последний раз и была ли вообще его реакция.
+async function personCards({ employeeId, scope }) {
+  const emp = (await db.pool.query(
+    `SELECT e.id, e.full_name, e.position, COALESCE(d.name, '— без отдела —') AS department,
+            (e.trello_member_id IS NOT NULL) AS in_trello, e.department_id
+       FROM hr_employees e LEFT JOIN hr_departments d ON d.id = e.department_id
+      WHERE e.id = $1`, [employeeId])).rows[0];
+  if (!emp) return { error: 'Такого сотрудника нет в Персонале' };
+  if (scope && scope.depts && !scope.depts.has(emp.department_id)) {
+    return { error: `${emp.full_name} не в вашей зоне ответственности` };
+  }
+  const real = REAL.map((x) => `'${x}'`).join(',');
+  const rows = (await db.pool.query(
+    `SELECT card_id, MAX(card_name) AS card_name, MAX(card_url) AS card_url, MAX(board_name) AS board_name,
+            COUNT(*)::int AS обращений,
+            COUNT(*) FILTER (WHERE answered_at IS NULL)::int AS без_ответа,
+            MIN(created_at) FILTER (WHERE answered_at IS NULL) AS первое_без_ответа,
+            MAX(created_at) FILTER (WHERE answered_at IS NULL) AS последнее_напоминание,
+            MAX(answered_at) FILTER (WHERE answered_via IN (${real})) AS последняя_реакция,
+            MAX(muted_at) AS напоминания_прекращены,
+            MAX(author_name) AS кто_обращался
+       FROM jarvis_mentions
+      WHERE employee_id = $1 AND answered_at IS NULL
+      GROUP BY card_id
+      ORDER BY MIN(created_at)`, [employeeId])).rows;
+  const day = 86400000;
+  const ru = (d) => (d ? new Date(new Date(d).getTime() + 5 * 3600000).toISOString().slice(0, 10) : null);
+  return {
+    сотрудник: emp.full_name, должность: emp.position || '', отдел: emp.department,
+    в_trello: emp.in_trello,
+    открытых_карточек: rows.length,
+    обращений_без_ответа: rows.reduce((a, r) => a + r.без_ответа, 0),
+    карточки: rows.map((r) => ({
+      карточка: r.card_name, ссылка: r.card_url, доска: r.board_name,
+      обращений: r.обращений, без_ответа: r.без_ответа,
+      кто_обращался: r.кто_обращался,
+      первое_обращение_без_ответа: ru(r.первое_без_ответа),
+      календарных_дней: r.первое_без_ответа
+        ? Math.floor((Date.now() - new Date(r.первое_без_ответа).getTime()) / day) : null,
+      последнее_напоминание: ru(r.последнее_напоминание),
+      последняя_реакция: ru(r.последняя_реакция),
+      напоминания_прекращены: r.напоминания_прекращены ? ru(r.напоминания_прекращены) : null,
+      основание: 'его упомянули в карточке',
+    })),
+    чего_здесь_нет: 'Срок задачи и факт выполнения берутся в Trello — здесь только обращения к человеку. '
+      + 'Карточка, где он просто участник и к нему не обращались, в список не попадает.',
+  };
+}
+
+module.exports = { teamReport, personCards, REAL, AUTO };
