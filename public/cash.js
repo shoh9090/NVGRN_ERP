@@ -1040,6 +1040,9 @@
       tab('dash', 'Дашборд'),
       tab('calc', 'Расчёт'),
       tab('src', 'Откуда цифры'),
+      // Задание от 01.10.2026: сначала сравнение двух методик, и только потом
+      // решение, какую цифру считать основной. Поэтому отдельная вкладка.
+      tab('accrual', 'По начислению'),
     ]));
 
     let d;
@@ -1073,7 +1076,80 @@
 
     if (PNL_VIEW === 'dash') pnlDashboard(box, d);
     else if (PNL_VIEW === 'src') pnlSources(box, d);
+    else if (PNL_VIEW === 'accrual') pnlAccrual(box);
     else pnlCalc(box, d);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Вкладка «По начислению»: вторая методика и сверка с действующей
+  // ---------------------------------------------------------------------------
+  // Здесь расход относится к месяцу, ЗА КОТОРЫЙ возник: зарплата — начислением
+  // из Персонала, упаковка — по нормам на проданные штуки. Цифра показана рядом
+  // с действующей, а не вместо неё: сначала сверка, потом решение.
+  async function pnlAccrual(box) {
+    box.appendChild(el('div', { class: 'cash-sub' }, 'Считаем по начислению…'));
+    let r;
+    try { r = await api('/pnl/accrual?period=' + encodeURIComponent(PNL_PERIOD)); }
+    catch (e) { box.innerHTML = ''; box.appendChild(el('div', { class: 'cash-empty' }, 'Ошибка: ' + e.message)); return; }
+    box.innerHTML = '';
+    const a = r.accrual;
+
+    // Статус отчёта — первым делом: большая цифра не должна скрывать пробелы.
+    const stCls = { incomplete: 'bad', estimated: 'warn', fact: 'ok', confirmed: 'ok' }[a.status.code] || 'warn';
+    box.appendChild(el('div', { class: 'cash-acc-status ' + stCls }, [
+      el('b', {}, a.status.label), el('div', {}, a.status.why),
+    ]));
+
+    // Строки отчёта в порядке из задания, с источником и способом расчёта.
+    const BASIS = { fact: ['из документов', 'ok'], estimate: ['оценка', 'warn'], missing: ['данных нет', 'bad'] };
+    const rows = a.lines.map((l) => {
+      const b = BASIS[l.basis] || ['', ''];
+      const total = l.key === 'after_materials' || l.key === 'operating' || l.key === 'net';
+      return el('tr', { class: 'cash-acc-r' + (total ? ' total' : '') }, [
+        el('td', {}, [
+          el('div', {}, l.label),
+          el('div', { class: 'cash-acc-src' }, l.source || ''),
+          l.note ? el('div', { class: 'cash-acc-note' }, l.note) : null,
+        ]),
+        el('td', { class: 'cash-acc-basis' }, el('span', { class: 'cash-acc-badge ' + b[1] }, b[0])),
+        el('td', { class: 'cash-acc-val' }, l.amount === null || l.amount === undefined ? '—' : money(l.amount)),
+      ]);
+    });
+    box.appendChild(el('table', { class: 'cash-acc-t' }, el('tbody', {}, rows)));
+
+    // Сверка: какая строка на сколько отличается и почему.
+    const cmp = (r.compare || []).map((x) => el('tr', { class: 'cash-acc-r' + (x.key === 'net' ? ' total' : '') }, [
+      el('td', {}, [el('div', {}, x.label), el('div', { class: 'cash-acc-note' }, x.why)]),
+      el('td', { class: 'cash-acc-val' }, x.current === null ? '—' : money(x.current)),
+      el('td', { class: 'cash-acc-val' }, x.accrual === null ? '—' : money(x.accrual)),
+      el('td', { class: 'cash-acc-val' + (x.diff && x.diff < 0 ? ' cash-pnl-bad' : '') },
+        x.diff === null ? '—' : (x.diff > 0 ? '+' : '') + money(x.diff)),
+    ]));
+    box.appendChild(el('div', { class: 'cash-acc-h' }, 'Сверка с действующим отчётом'));
+    box.appendChild(el('table', { class: 'cash-acc-t cash-acc-cmp' }, [
+      el('thead', {}, el('tr', {}, ['Строка', 'Сейчас (по оплате)', 'По начислению', 'Разница']
+        .map((h, i) => el('th', { style: i ? 'text-align:right' : '' }, h)))),
+      el('tbody', {}, cmp),
+    ]));
+
+    // Чего не хватает, чтобы цифру можно было назвать подтверждённой.
+    const gaps = [];
+    if (a.payroll && a.payroll.missing) gaps.push('Ведомость зарплаты за месяц в Персонале не заведена.');
+    if (a.payroll && a.payroll.draft) gaps.push('Ведомость зарплаты не проведена — суммы ещё могут измениться.');
+    if (a.packaging && a.packaging.total === null) gaps.push('Упаковка: ' + a.packaging.reason);
+    if (a.packaging && a.packaging.unmatched && a.packaging.unmatched.length) {
+      gaps.push('Нет пары в Калькуляции у ' + a.packaging.unmatched.length + ' товаров из продаж: '
+        + a.packaging.unmatched.slice(0, 5).map((x) => x.name).join(', ') + (a.packaging.unmatched.length > 5 ? '…' : ''));
+    }
+    if (a.packaging && a.packaging.no_norm && a.packaging.no_norm.length) {
+      gaps.push('Нет нормы упаковки у ' + a.packaging.no_norm.length + ' карточек Калькуляции.');
+    }
+    gaps.push('Остальные расходы, проценты и налог берутся по дате оплаты — периода начисления у них в системе нет.');
+    gaps.push('НДС из выручки не исключён, ретро сетям не вычтено — ждёт ответа бухгалтерии.');
+    box.appendChild(pnlFold('accgaps', 'cash-audit', '📋 Что нужно восстановить, чтобы цифра стала подтверждённой (' + gaps.length + ')',
+      gaps.map((g) => el('div', { class: 'cash-audit-row' }, el('div', { class: 'cash-audit-txt' }, g)))));
+
+    box.appendChild(el('div', { class: 'cash-acc-note', style: 'margin-top:10px' }, a.assumption));
   }
 
   // ---------------------------------------------------------------------------

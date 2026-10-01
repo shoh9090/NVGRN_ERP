@@ -1623,6 +1623,29 @@ router.get('/api/pnl', async (req, res) => {
   }
 });
 
+// Прибыль месяца по НАЧИСЛЕНИЮ и сверка с действующей методикой.
+// Задание от 01.10.2026: сначала сравнение, и только потом — решение, какую
+// цифру считать основной. Поэтому отдельный адрес, а не правка /api/pnl.
+router.get('/api/pnl/accrual', async (req, res) => {
+  const period = /^\d{4}-\d{2}$/.test(req.query.period || '')
+    ? req.query.period : new Date().toISOString().slice(0, 7);
+  try {
+    const acc = require('./cash-accrual');
+    const pnl = await pnlFor(db.pool, period);
+    // Продажи по товарам — те же, что в P&L: их подтягивает ночная выгрузка.
+    let sold = null;
+    try {
+      const raw = (await db.pool.query('SELECT value FROM settings WHERE key = $1', [SKU_KEY(period)])).rows[0];
+      if (raw) sold = JSON.parse(raw.value);
+    } catch (e) { sold = null; }
+    const accrual = await acc.buildAccrual(db.pool, period, pnl, sold, require('./cash-pnl').linkProducts);
+    res.json({ period, accrual, compare: acc.compareMethods(pnl, accrual), current_net: pnl.net_profit });
+  } catch (e) {
+    console.error('[КАССА] P&L по начислению:', e.message);
+    res.status(400).json({ error: e.message });
+  }
+});
+
 // Динамика по месяцам для графика на дашборде.
 router.get('/api/pnl/trend', async (req, res) => {
   const period = /^\d{4}-\d{2}$/.test(req.query.period || '')

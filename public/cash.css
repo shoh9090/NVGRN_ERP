@@ -577,3 +577,29 @@ select.cb-cell { cursor: pointer; }
 .cash-sd-t th:nth-child(1), .cash-sd-t td:nth-child(1) { width: 130px; text-align: right; font-weight: 700; }
 .cash-sd-t th:nth-child(3), .cash-sd-t td:nth-child(3) { width: 240px; }
 .cash-sd-acts { display: flex; gap: 10px; justify-content: flex-end; margin-top: 14px; }
+
+/* ---------------------------------------------------------------------------
+   P&L → «По начислению»: вторая методика и сверка с действующей.
+   Нарочно без крупных зелёных цифр: пока часть строк — оценка, цифра не должна
+   выглядеть подтверждённой. Главное на экране — способ расчёта у каждой строки.
+   --------------------------------------------------------------------------- */
+.cash-acc-status { padding: 11px 14px; border-radius: 10px; margin: 12px 0; font-size: 13.5px; line-height: 1.5; }
+.cash-acc-status.ok { background: var(--lime-soft); color: var(--forest); border: 1px solid var(--lime-d); }
+.cash-acc-status.warn { background: var(--amber-soft); color: #8a5a00; border: 1px solid #eddcae; }
+.cash-acc-status.bad { background: var(--red-soft); color: var(--red); border: 1px solid #e8c7bd; }
+
+.cash-acc-h { font-family: Lora, Georgia, serif; font-size: 17px; color: var(--ink); margin: 20px 0 8px; }
+.cash-acc-t { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.cash-acc-t th { font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em;
+  color: var(--ink-faint); padding: 0 8px 6px; font-weight: 700; }
+.cash-acc-t td { padding: 9px 8px; border-top: 1px solid #efeadc; vertical-align: top; }
+.cash-acc-r.total td { font-weight: 800; background: #faf8f1; }
+.cash-acc-val { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.cash-acc-basis { width: 120px; }
+.cash-acc-src { font-size: 11.5px; color: var(--ink-faint); margin-top: 2px; }
+.cash-acc-note { font-size: 11.5px; color: var(--ink-soft); margin-top: 3px; line-height: 1.4; }
+.cash-acc-badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; }
+.cash-acc-badge.ok { background: var(--lime-soft); color: var(--forest); }
+.cash-acc-badge.warn { background: var(--amber-soft); color: #8a5a00; }
+.cash-acc-badge.bad { background: var(--red-soft); color: var(--red); }
+.cash-acc-cmp td:nth-child(n+2), .cash-acc-cmp th:nth-child(n+2) { width: 150px; }
