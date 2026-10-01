@@ -17,7 +17,7 @@ function setup({ owners = [{ chat_id: 111, full_name: 'Комолиддин' }, 
       if (/^\s*UPDATE tgbot\.complaints SET resolution/.test(sql)) {
         return alreadyResolvedBy ? { rowCount: 0, rows: [] } : { rowCount: 1, rows: [{ sd_id: 'SD7' }] };
       }
-      if (/SELECT resolved_by FROM tgbot\.complaints/.test(sql)) return { rows: [{ resolved_by: alreadyResolvedBy }] };
+      if (/SELECT resolved_by, status FROM tgbot\.complaints/.test(sql)) return { rows: [{ resolved_by: alreadyResolvedBy, status: 'decided' }] };
       if (/internal_note = concat_ws/.test(sql)) return { rowCount: 1, rows: [] };
       return { rows: [] };
     },
@@ -30,6 +30,9 @@ function setup({ owners = [{ chat_id: 111, full_name: 'Комолиддин' }, 
   complaints.init({
     bot, db, getLang: async () => 'ru', mainMenu: () => ({}),
     notifyClientAgent: async (sdId, text, key) => { log.agent.push({ sdId, text, key }); return true; },
+    // Решение принято — агенту уходит сообщение с кнопкой «Сделано»: пока он
+    // её не нажал, решение считается невыполненным.
+    notifyAgentDone: async (sdId, text, id) => { log.agent.push({ sdId, text, id }); return true; },
   });
   const press = (fromId, data) => complaints.onCallback({ id: 'q1', from: { id: fromId }, data, message: { chat: { id: fromId }, message_id: 5 } });
   return { complaints, log, press };
@@ -42,14 +45,27 @@ test('руководитель звена решает: запись в карт
   await tick();
   const upd = log.sql.find((x) => /SET resolution/.test(x.sql));
   assert.deepEqual(upd.params, ['replace', 'Комолиддин', '42']);
-  assert.match(upd.sql, /status <> 'resolved'/);                       // не перезаписываем закрытую
+  // Решение принято — это ещё не закрытая претензия: её закроет тот, кто
+  // решение выполнит. И повторно принять решение нельзя.
+  assert.match(upd.sql, /status='decided'/);
+  assert.match(upd.sql, /status NOT IN \('decided','resolved'\)/);
   assert.ok(log.sent.some((m) => m.chat === 111 && /ваше решение — Замена/.test(m.text)));
   assert.ok(log.sent.some((m) => m.chat === 222 && /решение принял Комолиддин: Замена/.test(m.text)));
   assert.ok(!log.sent.some((m) => m.chat === 111 && /решение принял/.test(m.text))); // себе «уже решил» не шлём
   assert.equal(log.agent.length, 1);
   assert.equal(log.agent[0].sdId, 'SD7');
   assert.match(log.agent[0].text, /Свяжитесь с клиентом/);
-  assert.equal(log.agent[0].key, 'cmpres:42');
+  assert.match(log.agent[0].text, /Сделано/);     // кнопка исполнения
+  assert.equal(log.agent[0].id, '42');
+});
+
+test('агент нажал «Сделано» — вот теперь претензия закрыта', async () => {
+  const { log, press } = setup();
+  await press(111, 'cmpl:adone:42');
+  const upd = log.sql.find((x) => /SET status='resolved'/.test(x.sql));
+  assert.ok(upd, 'претензия не закрылась');
+  assert.match(upd.sql, /done_at=now\(\)/);
+  assert.deepEqual(upd.params, ['Агент (бот)', '42']);
 });
 
 test('чужой человек нажать не может — ничего не пишется', async () => {
@@ -63,7 +79,7 @@ test('чужой человек нажать не может — ничего н
 test('уже решено другим — второе нажатие ничего не меняет и говорит, кто решил', async () => {
   const { log, press } = setup({ alreadyResolvedBy: 'Бахром' });
   await press(111, 'cmpl:ores:42:replace');
-  assert.ok(log.answers.some((a) => /Уже закрыта: Бахром/.test(a.text)));
+  assert.ok(log.answers.some((a) => /Решение уже принято: Бахром/.test(a.text)));
   assert.equal(log.agent.length, 0);
 });
 

@@ -621,7 +621,7 @@ async function main() {
   }
 
   // Мастер претензий: отдаём ему нужные помощники бота (логику заказов он не трогает).
-  complaints.init({ bot, db, getLang, pointsOfUser, phone9OfUser, pointsOfAgent, getOrders14, mainMenu, notifyClientAgent, notifyAgentReact, notifyManagers });
+  complaints.init({ bot, db, getLang, pointsOfUser, phone9OfUser, pointsOfAgent, getOrders14, mainMenu, notifyClientAgent, notifyAgentReact, notifyAgentDone, notifyManagers });
 
   // Прогрев кэша: каталог/остатки и история всегда «горячие», чтобы «Добавить» открывалось мгновенно.
   const warmStock = async () => { try { _cache.delete("stock"); await getStockData(); } catch (e) { console.warn("[ПРОГРЕВ stock]", e.message); } };
@@ -1177,6 +1177,20 @@ async function main() {
       await bot.sendMessage(chatId, rolePrefix(role) + bodyText.replace("{name}", name), { reply_markup: kb });
       return true;
     } catch (e) { console.warn("[УВЕД-РЕАКЦ]", e.message); return false; }
+  }
+  // Уведомление агенту с кнопкой «Сделано»: решение по претензии принято,
+  // осталось его выполнить — привезти замену, оформить скидку, поговорить с
+  // клиентом. Пока кнопку не нажали, претензия считается невыполненной.
+  async function notifyAgentDone(sdId, bodyText, complaintId) {
+    try {
+      const pc = (await db.query("SELECT agent_sd_id, point_name, firm_name FROM point_contacts WHERE sd_id=$1", [sdId])).rows[0] || {};
+      const { chatId, role } = await resolveAgentChat(pc.agent_sd_id);
+      if (!chatId) return false;
+      const name = pc.point_name || pc.firm_name || sdId;
+      const kb = { inline_keyboard: [[{ text: "✅ Сделано", callback_data: "cmpl:adone:" + complaintId }]] };
+      await bot.sendMessage(chatId, rolePrefix(role) + bodyText.replace("{name}", name), { reply_markup: kb });
+      return true;
+    } catch (e) { console.warn("[УВЕД-ВЫПОЛН]", e.message); return false; }
   }
   // Эскалация критической претензии — всем подтверждённым РОПам и админу.
   async function notifyManagers(text) {
