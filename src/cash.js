@@ -1674,6 +1674,77 @@ router.post('/api/pnl/accrual/freeze-norms', express.json(), async (req, res) =>
   }
 });
 
+// Excel закупщику по спорным заявкам: у них плановая дата поставки и отметка
+// приёмки в разных месяцах, и из-за этого сырьё «переехало» между месяцами.
+// Пустые столбцы — чтобы закупщик вписал, когда товар пришёл на самом деле, по
+// какому документу и что с этим делать. Файл едет человеку, а не в систему:
+// подтверждённые даты вносятся потом, по одной, с записью в журнал.
+router.get('/api/pnl/accrual/raw-dates.xlsx', async (req, res) => {
+  const period = /^\d{4}-\d{2}$/.test(req.query.period || '')
+    ? req.query.period : new Date().toISOString().slice(0, 7);
+  try {
+    const XLSX = require('xlsx');
+    const audit = await require('./cash-accrual').rawDateAudit(db.pool, period);
+    if (!audit.available) return res.status(400).json({ error: audit.note });
+
+    const ruDate = (v) => (v ? String(v).slice(0, 10).split('-').reverse().join('.') : '');
+    const rows = audit.moved.map((m) => ([
+      m.order_id, m.supplier, Math.round(m.amount),
+      ruDate(m.plan_date), ruDate(m.fact_date),
+      m.direction === 'out' ? ('ушла в ' + m.to_month) : ('пришла из ' + m.from_month),
+      Math.round(m.profit_effect),
+      '', '', '',          // три пустых столбца для закупщика
+    ]));
+    const wb = XLSX.utils.book_new();
+    const sh = XLSX.utils.aoa_to_sheet([
+      ['Заявка №', 'Поставщик', 'Сумма, сум', 'Плановая дата поставки', 'Когда отметили приёмку',
+        'Как это сказалось на месяце', 'Влияние на прибыль, сум',
+        'Фактическая дата поставки', 'Подтверждающий документ', 'Комментарий закупщика'],
+      ...rows,
+      [],
+      ['ИТОГО', '', Math.round(audit.left_amount - 0), '', '', 'влияние на прибыль ' + period,
+        Math.round(audit.profit_effect), '', '', ''],
+      [],
+      ['Что нужно сделать:'],
+      ['1. По каждой заявке укажите, когда товар пришёл ФИЗИЧЕСКИ, и назовите документ поставщика.'],
+      ['2. Колонка «Когда отметили приёмку» — это время нажатия кнопки в ERP, а не дата поставки.'],
+      ['3. Даты в ERP задним числом никто не правит: внесём по вашему подтверждению, с записью в журнал.'],
+    ]);
+    sh['!cols'] = [{ wch: 10 }, { wch: 24 }, { wch: 14 }, { wch: 22 }, { wch: 22 },
+      { wch: 24 }, { wch: 20 }, { wch: 24 }, { wch: 26 }, { wch: 34 }];
+    XLSX.utils.book_append_sheet(wb, sh, 'Спорные приёмки ' + period);
+    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    res.setHeader('Content-Disposition',
+      'attachment; filename="sporniye-priyomki-' + period + '.xlsx"');
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.send(buf);
+  } catch (e) {
+    console.error('[КАССА] выгрузка спорных приёмок:', e.message);
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Журнал событий, влияющих на прибыль месяца: когда обновляли продажи SD,
+// когда фиксировали нормы, закрывали месяц, меняли подтверждённые даты приёмок.
+// Только чтение: по нему видно, ПОЧЕМУ цифра месяца изменилась задним числом.
+router.get('/api/pnl/audit', async (req, res) => {
+  if (!canFin(req)) return res.status(403).json({ error: 'Журнал доступен финансовому сотруднику или администратору' });
+  const period = /^\d{4}-\d{2}$/.test(req.query.period || '') ? req.query.period : null;
+  try {
+    const rows = (await db.pool.query(
+      `SELECT a.id, a.action, a.details, a.created_at, u.full_name AS who
+         FROM audit_log a LEFT JOIN users u ON u.id = a.user_id
+        WHERE a.action IN ('pnl_units_refresh', 'pnl_freeze_norms', 'cash_period_lock', 'cash_period_unlock',
+                           'purchase_receive', 'purchase_delivery_date')
+          AND ($1::text IS NULL OR a.details::text LIKE '%' || $1 || '%')
+        ORDER BY a.id DESC LIMIT 200`, [period])).rows;
+    res.json({ period, items: rows });
+  } catch (e) {
+    console.error('[КАССА] журнал P&L:', e.message);
+    res.status(400).json({ error: e.message });
+  }
+});
+
 // Динамика по месяцам для графика на дашборде.
 router.get('/api/pnl/trend', async (req, res) => {
   const period = /^\d{4}-\d{2}$/.test(req.query.period || '')

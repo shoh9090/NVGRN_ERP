@@ -1250,6 +1250,11 @@
           ])])),
         ]));
         box.appendChild(el('div', { class: 'cash-acc-note' }, rd.note));
+        // Выгрузка закупщику: те же заявки плюс пустые столбцы под его ответ.
+        box.appendChild(el('button', {
+          class: 'btn-ghost', style: 'margin-top:8px',
+          onclick: () => { window.location = '/cash/api/pnl/accrual/raw-dates.xlsx?period=' + encodeURIComponent(PNL_PERIOD); },
+        }, '📄 Выгрузить закупщику (Excel)'));
       }
     }
 
