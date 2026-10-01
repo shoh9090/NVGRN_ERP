@@ -588,7 +588,11 @@ async function rawDateAudit(pool, period) {
 // результат: он либо отдаёт строки, либо падает.
 async function loadReceiptDates(pool, period) {
   const rows = (await pool.query(
-    `SELECT po.id, po.delivery_date, po.received_at::date AS received_date,
+    `SELECT po.id,
+            -- Даты просим ТЕКСТОМ: колонку date драйвер отдаёт объектом Date, и
+            -- на экране получалось «Sun Aug 30» без года вместо 30.08.2026.
+            to_char(po.delivery_date, 'YYYY-MM-DD') AS delivery_date,
+            to_char(po.received_at::date, 'YYYY-MM-DD') AS received_date,
             c.name AS supplier,
             COALESCE(SUM(COALESCE(i.fact_qty, 0) * i.price), 0) AS amount,
             to_char(po.delivery_date, 'YYYY-MM') AS plan_month,
