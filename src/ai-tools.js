@@ -53,6 +53,19 @@ function unitKg(name) {
   return null;
 }
 
+// Кого человеку можно видеть в отчёте по команде. Пока: админ и Персонал —
+// всю компанию, остальные — свой отдел. Проверка разрешённых отделов Кадров
+// (hr_user_departments) — следующим шагом, задача J03.
+async function teamScope(ctx) {
+  const u = ctx && ctx.user;
+  if (!u) return { error: 'Не понял, кто спрашивает' };
+  if (u.isAdmin || await hasTile(u, '/hr')) return { depts: null, label: 'вся компания' };
+  if (!ctx.employee_id) return { error: 'Такой отчёт доступен администратору и Персоналу' };
+  const r = (await db.pool.query('SELECT department_id FROM hr_employees WHERE id = $1', [ctx.employee_id])).rows[0];
+  if (!r || !r.department_id) return { error: 'У вас не указан отдел — отчёт по команде показать не могу' };
+  return { depts: new Set([r.department_id]), label: 'ваш отдел' };
+}
+
 const period = (v) => (/^\d{4}-\d{2}$/.test(String(v || '')) ? String(v) : new Date(Date.now() + 5 * 3600000).toISOString().slice(0, 7));
 const today = () => new Date(Date.now() + 5 * 3600000).toISOString().slice(0, 10);
 const day = (v, def) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : def);
@@ -557,70 +570,48 @@ const TOOLS = [
       + 'Сколько упоминаний пришло и сколько осталось без ответа, сколько нарушений за период, '
       + 'сколько дней висит самое старое. Можно по отделу. Это сводка по людям, а не по себе.',
     schema: { type: 'object', properties: {
-      days: { type: 'number', description: 'за сколько дней считать нарушения, по умолчанию 30' },
+      from: { type: 'string', description: 'с какой даты, вид 2026-09-01' },
+      to: { type: 'string', description: 'по какую дату включительно' },
+      days: { type: 'number', description: 'либо просто «за сколько дней», если даты не названы' },
       department: { type: 'string', description: 'часть названия отдела, если нужен один' },
     }, additionalProperties: false },
     run: async (args, ctx) => {
-      const u = ctx && ctx.user;
-      if (!u) return { итог: 'Не понял, кто спрашивает' };
-      const wide = !!u.isAdmin || await hasTile(u, '/hr');
-      const days = Math.min(Math.max(parseInt(args.days, 10) || 30, 1), 180);
-      const p = [String(days)];
-      let where = '';
-      if (!wide) {
-        // Своё подразделение: человек видит тех, за кого отвечает.
-        if (!ctx.employee_id) return { итог: 'Такой отчёт доступен администратору и Персоналу' };
-        p.push(ctx.employee_id);
-        where = ` AND e.department_id = (SELECT department_id FROM hr_employees WHERE id = $${p.length})`;
+      const scope = await teamScope(ctx);
+      if (scope.error) return { итог: scope.error };
+      const nowDay = today();
+      let from, to;
+      if (args.from || args.to) {
+        to = day(args.to, nowDay);
+        from = day(args.from, to.slice(0, 8) + '01');
+      } else if (args.days) {
+        const n = Math.min(Math.max(parseInt(args.days, 10) || 30, 1), 365);
+        to = nowDay;
+        from = new Date(Date.now() + 5 * 3600000 - (n - 1) * 86400000).toISOString().slice(0, 10);
+      } else {
+        to = nowDay; from = nowDay.slice(0, 8) + '01';
       }
-      if (String(args.department || '').trim()) {
-        p.push('%' + String(args.department).trim() + '%');
-        where += ` AND d.name ILIKE $${p.length}`;
-      }
-      const rows = (await db.pool.query(
-        `WITH m AS (
-           SELECT employee_id,
-                  COUNT(*) FILTER (WHERE created_at > now() - ($1 || ' days')::interval) AS got,
-                  COUNT(*) FILTER (WHERE created_at > now() - ($1 || ' days')::interval AND answered_at IS NOT NULL) AS answered,
-                  COUNT(*) FILTER (WHERE answered_at IS NULL) AS waiting,
-                  MIN(created_at) FILTER (WHERE answered_at IS NULL) AS oldest
-             FROM jarvis_mentions GROUP BY employee_id),
-         v AS (
-           SELECT employee_id, COUNT(*) AS n FROM jarvis_log
-            WHERE kind LIKE 'violation%' AND created_at > now() - ($1 || ' days')::interval
-            GROUP BY employee_id)
-         SELECT e.full_name AS сотрудник, COALESCE(d.name, '— без отдела —') AS отдел, e.position AS должность,
-                COALESCE(m.got, 0)::int AS упоминаний, COALESCE(m.answered, 0)::int AS ответил,
-                COALESCE(m.waiting, 0)::int AS без_ответа, COALESCE(v.n, 0)::int AS нарушений,
-                EXTRACT(DAY FROM now() - m.oldest)::int AS дней_самое_старое,
-                (u.jv_chat_id IS NOT NULL) AS в_боте
-           FROM hr_employees e
-           LEFT JOIN hr_departments d ON d.id = e.department_id
-           LEFT JOIN users u ON u.id = e.erp_user_id
-           LEFT JOIN m ON m.employee_id = e.id
-           LEFT JOIN v ON v.employee_id = e.id
-          WHERE e.status = 'active'${where}
-            AND (COALESCE(m.got, 0) > 0 OR COALESCE(m.waiting, 0) > 0 OR COALESCE(v.n, 0) > 0)
-          ORDER BY COALESCE(m.waiting, 0) DESC, COALESCE(v.n, 0) DESC`, p)).rows;
-      if (!rows.length) return { за_дней: days, итог: 'Ни одного упоминания без ответа и ни одного нарушения' };
-      const byDep = new Map();
-      for (const r of rows) {
-        const d = byDep.get(r.отдел) || { отдел: r.отдел, людей: 0, без_ответа: 0, нарушений: 0 };
-        d.людей++; d.без_ответа += r.без_ответа; d.нарушений += r.нарушений;
-        byDep.set(r.отдел, d);
-      }
-      // Расшифровка едет вместе с цифрами: без неё «9 нарушений» — пустой звук,
-      // и модель начинает гадать, что это значит (замечание Шоха 01.10.2026).
+      const rep = await require('./jarvis-team').teamReport({ from, to, scope, department: args.department });
       const rules = await require('./jarvis').loadRules();
+      // В чат — полные итоги и короткий список; детали целиком берутся из
+      // Excel (инструмент otchet_excel), чтобы не пихать в ответ сотни строк.
+      const shown = rep.по_людям.filter((x) => x.обращений || x.старых_открытых || x.нарушений).slice(0, 15);
       return {
-        за_дней: days, охват: wide ? 'вся компания' : 'ваш отдел',
+        период: rep.период, охват: rep.охват, снимок_открытых_на: rep.снимок_открытых_на,
+        определения: rep.определения,
         что_такое_нарушение: `не ответил на упоминание за ${rules.mention_violation_h} раб. ч, `
           + `или карточка просрочена дольше ${rules.overdue_violation_days} раб. дн, `
           + `или карточка без срока дольше ${rules.due_required_h} раб. ч`
           + (rules.fines_enabled ? '' : '. Штрафы не начисляются — это пока только журнал'),
-        по_отделам: [...byDep.values()].sort((a, b) => b.без_ответа - a.без_ответа),
-        по_людям: rows.slice(0, 30),
-        примечание: 'в_боте = false означает, что человек не открыл Джарвиса и напоминания до него не доходят',
+        итого: rep.итого,
+        по_отделам: rep.по_отделам,
+        показано_людей: shown.length,
+        всего_людей_в_охвате: rep.итого.людей,
+        по_людям: shown,
+        полный_список: shown.length < rep.итого.людей
+          ? 'В чате показаны только те, у кого есть нагрузка или долги. Полный список — в Excel (попросите «пришли отчёт в Excel»)'
+          : 'показаны все',
+        примечание: 'Нулевые цифры у человека без Trello означают «измерить нечем», а не идеальную дисциплину. '
+          + '«не дошло до него» — сообщение не доставлено, это не доказательство игнорирования.',
       };
     },
   },
