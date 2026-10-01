@@ -1080,6 +1080,10 @@
     else pnlCalc(box, d);
   }
 
+  // Фиксировать нормы месяца может тот же, кто ведёт деньги: админ или роль
+  // «Финансы/Бухгалтерия». Остальные цифру видят, но не замораживают.
+  const canFreeze = () => !!(window.HUB_USER && (window.HUB_USER.isAdmin || window.HUB_USER.isFinance));
+
   // ---------------------------------------------------------------------------
   // Вкладка «По начислению»: вторая методика и сверка с действующей
   // ---------------------------------------------------------------------------
@@ -1095,10 +1099,45 @@
     const a = r.accrual;
 
     // Статус отчёта — первым делом: большая цифра не должна скрывать пробелы.
-    const stCls = { incomplete: 'bad', estimated: 'warn', fact: 'ok', confirmed: 'ok' }[a.status.code] || 'warn';
+    // «Подтверждён» здесь не бывает: закрытие месяца относится к действующей
+    // методике и эту не подтверждает, а вопросы НДС, ретро и расходов периода
+    // ещё открыты.
+    const stCls = { incomplete: 'bad' }[a.status.code] || 'warn';
     box.appendChild(el('div', { class: 'cash-acc-status ' + stCls }, [
-      el('b', {}, a.status.label), el('div', {}, a.status.why),
+      el('b', {}, '⏳ ' + a.status.label), el('div', {}, a.status.why),
+      r.current_closed ? el('div', { class: 'cash-acc-note' },
+        'Действующий отчёт за этот месяц закрыт снимком. На этот расчёт закрытие не распространяется: '
+        + 'это другая методика, и подтверждать её надо отдельно.') : null,
+      el('div', { class: 'cash-acc-note' }, 'Открытые вопросы методики: ' + a.status.open_questions.length
+        + ' — ' + a.status.open_questions.join(' ')),
     ]));
+
+    // Итог проверки месяца: исходная цифра плюс каждое объяснённое изменение.
+    const b = r.bridge;
+    if (b && b.from !== null) {
+      const brRows = [el('tr', { class: 'cash-acc-r' }, [
+        el('td', {}, el('b', {}, 'Прибыль по действующему отчёту')),
+        el('td', { class: 'cash-acc-val' }, money(b.from)),
+      ])];
+      (b.steps || []).forEach((st) => brRows.push(el('tr', { class: 'cash-acc-r' }, [
+        el('td', {}, [el('div', {}, st.label), el('div', { class: 'cash-acc-note' }, st.why)]),
+        el('td', { class: 'cash-acc-val' + (st.amount < 0 ? ' cash-pnl-bad' : '') },
+          st.amount === null ? '—' : (st.amount > 0 ? '+' : '') + money(st.amount)),
+      ])));
+      brRows.push(el('tr', { class: 'cash-acc-r total' }, [
+        el('td', {}, el('b', {}, 'Новый предварительный результат')),
+        el('td', { class: 'cash-acc-val' }, b.to === null ? '—' : money(b.to)),
+      ]));
+      box.appendChild(el('div', { class: 'cash-acc-h' }, 'Итог проверки месяца'));
+      box.appendChild(el('table', { class: 'cash-acc-t' }, el('tbody', {}, brRows)));
+      box.appendChild(el('div', { class: 'cash-acc-note' }, b.note));
+      if (b.unconfirmed && b.unconfirmed.length) {
+        box.appendChild(el('div', { class: 'cash-acc-unconf' }, [
+          el('div', { class: 'cash-acc-unconf-h' }, 'Неподтверждённое — в цифру выше НЕ входит'),
+          el('ul', {}, b.unconfirmed.map((u) => el('li', {}, [el('b', {}, u.label), ' — ', u.note]))),
+        ]));
+      }
+    }
 
     // Строки отчёта в порядке из задания, с источником и способом расчёта.
     const BASIS = { fact: ['из документов', 'ok'], estimate: ['оценка', 'warn'], missing: ['данных нет', 'bad'] };
@@ -1131,6 +1170,88 @@
         .map((h, i) => el('th', { style: i ? 'text-align:right' : '' }, h)))),
       el('tbody', {}, cmp),
     ]));
+
+    // Упаковка: чем считали, какое покрытие и по каким ценам — иначе цифру
+    // нельзя перепроверить руками.
+    const pk = a.packaging || {};
+    if (pk.total !== null && pk.total !== undefined) {
+      const frozen = pk.norms_source === 'snapshot';
+      const head = el('div', { class: 'cash-acc-h' }, 'Упаковка: расчёт по нормам (оценка)');
+      const info = el('div', { class: 'cash-acc-status ' + (frozen ? 'ok' : 'warn') }, [
+        el('div', {}, frozen
+          ? ('Нормы зафиксированы ' + (pk.norms_at || '') + ' — правки в Калькуляции этот месяц больше не меняют.')
+          : 'Считано ТЕКУЩИМИ нормами Калькуляции: любая правка комплекта упаковки изменит и этот месяц. '
+            + 'Зафиксируйте нормы, когда месяц сверен.'),
+        el('div', {}, 'Покрытие: ' + Math.round(pk.coverage_pct || 0) + '% проданных штук, '
+          + (pk.sku_covered || 0) + ' из ' + (pk.sku_total || 0) + ' товаров в продажах.'),
+        !frozen && canFreeze() ? el('button', {
+          class: 'btn-ghost', style: 'margin-top:8px',
+          onclick: async (ev) => {
+            ev.target.disabled = true;
+            try {
+              const res = await post('/pnl/accrual/freeze-norms', { period: PNL_PERIOD });
+              toast('Нормы зафиксированы: товаров ' + res.products);
+              renderReport('pnl');
+            } catch (err) { toast(err.message, true); ev.target.disabled = false; }
+          },
+        }, '🔒 Зафиксировать нормы этого месяца') : null,
+      ]);
+      box.appendChild(head);
+      box.appendChild(info);
+      // Цены расчёта: товар, норма, штуки, сумма.
+      const used = (pk.used || []).slice(0, 50).map((u) => el('tr', { class: 'cash-acc-r' }, [
+        el('td', {}, u.name),
+        el('td', { class: 'cash-acc-val' }, money(u.pack_cost)),
+        el('td', { class: 'cash-acc-val' }, money(u.units)),
+        el('td', { class: 'cash-acc-val' }, money(u.amount)),
+      ]));
+      if (used.length) {
+        box.appendChild(pnlFold('accpack', 'cash-audit', '📦 Цены расчёта упаковки по товарам (' + (pk.used || []).length + ')', [
+          el('table', { class: 'cash-acc-t' }, [
+            el('thead', {}, el('tr', {}, ['Товар', 'Норма, сум', 'Штук', 'Сумма'].map((h, i) => el('th', { style: i ? 'text-align:right' : '' }, h)))),
+            el('tbody', {}, used),
+          ]),
+        ]));
+      }
+      if (pk.unmatched && pk.unmatched.length) {
+        box.appendChild(pnlFold('accpackno', 'cash-audit', '⚠️ Продавались, но нормы упаковки нет (' + pk.unmatched.length + ')',
+          pk.unmatched.slice(0, 50).map((u) => el('div', { class: 'cash-audit-row' }, [
+            el('div', { class: 'cash-audit-txt' }, u.name),
+            el('div', { class: 'cash-audit-val' }, money(u.units) + ' шт'),
+          ]))));
+      }
+    }
+
+    // Документальная сверка дат приёмок: почему сырьё месяца изменилось.
+    const rd = r.raw_dates;
+    if (rd) {
+      box.appendChild(el('div', { class: 'cash-acc-h' }, 'Сырьё: заявки, учтённые не в том месяце'));
+      if (!rd.moved.length) {
+        box.appendChild(el('div', { class: 'cash-acc-status ok' }, rd.note));
+      } else {
+        const rows2 = rd.moved.map((m) => el('tr', { class: 'cash-acc-r' }, [
+          el('td', {}, [el('div', {}, 'Заявка №' + m.order_id), el('div', { class: 'cash-acc-note' }, m.supplier)]),
+          el('td', { class: 'cash-acc-val' }, m.plan_date || '—'),
+          el('td', { class: 'cash-acc-val' }, m.fact_date || '—'),
+          el('td', { class: 'cash-acc-val' }, money(m.amount)),
+          el('td', { class: 'cash-acc-val' }, m.direction === 'out' ? 'ушла в ' + m.to_month : 'пришла из ' + m.from_month),
+          el('td', { class: 'cash-acc-val' + (m.profit_effect < 0 ? ' cash-pnl-bad' : '') },
+            (m.profit_effect > 0 ? '+' : '') + money(m.profit_effect)),
+        ]));
+        box.appendChild(el('table', { class: 'cash-acc-t' }, [
+          el('thead', {}, el('tr', {}, ['Заявка', 'Плановая дата', 'Фактическая', 'Сумма', 'Куда переехала', 'Влияние на прибыль']
+            .map((h, i) => el('th', { style: i ? 'text-align:right' : '' }, h)))),
+          el('tbody', {}, rows2.concat([el('tr', { class: 'cash-acc-r total' }, [
+            el('td', {}, 'Итого'),
+            el('td', {}, ''), el('td', {}, ''),
+            el('td', { class: 'cash-acc-val' }, 'ушло ' + money(rd.left_amount) + ', пришло ' + money(rd.came_amount)),
+            el('td', {}, ''),
+            el('td', { class: 'cash-acc-val' }, (rd.profit_effect > 0 ? '+' : '') + money(rd.profit_effect)),
+          ])])),
+        ]));
+        box.appendChild(el('div', { class: 'cash-acc-note' }, rd.note));
+      }
+    }
 
     // Чего не хватает, чтобы цифру можно было назвать подтверждённой.
     const gaps = [];

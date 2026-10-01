@@ -603,3 +603,8 @@ select.cb-cell { cursor: pointer; }
 .cash-acc-badge.warn { background: var(--amber-soft); color: #8a5a00; }
 .cash-acc-badge.bad { background: var(--red-soft); color: var(--red); }
 .cash-acc-cmp td:nth-child(n+2), .cash-acc-cmp th:nth-child(n+2) { width: 150px; }
+.cash-acc-unconf { margin-top: 10px; padding: 10px 14px; border-radius: 10px;
+  background: #fdf6ef; border: 1px solid #efd9c2; font-size: 12.5px; color: var(--ink-soft); line-height: 1.5; }
+.cash-acc-unconf-h { font-weight: 800; color: #8a5a00; margin-bottom: 4px; }
+.cash-acc-unconf ul { margin: 0; padding-left: 18px; }
+.cash-acc-unconf li { margin: 3px 0; }

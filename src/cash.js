@@ -1639,9 +1639,37 @@ router.get('/api/pnl/accrual', async (req, res) => {
       if (raw) sold = JSON.parse(raw.value);
     } catch (e) { sold = null; }
     const accrual = await acc.buildAccrual(db.pool, period, pnl, sold, require('./cash-pnl').linkProducts);
-    res.json({ period, accrual, compare: acc.compareMethods(pnl, accrual), current_net: pnl.net_profit });
+    res.json({
+      period, accrual,
+      compare: acc.compareMethods(pnl, accrual),
+      // Итог проверки месяца: исходная прибыль + объяснённые изменения = новый
+      // предварительный результат. Неподтверждённое идёт отдельным списком.
+      bridge: acc.bridge(pnl, accrual),
+      // Документальная сверка: какие заявки переехали между месяцами из-за
+      // перехода на фактическую дату приёмки.
+      raw_dates: await acc.rawDateAudit(db.pool, period),
+      current_net: pnl.net_profit,
+      current_closed: !!pnl.snapshot_at,
+    });
   } catch (e) {
     console.error('[КАССА] P&L по начислению:', e.message);
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Зафиксировать нормы упаковки за месяц: дальше расход упаковки этого месяца
+// считается ими, и правки в Калькуляции его больше не меняют. Без этого
+// «проверенный август» менялся бы от каждой новой цены плёнки.
+router.post('/api/pnl/accrual/freeze-norms', express.json(), async (req, res) => {
+  if (!canFin(req)) return res.status(403).json({ error: 'Фиксирует нормы финансовый сотрудник или администратор' });
+  const period = /^\d{4}-\d{2}$/.test((req.body || {}).period || '') ? req.body.period : null;
+  if (!period) return res.status(400).json({ error: 'Период указывается как 2026-08' });
+  try {
+    const r = await require('./cash-accrual').snapshotPackNorms(db.pool, period);
+    await db.log(req.user.id, 'pnl_freeze_norms', `${period}: товаров ${r.products}`);
+    res.json({ ok: true, ...r });
+  } catch (e) {
+    console.error('[КАССА] фиксация норм упаковки:', e.message);
     res.status(400).json({ error: e.message });
   }
 });
