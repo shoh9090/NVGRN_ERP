@@ -12,6 +12,40 @@ const PROVIDERS = {
 };
 const hasKey = (p) => !!process.env[(PROVIDERS[p] || {}).env];
 const MAX_STEPS = 6;          // сколько раз подряд модель может попросить инструмент
+const MAX_RESULT = 12000;    // сколько текста результата влезает в один ответ модели
+
+// Результат инструмента для модели. Раньше он обрезался посередине
+// (JSON.stringify(...).slice(0, 12000)) — модель получала оборванный JSON и
+// дочитывала его как придётся. Теперь, если длинно, укорачиваем САМИ ДАННЫЕ:
+// длинные списки режем, остальное оставляем целым, и прямо говорим, что
+// показана часть и где взять полное (задание J05).
+function packResult(out) {
+  let text = JSON.stringify(out);
+  if (text.length <= MAX_RESULT) return text;
+  if (out && typeof out === 'object' && !Array.isArray(out)) {
+    const copy = { ...out };
+    // Режем самые длинные массивы, пока не влезем.
+    const arrays = Object.keys(copy).filter((k) => Array.isArray(copy[k]))
+      .sort((a, b) => JSON.stringify(copy[b]).length - JSON.stringify(copy[a]).length);
+    for (const key of arrays) {
+      while (copy[key].length > 1 && JSON.stringify(copy).length > MAX_RESULT - 400) {
+        copy[key] = copy[key].slice(0, Math.max(1, Math.floor(copy[key].length / 2)));
+      }
+      copy[`${key}_показано`] = copy[key].length;
+      copy[`${key}_всего`] = (out[key] || []).length;
+    }
+    copy.часть_данных = 'Список сокращён, чтобы влезть в ответ. Итоги и цифры выше посчитаны по ВСЕМ строкам. '
+      + 'Полный список — в файле Excel.';
+    text = JSON.stringify(copy);
+    if (text.length <= MAX_RESULT) return text;
+  }
+  // Крайний случай: отдаём честное объяснение вместо обрывка.
+  return JSON.stringify({
+    статус: 'результат слишком большой',
+    пояснение: 'Данные получены, но не помещаются в ответ. Сузьте период или фильтр, либо попросите файл Excel.',
+  });
+}
+
 const TIMEOUT_MS = 60000;
 
 async function post(url, headers, body) {
@@ -25,6 +59,15 @@ async function post(url, headers, body) {
     throw new Error('Модель не ответила: ' + String(msg).slice(0, 200));
   }
   return data;
+}
+
+// Шаги кончились. Молчать про собранное нельзя: человек должен понимать, что
+// успели, а что нет, иначе «спросите конкретнее» выглядит отпиской (J05).
+function outOfSteps(used) {
+  const names = [...new Set(used)].filter((x) => x && x !== 'интернет');
+  return 'Собрал не всё: запрос оказался слишком большим для одного захода.'
+    + (names.length ? ` Успел поднять: ${names.join(', ')}.` : '')
+    + ' Давайте сузим — назовите один период или один разрез, и я досчитаю.';
 }
 
 // --- Claude (Messages API) ---
@@ -63,11 +106,11 @@ async function askClaude({ model, system, messages, tools, runTool, onStep, web 
       used.push(c.name);
       if (onStep) onStep(c.name);
       const out = await runTool(c.name, c.input || {});
-      results.push({ type: 'tool_result', tool_use_id: c.id, content: JSON.stringify(out).slice(0, 12000) });
+      results.push({ type: 'tool_result', tool_use_id: c.id, content: packResult(out) });
     }
     msgs.push({ role: 'user', content: results });
   }
-  return { text: 'Не смог собрать ответ за отведённые шаги. Попробуйте спросить конкретнее.', used, usage: {} };
+  return { text: outOfSteps(used), used, usage: {} };
 }
 
 // --- OpenAI (Chat Completions) ---
@@ -93,10 +136,10 @@ async function askOpenAI({ model, system, messages, tools, runTool, onStep }) {
       let args = {};
       try { args = JSON.parse((c.function && c.function.arguments) || '{}'); } catch (e) { args = {}; }
       const out = await runTool(name, args);
-      msgs.push({ role: 'tool', tool_call_id: c.id, content: JSON.stringify(out).slice(0, 12000) });
+      msgs.push({ role: 'tool', tool_call_id: c.id, content: packResult(out) });
     }
   }
-  return { text: 'Не смог собрать ответ за отведённые шаги. Попробуйте спросить конкретнее.', used, usage: {} };
+  return { text: outOfSteps(used), used, usage: {} };
 }
 
 // Единый вход. provider: 'claude' | 'openai'.
@@ -110,3 +153,5 @@ async function ask(provider, opts) {
 }
 
 module.exports = { ask, hasKey, PROVIDERS };
+// Открыто для теста: обрыв JSON посередине — молчаливая порча данных.
+module.exports.packResult = packResult;
