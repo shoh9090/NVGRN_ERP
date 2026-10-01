@@ -337,6 +337,31 @@ router.post('/api/one/:id(\\d+)/delete', requireManager, async (req, res) => {
   res.json({ ok: true });
 });
 
+// ----- Разовое закрытие накопившегося (решение Шоха 01.10.2026) -----
+// К октябрю висело 68 незакрытых претензий — хвост старого порядка, когда
+// карточки уходили в клиентский бот и их никто не читал. Разбирать их задним
+// числом бессмысленно: клиенты давно живут дальше. Закрываем одной операцией
+// с честной пометкой в карточке — не выдавая это за «решено по-настоящему».
+// С новой механикой такой хвост больше не накопится: Джарвис сигналит, когда
+// претензия висит дольше суток.
+router.post('/api/close-before', express.json(), async (req, res) => {
+  if (!req.user || !req.user.isAdmin) return res.status(403).json({ error: 'Доступно только администратору' });
+  const date = String((req.body || {}).date || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'Нужна дата в виде 2026-10-01' });
+  const who = req.user.name || 'Администратор';
+  const note = `Закрыто массово ${new Date(Date.now() + 5 * 3600000).toISOString().slice(0, 10)} (${who}): `
+    + `разбор накопившегося до ${date}, по существу не рассматривалось.`;
+  const r = await db.pool.query(
+    `UPDATE tgbot.complaints
+        SET status = 'resolved', resolved_at = now(), resolved_by = $1, updated_at = now(),
+            internal_note = CASE WHEN COALESCE(internal_note, '') = '' THEN $2
+                                 ELSE internal_note || chr(10) || $2 END
+      WHERE status <> 'resolved' AND created_at < $3::date
+      RETURNING id`, [`${who} (массово)`, note, date]);
+  await db.log(req.user.id, 'complaint_close_before', `${date}: ${r.rowCount}`);
+  res.json({ ok: true, closed: r.rowCount });
+});
+
 async function validCodes() {
   const r = await db.pool.query("SELECT kind, code FROM tgbot.complaint_dicts WHERE active");
   const m = { severity: new Set(), resolution: new Set(), type: new Set(), category: new Set() };

@@ -456,6 +456,7 @@
       el('div', { class: 'cmp-f-actions' }, [
         el('a', { class: 'btn-primary cmp-btn', href: '#', onclick: (e) => { e.preventDefault(); exportXlsx(); } }, '⬇ Excel'),
         isAdmin ? el('button', { class: 'btn-ghost cmp-btn', onclick: importDialog }, '📥 Импорт истории') : null,
+        isAdmin ? el('button', { class: 'btn-ghost cmp-btn', onclick: closeBeforeDialog }, '🧹 Закрыть старые') : null,
       ]),
     ]);
   }
@@ -612,6 +613,31 @@
       go.disabled = false; go.textContent = 'Загрузить';
     } }, 'Загрузить');
     modal('Импорт истории претензий', el('div', { class: 'cmp-imp' }, [info, inp, out]), [go]);
+  }
+
+  // Разовая уборка хвоста: старые претензии, до которых никто не дошёл.
+  // Отмечаем их закрытыми честно — в карточке остаётся пометка, что по
+  // существу их не рассматривали, иначе статистика решений будет врать.
+  function closeBeforeDialog() {
+    const d = el('input', { class: 'cmp-f', type: 'date', value: new Date().toISOString().slice(0, 10) });
+    const out = el('div', { class: 'cmp-imp-out' });
+    const info = el('div', { class: 'cmp-imp-info' },
+      'Все незакрытые претензии, поданные ДО выбранной даты, будут отмечены закрытыми. '
+      + 'В каждой карточке останется пометка, что это массовое закрытие и по существу разбора не было. '
+      + 'Решение и степень не проставляются — иначе отчёты показали бы работу, которой не было.');
+    const go = el('button', { class: 'btn-primary', onclick: async () => {
+      if (!confirm('Закрыть все незакрытые претензии до ' + d.value + '? Отменить массово будет нельзя.')) return;
+      go.disabled = true; go.textContent = 'Закрываю…';
+      try {
+        const r = await api('/close-before', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ date: d.value }) });
+        out.innerHTML = '';
+        out.appendChild(el('div', { class: 'cmp-ok' }, '✅ Закрыто: ' + r.closed));
+        toast('Закрыто: ' + r.closed); loadList();
+      } catch (e) { toast(e.message, true); }
+      go.disabled = false; go.textContent = 'Закрыть';
+    } }, 'Закрыть');
+    modal('Закрыть накопившиеся претензии', el('div', { class: 'cmp-imp' }, [info, d, out]), [go]);
   }
 
   // ================= СПРАВОЧНИК (настройки) =================
