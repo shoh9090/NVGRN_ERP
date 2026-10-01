@@ -474,6 +474,113 @@ async function buildAccrual(pool, period, pnl, sold, linkProducts) {
 }
 
 // ---------------------------------------------------------------------------
+// От прибыли к деньгам: почему при прибыли нет денег
+// ---------------------------------------------------------------------------
+// Это НЕ отдельный отчёт и не «мостик» сбоку. Это вторая половина ДДС, которой у
+// нас не было: прямая форма («пришло — ушло по статьям») отвечает, сколько денег
+// двигалось, а косвенная — почему прибыль не равна деньгам. Поэтому блок живёт
+// внизу Кэш-флоу, рядом с разделами «операционный / инвестиции / финансы».
+//
+// Правило чтения: прибыль — это про отгрузку и начисление, деньги — про оплату.
+// Разница между ними складывается из того, что продали в долг, купили в долг,
+// вернули долгов, вложили в стройку и оборудование.
+//
+// Честность важнее красоты: то, что не объясняется имеющимися данными, остаётся
+// отдельной строкой «необъяснено». Её главная часть — дебиторка на даты
+// (её в системе нет) и зарплата, выплаченная за другие месяцы.
+async function profitToCash(pool, period, pnl) {
+  const from = period + '-01';
+  const to = (await pool.query(
+    "SELECT to_char(($1::date + INTERVAL '1 month') - INTERVAL '1 day', 'YYYY-MM-DD') AS d",
+    [from])).rows[0].d;
+
+  // Деньги на начало и конец: сумма всех движений по кошелькам до даты.
+  // Переводы между своими счетами в сумме гасятся, поэтому их можно не исключать.
+  const bal = async (d) => num((await pool.query(
+    `SELECT COALESCE(SUM(CASE WHEN tx_type = 'in' THEN amount
+                              WHEN tx_type IN ('out', 'transfer') THEN -amount ELSE 0 END), 0) AS b
+       FROM cash_transactions WHERE tx_date <= $1`, [d])).rows[0].b);
+  const opening = await bal((await pool.query(
+    "SELECT to_char($1::date - INTERVAL '1 day', 'YYYY-MM-DD') AS d", [from])).rows[0].d);
+  const closing = await bal(to);
+
+  // Деньги месяца по статьям: что привлекли и что вернули.
+  const codes = (await pool.query(
+    `SELECT c.code,
+            COALESCE(SUM(t.amount) FILTER (WHERE t.tx_type = 'in'), 0) AS inc,
+            COALESCE(SUM(t.amount) FILTER (WHERE t.tx_type = 'out'), 0) AS exp
+       FROM cash_transactions t JOIN cash_categories c ON c.id = t.category_id
+      WHERE t.tx_date BETWEEN $1 AND $2 AND t.source <> 'opening'
+      GROUP BY c.code`, [from, to])).rows;
+  const by = new Map(codes.map((r) => [String(r.code), { inc: num(r.inc), exp: num(r.exp) }]));
+  const got = (code, side) => ((by.get(code) || {})[side] || 0);
+
+  const borrowed = ['201', '202', '203'].reduce((t, c) => t + got(c, 'inc'), 0);
+  const repaid = ['61', '63'].reduce((t, c) => t + got(c, 'exp'), 0);
+  const capex = num((pnl.excluded && pnl.excluded.capex && pnl.excluded.capex.total) || 0);
+  const rawPaid = num((pnl.cogs_parts && pnl.cogs_parts.raw_paid) || 0);
+  const rawReceived = (pnl.cogs_parts && pnl.cogs_parts.raw_source === 'purchase')
+    ? num(pnl.cogs_parts.raw) : null;
+  const shipped = pnl.revenue.source === 'shipped' ? num(pnl.revenue.total) : null;
+  const cashForGoods = pnl.revenue.cash_in_sales === undefined
+    ? num(pnl.revenue.cash_in) : num(pnl.revenue.cash_in_sales);
+  const net = pnl.net_profit === undefined || pnl.net_profit === null ? null : num(pnl.net_profit);
+
+  const steps = [];
+  const add = (key, label, amount, why) => steps.push({ key, label, amount, why });
+
+  if (shipped !== null) {
+    add('ar', 'Продали в долг: отгрузили больше, чем получили деньгами',
+      -(shipped - cashForGoods),
+      `Отгружено ${mln(shipped)}, деньгами за товар пришло ${mln(cashForGoods)}. `
+      + 'Разница осталась у клиентов. Это главная причина, по которой прибыль есть, а денег нет.');
+  }
+  if (rawReceived !== null) {
+    add('ap', 'Купили в долг: приняли сырья больше, чем оплатили',
+      rawReceived - rawPaid,
+      `Принято сырья на ${mln(rawReceived)}, оплачено поставщикам ${mln(rawPaid)}. `
+      + 'Плюс означает, что часть сырья ещё не оплачена — деньги пока у нас, долг растёт.');
+  }
+  if (repaid) {
+    add('repaid', 'Вернули кредиты и долги', -repaid,
+      'Возврат тела кредита и долгов (статьи 61, 63). В прибыли этого расхода нет — '
+      + 'это свои деньги, отданные обратно, но из кассы они уходят.');
+  }
+  if (borrowed) {
+    add('borrowed', 'Привлекли займы и кредиты', borrowed,
+      'Статьи 201–203. В прибыль не идёт — это не заработок, а деньги в долг.');
+  }
+  if (capex) {
+    add('capex', 'Вложили в оборудование и стройку', -capex,
+      'Капвложения в прибыль не входят, но деньги тратят.');
+  }
+
+  const sum = steps.reduce((t, x) => t + num(x.amount), 0);
+  const expected = net === null ? null : net + sum;
+  const actual = closing - opening;
+  const residual = expected === null ? null : actual - expected;
+
+  return {
+    period, from, to,
+    opening, closing, actual,
+    net_profit: net,
+    steps,
+    expected,
+    residual,
+    // Что лежит в «необъяснено» — говорим прямо, чтобы цифру не принимали за ошибку счёта.
+    residual_note: 'Сюда попадает всё, чего система пока не знает по датам: зарплата, выплаченная '
+      + 'за другие месяцы, авансы клиентам и поставщикам, оплаты расходов прошлых периодов. '
+      + 'Главный недостающий кусок — долг клиентов на начало и конец месяца: его в системе нет, '
+      + 'и пока он не появится, строка будет крупной.',
+    note: net === null
+      ? 'Прибыль месяца посчитать не из чего, поэтому переход от прибыли к деньгам не строится.'
+      : null,
+  };
+}
+
+const mln = (v) => (Math.round((Number(v) || 0) / 1e6 * 10) / 10) + ' млн';
+
+// ---------------------------------------------------------------------------
 // Сверка двух методик
 // ---------------------------------------------------------------------------
 // Для каждой строки: что показывает действующий отчёт, что — расчёт по
@@ -786,4 +893,4 @@ function bridge(pnl, accrual) {
   };
 }
 
-module.exports = { buildAccrual, compareMethods, bridge, rawDateAudit, confirmDeliveryDate, staffOfMonth, accruedPayroll, packagingByNorms, snapshotPackNorms, PACK_SNAP_KEY, SALARY_CODES, OPEN_QUESTIONS };
+module.exports = { buildAccrual, compareMethods, bridge, profitToCash, rawDateAudit, confirmDeliveryDate, staffOfMonth, accruedPayroll, packagingByNorms, snapshotPackNorms, PACK_SNAP_KEY, SALARY_CODES, OPEN_QUESTIONS };

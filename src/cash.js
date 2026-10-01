@@ -2000,7 +2000,25 @@ router.get('/api/report', async (req, res) => {
   // a2a оставлен для обратной совместимости фронта (общий оборот переводов).
   const a2aInc = internal.reduce((s, x) => s + x.leg_in, 0);
   const a2aExp = internal.reduce((s, x) => s + x.moved, 0);
-  res.json({ from, to, rows, groups, wallets, internal, obnal, a2a: { inc: a2aInc, exp: a2aExp } });
+  // Вторая половина ДДС: почему прибыль не равна деньгам. Считается только для
+  // целого календарного месяца — у прибыли нет смысла на произвольном отрезке.
+  // Это не отдельный отчёт: блок показывается внизу того же Кэш-флоу.
+  let profitToCash = null;
+  const isWholeMonth = /^\d{4}-\d{2}-01$/.test(from)
+    && to === (await db.pool.query(
+      "SELECT to_char(($1::date + INTERVAL '1 month') - INTERVAL '1 day', 'YYYY-MM-DD') AS d", [from])).rows[0].d;
+  if (isWholeMonth && !req.query.wallet) {
+    try {
+      const period = from.slice(0, 7);
+      profitToCash = await require('./cash-accrual').profitToCash(db.pool, period, await pnlFor(db.pool, period));
+    } catch (e) {
+      console.warn('[КАССА] переход прибыль→деньги:', e.message);
+      profitToCash = { error: 'Переход от прибыли к деньгам посчитать не удалось: ' + e.message };
+    }
+  }
+  res.json({ from, to, rows, groups, wallets, internal, obnal, a2a: { inc: a2aInc, exp: a2aExp },
+    profit_to_cash: profitToCash,
+    whole_month: isWholeMonth });
 });
 
 // ---------- Журнал транзакций ----------

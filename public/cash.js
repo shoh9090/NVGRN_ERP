@@ -378,7 +378,7 @@
     const wq = repState.wallet ? '&wallet=' + repState.wallet : '';
     let d; try { d = await api('/report?from=' + repState.from + '&to=' + repState.to + wq); } catch (e) { c.innerHTML = ''; c.appendChild(el('div', { class: 'cash-empty' }, 'Ошибка: ' + e.message)); return; }
     c.innerHTML = '';
-    renderCashflow(c, d.rows || [], d.groups || [], d.a2a || { inc: 0, exp: 0 }, d.internal || [], d.obnal || { received: 0, commission: 0, sent: 0 });
+    renderCashflow(c, d.rows || [], d.groups || [], d.a2a || { inc: 0, exp: 0 }, d.internal || [], d.obnal || { received: 0, commission: 0, sent: 0 }, d);
     crmReconcile(c);
   }
 
@@ -540,7 +540,9 @@
     loadCatOps(catId, wrap);
   }
 
-  function renderCashflow(c, rows, groupsOrder, a2a, internal, obnal) {
+  // rep — весь ответ отчёта: нужен для блока «почему прибыль не равна деньгам».
+  function renderCashflow(c, rows, groupsOrder, a2a, internal, obnal, rep) {
+    rep = rep || {};
     a2a = a2a || { inc: 0, exp: 0 };
     internal = internal || []; obnal = obnal || { received: 0, commission: 0, sent: 0 };
     c.appendChild(el('div', { class: 'cash-head' }, [el('div', {}, [
@@ -575,6 +577,14 @@
       flowCard('Внутренние переводы', 'Перемещения между своими счетами/картами/кассой — не доход и не расход', a2aNet),
     ]));
     c.appendChild(flowDetail);
+
+    // Почему прибыль не равна деньгам — вторая половина ДДС. Показывается для
+    // целого месяца: у прибыли нет смысла на произвольном отрезке.
+    if (rep.profit_to_cash) c.appendChild(profitToCashBlock(rep.profit_to_cash));
+    else if (rep.whole_month === false) {
+      c.appendChild(el('div', { class: 'cash-sub', style: 'margin:10px 0' },
+        'Выберите целый месяц — тогда внизу появится разбор, почему прибыль не равна деньгам.'));
+    }
 
     // Внутренние перемещения: разбивка по под-категориям (межбанк / обнал / пополнение карты) + детализация обнала.
     if ((internal && internal.length) || obnal.sent) {
@@ -1083,6 +1093,40 @@
   // Фиксировать нормы месяца может тот же, кто ведёт деньги: админ или роль
   // «Финансы/Бухгалтерия». Остальные цифру видят, но не замораживают.
   const canFreeze = () => !!(window.HUB_USER && (window.HUB_USER.isAdmin || window.HUB_USER.isFinance));
+
+  // Почему прибыль не равна деньгам: прибыль месяца → продали в долг → купили в
+  // долг → вернули кредиты → привлекли → капекс → изменение денег.
+  // Это часть Кэш-флоу, а не отдельный отчёт: деньги и прибыль должны
+  // объясняться в одном месте, иначе их снова начнут сравнивать на глаз.
+  function profitToCashBlock(d) {
+    const box = el('div', { class: 'cash-p2c' });
+    box.appendChild(el('div', { class: 'cash-h3' }, 'Почему прибыль не равна деньгам'));
+    if (d.error || d.note) {
+      box.appendChild(el('div', { class: 'cash-sub' }, d.error || d.note));
+      return box;
+    }
+    box.appendChild(el('div', { class: 'cash-sub' },
+      'Прибыль считается по отгрузке и начислению, деньги — по оплате. Ниже видно, из чего '
+      + 'складывается разница за месяц.'));
+
+    const rows = [];
+    const line = (name, val, why, cls) => rows.push(el('tr', { class: 'cash-p2c-r' + (cls ? ' ' + cls : '') }, [
+      el('td', {}, [el('div', {}, name), why ? el('div', { class: 'cash-p2c-why' }, why) : null]),
+      el('td', { class: 'cash-p2c-v' + (val < 0 ? ' cash-tot-out' : '') },
+        val === null ? '—' : (val > 0 && rows.length ? '+' : '') + money(val)),
+    ]));
+
+    line('Прибыль месяца', d.net_profit, 'Чистая прибыль из P&L — по отгрузке и начислению', 'cash-p2c-head');
+    (d.steps || []).forEach((st) => line(st.label, st.amount, st.why));
+    line('Должно получиться изменение денег', d.expected, 'Прибыль плюс всё перечисленное', 'cash-p2c-total');
+    line('На самом деле деньги изменились на', d.actual,
+      'Остаток на конец ' + money(d.closing) + ' минус остаток на начало ' + money(d.opening), 'cash-p2c-total');
+    if (d.residual !== null && Math.abs(d.residual) >= 1) {
+      line('Необъяснено', d.residual, d.residual_note, 'cash-p2c-resid');
+    }
+    box.appendChild(el('table', { class: 'cash-p2c-t' }, el('tbody', {}, rows)));
+    return box;
+  }
 
   // ---------------------------------------------------------------------------
   // Вкладка «По начислению»: вторая методика и сверка с действующей
