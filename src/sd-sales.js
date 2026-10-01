@@ -57,6 +57,24 @@ async function ensureSchema() {
   )`);
   await db.pool.query('CREATE INDEX IF NOT EXISTS idx_sd_deliv_day ON sd_deliveries (day)');
   await db.pool.query('CREATE INDEX IF NOT EXISTS idx_sd_deliv_exp ON sd_deliveries (expeditor_sd, day)');
+  // Оплаты клиентов. Отгрузки у нас есть, а кто сколько заплатил — нет, и
+  // поэтому на вопрос «кто не платит» Джарвис отвечать не мог. Платежи
+  // SalesDoctor отдаёт (ими же сверяется Касса), но онлайн это 10–60 секунд
+  // на запрос — для разговора слишком долго, поэтому держим копию у себя.
+  // Одна строка = один платёж: по ним считается и сумма за период, и дата
+  // последней оплаты клиента.
+  await db.pool.query(`CREATE TABLE IF NOT EXISTS sd_payments (
+    sd_id TEXT PRIMARY KEY,
+    day DATE NOT NULL,
+    client_sd TEXT NOT NULL DEFAULT '',
+    client_name TEXT NOT NULL DEFAULT '',
+    agent_sd TEXT NOT NULL DEFAULT '',
+    amount NUMERIC NOT NULL DEFAULT 0,
+    kind INT,
+    pay_type TEXT NOT NULL DEFAULT ''
+  )`);
+  await db.pool.query('CREATE INDEX IF NOT EXISTS idx_sd_pay_day ON sd_payments (day)');
+  await db.pool.query('CREATE INDEX IF NOT EXISTS idx_sd_pay_client ON sd_payments (client_sd, day)');
   // Какие дни уже выгружены: без этого непонятно, «продаж не было» или «не забрали».
   await db.pool.query(`CREATE TABLE IF NOT EXISTS sd_sales_days (
     day DATE PRIMARY KEY,
@@ -258,7 +276,44 @@ async function coverage() {
   return { ...r, deliveries: d.rows, backfill: await backfillState() };
 }
 
-module.exports = { ensureSchema, byMonth, syncRange, syncRecent, startBackfill, backfillStep, backfillState, coverage, KEEP_MONTHS };
+// ---- Оплаты клиентов ----
+// Забираем тем же способом, что и Касса (integrations.getPayments), и кладём
+// к себе. Платёж узнаётся по его номеру в SD, поэтому повторная выгрузка того
+// же отрезка ничего не задваивает.
+async function syncPayments(from, to) {
+  await ensureSchema();
+  const r = await integrations.getPayments(from, to);
+  const items = (r.items || []).filter((x) => x.sd_id && /^\d{4}-\d{2}-\d{2}$/.test(x.date));
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    for (const x of items) {
+      await client.query(
+        `INSERT INTO sd_payments (sd_id, day, client_sd, client_name, agent_sd, amount, kind, pay_type)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+         ON CONFLICT (sd_id) DO UPDATE SET day = $2, client_sd = $3, client_name = $4,
+           agent_sd = $5, amount = $6, kind = $7, pay_type = $8`,
+        [x.sd_id, x.date, x.client_sd || '', x.client || '', x.agent_sd || '', x.amount || 0, x.kind, x.type || '']);
+    }
+    await client.query('COMMIT');
+  } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+  finally { client.release(); }
+  // Неполная выгрузка (SD оборвал постранично) — честно говорим наверх,
+  // чтобы не считать по ней долги как по полным данным.
+  return { from, to, saved: items.length, truncated: !!r.truncated };
+}
+
+// Что у нас есть по оплатам — чтобы отвечать «данных за этот период нет»,
+// а не «клиент не платил».
+async function paymentsCoverage() {
+  await ensureSchema();
+  const r = (await db.pool.query(
+    `SELECT to_char(MIN(day), 'YYYY-MM-DD') AS first_day, to_char(MAX(day), 'YYYY-MM-DD') AS last_day,
+            COUNT(*)::int AS rows FROM sd_payments`)).rows[0];
+  return r;
+}
+
+module.exports = { ensureSchema, syncPayments, paymentsCoverage, byMonth, syncRange, syncRecent, startBackfill, backfillStep, backfillState, coverage, KEEP_MONTHS };
 // Открыто для тестов: обрыв постраничной выгрузки и отметка «день выгружен» —
 // это молчаливая потеря продаж, такое обязано проверяться автоматически.
 module.exports.fetchRange = fetchRange;

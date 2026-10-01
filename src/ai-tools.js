@@ -518,6 +518,78 @@ const TOOLS = [
     },
   },
   {
+    // «Дебиторка по клиентам» — первый вопрос, на который Джарвис не умел
+    // отвечать вовсе: отгрузки у нас были, оплаты жили только в SalesDoctor.
+    // Теперь оплаты копятся у нас (ночью), и мы честно считаем РАЗНИЦУ ЗА
+    // ПЕРИОД: отгружено минус оплачено. Это не полный долг с начала времён —
+    // входящего сальдо в ERP нет, и выдумывать его нельзя.
+    name: 'dolgi_klientov',
+    tile: ['/cash', '/tgbot'],
+    description: 'Кто из клиентов отгружается, но не платит: за период — сколько отгрузили, сколько '
+      + 'получили и разница. Отвечает на «дебиторка», «кто не платит», «кто должен».',
+    schema: { type: 'object', properties: {
+      from: { type: 'string', description: 'с какой даты' },
+      to: { type: 'string', description: 'по какую дату' },
+      client: { type: 'string', description: 'часть названия клиента, если нужен один' },
+      limit: { type: 'number', description: 'сколько клиентов показать, по умолчанию 15' },
+    }, additionalProperties: false },
+    run: async (args) => {
+      const sd = require('./sd-sales');
+      const cov = await sd.coverage();
+      const pcov = await sd.paymentsCoverage();
+      const to = day(args.to, cov.last_day || today());
+      const from = day(args.from, to.slice(0, 8) + '01');
+      if (!pcov || !pcov.rows) {
+        return { итог: 'Оплаты клиентов ещё не выгружены из SalesDoctor — первая выгрузка ночью в 3:00. '
+          + 'Пока могу показать только отгрузки' };
+      }
+      const p = [from, to];
+      let w = '';
+      if (String(args.client || '').trim()) {
+        p.push('%' + String(args.client).trim() + '%');
+        w = ` AND (s.client_name ILIKE $${p.length} OR p.client_name ILIKE $${p.length})`;
+      }
+      const n = Math.min(Math.max(parseInt(args.limit, 10) || 15, 1), 40);
+      // Клиента сводим по номеру в SalesDoctor, а не по названию: одна и та же
+      // точка в отгрузках и платежах может быть записана по-разному.
+      const rows = (await db.pool.query(
+        `WITH s AS (SELECT client_sd, MAX(client_name) AS client_name,
+                           SUM(amount - returned)::numeric AS отгружено
+                      FROM sd_sales WHERE day BETWEEN $1 AND $2 GROUP BY client_sd),
+              p AS (SELECT client_sd, MAX(client_name) AS client_name,
+                           SUM(amount)::numeric AS оплачено, MAX(day) AS последняя_оплата
+                      FROM sd_payments WHERE day BETWEEN $1 AND $2 GROUP BY client_sd)
+         SELECT COALESCE(s.client_sd, p.client_sd) AS sd,
+                COALESCE(s.client_name, p.client_name) AS клиент,
+                COALESCE(s.отгружено, 0)::numeric AS отгружено,
+                COALESCE(p.оплачено, 0)::numeric AS оплачено,
+                (COALESCE(s.отгружено, 0) - COALESCE(p.оплачено, 0))::numeric AS разница,
+                to_char(p.последняя_оплата, 'DD.MM') AS последняя_оплата
+           FROM s FULL OUTER JOIN p ON p.client_sd = s.client_sd
+          WHERE TRUE${w}
+          ORDER BY 5 DESC`, p)).rows;
+      if (!rows.length) return { период: `${from} — ${to}`, итог: 'За этот период ни отгрузок, ни оплат не нашлось' };
+      const должны = rows.filter((r) => Number(r.разница) > 0);
+      const итог = rows.reduce((a, r) => ({
+        отгружено: a.отгружено + Number(r.отгружено), оплачено: a.оплачено + Number(r.оплачено) }),
+      { отгружено: 0, оплачено: 0 });
+      return {
+        период: `${from} — ${to}`,
+        что_это: 'Отгружено минус оплачено ЗА ПЕРИОД. Это не полный долг клиента с начала работы: '
+          + 'входящего остатка в ERP нет. Клиент мог заплатить в этом месяце за прошлый — тогда разница '
+          + 'будет отрицательной, и это нормально.',
+        данные: { продажи_до: cov.last_day, оплаты: `${pcov.first_day} — ${pcov.last_day}` },
+        итого: { отгружено: money(итог.отгружено), оплачено: money(итог.оплачено),
+          разница: money(итог.отгружено - итог.оплачено) },
+        клиентов_с_долгом: должны.length,
+        кто_должен: должны.slice(0, n).map((r) => ({
+          клиент: r.клиент, отгружено: money(r.отгружено), оплачено: money(r.оплачено),
+          разница: money(r.разница), последняя_оплата: r.последняя_оплата || 'в этом периоде не платил' })),
+        показано: `${Math.min(должны.length, n)} из ${должны.length}`,
+      };
+    },
+  },
+  {
     name: 'dinamika_klienta',
     tile: ['/cash', '/tgbot'],
     tab: { '/cash': 'pnl' },

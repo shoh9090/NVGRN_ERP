@@ -279,6 +279,7 @@ const TOOL_HELP = {
   dinamika_klienta: ['📊', 'динамика клиента по неделям — растёт или падает'],
   pretenzii: ['📣', 'претензии за период: сколько, по каким товарам'],
   chto_s_tovarom: ['🥬', 'что с товаром: остаток, продажи за неделю и что едет («что с айсбергом»)'],
+  dolgi_klientov: ['💳', 'кто отгружается, но не платит: отгружено, оплачено и разница за период'],
   kto_ne_otvechaet: ['👥', 'кто отвечает на карточки, а кто нет — по людям и отделам'],
   kartochki_sotrudnika: ['🗂', 'какие карточки ждут человека («карточки Асилбека»)'],
   otchet_excel: ['📄', 'прислать этот отчёт файлом Excel'],
@@ -1191,9 +1192,17 @@ async function sdSalesTick() {
   const day = R.localDate(Date.now());
   if (last === day) return;
   const r = await sd.syncRecent(4);
+  // Оплаты клиентов тем же заходом: без них нельзя ответить, кто не платит.
+  // Берём месяц назад — платежи в SD тоже правят задним числом.
+  let pay = null;
+  try {
+    const from = new Date(Date.now() + 5 * 3600000 - 31 * 86400000).toISOString().slice(0, 10);
+    pay = await sd.syncPayments(from, day);
+  } catch (e) { console.warn('[ОПЛАТЫ SD]', e.message); }
   await pool.query(`INSERT INTO settings (key, value) VALUES ($1, $2)
                     ON CONFLICT (key) DO UPDATE SET value = $2`, [key, day]);
-  console.log(`[ПРОДАЖИ SD] ночью обновлено ${r.from}…${r.to}: строк ${r.rows}`);
+  console.log(`[ПРОДАЖИ SD] ночью обновлено ${r.from}…${r.to}: строк ${r.rows}`
+    + (pay ? `; оплат ${pay.saved}${pay.truncated ? ' (неполно)' : ''}` : ''));
 }
 
 // ---------- Раз в N дней: клиенты, которые притихли ----------
