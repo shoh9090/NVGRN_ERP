@@ -925,6 +925,23 @@ async function requireComplaintsAccess(req, res, next) {
 const complaintsRouter = require('./src/complaints');
 app.use('/complaints', requireComplaintsAccess, complaintsRouter);
 
+// Блок «План продаж» (ГП) — недельный план спроса по готовой продукции.
+// Из него потом читают производство и закуп; фактический P&L он не подменяет.
+async function requireSalesPlanAccess(req, res, next) {
+  if (!req.user) return res.redirect('/login');
+  if (req.user.isAdmin) return next();
+  const r = await db.pool.query(
+    `SELECT 1 FROM tiles t
+     JOIN role_tiles rt ON rt.tile_id = t.id
+     JOIN user_roles ur ON ur.role_id = rt.role_id
+     WHERE ur.user_id = $1 AND t.url = '/salesplan' LIMIT 1`,
+    [req.user.id]
+  );
+  if (r.rows.length === 0) return res.status(403).send('Нет доступа к блоку «План продаж». Обратитесь к администратору.');
+  next();
+}
+app.use('/salesplan', requireSalesPlanAccess, require('./src/salesplan'));
+
 // Блок «Касса» — единый журнал транзакций, ДДС/P&L, остатки кошельков
 async function requireCashAccess(req, res, next) {
   if (!req.user) return res.redirect('/login');

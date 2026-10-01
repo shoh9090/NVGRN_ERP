@@ -864,6 +864,16 @@ async function seed() {
   await pool.query("UPDATE tiles SET is_visible = TRUE WHERE url = '/hr' AND is_visible IS DISTINCT FROM TRUE").catch(() => {});
   console.log('[SEED] Плитка /hr обеспечена');
 
+  // Плитка «План продаж» (ГП): недельный план спроса по готовой продукции.
+  // Из него потом читают производство (что выпускать) и закуп (что докупить).
+  const splt = await pool.query("SELECT id FROM tiles WHERE url = '/salesplan' LIMIT 1");
+  if (splt.rows.length === 0) {
+    await pool.query(
+      `INSERT INTO tiles (title, description, icon, url, open_new_tab, sort_order)
+       VALUES ('План продаж', 'Недельный план по готовой продукции: штуки, деньги, направления', '📈', '/salesplan', FALSE, 45)`
+    );
+  }
+
   // Плитка «Джарвис»: фирменная иконка вместо эмодзи (картинка Шоха, 23.09.2026).
   // Ставим один раз: если админ потом сменит иконку руками, мы её не перетрём.
   const iconSet = await pool.query("SELECT 1 FROM settings WHERE key = 'jarvis_tile_icon_v1'");
@@ -899,6 +909,7 @@ async function seed() {
   const tileSections = [
     ['/complaints', 'HoReCa'],
     ['/tgbot', 'HoReCa'],
+    ['/salesplan', 'Продажи'],
     ['/purchase', 'Склад и закуп'],
     ['/stock', 'Склад и закуп'],
     ['/dictionaries', 'Справочники и настройки'],

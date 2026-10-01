@@ -10,10 +10,13 @@
 // Готовый вариант применяется сразу — это самый частый случай; произвольный
 // диапазон ждёт «ОК», чтобы отчёт не пересчитывался на каждую полудату.
 //
-// Два режима:
+// Три режима:
 //   range — произвольный отрезок дат (Кэш-флоу, Транзакции, Взаиморасчёты);
 //   month — целый месяц (P&L, Калькуляция): там расчёт помесячный, и
-//           произвольный отрезок сломал бы себестоимость и реализацию.
+//           произвольный отрезок сломал бы себестоимость и реализацию;
+//   week  — неделя Пн–Вс (План продаж): план спроса ведётся неделями, как в
+//           рабочем файле отдела продаж. Любая выбранная дата растягивается
+//           до своей недели, чтобы «с четверга по четверг» не появлялось.
 (function () {
   const MONTHS = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
     'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
@@ -81,6 +84,18 @@
       ['За всё время', () => ['', '']],
     ];
   }
+  // Неделя Пн–Вс: любая дата → её понедельник и воскресенье.
+  const weekStart = (d) => { const x = new Date(d); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return x; };
+  const weekOf = (d) => { const a = weekStart(d); return [iso(a), iso(shift(a, 6))]; };
+  function weekPresets() {
+    const t = today();
+    return [
+      ['Эта неделя', () => weekOf(t)],
+      ['Следующая неделя', () => weekOf(shift(t, 7))],
+      ['Через две недели', () => weekOf(shift(t, 14))],
+      ['Прошлая неделя', () => weekOf(shift(t, -7))],
+    ];
+  }
   function monthPresets() {
     const t = today();
     return [
@@ -97,26 +112,42 @@
   });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closePanel(); });
 
+  // Подпись недели: «14 — 20 сентября 2026», через месяц — с двумя месяцами.
+  function labelWeek(from) {
+    if (!from) return 'Неделя не выбрана';
+    const [a, b] = weekOf(new Date(from));
+    const x = new Date(a), y = new Date(b);
+    const left = x.getDate() + (x.getMonth() === y.getMonth() ? '' : ' ' + MONTHS[x.getMonth()]);
+    return left + ' — ' + y.getDate() + ' ' + MONTHS[y.getMonth()] + ' ' + y.getFullYear();
+  }
+
   function create(opts) {
     const o = opts || {};
-    const mode = o.mode === 'month' ? 'month' : 'range';
+    const mode = o.mode === 'month' ? 'month' : o.mode === 'week' ? 'week' : 'range';
     const state = mode === 'month'
       ? { period: o.period || iso(monthStart(today())).slice(0, 7) }
       // Берём ровно то, что передал экран. Раньше пустые даты молча
       // превращались в «этот месяц» только в подписи — а данные экран грузил
       // за всё время, и кнопка врала.
       : { from: o.from || '', to: o.to || '' };
+    // Неделя всегда полная: что бы ни передал экран, растягиваем до Пн–Вс.
+    if (mode === 'week') {
+      const [a, b] = weekOf(state.from ? new Date(state.from) : today());
+      state.from = a; state.to = b;
+    }
 
     const btn = el('button', { class: 'hub-dr-btn', type: 'button' }, [
       el('span', { class: 'hub-dr-ico' }, '📅'),
       el('span', { class: 'hub-dr-label' },
-        mode === 'month' ? labelMonth(state.period) : labelRange(state.from, state.to)),
+        mode === 'month' ? labelMonth(state.period)
+          : mode === 'week' ? labelWeek(state.from) : labelRange(state.from, state.to)),
       el('span', { class: 'hub-dr-caret' }, '▾'),
     ]);
 
     const relabel = () => {
       btn.querySelector('.hub-dr-label').textContent =
-        mode === 'month' ? labelMonth(state.period) : labelRange(state.from, state.to);
+        mode === 'month' ? labelMonth(state.period)
+          : mode === 'week' ? labelWeek(state.from) : labelRange(state.from, state.to);
     };
     const apply = () => { relabel(); closePanel(); if (o.onChange) o.onChange({ ...state }); };
 
@@ -125,7 +156,7 @@
       if (openPanel) { closePanel(); return; }
       const panel = el('div', { class: 'hub-dr-panel' });
 
-      const presets = mode === 'month' ? monthPresets() : rangePresets();
+      const presets = mode === 'month' ? monthPresets() : mode === 'week' ? weekPresets() : rangePresets();
       presets.forEach(([label, calc]) => {
         panel.appendChild(el('button', {
           class: 'hub-dr-item', type: 'button',
@@ -139,13 +170,27 @@
 
       panel.appendChild(el('div', { class: 'hub-dr-sep' }));
       panel.appendChild(el('div', { class: 'hub-dr-custom-t' },
-        mode === 'month' ? 'Другой месяц' : 'Выбрать даты'));
+        mode === 'month' ? 'Другой месяц' : mode === 'week' ? 'Неделя с датой' : 'Выбрать даты'));
 
       if (mode === 'month') {
         const inp = el('input', { type: 'month', class: 'hub-dr-inp', value: state.period });
         panel.appendChild(el('div', { class: 'hub-dr-custom' }, inp));
         panel.appendChild(el('div', { class: 'hub-dr-actions' }, [
           el('button', { class: 'hub-dr-ok', type: 'button', onclick: () => { state.period = inp.value || state.period; apply(); } }, 'ОК'),
+          el('button', { class: 'hub-dr-cancel', type: 'button', onclick: closePanel }, 'Отменить'),
+        ]));
+      } else if (mode === 'week') {
+        const inp = el('input', { type: 'date', class: 'hub-dr-inp', value: state.from });
+        panel.appendChild(el('div', { class: 'hub-dr-custom' }, inp));
+        panel.appendChild(el('div', { class: 'hub-dr-actions' }, [
+          el('button', {
+            class: 'hub-dr-ok', type: 'button',
+            onclick: () => {
+              if (!inp.value) { closePanel(); return; }
+              const [a, b] = weekOf(new Date(inp.value));
+              state.from = a; state.to = b; apply();
+            },
+          }, 'ОК'),
           el('button', { class: 'hub-dr-cancel', type: 'button', onclick: closePanel }, 'Отменить'),
         ]));
       } else {
@@ -184,11 +229,20 @@
 
     btn.setPeriod = (v) => {
       if (mode === 'month') state.period = v.period || state.period;
-      else { state.from = v.from || ''; state.to = v.to || ''; }
+      else if (mode === 'week') {
+        const [a, b] = weekOf(v.from ? new Date(v.from) : today());
+        state.from = a; state.to = b;
+      } else { state.from = v.from || ''; state.to = v.to || ''; }
       relabel();
     };
     return btn;
   }
 
-  window.HubDateRange = { create, labelRange, labelMonth };
+  // weekOf/weekShift наружу: кнопки «‹ ›» в плитках не должны считать
+  // понедельник сами — иначе у каждой плитки будет своё начало недели.
+  window.HubDateRange = {
+    create, labelRange, labelMonth, labelWeek,
+    weekOf: (d) => weekOf(new Date(d)),
+    weekShift: (d, weeks) => weekOf(shift(weekStart(new Date(d)), weeks * 7)),
+  };
 })();
