@@ -570,6 +570,91 @@ const TOOLS = [
     },
   },
   {
+    // Сценарий закупщика (задание J09): за минуту понять, что с товаром —
+    // остаток, сколько продали, что едет. Три блока из трёх разных мест,
+    // но без фальшивой связи между ними: килограммы сырья и пачки готовой
+    // продукции не вычитаются друг из друга.
+    name: 'chto_s_tovarom',
+    tile: ['/purchase', '/stock'],
+    description: 'Картина по сырью или товару для решения о закупе: сколько на складе, сколько продали '
+      + 'за период, что заказано и когда приедет. Спрашивают так: «что с айсбергом», '
+      + '«остаток и продажи рукколы», «надо ли докупать салат».',
+    schema: { type: 'object', properties: {
+      query: { type: 'string', description: 'название сырья или товара, например «айсберг»' },
+      days: { type: 'number', description: 'за сколько дней смотреть продажи, по умолчанию 7' },
+    }, additionalProperties: false },
+    run: async (args, ctx) => {
+      const q = String(args.query || '').trim();
+      if (!q) return { итог: 'Назовите товар — например «что с айсбергом»' };
+      const days = Math.min(Math.max(parseInt(args.days, 10) || 7, 1), 90);
+      const to = today();
+      const from = new Date(Date.now() + 5 * 3600000 - (days - 1) * 86400000).toISOString().slice(0, 10);
+
+      // 1. Склад: сырьё и упаковка, в своих единицах.
+      const stock = (await db.pool.query(
+        `WITH mv AS (SELECT item_kind, item_id, SUM(qty) AS balance FROM stock_movements GROUP BY item_kind, item_id),
+              m AS (SELECT 'raw' AS kind, id, name, unit_id FROM ref_raw_materials
+                    UNION ALL SELECT 'packaging', id, name, unit_id FROM ref_packaging)
+         SELECT m.name AS позиция, m.kind AS вид, COALESCE(mv.balance, 0)::numeric AS остаток,
+                u.short_name AS единица
+           FROM m LEFT JOIN mv ON mv.item_kind = m.kind AND mv.item_id = m.id
+           LEFT JOIN ref_units u ON u.id = m.unit_id
+          WHERE m.name ILIKE $1 AND COALESCE(mv.balance, 0) <> 0
+          ORDER BY m.name LIMIT 20`, ['%' + q + '%'])).rows;
+
+      // 2. Продажи готовой продукции за период — штуки и килограммы по фасовке.
+      const sold = (await db.pool.query(
+        `SELECT product_name AS товар, SUM(qty)::numeric AS штук
+           FROM sd_sales WHERE day BETWEEN $1 AND $2 AND product_name ILIKE $3
+          GROUP BY product_name ORDER BY 2 DESC LIMIT 20`, [from, to, '%' + q + '%'])).rows;
+      let soldKg = 0, kgKnown = true;
+      const sales = sold.map((r) => {
+        const kg = unitKg(r.товар);
+        if (kg === null) kgKnown = false; else soldKg += kg * Number(r.штук);
+        const line = { товар: r.товар, штук: Math.round(Number(r.штук)) };
+        if (kg !== null) line.кг = Math.round(kg * Number(r.штук) * 10) / 10;
+        return line;
+      });
+
+      // 3. Что заказано и ещё не принято.
+      const coming = (await db.pool.query(
+        `SELECT po.number AS заявка, c.name AS поставщик,
+                to_char(po.delivery_date, 'DD.MM') AS ожидается,
+                rm.name AS позиция, i.qty::numeric AS количество, u.short_name AS единица
+           FROM purchase_orders po
+           JOIN purchase_order_items i ON i.order_id = po.id
+           JOIN ref_counterparties c ON c.id = po.supplier_id
+           LEFT JOIN ref_raw_materials rm ON i.item_kind = 'raw' AND rm.id = i.item_id
+           LEFT JOIN ref_packaging pk ON i.item_kind = 'packaging' AND pk.id = i.item_id
+           LEFT JOIN ref_units u ON u.id = COALESCE(rm.unit_id, pk.unit_id)
+          WHERE po.status = 'ordered' AND COALESCE(rm.name, pk.name) ILIKE $1
+          ORDER BY po.delivery_date LIMIT 20`, ['%' + q + '%'])).rows;
+
+      const cov = await require('./sd-sales').coverage();
+      if (!stock.length && !sales.length && !coming.length) {
+        return { запрос: q, итог: `По «${q}» ничего не нашлось: ни остатка, ни продаж, ни заказов. `
+          + 'Возможно, название в системе другое — попробуйте часть слова' };
+      }
+      return {
+        товар: q,
+        склад: { позиций: stock.length,
+          остатки: stock.map((r) => ({ позиция: r.позиция, вид: r.вид === 'raw' ? 'сырьё' : 'упаковка',
+            остаток: Math.round(Number(r.остаток) * 100) / 100, единица: r.единица })),
+          источник: 'реестр движений склада, прямо сейчас' },
+        продажи: { период: `${from} — ${to}`, позиций: sales.length, строки: sales,
+          всего_штук: sales.reduce((a, x) => a + x.штук, 0),
+          всего_кг: soldKg ? Math.round(soldKg * 10) / 10 : null,
+          про_килограммы: soldKg && !kgKnown ? 'Только по товарам, где вес указан в названии' : null,
+          источник: `копия SalesDoctor, обновлена ${cov.last_sync || 'неизвестно когда'}` },
+        ожидается: { заявок: coming.length, строки: coming.map((r) => ({ ...r, количество: Number(r.количество) })),
+          источник: 'Закуп, заявки со статусом «заказано»' },
+        как_читать: 'Остаток сырья в килограммах и продажи готовой продукции в пачках — РАЗНЫЕ величины. '
+          + 'Я их не вычитаю друг из друга: расход сырья на пачку задаётся рецептурой, '
+          + 'и пока она не подтверждена, дефицит считать нельзя. Решение о закупе — за вами.',
+      };
+    },
+  },
+  {
     name: 'zayavki_zakupa',
     tile: '/purchase',
     tab: { '/purchase': 'orders' },

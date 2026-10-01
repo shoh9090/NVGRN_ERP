@@ -251,6 +251,10 @@ const TOOL_HELP = {
   prodazhi_po_klientam: ['👥', 'продажи по клиентам за период'],
   dinamika_klienta: ['📊', 'динамика клиента по неделям — растёт или падает'],
   pretenzii: ['📣', 'претензии за период: сколько, по каким товарам'],
+  chto_s_tovarom: ['🥬', 'что с товаром: остаток, продажи за неделю и что едет («что с айсбергом»)'],
+  kto_ne_otvechaet: ['👥', 'кто отвечает на карточки, а кто нет — по людям и отделам'],
+  kartochki_sotrudnika: ['🗂', 'какие карточки ждут человека («карточки Асилбека»)'],
+  otchet_excel: ['📄', 'прислать этот отчёт файлом Excel'],
 };
 async function sendHelp(chatId, me) {
   const user = await erpUser(me.user_id);
