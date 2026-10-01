@@ -200,6 +200,15 @@ async function collect(pool, rules) {
         text: `${r.name}: остаток ${bal}, расход ${num1(r.per_day)} ${r.unit || ''} в день — хватит ${left}.` });
     }
   });
+  // Калькуляция «теряет» часть фонда зарплат: у товаров занижены доли труда.
+  // Себестоимость от этого выглядит лучше, а зарплату компания платит ту же.
+  await safe(async () => {
+    const c = await require('./calculation').laborCoverage();
+    if (!c || !(c.fund > 0) || !(c.rest > c.fund * 0.05)) return;
+    out.push({ tiles: ['/calculation'], icon: '🧮',
+      text: `В Калькуляции доли ФОТ покрывают ${Math.round(c.avg_pct)}% фонда: ${money(c.distributed)} из ${money(c.fund)}. `
+        + `${money(c.rest)} зарплат не заложено ни в один товар — в себестоимости их не видно, а платить их всё равно надо.` });
+  });
   await safe(async () => {
     for (const r of await complaintsDecidedNotDone(pool)) {
       const point = r.point_name || r.firm_name || 'точка не указана';
