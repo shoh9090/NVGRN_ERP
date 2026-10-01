@@ -2820,6 +2820,15 @@
     if (v) {
       wrap.appendChild(el('div', { class: 'calc-sb-verdict ' + v.level },
         (v.level === 'good' ? '✓ ' : v.level === 'bad' ? '⚠️ ' : 'ℹ️ ') + v.text));
+      // Чего в расчёте нет. Без этих строк «скидка окупается» читается как
+      // обещание денег, хотя это расчёт внутри сценария: лишняя смена,
+      // доставка и отсрочка в него не входят, а объём только обещан.
+      if (v.notes && v.notes.length) {
+        wrap.appendChild(el('div', { class: 'calc-sb-notes' }, [
+          el('div', { class: 'calc-sb-notes-h' }, 'Что этот расчёт не учитывает'),
+          el('ul', {}, v.notes.map((n) => el('li', {}, n))),
+        ]));
+      }
     }
     if (t.incomplete) {
       wrap.appendChild(el('div', { class: 'calc-msg warn' },

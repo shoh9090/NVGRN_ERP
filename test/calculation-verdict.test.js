@@ -53,3 +53,33 @@ test('обычная сделка с ростом вклада — скидка 
   assert.strictEqual(v.level, 'good');
   assert.match(v.text, /окупается/);
 });
+
+// --- Чего расчёт не учитывает ----------------------------------------------
+// «Скидка окупается» — вывод внутри сценария, а не обещание денег. Условия,
+// при которых он верен, обязаны идти рядом с ним, иначе продажник прочитает
+// цифру как гарантию.
+test('у положительного вывода всегда есть список допущений', () => {
+  const v = sandboxVerdict([line({ qty: 100, qty_new: 150 })], 50000, 15);
+  assert.ok(v.notes && v.notes.length, 'допущений нет вовсе');
+  assert.ok(v.notes.some((n) => /смена/i.test(n)), 'про дополнительную смену не сказано');
+  assert.ok(v.notes.some((n) => /обещан/i.test(n)), 'про обещанный объём не сказано');
+});
+
+test('рост выпуска завода вписан руками — это названо предположением', () => {
+  const v = sandboxVerdict([line({ qty: 100, qty_new: 150 })], 50000, 15,
+    { output_changed: true, output_new: 150000, output_now: 100000 });
+  assert.ok(v.notes.some((n) => /Выпуск завода изменён вручную/.test(n)));
+  assert.ok(v.notes.some((n) => /предположение/.test(n)));
+});
+
+test('выпуск не трогали — лишнего предупреждения нет', () => {
+  const v = sandboxVerdict([line({ qty: 100, qty_new: 150 })], 50000, 15,
+    { output_changed: false });
+  assert.ok(!v.notes.some((n) => /Выпуск завода изменён/.test(n)));
+});
+
+test('убыточный сценарий тоже показывает границы расчёта', () => {
+  const v = sandboxVerdict([line({ qty: 100, qty_new: 150, delta_total: -50000 })], -50000, 15);
+  assert.strictEqual(v.level, 'bad');
+  assert.ok(v.notes && v.notes.length);
+});

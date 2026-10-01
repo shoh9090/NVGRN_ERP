@@ -1690,7 +1690,10 @@ const mul = (v, k) => (v === null || v === undefined ? null : v * k);
 // Вердикт словами. Смысл не в «да/нет», а в том, ЧТО предложить клиенту
 // взамен: какой объём вернёт прежние деньги и до какой цены можно опуститься.
 const sumRu = (v) => Math.round(v).toLocaleString('ru-RU');
-function sandboxVerdict(lines, delta, minMargin) {
+// opts — условия сценария: сильно ли вырос объём и трогали ли общий выпуск.
+// Нужны не для цифры, а для честности вывода: расчёт верен внутри сценария,
+// но сценарий — это предположение, а не обещание денег.
+function sandboxVerdict(lines, delta, minMargin, opts) {
   if (!lines.length) return null;
   // Объём не задан вообще — считать нечего. А вот «берёт сейчас = 0», но
   // «обещает взять» заполнено — это НОВЫЙ товар: сравнивать не с чем по самой
@@ -1721,16 +1724,18 @@ function sandboxVerdict(lines, delta, minMargin) {
     return {
       level: delta > 0 ? 'good' : 'bad',
       text: delta > 0
-        ? 'Сделка принесёт ' + sumRu(delta) + ' сум в месяц — это деньги на аренду, зарплаты и прибыль.'
+        ? 'При обещанном объёме сделка принесёт ' + sumRu(delta) + ' сум в месяц — это деньги на аренду, зарплаты и прибыль.'
         : 'По этой цене сделка отнимает ' + sumRu(-delta) + ' сум в месяц: каждая упаковка дешевле того, во что обходится.',
+      notes: sandboxNotes(lines, opts),
     };
   }
   if (delta >= 0) {
     return {
       level: 'good',
       text: delta > 0
-        ? 'Скидка окупается: денег станет больше на ' + sumRu(delta) + ' сум в месяц.'
+        ? 'Скидка окупается при этом объёме: денег станет больше на ' + sumRu(delta) + ' сум в месяц.'
         : 'Денег будет столько же — сделка равнозначна прежней.',
+      notes: sandboxNotes(lines, opts),
     };
   }
   // Не окупается: советуем по позиции, которая теряет больше всех.
@@ -1746,7 +1751,30 @@ function sandboxVerdict(lines, delta, minMargin) {
     }
     if (how.length) parts.push('По «' + worst.name + '» нужен ' + how.join(', ') + '.');
   }
-  return { level: 'bad', text: parts.join(' ') };
+  return { level: 'bad', text: parts.join(' '), notes: sandboxNotes(lines, opts) };
+}
+
+// Чего в расчёте НЕТ. Песочница честно считает сделку по сырью, упаковке,
+// ретро и НДС — и ничего не знает про лишнюю смену, доставку, отсрочку и про
+// то, выберет ли клиент обещанный объём. Эти строки идут под выводом, чтобы
+// «скидка окупается» не читалось как обещание денег.
+function sandboxNotes(lines, opts) {
+  const o = opts || {};
+  const notes = [];
+  if (o.output_changed) {
+    notes.push('Выпуск завода изменён вручную'
+      + (o.output_new ? ' на ' + sumRu(o.output_new) + ' шт' : '')
+      + (o.output_now ? ' вместо ' + sumRu(o.output_now) : '')
+      + ': аренда, ФОТ и производственные делятся на большее число штук, и себестоимость падает у ВСЕХ товаров. '
+      + 'Пока рост не подтверждён заказами, это предположение, а не факт.');
+  }
+  const grows = (lines || []).some((x) => (Number(x.qty_new) || 0) > (Number(x.qty) || 0));
+  if (grows) {
+    notes.push('Объём обещан клиентом, а не выбран. Скидку за объём надёжнее привязывать к фактической выборке — это условие договора.');
+  }
+  notes.push('В расчёт не входят дополнительная смена, доставка, оборудование, отсрочка оплаты и возвраты. '
+    + 'Если новый объём не помещается в текущую смену — считайте её отдельно: прежняя зарплата, делённая на большее число упаковок, сама по себе выгоды не создаёт.');
+  return notes;
 }
 
 // Весь сценарий одной функцией: её же берёт выгрузка в Excel, чтобы файл и
@@ -1759,6 +1787,7 @@ async function sandboxScenario(b) {
   {
     const settings = await calcSettings();
     const minMargin = numOrNull(settings[K_MIN_MARGIN]);
+    const settingsOutput = asNum(settings[K_OUTPUT]) || 0;
     // Тянем только те листы, товары с которых реально в сценарии.
     const wanted = new Set(lines.map((l) => String(l.sheet || '')).filter((s) => SHEETS[s]));
     const byId = new Map();
@@ -1871,7 +1900,11 @@ async function sandboxScenario(b) {
         incomplete: out.some((x) => x.was.incomplete || x.now.incomplete),
         below_min: out.filter((x) => x.below_min).map((x) => x.name),
       },
-      verdict: sandboxVerdict(out, delta, minMargin),
+      verdict: sandboxVerdict(out, delta, minMargin, {
+        output_changed: !!(outputNew > 0 && outputNew !== settingsOutput),
+        output_new: outputNew || null,
+        output_now: settingsOutput || null,
+      }),
     };
   }
 }

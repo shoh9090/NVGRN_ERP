@@ -704,6 +704,17 @@ input.calc-rate-inp:focus { border-color: var(--lime-d); background: var(--surfa
 .calc-sb-verdict.bad { background: var(--red-soft); color: var(--red); border: 1px solid #e8c7bd; }
 .calc-sb-verdict.warn { background: var(--amber-soft); color: #8a5a00; border: 1px solid #eddcae; }
 
+/* Чего расчёт не учитывает: условия, при которых вывод верен. Намеренно
+   спокойные, не тревожные — это не ошибка, а граница применимости цифры. */
+.calc-sb-notes {
+  margin-top: 8px; padding: 9px 13px; border-radius: 9px;
+  background: var(--surface-2); border: 1px solid var(--line);
+  font-size: 12px; color: var(--ink-soft); line-height: 1.45;
+}
+.calc-sb-notes-h { font-weight: 700; color: var(--ink); margin-bottom: 4px; }
+.calc-sb-notes ul { margin: 0; padding-left: 17px; }
+.calc-sb-notes li { margin: 3px 0; }
+
 /* Подписи под парой «было → стало»: без них непонятно, какое поле какое */
 .calc-sb-hint {
   display: flex; justify-content: space-between; gap: 18px;
