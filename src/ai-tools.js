@@ -53,6 +53,22 @@ function unitKg(name) {
   return null;
 }
 
+// Параметры последнего отчёта по человеку: «пришли Excel» должен прислать ТОТ
+// ЖЕ отрезок и тот же фильтр, а не текущий месяц (задание J06). Живёт в памяти
+// процесса полчаса — это продолжение разговора, а не хранимая настройка.
+const lastReport = new Map();                         // ключ: chatId или user.id
+const reportKey = (ctx) => String((ctx && (ctx.chatId || (ctx.user && ctx.user.id))) || '');
+function rememberReport(ctx, params) {
+  const k = reportKey(ctx);
+  if (k) lastReport.set(k, { ...params, until: Date.now() + 30 * 60 * 1000 });
+}
+function recallReport(ctx) {
+  const v = lastReport.get(reportKey(ctx));
+  if (!v) return null;
+  if (Date.now() > v.until) { lastReport.delete(reportKey(ctx)); return null; }
+  return v;
+}
+
 // Кого человеку можно видеть в отчёте по команде (задание J03).
 // Правило то же, что в Кадрах: плитка открывает экран, а КОГО на нём видно,
 // решает привязка к отделам (hr_user_departments). Наличие плитки само по себе
@@ -658,6 +674,7 @@ const TOOLS = [
         to = nowDay; from = nowDay.slice(0, 8) + '01';
       }
       const rep = await require('./jarvis-team').teamReport({ from, to, scope, department: args.department });
+      rememberReport(ctx, { from, to, department: args.department || null });
       const rules = await require('./jarvis').loadRules();
       // В чат — полные итоги и короткий список; детали целиком берутся из
       // Excel (инструмент otchet_excel), чтобы не пихать в ответ сотни строк.
@@ -721,7 +738,10 @@ const TOOLS = [
       + 'карточки Trello без ответа, претензии без реакции и незакрытые. '
       + 'Видно ровно то, что человеку открыто по правам.',
     schema: { type: 'object', properties: {
-      month: { type: 'string', description: 'месяц в виде 2026-09, по умолчанию текущий' },
+      month: { type: 'string', description: 'месяц в виде 2026-09' },
+      from: { type: 'string', description: 'с какой даты, если период не месяц' },
+      to: { type: 'string', description: 'по какую дату' },
+      department: { type: 'string', description: 'часть названия отдела' },
     }, additionalProperties: false },
     run: async (args, ctx) => {
       // Права те же, что у отчёта в чате: файл не должен открывать больше,
@@ -729,15 +749,33 @@ const TOOLS = [
       const scope = await teamScope(ctx);
       if (scope.error) return { итог: scope.error };
       if (!ctx.chatId) return { итог: 'Этот отчёт присылается только в чат с ботом' };
-      const per = period(args.month);
-      const from = per + '-01';
-      const to = new Date(Date.UTC(Number(per.slice(0, 4)), Number(per.slice(5, 7)), 0)).toISOString().slice(0, 10);
+      // Период: что назвали сейчас → что смотрели только что → текущий месяц.
+      // Без этого «последние 30 дней», а потом «пришли Excel» давали разные
+      // отрезки, и файл не сходился с ответом в чате (задание J06).
+      const prev = recallReport(ctx);
+      let from, to, dep = args.department || (prev && prev.department) || null;
+      if (args.from || args.to) {
+        to = day(args.to, today());
+        from = day(args.from, to.slice(0, 8) + '01');
+      } else if (args.month) {
+        const per = period(args.month);
+        from = per + '-01';
+        to = new Date(Date.UTC(Number(per.slice(0, 4)), Number(per.slice(5, 7)), 0)).toISOString().slice(0, 10);
+      } else if (prev) {
+        from = prev.from; to = prev.to;
+      } else {
+        const per = period(null);
+        from = per + '-01';
+        to = new Date(Date.UTC(Number(per.slice(0, 4)), Number(per.slice(5, 7)), 0)).toISOString().slice(0, 10);
+      }
       const rules = await require('./jarvis').loadRules();
-      const { buf, name } = await require('./jarvis-report').workbook({ from, to, rules, scope });
+      const { buf, name } = await require('./jarvis-report').workbook({ from, to, rules, scope, department: dep });
       const ok = await require('./jarvis-bot').sendFile(ctx.chatId, 'document', buf, name);
       // «Отправлено» говорим только после фактической отправки (задание J06).
+      if (ok) rememberReport(ctx, { from, to, department: dep });
       return ok
-        ? { итог: 'Файл отправлен в чат', период: `${from} — ${to}`, охват: scope.label, файл: name }
+        ? { итог: 'Файл отправлен в чат', период: `${from} — ${to}`, охват: scope.label,
+          отдел: dep || 'все разрешённые', файл: name }
         : { итог: 'Файл собрался, но Telegram его не принял — попробуйте ещё раз' };
     },
   },

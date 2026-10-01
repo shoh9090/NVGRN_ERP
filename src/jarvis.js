@@ -366,7 +366,9 @@ router.get('/api/violations.xlsx', async (req, res) => {
     const ok = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ''));
     const to = ok(req.query.to) ? String(req.query.to) : new Date(Date.now() + 5 * 3600000).toISOString().slice(0, 10);
     const from = ok(req.query.from) ? String(req.query.from) : to.slice(0, 8) + '01';
-    const { buf, name } = await require('./jarvis-report').workbook({ from, to, rules: await loadRules() });
+    // Тот же файл, что в чате: период, отдел и охват передаются одинаково (J06).
+    const { buf, name } = await require('./jarvis-report').workbook({
+      from, to, rules: await loadRules(), department: req.query.department || null });
     res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.send(buf);
