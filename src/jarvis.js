@@ -353,5 +353,74 @@ router.get('/api/log', async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
+// ---------- Нарушения: выгрузка для разбора ----------
+// Шох: «сумму нарушений по отделам или по начальникам отделов, выкати Excel».
+// Три листа: по отделам, по людям, построчно. Суммы берутся из правил
+// (fine_mention / fine_overdue): пока штрафы выключены, они справочные —
+// видно, во что это вылилось бы, никого не наказывая задним числом.
+const VIOLATIONS = {
+  violation_mention: 'Не ответил на упоминание',
+  violation_overdue: 'Просрочил карточку',
+  violation_no_due: 'Карточка без срока',
+};
+router.get('/api/violations.xlsx', async (req, res) => {
+  if (onlyAdmin(req, res)) return;
+  try {
+    await ensureSchema();
+    const rules = await loadRules();
+    const day = (v, def) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : def);
+    const to = day(req.query.to, new Date(Date.now() + 5 * 3600000).toISOString().slice(0, 10));
+    const from = day(req.query.from, to.slice(0, 8) + '01');
+    const rows = (await db.pool.query(
+      `SELECT l.kind, l.text, l.card_name, l.sent, l.created_at,
+              e.full_name, e.position, COALESCE(d.name, '— без отдела —') AS department
+         FROM jarvis_log l
+         LEFT JOIN hr_employees e ON e.id = l.employee_id
+         LEFT JOIN hr_departments d ON d.id = e.department_id
+        WHERE l.kind LIKE 'violation%' AND l.created_at >= $1::date AND l.created_at < ($2::date + 1)
+        ORDER BY l.created_at`, [from, to])).rows;
+    // Цена нарушения: за неответ и за срок — своя, «без срока» считаем как просрочку.
+    const price = (kind) => (kind === 'violation_mention' ? rules.fine_mention : rules.fine_overdue) || 0;
+    const byDep = new Map(), byMan = new Map();
+    for (const r of rows) {
+      const dep = r.department, who = r.full_name || '— не опознан —';
+      const d = byDep.get(dep) || { dep, n: 0, mention: 0, overdue: 0, nodue: 0, sum: 0, people: new Set() };
+      d.n++; d.sum += price(r.kind); d.people.add(who);
+      if (r.kind === 'violation_mention') d.mention++;
+      else if (r.kind === 'violation_overdue') d.overdue++;
+      else d.nodue++;
+      byDep.set(dep, d);
+      const key = dep + '|' + who;
+      const m = byMan.get(key) || { dep, who, position: r.position || '', n: 0, sum: 0, notSent: 0 };
+      m.n++; m.sum += price(r.kind);
+      if (!r.sent) m.notSent++;
+      byMan.set(key, m);
+    }
+    const XLSX = require('xlsx');
+    const wb = XLSX.utils.book_new();
+    const head = [[`Нарушения с ${from} по ${to}`],
+      [rules.fines_enabled ? 'Штрафы включены' : 'Штрафы ВЫКЛЮЧЕНЫ — суммы справочные'],
+      [`Цена: неответ ${rules.fine_mention} сум, срок ${rules.fine_overdue} сум`], []];
+    const dep = [...byDep.values()].sort((a, b) => b.n - a.n)
+      .map((d) => [d.dep, d.people.size, d.n, d.mention, d.overdue, d.nodue, d.sum]);
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([...head,
+      ['Отдел', 'Людей', 'Нарушений', 'Не ответил', 'Просрочил', 'Без срока', 'Сумма, сум'], ...dep,
+      ['ИТОГО', '', rows.length, '', '', '', dep.reduce((a, x) => a + x[6], 0)]]), 'По отделам');
+    const man = [...byMan.values()].sort((a, b) => b.n - a.n)
+      .map((m) => [m.dep, m.who, m.position, m.n, m.sum, m.notSent]);
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([...head,
+      ['Отдел', 'Сотрудник', 'Должность', 'Нарушений', 'Сумма, сум', 'Не дошло до него'], ...man]), 'По людям');
+    const ru = (d) => new Date(new Date(d).getTime() + 5 * 3600000).toISOString().slice(0, 16).replace('T', ' ');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
+      ['Дата', 'Отдел', 'Сотрудник', 'Нарушение', 'Карточка', 'Подробности', 'Дошло'],
+      ...rows.map((r) => [ru(r.created_at), r.department, r.full_name || '', VIOLATIONS[r.kind] || r.kind,
+        r.card_name || '', r.text || '', r.sent ? 'да' : 'нет'])]), 'Построчно');
+    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    res.setHeader('Content-Disposition', `attachment; filename="narusheniya_${from}_${to}.xlsx"`);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.send(buf);
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 module.exports = router;
 module.exports.loadRules = loadRules;

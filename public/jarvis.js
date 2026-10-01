@@ -428,6 +428,21 @@
       ['Ответов из Telegram', n('reply')],
     ].map(([l, v]) => el('div', { class: 'pur-kpi' }, [el('div', { class: 'pur-kpi-label' }, l), el('div', { class: 'pur-kpi-val' }, String(v))]))));
 
+    // Выгрузка нарушений для разбора: по отделам, по людям и построчно.
+    // Период — месяц по умолчанию, потому что разбирают обычно за месяц.
+    if (isAdmin) {
+      const m = new Date(Date.now() + 5 * 3600000).toISOString().slice(0, 7);
+      const month = el('input', { class: 'jv-inp', type: 'month', value: m, style: 'width:160px' });
+      box.appendChild(el('div', { class: 'pur-toolbar' }, [
+        el('div', { class: 'jv-muted' }, 'Нарушения в Excel: по отделам, по людям и построчно.'),
+        el('div', { class: 'pur-toolbar-right' }, [month, ' ', el('button', { class: 'pur-tbtn', onclick: () => {
+          const v = month.value || m;
+          const last = new Date(Date.UTC(Number(v.slice(0, 4)), Number(v.slice(5, 7)), 0)).toISOString().slice(0, 10);
+          window.open(`/jarvis/api/violations.xlsx?from=${v}-01&to=${last}`, '_blank');
+        } }, '↓ Excel')]),
+      ]));
+    }
+
     if (d.waiting.length) {
       box.appendChild(el('section', { class: 'jv-sec' }, [el('h3', {}, 'Упоминания без ответа'),
         el('table', { class: 'dict-table jv-table' }, [
