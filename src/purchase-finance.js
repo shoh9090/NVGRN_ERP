@@ -1,6 +1,8 @@
 // purchase-finance.js — ЕДИНЫЙ источник расчёта задолженности поставщикам.
 // Используется и в «Закуп» (взаиморасчёты, список заявок), и в «Касса → Обязательства»
 // (read-only зеркало + агрегаты сводки). Бизнес-логику НЕ дублировать по модулям.
+// Дата приёмки — одно определение на всю систему (см. receipt-date.js).
+const { RECEIPT_DATE: RD } = require('./receipt-date');
 const db = require('./db');
 
 const DAY_MS = 86400000;
@@ -163,9 +165,9 @@ async function allocateUnassigned(supplierIds) {
        FROM purchase_orders po
        LEFT JOIN purchase_order_items i ON i.order_id = po.id
       WHERE po.status = 'received' AND po.supplier_id = ANY($1::int[])
-        AND COALESCE(po.received_at::date, po.delivery_date) >= '${SETTLE_START}'
+        AND ${RD} >= '${SETTLE_START}'
       GROUP BY po.id
-      ORDER BY COALESCE(po.received_at::date, po.delivery_date), po.id`, [ids])).rows;
+      ORDER BY ${RD}, po.id`, [ids])).rows;
 
   for (const o of orders) {
     let rest = free.get(o.supplier_id) || 0;
@@ -253,7 +255,7 @@ async function supplierBalances(opts = {}) {
      LEFT JOIN (
        SELECT po.supplier_id, SUM(COALESCE(i.fact_qty, 0) * i.price) AS delivered
        FROM purchase_orders po JOIN purchase_order_items i ON i.order_id = po.id
-       WHERE po.status = 'received' AND COALESCE(po.received_at::date, po.delivery_date) >= '${SETTLE_START}' GROUP BY po.supplier_id
+       WHERE po.status = 'received' AND ${RD} >= '${SETTLE_START}' GROUP BY po.supplier_id
      ) d ON d.supplier_id = c.id
      LEFT JOIN (
        SELECT supplier_id, SUM(amount) AS paid FROM supplier_payments WHERE paid_at >= '${SETTLE_START}' GROUP BY supplier_id
@@ -281,10 +283,10 @@ async function supplierBalances(opts = {}) {
   if (from || to) {
     const dAgg = (await db.pool.query(
       `WITH ord AS (
-         SELECT po.supplier_id, COALESCE(po.received_at::date, po.delivery_date) d,
+         SELECT po.supplier_id, ${RD} d,
                 SUM(COALESCE(i.fact_qty, 0) * i.price) val
          FROM purchase_orders po JOIN purchase_order_items i ON i.order_id = po.id
-         WHERE po.status = 'received' AND COALESCE(po.received_at::date, po.delivery_date) >= '${SETTLE_START}' GROUP BY po.id)
+         WHERE po.status = 'received' AND ${RD} >= '${SETTLE_START}' GROUP BY po.id)
        SELECT supplier_id,
          COALESCE(SUM(val) FILTER (WHERE $1::date IS NULL OR d < $1),0) AS before_v,
          COALESCE(SUM(val) FILTER (WHERE ($1::date IS NULL OR d >= $1) AND ($2::date IS NULL OR d <= $2)),0) AS period_v
@@ -332,7 +334,7 @@ async function openSupplierObligations() {
      FROM purchase_orders po
      JOIN ref_counterparties c ON c.id = po.supplier_id
      LEFT JOIN purchase_order_items i ON i.order_id = po.id
-     WHERE po.status = 'received' AND COALESCE(po.received_at::date, po.delivery_date) >= '${SETTLE_START}'
+     WHERE po.status = 'received' AND ${RD} >= '${SETTLE_START}'
      GROUP BY po.id, c.name`);
   // Нераспределённые оплаты (авторазнос и аванс) разносим по заявкам расчётом.
   return (await withAllocatedPaid(r.rows)).map(enrichOrderFinance).filter((o) => o.remainder > 0.01);

@@ -13,6 +13,8 @@
 //
 // Ответственность файла: маршруты, права, сбор ответа.
 // Формулы — только в calculation-engine.js, чтение источников — в calculation-sources.js.
+// Дата приёмки — одно определение на всю систему (см. receipt-date.js).
+const { RECEIPT_DATE: RD } = require('./receipt-date');
 const express = require('express');
 const XLSX = require('xlsx');
 const db = require('./db');
@@ -861,11 +863,11 @@ async function lastRawPrices() {
   const r = await db.pool.query(
     `SELECT DISTINCT ON (i.item_id) i.item_id,
             COALESCE(i.fact_price, i.price) AS price,
-            to_char(COALESCE(po.received_at::date, po.delivery_date), 'DD.MM.YY') AS at
+            to_char(${RD}, 'DD.MM.YY') AS at
        FROM purchase_order_items i
        JOIN purchase_orders po ON po.id = i.order_id AND po.status = 'received'
       WHERE i.item_kind = 'raw' AND COALESCE(i.fact_price, i.price) > 0
-      ORDER BY i.item_id, COALESCE(po.received_at::date, po.delivery_date) DESC`);
+      ORDER BY i.item_id, ${RD} DESC`);
     // ниже дата уходит на экран, поэтому приводим её к тексту сразу
   const byId = new Map();
   r.rows.forEach((x) => byId.set(x.item_id, { price: Number(x.price), at: x.at }));

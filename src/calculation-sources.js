@@ -6,6 +6,9 @@
 //  • одна и та же логика цены используется Закупом и Калькуляцией (ТЗ 8.3),
 //    поэтому SQL «последней принятой цены» существует ровно в одном месте — здесь.
 
+// Дата приёмки — одно определение на всю систему (см. receipt-date.js).
+const { RECEIPT_DATE: RD } = require('./receipt-date');
+
 // Базовый SQL истории принятых цен (ТЗ 8.3):
 //  • только завершённые приёмки (purchase_orders.status = 'received');
 //  • цена = fact_price, если она положительная, иначе согласованная price;
@@ -14,7 +17,7 @@ const ACCEPTED_HISTORY_SQL = `
   SELECT i.item_kind, i.item_id,
          COALESCE(NULLIF(i.fact_price, 0), i.price) AS price,
          COALESCE(i.fact_qty, i.qty) AS qty,
-         COALESCE(po.received_at::date, po.delivery_date) AS price_date,
+         ${RD} AS price_date,
          po.id AS order_id, po.number AS order_number, po.supplier_id
   FROM purchase_order_items i
   JOIN purchase_orders po ON po.id = i.order_id AND po.status = 'received'

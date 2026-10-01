@@ -297,6 +297,16 @@ async function migrate() {
   // миграции колонок блока закупа/склада (для уже существующих баз)
   await pool.query("ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS delivery_date DATE").catch(()=>{});
   await pool.query("ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS receipt_status TEXT DEFAULT 'pending'").catch(()=>{});
+  // ПОДТВЕРЖДЁННАЯ дата поставки: когда товар пришёл физически, по документу
+  // поставщика. Отличается от received_at — тот фиксирует время нажатия кнопки
+  // «принял» в ERP: зелень пришла в субботу, отметили во вторник. Из-за этого в
+  // августе 2026 сырьё на 104 млн уехало в сентябрь (docs/august-2026-check.md).
+  // Заполняется человеком после проверки, автоматически НЕ проставляется:
+  // переносить старые заявки задним числом нельзя (решение Шоха 01.10.2026).
+  await pool.query("ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS delivery_confirmed_date DATE").catch(()=>{});
+  await pool.query("ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS delivery_confirmed_by TEXT").catch(()=>{});
+  await pool.query("ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS delivery_confirmed_at TIMESTAMPTZ").catch(()=>{});
+  await pool.query("ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS delivery_confirmed_doc TEXT DEFAULT ''").catch(()=>{});
   await pool.query("ALTER TABLE production_issues ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'pending'").catch(()=>{});
   await pool.query("ALTER TABLE production_issues ADD COLUMN IF NOT EXISTS reject_reason TEXT DEFAULT ''").catch(()=>{});
   await pool.query("ALTER TABLE production_issues ADD COLUMN IF NOT EXISTS confirmed_at TIMESTAMPTZ").catch(()=>{});

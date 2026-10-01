@@ -23,6 +23,8 @@
 //   • остатки сырья и готовой продукции между месяцами считаются несущественными
 //     (зелень не хранится). Если это перестанет быть правдой, метод врёт.
 
+// Дата приёмки — одно определение на всю систему (см. receipt-date.js).
+const { RECEIPT_DATE: RD } = require('./receipt-date');
 const { ACCR_FIELDS } = require('./hr-fields');
 
 const num = (v) => Number(v) || 0;
@@ -596,13 +598,13 @@ async function loadReceiptDates(pool, period) {
             c.name AS supplier,
             COALESCE(SUM(COALESCE(i.fact_qty, 0) * i.price), 0) AS amount,
             to_char(po.delivery_date, 'YYYY-MM') AS plan_month,
-            to_char(COALESCE(po.received_at::date, po.delivery_date), 'YYYY-MM') AS fact_month
+            to_char(${RD}, 'YYYY-MM') AS fact_month
        FROM purchase_orders po
        JOIN purchase_order_items i ON i.order_id = po.id AND i.item_kind = 'raw'
        LEFT JOIN ref_counterparties c ON c.id = po.supplier_id
       WHERE po.status = 'received'
         AND (to_char(po.delivery_date, 'YYYY-MM') = $1
-             OR to_char(COALESCE(po.received_at::date, po.delivery_date), 'YYYY-MM') = $1)
+             OR to_char(${RD}, 'YYYY-MM') = $1)
       GROUP BY po.id, po.delivery_date, po.received_at, c.name
       ORDER BY po.delivery_date, po.id`, [period])).rows;
   return rows;

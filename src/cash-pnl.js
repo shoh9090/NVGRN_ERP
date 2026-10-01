@@ -23,6 +23,8 @@
 
 // Замок закрытого периода: закрытый месяц отдаётся из снимка, а не считается
 // заново (см. pnlFor внизу файла).
+// Дата приёмки — одно определение на всю систему (см. receipt-date.js).
+const { RECEIPT_DATE: RD } = require('./receipt-date');
 const { cashLockedUntil } = require('./cash-lock');
 
 // Ключ, под которым храним подтянутое из SalesDoctor количество отгрузок.
@@ -468,14 +470,14 @@ const CODE_PACK_PAID = '11';
 // показывали разные месяцы.
 async function rawReceivedByMonth(pool, from, to) {
   const rows = (await pool.query(
-    `SELECT to_char(COALESCE(po.received_at::date, po.delivery_date), 'YYYY-MM') AS m,
+    `SELECT to_char(${RD}, 'YYYY-MM') AS m,
             COUNT(DISTINCT po.id) AS orders,
             COALESCE(SUM(COALESCE(i.fact_qty, 0) * i.price), 0) AS total,
             COUNT(*) FILTER (WHERE COALESCE(i.fact_qty, 0) > 0 AND COALESCE(i.price, 0) = 0) AS no_price
        FROM purchase_orders po
        JOIN purchase_order_items i ON i.order_id = po.id
       WHERE po.status = 'received' AND i.item_kind = 'raw'
-        AND COALESCE(po.received_at::date, po.delivery_date) BETWEEN $1 AND $2
+        AND ${RD} BETWEEN $1 AND $2
       GROUP BY 1`, [from, to])).rows;
   return new Map(rows.filter((r) => r.m).map((r) => [r.m, {
     total: num(r.total), orders: Number(r.orders) || 0, no_price: Number(r.no_price) || 0,

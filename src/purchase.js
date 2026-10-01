@@ -1,4 +1,6 @@
 // purchase.js — блок «Закуп»: поставщики, заявки, приёмка, взаиморасчёты
+// Дата приёмки — одно определение на всю систему (см. receipt-date.js).
+const { RECEIPT_DATE: RD } = require('./receipt-date');
 const express = require('express');
 const db = require('./db');
 const pfin = require('./purchase-finance'); // единый расчёт долга (общий с Кассой)
@@ -249,7 +251,7 @@ router.get('/api/suppliers/:id(\\d+)/statement', async (req, res) => {
      FROM purchase_orders po
      JOIN purchase_order_items i ON i.order_id = po.id
      WHERE po.supplier_id = $1 AND po.status = 'received'
-       AND COALESCE(po.received_at::date, po.delivery_date) >= '${pfin.SETTLE_START}'
+       AND ${RD} >= '${pfin.SETTLE_START}'
      GROUP BY po.id ORDER BY po.received_at DESC`,
     [req.params.id]
   );
@@ -323,10 +325,10 @@ router.get('/api/act', async (req, res) => {
     const closing = period ? (Number(b.balance_end) || 0) : (Number(b.balance) || 0);
     // Поставки (принятые заявки в периоде): факт-количество × цена заявки.
     const po = [sid]; let dc = '';
-    if (from) { po.push(from); dc += ` AND to_char(COALESCE(po.received_at::date, po.delivery_date),'YYYY-MM-DD') >= $${po.length}`; }
-    if (to) { po.push(to); dc += ` AND to_char(COALESCE(po.received_at::date, po.delivery_date),'YYYY-MM-DD') <= $${po.length}`; }
+    if (from) { po.push(from); dc += ` AND to_char(${RD},'YYYY-MM-DD') >= $${po.length}`; }
+    if (to) { po.push(to); dc += ` AND to_char(${RD},'YYYY-MM-DD') <= $${po.length}`; }
     const orders = (await db.pool.query(
-      `SELECT po.number, to_char(COALESCE(po.received_at::date, po.delivery_date),'YYYY-MM-DD') AS d,
+      `SELECT po.number, to_char(${RD},'YYYY-MM-DD') AS d,
               SUM(COALESCE(i.fact_qty, 0)*i.price) AS val
          FROM purchase_orders po JOIN purchase_order_items i ON i.order_id=po.id
         WHERE po.supplier_id=$1 AND po.status='received'${dc}
@@ -932,7 +934,7 @@ router.get('/api/last-prices', async (req, res) => {
   const r = await db.pool.query(
     `WITH hist AS (
        SELECT i.item_kind, i.item_id, COALESCE(i.fact_price, i.price) AS price,
-              COALESCE(po.received_at::date, po.delivery_date) AS d
+              ${RD} AS d
        FROM purchase_order_items i
        JOIN purchase_orders po ON po.id = i.order_id AND po.status = 'received'
        WHERE COALESCE(i.fact_price, i.price) > 0${supW.map((x) => ' AND ' + x).join('')}
