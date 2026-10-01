@@ -186,7 +186,10 @@ router.post('/api/ai/ask', J, async (req, res) => {
     const started = Date.now();
     const out = await ai.ask(provider, {
       model: (req.body || {}).model || rules.ai_model,
-      system: require('./jarvis-bot').SYSTEM + ` Сегодня ${R.localDate(Date.now())}. Спрашивает: ${ctx.full_name}.`,
+      system: require('./jarvis-bot').SYSTEM + ` Сегодня ${R.localDate(Date.now())}. Спрашивает: ${ctx.full_name}.
+
+`
+        + require('./jarvis-bot').rulesBrief(rules),
       messages: [{ role: 'user', content: question.slice(0, 2000) }],
       tools,
       web: rules.web_enabled && provider === 'claude',

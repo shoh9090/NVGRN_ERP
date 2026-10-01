@@ -532,8 +532,12 @@ const TOOLS = [
           ORDER BY created_at DESC LIMIT 30`, [ctx.employee_id, String(days)])).rows;
       const NAME = { violation_mention: 'нарушение: не ответил', violation_overdue: 'нарушение: просрочка',
         violation_no_due: 'нарушение: нет срока', remind_mention: 'напоминание об упоминании', remind_no_due: 'спросили срок' };
+      const rules = await require('./jarvis').loadRules();
       return {
         за_дней: days,
+        что_такое_нарушение: `не ответил на упоминание за ${rules.mention_violation_h} раб. ч, `
+          + `или карточка просрочена дольше ${rules.overdue_violation_days} раб. дн, `
+          + `или карточка без срока дольше ${rules.due_required_h} раб. ч`,
         нарушений: rows.filter((r) => r.kind.startsWith('violation')).length,
         напоминаний: rows.filter((r) => r.kind.startsWith('remind')).length,
         список: rows.map((r) => ({ что: NAME[r.kind] || r.kind, карточка: r.card_name, когда: r.когда })),
@@ -605,8 +609,15 @@ const TOOLS = [
         d.людей++; d.без_ответа += r.без_ответа; d.нарушений += r.нарушений;
         byDep.set(r.отдел, d);
       }
+      // Расшифровка едет вместе с цифрами: без неё «9 нарушений» — пустой звук,
+      // и модель начинает гадать, что это значит (замечание Шоха 01.10.2026).
+      const rules = await require('./jarvis').loadRules();
       return {
         за_дней: days, охват: wide ? 'вся компания' : 'ваш отдел',
+        что_такое_нарушение: `не ответил на упоминание за ${rules.mention_violation_h} раб. ч, `
+          + `или карточка просрочена дольше ${rules.overdue_violation_days} раб. дн, `
+          + `или карточка без срока дольше ${rules.due_required_h} раб. ч`
+          + (rules.fines_enabled ? '' : '. Штрафы не начисляются — это пока только журнал'),
         по_отделам: [...byDep.values()].sort((a, b) => b.без_ответа - a.без_ответа),
         по_людям: rows.slice(0, 30),
         примечание: 'в_боте = false означает, что человек не открыл Джарвиса и напоминания до него не доходят',

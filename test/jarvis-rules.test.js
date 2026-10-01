@@ -261,3 +261,14 @@ test('разницу меньше 10% не объявляем ни победо�
   assert.strictEqual(trend(90, 100).up, false);
   assert.strictEqual(trend(5, 0).pct, null, 'сравнивать не с чем — молчим');
 });
+
+test('модель получает пороги нарушений числами, а не на словах', () => {
+  const { rulesBrief } = require('../src/jarvis-bot');
+  const t = rulesBrief(normalizeRules({ mention_violation_h: 10, overdue_violation_days: 1, due_required_h: 4 }));
+  assert.match(t, /дольше 10 рабочих часов/);
+  assert.match(t, /дольше 1 рабочих дней/);
+  assert.match(t, /без срока дольше 4 рабочих часов/);
+  assert.match(t, /НЕ начисляются/, 'пока штрафы выключены, это надо говорить прямо');
+  const paid = rulesBrief(normalizeRules({ fines_enabled: true, fine_mention: 50000, fine_overdue: 100000 }));
+  assert.match(paid, /неответ 50000 сум/);
+});
