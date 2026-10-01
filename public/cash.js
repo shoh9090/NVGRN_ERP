@@ -1229,17 +1229,33 @@
       if (!rd.moved.length) {
         box.appendChild(el('div', { class: 'cash-acc-status ok' }, rd.note));
       } else {
-        const rows2 = rd.moved.map((m) => el('tr', { class: 'cash-acc-r' }, [
-          el('td', {}, [el('div', {}, 'Заявка №' + m.order_id), el('div', { class: 'cash-acc-note' }, m.supplier)]),
-          el('td', { class: 'cash-acc-val' }, m.plan_date || '—'),
-          el('td', { class: 'cash-acc-val' }, m.fact_date || '—'),
-          el('td', { class: 'cash-acc-val' }, money(m.amount)),
-          el('td', { class: 'cash-acc-val' }, m.direction === 'out' ? 'ушла в ' + m.to_month : 'пришла из ' + m.from_month),
-          el('td', { class: 'cash-acc-val' + (m.profit_effect < 0 ? ' cash-pnl-bad' : '') },
-            (m.profit_effect > 0 ? '+' : '') + money(m.profit_effect)),
-        ]));
+        const rows2 = rd.moved.map((m) => {
+          // Поле для подтверждённой даты: вносим по одной заявке, по документу.
+          const dIn = el('input', { type: 'date', class: 'cash-acc-date', value: m.plan_date || '' });
+          const docIn = el('input', { type: 'text', class: 'cash-acc-doc', placeholder: 'документ' });
+          const btn = canFreeze() ? el('button', { class: 'btn-ghost cash-acc-ok', onclick: async () => {
+            btn.disabled = true;
+            try {
+              const r2 = await post('/pnl/accrual/confirm-date', { order_id: m.order_id, date: dIn.value, doc: docIn.value });
+              toast(r2.effect || 'Дата подтверждена — месяц не изменился');
+              if (r2.locked_note) toast(r2.locked_note, true);
+              renderReport('pnl');
+            } catch (err) { toast(err.message, true); btn.disabled = false; }
+          } }, '✓ подтвердить') : null;
+          return el('tr', { class: 'cash-acc-r' }, [
+            el('td', {}, [el('div', {}, 'Заявка №' + m.order_id), el('div', { class: 'cash-acc-note' }, m.supplier)]),
+            el('td', { class: 'cash-acc-val' }, m.plan_date || '—'),
+            el('td', { class: 'cash-acc-val' }, m.fact_date || '—'),
+            el('td', { class: 'cash-acc-val' }, money(m.amount)),
+            el('td', { class: 'cash-acc-val' }, m.direction === 'out' ? 'ушла в ' + m.to_month : 'пришла из ' + m.from_month),
+            el('td', { class: 'cash-acc-val' + (m.profit_effect < 0 ? ' cash-pnl-bad' : '') },
+              (m.profit_effect > 0 ? '+' : '') + money(m.profit_effect)),
+            el('td', { class: 'cash-acc-val' }, canFreeze() ? el('div', { class: 'cash-acc-confirm' }, [dIn, docIn, btn]) : '—'),
+          ]);
+        });
         box.appendChild(el('table', { class: 'cash-acc-t' }, [
-          el('thead', {}, el('tr', {}, ['Заявка', 'Плановая дата', 'Фактическая', 'Сумма', 'Куда переехала', 'Влияние на прибыль']
+          el('thead', {}, el('tr', {}, ['Заявка', 'Плановая дата', 'Когда отметили', 'Сумма', 'Куда переехала',
+            'Влияние на прибыль', 'Подтверждённая дата поставки']
             .map((h, i) => el('th', { style: i ? 'text-align:right' : '' }, h)))),
           el('tbody', {}, rows2.concat([el('tr', { class: 'cash-acc-r total' }, [
             el('td', {}, 'Итого'),
@@ -1247,6 +1263,7 @@
             el('td', { class: 'cash-acc-val' }, 'ушло ' + money(rd.left_amount) + ', пришло ' + money(rd.came_amount)),
             el('td', {}, ''),
             el('td', { class: 'cash-acc-val' }, (rd.profit_effect > 0 ? '+' : '') + money(rd.profit_effect)),
+            el('td', {}, ''),
           ])])),
         ]));
         box.appendChild(el('div', { class: 'cash-acc-note' }, rd.note));

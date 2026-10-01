@@ -608,3 +608,10 @@ select.cb-cell { cursor: pointer; }
 .cash-acc-unconf-h { font-weight: 800; color: #8a5a00; margin-bottom: 4px; }
 .cash-acc-unconf ul { margin: 0; padding-left: 18px; }
 .cash-acc-unconf li { margin: 3px 0; }
+/* Подтверждение даты поставки прямо в таблице спорных заявок: дату вносят по
+   одной, с документом — поэтому поля стоят в строке, а не в отдельном окне. */
+.cash-acc-confirm { display: flex; gap: 5px; justify-content: flex-end; align-items: center; flex-wrap: wrap; }
+.cash-acc-date, .cash-acc-doc { font: inherit; font-size: 12px; padding: 3px 6px;
+  border: 1px solid var(--line); border-radius: 7px; background: #fff; }
+.cash-acc-doc { width: 110px; }
+.cash-acc-ok { font-size: 12px; padding: 3px 9px; }

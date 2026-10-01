@@ -1724,6 +1724,38 @@ router.get('/api/pnl/accrual/raw-dates.xlsx', async (req, res) => {
   }
 });
 
+// Внести подтверждённую дату поставки по ОДНОЙ заявке — после проверки
+// закупщиком, по документу поставщика. Пачкой задним числом не переносим.
+// Закрытый месяц не перезаписывается: его снимок остаётся, а расхождение видно
+// сравнением на вкладке «По начислению».
+router.post('/api/pnl/accrual/confirm-date', express.json(), async (req, res) => {
+  if (!canFin(req)) return res.status(403).json({ error: 'Дату подтверждает финансовый сотрудник или администратор' });
+  const b = req.body || {};
+  const orderId = parseInt(b.order_id, 10);
+  if (!orderId) return res.status(400).json({ error: 'Нужен номер заявки' });
+  try {
+    const who = req.user.name || req.user.login || 'web';
+    const r = await require('./cash-accrual').confirmDeliveryDate(db.pool, {
+      orderId, date: b.date, doc: b.doc, who,
+      log: (action, details) => db.log(req.user.id, action, details),
+    });
+    // Предупреждаем, если затронут закрытый период: снимок мы не трогаем.
+    const lockedBefore = await isLocked(r.month_before + '-01');
+    const lockedAfter = await isLocked(r.month_after + '-01');
+    res.json({
+      ok: true, ...r,
+      locked_before: lockedBefore, locked_after: lockedAfter,
+      locked_note: (lockedBefore || lockedAfter)
+        ? 'Затронут закрытый месяц. Его снимок остался прежним и автоматически не перезаписан — '
+          + 'сравните цифры на вкладке «По начислению» и решите, открывать ли месяц.'
+        : null,
+    });
+  } catch (e) {
+    console.error('[КАССА] подтверждение даты поставки:', e.message);
+    res.status(400).json({ error: e.message });
+  }
+});
+
 // Журнал событий, влияющих на прибыль месяца: когда обновляли продажи SD,
 // когда фиксировали нормы, закрывали месяц, меняли подтверждённые даты приёмок.
 // Только чтение: по нему видно, ПОЧЕМУ цифра месяца изменилась задним числом.

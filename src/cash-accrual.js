@@ -611,6 +611,65 @@ async function loadReceiptDates(pool, period) {
 }
 
 // ---------------------------------------------------------------------------
+// Внесение подтверждённой даты поставки
+// ---------------------------------------------------------------------------
+// Дату вносит человек по документу поставщика — по одной заявке, не скриптом.
+// Правило Шоха (01.10.2026): задним числом пачкой не переносим, каждое изменение
+// попадает в журнал, и сразу видно, на какие месяцы оно повлияло.
+//
+// Что возвращается: прежний месяц, новый месяц, сумма сырья заявки и признак,
+// закрыт ли затронутый период. Закрытый месяц НЕ перезаписывается — его снимок
+// остаётся, а расхождение показывается сравнением.
+async function confirmDeliveryDate(pool, { orderId, date, doc, who, log }) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date || ''))) {
+    throw new Error('Дата указывается как 2026-08-29');
+  }
+  const before = (await pool.query(
+    `SELECT po.id, po.number, po.delivery_date, po.received_at::date AS received_date,
+            po.delivery_confirmed_date AS confirmed,
+            to_char(${RD}, 'YYYY-MM') AS month_before,
+            COALESCE((SELECT SUM(COALESCE(i.fact_qty, 0) * i.price) FROM purchase_order_items i
+                       WHERE i.order_id = po.id AND i.item_kind = 'raw'), 0) AS raw_amount
+       FROM purchase_orders po WHERE po.id = $1`, [orderId])).rows[0];
+  if (!before) throw new Error('Заявка не найдена');
+
+  const monthAfter = String(date).slice(0, 7);
+  await pool.query(
+    `UPDATE purchase_orders
+        SET delivery_confirmed_date = $1::date,
+            delivery_confirmed_doc = COALESCE($2, ''),
+            delivery_confirmed_by = $3,
+            delivery_confirmed_at = now()
+      WHERE id = $4`, [date, doc ? String(doc).slice(0, 200) : '', who || 'не указан', orderId]);
+
+  // В журнал — чтобы потом было видно, почему цифра месяца изменилась.
+  if (log) {
+    await log('purchase_delivery_date', JSON.stringify({
+      order: before.number || orderId,
+      was_month: before.month_before, now_month: monthAfter,
+      date, doc: doc || '', raw: Math.round(num(before.raw_amount)),
+    })).catch(() => {});
+  }
+
+  return {
+    order_id: orderId,
+    number: before.number,
+    plan_date: before.delivery_date ? String(before.delivery_date).slice(0, 10) : null,
+    marked_date: before.received_date ? String(before.received_date).slice(0, 10) : null,
+    was_confirmed: before.confirmed ? String(before.confirmed).slice(0, 10) : null,
+    confirmed_date: date,
+    raw_amount: num(before.raw_amount),
+    month_before: before.month_before,
+    month_after: monthAfter,
+    moved: before.month_before !== monthAfter,
+    // Что это значит для прибыли: сырьё уходит из одного месяца в другой.
+    effect: before.month_before === monthAfter ? null
+      : `Сырьё на ${Math.round(num(before.raw_amount) / 1e6 * 10) / 10} млн переходит из ${before.month_before} в ${monthAfter}: `
+        + `прибыль ${before.month_before} вырастет, прибыль ${monthAfter} уменьшится на эту сумму.`,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Мостик: от исходной прибыли к новому предварительному результату
 // ---------------------------------------------------------------------------
 // Требование задания: «исходная прибыль + каждое объяснённое изменение = новый
@@ -727,4 +786,4 @@ function bridge(pnl, accrual) {
   };
 }
 
-module.exports = { buildAccrual, compareMethods, bridge, rawDateAudit, staffOfMonth, accruedPayroll, packagingByNorms, snapshotPackNorms, PACK_SNAP_KEY, SALARY_CODES, OPEN_QUESTIONS };
+module.exports = { buildAccrual, compareMethods, bridge, rawDateAudit, confirmDeliveryDate, staffOfMonth, accruedPayroll, packagingByNorms, snapshotPackNorms, PACK_SNAP_KEY, SALARY_CODES, OPEN_QUESTIONS };
