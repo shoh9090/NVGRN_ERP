@@ -8,6 +8,13 @@ const assert = require('node:assert');
 const { buildAccrual, compareMethods, accruedPayroll, packagingByNorms } = require('../src/cash-accrual');
 const { linkProducts } = require('../src/cash-pnl');
 
+// Состав августа: два человека с окладами. Начисление есть у обоих.
+const WORKED = [
+  { id: 1, name: 'Иванов', hire_date: '2025-01-10', fire_date: null, salary: 120000000 },
+  { id: 2, name: 'Петров', hire_date: '2025-03-01', fire_date: null, salary: 120000000 },
+];
+const PAID_PEOPLE = [{ id: 1, name: 'Иванов', accrued: 125000000 }, { id: 2, name: 'Петров', accrued: 125000000 }];
+
 // Ведомость, в которой начислений нет вовсе.
 const ZERO_PAYROLL = { total: 0, total_posted: 0, total_draft: 0, rows: 0, posted: 0, draft_rows: 0, with_money: 0 };
 // Ведомость проведена целиком и на всех активных сотрудников.
@@ -22,7 +29,13 @@ function pool(o) {
     query: async (sql) => {
       const q = String(sql).replace(/\s+/g, ' ');
       if (/FROM hr_payroll WHERE period/.test(q)) return { rows: [opts.payroll || ZERO_PAYROLL] };
-      if (/FROM hr_employees WHERE status/.test(q)) return { rows: [opts.staff || { active: 2, fund: 240000000 }] };
+      // Состав месяца: кто работал по датам приёма и увольнения, и у кого есть начисление.
+      if (/FROM hr_employees e WHERE e\.hire_date/.test(q)) return { rows: opts.worked || WORKED };
+      if (/COUNT\(\*\)::int AS n FROM hr_employees WHERE hire_date IS NULL/.test(q)) {
+        return { rows: [{ n: opts.noDates === undefined ? 0 : opts.noDates }] };
+      }
+      if (/FROM hr_payroll pr JOIN hr_employees/.test(q)) return { rows: opts.paidPeople || PAID_PEOPLE };
+      if (/INTERVAL '1 month'/.test(q)) return { rows: [{ d: '2026-08-31' }] };
       if (/FROM settings WHERE key/.test(q)) return { rows: opts.normsSnapshot ? [{ value: JSON.stringify(opts.normsSnapshot) }] : [] };
       if (/FROM purchase_orders po/.test(q)) return { rows: opts.orders || [] };
       if (/FROM calc_sheet_products/.test(q)) return { rows: opts.products || [] };
@@ -195,18 +208,41 @@ test('зарплата: проведённое и непроведённое в�
   assert.match(line.note, /не проведено 12/);
 });
 
-test('зарплата: полнота фонда проверяется отдельно от проведения', async () => {
+test('полнота фонда: сравниваются конкретные люди месяца, а не количество строк', async () => {
   const r = await buildAccrual(pool({
-    // Ведомость проведена аккуратно, но только на половину людей.
-    payroll: { total: 120000000, total_posted: 120000000, total_draft: 0, rows: 15, posted: 15, draft_rows: 0, with_money: 15 },
-    staff: { active: 30, fund: 240000000 },
+    payroll: { total: 125000000, total_posted: 125000000, total_draft: 0, rows: 1, posted: 1, draft_rows: 0, with_money: 1 },
+    // Петров в августе работал, а начисления у него нет.
+    paidPeople: [{ id: 1, name: 'Иванов', accrued: 125000000 }],
     products: PRODUCTS, templates: TEMPLATES,
   }), '2026-08', pnlOf(), SOLD, linkProducts);
   const line = r.lines.find((l) => l.key === 'payroll');
-  assert.strictEqual(line.basis, 'estimate', 'половина фонда не может быть «фактом»');
-  assert.match(line.note, /15 из 30 активных сотрудников/);
+  assert.strictEqual(line.basis, 'estimate', 'неполный фонд не может быть «фактом»');
   assert.strictEqual(r.payroll.complete, false);
-  assert.strictEqual(r.payroll.staff_missing, 15);
+  assert.deepStrictEqual(r.payroll.staff_missing_people, ['Петров']);
+  assert.match(line.note, /Работали в месяце, но начисления нет: Петров/);
+});
+
+test('начисление есть у того, кто в месяце не работал — это тоже видно', async () => {
+  const r = await buildAccrual(pool({
+    payroll: { total: 125000000, total_posted: 125000000, total_draft: 0, rows: 1, posted: 1, draft_rows: 0, with_money: 1 },
+    // В августе работал только Иванов, а начисление стоит у Сидорова.
+    worked: [WORKED[0]],
+    paidPeople: [{ id: 9, name: 'Сидоров', accrued: 125000000 }],
+    products: PRODUCTS, templates: TEMPLATES,
+  }), '2026-08', pnlOf(), SOLD, linkProducts);
+  assert.deepStrictEqual(r.payroll.staff_extra_people, ['Сидоров']);
+  assert.strictEqual(r.payroll.complete, false);
+});
+
+test('нет дат приёма — полноту фонда объявляем неподтверждённой, а не полной', async () => {
+  const r = await buildAccrual(pool({
+    payroll: FULL(250000000), noDates: 4,
+    products: PRODUCTS, templates: TEMPLATES,
+  }), '2026-08', pnlOf(), SOLD, linkProducts);
+  assert.strictEqual(r.payroll.staff_known, false);
+  assert.strictEqual(r.payroll.complete, false);
+  assert.match(r.payroll.staff_note, /не заполнена дата приёма/);
+  assert.strictEqual(r.lines.find((l) => l.key === 'payroll').basis, 'estimate');
 });
 
 test('итог проверки: исходная прибыль плюс изменения даёт новый результат', async () => {
@@ -216,9 +252,11 @@ test('итог проверки: исходная прибыль плюс изм
     '2026-08', pnl, SOLD, linkProducts);
   const b = bridge(pnl, r);
   assert.strictEqual(b.from, 20000000);
-  // Арифметика обязана сходиться: иначе где-то потерялось изменение.
-  const sum = b.steps.reduce((t, x) => t + x.amount, 0);
-  assert.strictEqual(b.to, b.from + sum);
+  // Итог — независимо посчитанная прибыль новой методики, а не «старая плюс шаги».
+  assert.strictEqual(b.to, r.totals.net);
+  // И проверка сравнивает именно их: невязка означает неназванное изменение.
+  const sum = b.steps.filter((x) => x.key !== 'residual').reduce((t, x) => t + x.amount, 0);
+  assert.strictEqual(b.residual, b.to - (b.from + sum));
   assert.strictEqual(b.checks_out, true);
   // Упаковка: было 80 млн оплат, стало 1,35 млн по нормам — прибыль выросла.
   assert.strictEqual(b.steps.find((x) => x.key === 'pack').amount, 80000000 - 1350000);
@@ -332,7 +370,18 @@ test('переездов нет — так и говорим, а не показ
   ] }), '2026-08');
   assert.strictEqual(r.moved.length, 0);
   assert.strictEqual(r.profit_effect, 0);
-  assert.match(r.note, /сырьё этого месяца не изменил/);
+  assert.strictEqual(r.available, true);
+  assert.match(r.note, /не меняет/);
+});
+
+test('запрос к базе упал — говорим «сверка недоступна», а не «расхождений нет»', async () => {
+  const { rawDateAudit } = require('../src/cash-accrual');
+  const broken = { query: async () => { throw new Error('column po.received_at does not exist'); } };
+  const r = await rawDateAudit(broken, '2026-08');
+  assert.strictEqual(r.available, false);
+  assert.strictEqual(r.profit_effect, null);
+  assert.match(r.note, /Сверка приёмок недоступна/);
+  assert.ok(!/не изменил|не меняет/.test(r.note), 'ошибка подана как вывод об отсутствии расхождений');
 });
 
 test('продаж по товарам нет — упаковку по нормам считать не из чего', async () => {

@@ -49,17 +49,21 @@ async function accruedPayroll(pool, period) {
             COUNT(*) FILTER (WHERE accrued_at IS NULL)::int AS draft_rows,
             COUNT(*) FILTER (WHERE (${sum}) > 0)::int AS with_money
        FROM hr_payroll WHERE period = $1`, [period])).rows[0];
-  // Полнота фонда проверяется ОТДЕЛЬНО от проведения: ведомость может быть
-  // проведена на половину людей, и это не «фонд посчитан». Сравниваем с
-  // активными сотрудниками и с их окладами из Персонала.
-  const staff = (await pool.query(
-    `SELECT COUNT(*)::int AS active, COALESCE(SUM(base_salary), 0) AS fund
-       FROM hr_employees WHERE status = 'active'`).catch(() => ({ rows: [] }))).rows[0] || { active: 0, fund: 0 };
+  // Полнота фонда проверяется ОТДЕЛЬНО от проведения и по составу ИМЕННО ТОГО
+  // месяца, а не по тем, кто активен сегодня. Человек мог уволиться в сентябре —
+  // в августе он работал и зарплату получал; устроиться в октябре — тогда
+  // августовского начисления у него быть не должно.
+  //
+  // Сравниваем конкретных людей, а не количество строк: иначе 30 начислений на
+  // 30 работавших выглядят полными, даже если это 30 разных людей.
+  const staff = await staffOfMonth(pool, period);
 
   const total = num(r.total);
-  const active = Number(staff.active) || 0;
-  const withMoney = Number(r.with_money) || 0;
-  const fund = num(staff.fund);
+  // Кто работал в месяце, но начисления не получил, и наоборот.
+  const paid = new Set(staff.paid_ids);
+  const missingPeople = staff.known ? staff.worked.filter((e) => !paid.has(e.id)) : [];
+  const extraPeople = staff.known ? staff.paid.filter((e) => !staff.worked_ids.has(e.id)) : [];
+  const fund = staff.fund;
   return {
     total: total > 0 ? total : null,
     total_posted: num(r.total_posted),
@@ -67,21 +71,76 @@ async function accruedPayroll(pool, period) {
     rows: Number(r.rows) || 0,
     posted: Number(r.posted) || 0,
     draft_rows: Number(r.draft_rows) || 0,
-    with_money: withMoney,
+    with_money: Number(r.with_money) || 0,
     // Ведомость за месяц не заведена вовсе — это не «зарплаты не было».
     missing: !(total > 0),
     // Есть непроведённые строки с деньгами — суммы ещё могут измениться.
     draft: total > 0 && num(r.total_draft) > 0,
-    // Полнота: на сколько активных сотрудников есть начисление и как сумма
-    // соотносится с фондом окладов. Это ОЦЕНКА полноты, а не сверка с 1С.
-    staff_active: active,
-    staff_covered: withMoney,
-    staff_missing: Math.max(0, active - withMoney),
+    // Состав месяца. known = false, если в карточках нет дат приёма: тогда
+    // полнота фонда НЕ ПОДТВЕРЖДЕНА, и выдавать её за проверенную нельзя.
+    staff_known: staff.known,
+    staff_worked: staff.worked.length,
+    staff_covered: staff.paid.length,
+    staff_missing_people: missingPeople.map((e) => e.name),
+    staff_extra_people: extraPeople.map((e) => e.name),
+    staff_note: staff.note,
     salary_fund: fund > 0 ? fund : null,
     fund_diff_pct: (fund > 0 && total > 0) ? ((total - fund) / fund) * 100 : null,
-    // Полным считаем, когда начисление есть у всех активных сотрудников.
-    complete: active > 0 && withMoney >= active,
+    // Полным считаем, только когда состав месяца известен И начисление есть у
+    // каждого, кто в этом месяце работал, и ни у кого лишнего.
+    complete: staff.known && staff.worked.length > 0
+      && missingPeople.length === 0 && extraPeople.length === 0,
   };
+}
+
+// Кто работал в этом месяце и какой у него был оклад. Состав берём по датам
+// приёма и увольнения, оклад — из истории оклада (`hr_salary_history`) на конец
+// месяца: сегодняшняя ставка к августу отношения не имеет.
+async function staffOfMonth(pool, period) {
+  const out = { known: false, worked: [], worked_ids: new Set(), paid: [], paid_ids: [], fund: 0, note: null };
+  try {
+    const to = (await pool.query(
+      "SELECT to_char(($1::date + INTERVAL '1 month') - INTERVAL '1 day', 'YYYY-MM-DD') AS d",
+      [period + '-01'])).rows[0].d;
+    const from = period + '-01';
+
+    // Работал в месяце: принят не позже конца месяца и не уволен до его начала.
+    const worked = (await pool.query(
+      `SELECT e.id, e.full_name AS name, e.hire_date, e.fire_date,
+              COALESCE((SELECT h.base_salary FROM hr_salary_history h
+                         WHERE h.employee_id = e.id AND h.effective_from <= $2::date
+                      ORDER BY h.effective_from DESC LIMIT 1), e.base_salary, 0) AS salary
+         FROM hr_employees e
+        WHERE e.hire_date IS NOT NULL
+          AND e.hire_date <= $2::date
+          AND (e.fire_date IS NULL OR e.fire_date >= $1::date)
+        ORDER BY e.full_name`, [from, to])).rows;
+
+    // Сколько карточек вообще без даты приёма: по ним состав месяца неизвестен.
+    const noDates = (await pool.query(
+      'SELECT COUNT(*)::int AS n FROM hr_employees WHERE hire_date IS NULL')).rows[0];
+
+    const sumF = ACCR_FIELDS.map((f) => `COALESCE(${f}, 0)`).join(' + ');
+    const paid = (await pool.query(
+      `SELECT pr.employee_id AS id, e.full_name AS name, (${sumF}) AS accrued
+         FROM hr_payroll pr JOIN hr_employees e ON e.id = pr.employee_id
+        WHERE pr.period = $1 AND (${sumF}) > 0
+        ORDER BY e.full_name`, [period])).rows;
+
+    out.worked = worked.map((e) => ({ id: e.id, name: e.name, salary: num(e.salary) }));
+    out.worked_ids = new Set(out.worked.map((e) => e.id));
+    out.paid = paid.map((e) => ({ id: e.id, name: e.name, accrued: num(e.accrued) }));
+    out.paid_ids = out.paid.map((e) => e.id);
+    out.fund = out.worked.reduce((t, e) => t + e.salary, 0);
+    const blind = Number(noDates && noDates.n) || 0;
+    out.known = out.worked.length > 0 && blind === 0;
+    out.note = blind
+      ? `У ${blind} сотрудников не заполнена дата приёма — состав месяца восстановить нельзя, полнота фонда не подтверждена.`
+      : (out.worked.length ? null : 'По датам приёма и увольнения в этом месяце не работал никто — проверьте карточки сотрудников.');
+  } catch (e) {
+    out.note = 'Состав сотрудников за месяц прочитать не удалось: ' + e.message + '. Полнота фонда не подтверждена.';
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -340,13 +399,20 @@ async function buildAccrual(pool, period, pnl, sold, linkProducts) {
         : [
           `Проведено ${payroll.posted} строк на ${Math.round(payroll.total_posted / 1e6)} млн`
             + (payroll.draft_rows ? `, не проведено ${payroll.draft_rows} на ${Math.round(payroll.total_draft / 1e6)} млн` : ''),
-          payroll.staff_active
-            ? (payroll.complete
-              ? `Начисление есть у всех ${payroll.staff_active} активных сотрудников.`
-              : `Начисление есть у ${payroll.staff_covered} из ${payroll.staff_active} активных сотрудников — фонд месяца неполный.`)
-            : null,
+          !payroll.staff_known ? (payroll.staff_note || 'Состав сотрудников за месяц неизвестен — полнота фонда не подтверждена.')
+            : (payroll.complete
+              ? `Начисление есть у каждого из ${payroll.staff_worked} работавших в этом месяце.`
+              : [
+                payroll.staff_missing_people.length
+                  ? `Работали в месяце, но начисления нет: ${payroll.staff_missing_people.slice(0, 8).join(', ')}`
+                    + (payroll.staff_missing_people.length > 8 ? ` и ещё ${payroll.staff_missing_people.length - 8}` : '') + '.'
+                  : null,
+                payroll.staff_extra_people.length
+                  ? `Начисление есть, но по датам в месяце не работали: ${payroll.staff_extra_people.slice(0, 8).join(', ')}.`
+                  : null,
+              ].filter(Boolean).join(' ')),
           payroll.fund_diff_pct !== null && Math.abs(payroll.fund_diff_pct) >= 10
-            ? `Начислено на ${Math.round(payroll.fund_diff_pct)}% ${payroll.fund_diff_pct > 0 ? 'больше' : 'меньше'} фонда окладов — проверьте премии и удержания.`
+            ? `Начислено на ${Math.round(payroll.fund_diff_pct)}% ${payroll.fund_diff_pct > 0 ? 'больше' : 'меньше'} фонда окладов того месяца — проверьте премии и удержания.`
             : null,
         ].filter(Boolean).join(' '),
     },
@@ -463,21 +529,20 @@ function compareMethods(pnl, accrual) {
 // куда она переехала. **Даты документов не меняются ради результата** — если
 // приёмка отмечена не тем днём, это исправляет закупщик в Закупе, по документу.
 async function rawDateAudit(pool, period) {
-  const from = period + '-01';
-  const rows = (await pool.query(
-    `SELECT po.id, po.delivery_date, po.received_at::date AS received_date,
-            c.name AS supplier,
-            COALESCE(SUM(COALESCE(i.fact_qty, 0) * i.price), 0) AS amount,
-            to_char(po.delivery_date, 'YYYY-MM') AS plan_month,
-            to_char(COALESCE(po.received_at::date, po.delivery_date), 'YYYY-MM') AS fact_month
-       FROM purchase_orders po
-       JOIN purchase_order_items i ON i.order_id = po.id AND i.item_kind = 'raw'
-       LEFT JOIN ref_counterparties c ON c.id = po.supplier_id
-      WHERE po.status = 'received'
-        AND (to_char(po.delivery_date, 'YYYY-MM') = $1
-             OR to_char(COALESCE(po.received_at::date, po.delivery_date), 'YYYY-MM') = $1)
-      GROUP BY po.id, po.delivery_date, po.received_at, c.name
-      ORDER BY po.delivery_date, po.id`, [period]).catch(() => ({ rows: [] }))).rows;
+  let rows;
+  try {
+    rows = await loadReceiptDates(pool, period);
+  } catch (e) {
+    // Сломался запрос — это «не знаю», а не «расхождений нет». Раньше здесь
+    // возвращался пустой список, и экран уверенно сообщал, что переход на
+    // фактические даты ничего не изменил.
+    return {
+      period, available: false, orders: 0, moved: [],
+      left_amount: null, came_amount: null, profit_effect: null,
+      note: 'Сверка приёмок недоступна: ' + e.message
+        + '. Вывода о причинах изменения прибыли по сырью сделать нельзя.',
+    };
+  }
 
   const moved = [];
   let left = 0, came = 0;
@@ -502,6 +567,7 @@ async function rawDateAudit(pool, period) {
   moved.sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount));
   return {
     period,
+    available: true,
     orders: rows.length,
     moved,
     left_amount: left,
@@ -510,10 +576,32 @@ async function rawDateAudit(pool, period) {
     profit_effect: left - came,
     note: moved.length
       ? 'Эти заявки учтены не в том месяце, в каком были запланированы. Если дата приёмки '
-        + 'не совпадает с документом поставщика, её исправляет закупщик в Закупе — по документу, а не под результат.'
+        + 'не совпадает с документом поставщика, её исправляет закупщик в Закупе — по документу, а не под результат. '
+        + 'Таблица показывает, как новое правило влияет на СЕГОДНЯШНИЕ документы; объяснить, почему цифра изменилась '
+        + 'задним числом, можно только сравнением с исходным расчётом месяца.'
       : 'Заявок, у которых плановая и фактическая даты приёмки в разных месяцах, нет: '
-        + 'переход на фактическую дату сырьё этого месяца не изменил.',
+        + 'на сегодняшних документах новое правило сырьё этого месяца не меняет.',
   };
+}
+
+// Запрос вынесен отдельно, чтобы ошибку базы нельзя было принять за пустой
+// результат: он либо отдаёт строки, либо падает.
+async function loadReceiptDates(pool, period) {
+  const rows = (await pool.query(
+    `SELECT po.id, po.delivery_date, po.received_at::date AS received_date,
+            c.name AS supplier,
+            COALESCE(SUM(COALESCE(i.fact_qty, 0) * i.price), 0) AS amount,
+            to_char(po.delivery_date, 'YYYY-MM') AS plan_month,
+            to_char(COALESCE(po.received_at::date, po.delivery_date), 'YYYY-MM') AS fact_month
+       FROM purchase_orders po
+       JOIN purchase_order_items i ON i.order_id = po.id AND i.item_kind = 'raw'
+       LEFT JOIN ref_counterparties c ON c.id = po.supplier_id
+      WHERE po.status = 'received'
+        AND (to_char(po.delivery_date, 'YYYY-MM') = $1
+             OR to_char(COALESCE(po.received_at::date, po.delivery_date), 'YYYY-MM') = $1)
+      GROUP BY po.id, po.delivery_date, po.received_at, c.name
+      ORDER BY po.delivery_date, po.id`, [period])).rows;
+  return rows;
 }
 
 // ---------------------------------------------------------------------------
@@ -556,9 +644,30 @@ function bridge(pnl, accrual) {
       + `${Math.round(a.payroll / 1e6)} млн. Разница — зарплата, выплаченная в другом месяце.`);
   }
 
+  // Сырьё: обычно совпадает (оба источника — приёмки Закупа), но если
+  // действующий отчёт подставил оплаты поставщикам, разница есть, и её надо
+  // показать отдельным шагом — иначе итог не сойдётся.
+  if (a.raw !== null) {
+    const rawOld = num(parts.raw);
+    if (Math.abs(rawOld - a.raw) >= 1) {
+      add('raw', 'Сырьё: источник месяца', rawOld - a.raw,
+        parts.raw_source === 'purchase'
+          ? 'Обе методики берут приёмки Закупа — расхождение означает разные наборы заявок, это надо разобрать.'
+          : `Действующий отчёт при отсутствии приёмок подставил оплаты поставщикам (${Math.round(rawOld / 1e6)} млн), `
+            + 'расчёт по начислению берёт только приёмки.');
+    }
+  }
+
   const known = steps.every((x) => x.amount !== null);
   const sum = steps.reduce((t, x) => t + num(x.amount), 0);
-  const to = (from === null || !known || a.net === null) ? null : from + sum;
+  // Итог — НЕ «старый плюс шаги». Это прибыль, посчитанная новой методикой
+  // самостоятельно, со своей выручкой, расходами и налогами.
+  const to = a.net === null ? null : num(a.net);
+  // А вот теперь проверка имеет смысл: сходится ли старый итог плюс объяснённые
+  // шаги с независимо посчитанным новым. Раньше здесь сравнивалось «from + sum»
+  // с «from + sum» — такое равенство выполняется само и ничего не проверяет.
+  // Невязка означает ровно одно: есть изменение, которое мы не назвали.
+  const residual = (from === null || to === null || !known) ? null : to - (from + sum);
 
   // Неподтверждённое: названо, но в цифру не заложено.
   const unconfirmed = [
@@ -575,19 +684,41 @@ function bridge(pnl, accrual) {
       note: `Нормами покрыто ${Math.round(accrual.packaging.coverage_pct)}% проданных штук; остальное в расход упаковки не вошло.` });
   }
   if (accrual.payroll && !accrual.payroll.complete) {
-    unconfirmed.push({ key: 'payroll_gap', label: 'Зарплата сотрудников без начисления',
-      note: `Начисление есть у ${accrual.payroll.staff_covered} из ${accrual.payroll.staff_active} активных сотрудников.` });
+    const pr = accrual.payroll;
+    unconfirmed.push({
+      key: 'payroll_gap',
+      label: 'Полнота фонда зарплаты за месяц',
+      note: !pr.staff_known
+        ? (pr.staff_note || 'Состав сотрудников за месяц восстановить нельзя — полнота фонда не подтверждена.')
+        : `Начисление есть у ${pr.staff_covered} из ${pr.staff_worked} работавших в этом месяце`
+          + (pr.staff_missing_people && pr.staff_missing_people.length
+            ? `; без начисления: ${pr.staff_missing_people.slice(0, 5).join(', ')}` : '') + '.',
+    });
+  }
+
+  if (residual !== null && Math.abs(residual) >= 1) {
+    // Невязку показываем как строку, а не прячем: это честнее, чем «подогнать».
+    steps.push({
+      key: 'residual', label: 'Необъяснённая разница',
+      amount: residual,
+      why: 'Старая прибыль плюс перечисленные изменения не дают новый итог. '
+        + 'Значит, есть ещё одно отличие методик, которое здесь не названо. Его надо найти, а не списать.',
+    });
   }
 
   return {
     from, to, steps, unconfirmed,
-    // Сходится ли арифметика: итог = исходная + сумма шагов.
-    checks_out: to === null ? null : Math.abs((from + sum) - to) < 1,
+    residual,
+    // Сходится ли разбор: сумма объяснённых шагов равна разнице итогов.
+    // null — одну из цифр посчитать не из чего.
+    checks_out: residual === null ? null : Math.abs(residual) < 1,
     note: to === null
       ? 'Новый результат посчитать не из чего: не хватает данных по одной из строк.'
-      : 'Это предварительный результат: он учитывает только объяснённые изменения. '
-        + 'Неподтверждённые суммы ниже в него не входят.',
+      : ((residual !== null && Math.abs(residual) >= 1)
+        ? 'Разбор неполный: перечисленные изменения не объясняют всю разницу между отчётами.'
+        : 'Это предварительный результат: он учитывает только объяснённые изменения. '
+          + 'Неподтверждённые суммы ниже в него не входят.'),
   };
 }
 
-module.exports = { buildAccrual, compareMethods, bridge, rawDateAudit, accruedPayroll, packagingByNorms, snapshotPackNorms, PACK_SNAP_KEY, SALARY_CODES, OPEN_QUESTIONS };
+module.exports = { buildAccrual, compareMethods, bridge, rawDateAudit, staffOfMonth, accruedPayroll, packagingByNorms, snapshotPackNorms, PACK_SNAP_KEY, SALARY_CODES, OPEN_QUESTIONS };
