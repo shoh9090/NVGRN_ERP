@@ -76,3 +76,42 @@ test('охват по отделам сужает выборку, пустой �
     assert.ok(/AND FALSE/.test(getSql()), 'нет разрешённых отделов — не показываем никого');
   });
 });
+
+// J03: плитка открывает экран, а кого на нём видно — решают разрешённые отделы.
+test('Персонал с привязкой к отделам не получает чужие отделы', async () => {
+  const { TOOLS } = require('../src/ai-tools');
+  const t = TOOLS.find((x) => x.name === 'kto_ne_otvechaet');
+  const real = db.pool.query;
+  const seen = [];
+  db.pool.query = async (q, p) => {
+    const sql = String(q);
+    seen.push(sql);
+    if (/FROM tiles/.test(sql)) return { rows: [{ ok: 1 }] };              // плитка /hr есть
+    if (/hr_user_departments/.test(sql)) return { rows: [{ department_id: 4 }] };  // но только отдел 4
+    if (/FROM settings/.test(sql)) return { rows: [] };
+    return { rows: [] };
+  };
+  try {
+    const r = await t.run({ department: 'Производство' }, { user: { id: 7, isAdmin: false }, employee_id: 7 });
+    assert.strictEqual(r.охват, 'ваши отделы', 'охват сужен до разрешённых');
+    const main = seen.find((x) => /FROM hr_employees e/.test(x) && /per AS/.test(x));
+    assert.ok(main && /department_id = ANY/.test(main), 'запрос ограничен разрешёнными отделами');
+    assert.ok(/d\.name ILIKE/.test(main), 'фильтр по названию только сужает, а не открывает чужой отдел');
+  } finally { db.pool.query = real; }
+});
+
+test('Персонал без привязки видит всю компанию — так работают Кадры', async () => {
+  const { TOOLS } = require('../src/ai-tools');
+  const t = TOOLS.find((x) => x.name === 'kto_ne_otvechaet');
+  const real = db.pool.query;
+  db.pool.query = async (q) => {
+    const sql = String(q);
+    if (/FROM tiles/.test(sql)) return { rows: [{ ok: 1 }] };
+    if (/hr_user_departments/.test(sql)) return { rows: [] };
+    return { rows: [] };
+  };
+  try {
+    const r = await t.run({}, { user: { id: 8, isAdmin: false }, employee_id: 8 });
+    assert.strictEqual(r.охват, 'вся компания');
+  } finally { db.pool.query = real; }
+});

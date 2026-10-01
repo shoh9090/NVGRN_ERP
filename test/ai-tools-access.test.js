@@ -55,12 +55,15 @@ test('отчёт «кто не отвечает» чужому человеку 
   assert.match(String(r.итог || ''), /кто спрашивает/);
 });
 
-test('файл Excel по всей компании — только администратору и только в чат', async () => {
+test('файл Excel отдаётся по тем же правам, что и отчёт на экране', async () => {
   const { TOOLS } = require('../src/ai-tools');
   const t = TOOLS.find((x) => x.name === 'otchet_excel');
   assert.ok(t, 'инструмент пропал');
-  const notAdmin = await t.run({}, { user: { id: 1, isAdmin: false }, chatId: 5 });
-  assert.match(String(notAdmin.итог || ''), /администратору/);
+  // Человек без Персонала и без карточки сотрудника отчёта по команде не получает.
+  // Без базы проверить права нельзя — инструмент не падает и не пускает.
+  const stranger = await t.run({}, { user: { id: 999, isAdmin: false }, chatId: 5 });
+  assert.match(String(stranger.итог || ''), /Не удалось проверить права|администратору и Персоналу/);
+  // Админу файл доступен, но присылается только в чат с ботом.
   const noChat = await t.run({}, { user: { id: 1, isAdmin: true } });
   assert.match(String(noChat.итог || ''), /в чат/);
 });

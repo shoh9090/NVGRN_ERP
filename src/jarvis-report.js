@@ -18,15 +18,23 @@ const VIOLATIONS = {
   violation_no_due: 'Карточка без срока',
 };
 
-async function workbook({ from, to, rules }) {
+// scope = { depts: null | Set<int> } — та же область, что в чате (задание J03):
+// кому нельзя видеть чужой отдел, тот не получит его и файлом. Претензии и
+// доставка — данные компании целиком, поэтому при суженной области в книгу
+// они не попадают, и об этом прямо сказано в листе.
+async function workbook({ from, to, rules, scope }) {
+  const limited = !!(scope && scope.depts);
+  const depIds = limited ? [...scope.depts] : null;
+  const depWhere = limited ? ' AND e.department_id = ANY($3::int[])' : '';
+  const depArgs = limited ? [from, to, depIds] : [from, to];
   const rows = (await db.pool.query(
     `SELECT l.kind, l.text, l.card_name, l.sent, l.created_at,
             e.full_name, e.position, COALESCE(d.name, '— без отдела —') AS department
        FROM jarvis_log l
        LEFT JOIN hr_employees e ON e.id = l.employee_id
        LEFT JOIN hr_departments d ON d.id = e.department_id
-      WHERE l.kind LIKE 'violation%' AND l.created_at >= $1::date AND l.created_at < ($2::date + 1)
-      ORDER BY l.created_at`, [from, to])).rows;
+      WHERE l.kind LIKE 'violation%' AND l.created_at >= $1::date AND l.created_at < ($2::date + 1)${depWhere}
+      ORDER BY l.created_at`, depArgs)).rows;
   // Цена нарушения: за неответ и за срок — своя, «без срока» считаем как просрочку.
   const price = (kind) => (kind === 'violation_mention' ? rules.fine_mention : rules.fine_overdue) || 0;
   const byDep = new Map(), byMan = new Map();
@@ -73,7 +81,8 @@ async function workbook({ from, to, rules }) {
        FROM jarvis_mentions m
        LEFT JOIN hr_employees e ON e.id = m.employee_id
        LEFT JOIN hr_departments d ON d.id = e.department_id
-      WHERE m.answered_at IS NULL ORDER BY m.created_at`)).rows;
+      WHERE m.answered_at IS NULL${limited ? ' AND e.department_id = ANY($1::int[])' : ''}
+      ORDER BY m.created_at`, limited ? [depIds] : [])).rows;
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
     ['Упоминания в Trello без ответа — на ' + new Date(Date.now() + 5 * 3600000).toISOString().slice(0, 10)], [],
     ['Кого ждут', 'Отдел', 'Карточка', 'Доска', 'Кто упомянул', 'Когда', 'Дней без ответа', 'Стадия'],
@@ -86,7 +95,9 @@ async function workbook({ from, to, rules }) {
   // Схемы претензий может не быть (бот ещё не поднимался) — тогда просто
   // отдаём файл без этих листов, а не роняем всю выгрузку.
   let openClaims = [];
+  let claimsNote = null;
   try {
+    if (limited) throw new Error('ограниченная область: претензии не показываем');
     openClaims = (await db.pool.query(
       `SELECT c.id, c.created_at, c.status, c.point_name, c.firm_name, c.product_name, c.agent_name,
               c.agent_reacted_at, c.internal_note, c.source,
@@ -94,18 +105,23 @@ async function workbook({ from, to, rules }) {
               (SELECT label_ru FROM tgbot.complaint_dicts WHERE kind = 'link' AND code = c.link_code LIMIT 1) AS link_label
          FROM tgbot.complaints c
         WHERE c.status <> 'resolved' ORDER BY c.created_at`)).rows;
-  } catch (e) { openClaims = []; }
+  } catch (e) { openClaims = []; claimsNote = limited
+    ? 'Претензии в этом файле не показаны: они по всей компании, а вам открыты только свои отделы.'
+    : 'Претензии прочитать не удалось: ' + e.message + '. Пустой список тут не значит «претензий нет».'; }
   const claimRow = (c) => [c.id, ru(c.created_at), days(c.created_at), c.link_label || '',
     c.point_name || c.firm_name || '', c.product_name || '', c.type_label || '', c.agent_name || '',
     c.agent_reacted_at ? 'да' : 'нет', String(c.internal_note || '').trim() ? 'да' : 'нет',
     c.source === 'client_bot' ? 'клиент' : 'агент'];
   const claimHead = ['№', 'Подана', 'Дней открыта', 'Звено', 'Точка', 'Товар', 'Тип', 'Агент',
     'Агент принял в работу', 'Есть причина', 'Кто подал'];
+  // Пустой лист без объяснения читается как «проблем нет» — поэтому причина
+  // пустоты всегда написана прямо в листе (задание J05).
+  const claimTop = (title) => (claimsNote ? [[title], ['⚠️ ' + claimsNote], []] : [[title], []]);
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
-    ['Претензии, где агент не взял в работу'], [],
+    ...claimTop('Претензии, где агент не взял в работу'),
     claimHead, ...openClaims.filter((c) => !c.agent_reacted_at).map(claimRow)]), 'Претензии без реакции');
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
-    ['Претензии, которые до сих пор не закрыты'], [],
+    ...claimTop('Претензии, которые до сих пор не закрыты'),
     claimHead, ...openClaims.map(claimRow)]), 'Претензии не закрыты');
   // Кто именно тормозит: по звеньям и по агентам.
   const byLink = new Map(), byAgent = new Map();

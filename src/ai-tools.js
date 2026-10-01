@@ -53,13 +53,32 @@ function unitKg(name) {
   return null;
 }
 
-// Кого человеку можно видеть в отчёте по команде. Пока: админ и Персонал —
-// всю компанию, остальные — свой отдел. Проверка разрешённых отделов Кадров
-// (hr_user_departments) — следующим шагом, задача J03.
+// Кого человеку можно видеть в отчёте по команде (задание J03).
+// Правило то же, что в Кадрах: плитка открывает экран, а КОГО на нём видно,
+// решает привязка к отделам (hr_user_departments). Наличие плитки само по себе
+// не даёт всю компанию — иначе кадровик одного цеха видел бы весь завод.
+//   • админ — вся компания;
+//   • Персонал без привязки к отделам — вся компания (так Кадры и работают);
+//   • Персонал с привязкой — только свои отделы;
+//   • остальные — свой отдел, если он указан.
 async function teamScope(ctx) {
   const u = ctx && ctx.user;
   if (!u) return { error: 'Не понял, кто спрашивает' };
-  if (u.isAdmin || await hasTile(u, '/hr')) return { depts: null, label: 'вся компания' };
+  if (u.isAdmin) return { depts: null, label: 'вся компания' };
+  // Сбой проверки прав — это «не знаю», а не «можно»: честно отказываем
+  // и говорим почему, вместо падения инструмента (задание J05).
+  let hr = false;
+  try { hr = await hasTile(u, '/hr'); }
+  catch (e) { return { error: 'Не удалось проверить права — база не ответила. Повторите через минуту' }; }
+  if (hr) {
+    let allowed = null;
+    try {
+      const r = await db.pool.query('SELECT department_id FROM hr_user_departments WHERE user_id = $1', [u.id]);
+      if (r.rows.length) allowed = new Set(r.rows.map((x) => x.department_id));
+    } catch (e) { allowed = null; }
+    if (!allowed) return { depts: null, label: 'вся компания' };
+    return { depts: allowed, label: 'ваши отделы' };
+  }
   if (!ctx.employee_id) return { error: 'Такой отчёт доступен администратору и Персоналу' };
   const r = (await db.pool.query('SELECT department_id FROM hr_employees WHERE id = $1', [ctx.employee_id])).rows[0];
   if (!r || !r.department_id) return { error: 'У вас не указан отдел — отчёт по команде показать не могу' };
@@ -620,22 +639,27 @@ const TOOLS = [
     name: 'otchet_excel',
     tile: null,
     description: 'Прислать в чат файл Excel с отчётом: нарушения за месяц по отделам и людям, '
-      + 'карточки Trello без ответа, претензии без реакции и незакрытые. Только для администратора.',
+      + 'карточки Trello без ответа, претензии без реакции и незакрытые. '
+      + 'Видно ровно то, что человеку открыто по правам.',
     schema: { type: 'object', properties: {
       month: { type: 'string', description: 'месяц в виде 2026-09, по умолчанию текущий' },
     }, additionalProperties: false },
     run: async (args, ctx) => {
-      const u = ctx && ctx.user;
-      if (!u || !u.isAdmin) return { итог: 'Файл с данными по всей компании отдаётся только администратору' };
+      // Права те же, что у отчёта в чате: файл не должен открывать больше,
+      // чем человек видит на экране (задание J03).
+      const scope = await teamScope(ctx);
+      if (scope.error) return { итог: scope.error };
       if (!ctx.chatId) return { итог: 'Этот отчёт присылается только в чат с ботом' };
       const per = period(args.month);
       const from = per + '-01';
       const to = new Date(Date.UTC(Number(per.slice(0, 4)), Number(per.slice(5, 7)), 0)).toISOString().slice(0, 10);
       const rules = await require('./jarvis').loadRules();
-      const { buf, name } = await require('./jarvis-report').workbook({ from, to, rules });
+      const { buf, name } = await require('./jarvis-report').workbook({ from, to, rules, scope });
       const ok = await require('./jarvis-bot').sendFile(ctx.chatId, 'document', buf, name);
-      return ok ? { итог: 'Файл отправлен в чат', период: `${from} — ${to}`, файл: name }
-        : { итог: 'Не получилось отправить файл' };
+      // «Отправлено» говорим только после фактической отправки (задание J06).
+      return ok
+        ? { итог: 'Файл отправлен в чат', период: `${from} — ${to}`, охват: scope.label, файл: name }
+        : { итог: 'Файл собрался, но Telegram его не принял — попробуйте ещё раз' };
     },
   },
   {
