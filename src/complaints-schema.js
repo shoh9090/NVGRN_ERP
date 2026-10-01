@@ -51,7 +51,7 @@ async function ensureComplaintSchema(pool) {
     severity         TEXT,
     resolution       TEXT,
     internal_note    TEXT,
-    status           TEXT NOT NULL DEFAULT 'new',          -- new | agent_reacted | in_review | resolved
+    status           TEXT NOT NULL DEFAULT 'new',          -- new | agent_reacted | in_review | decided | resolved
     resolved_at      TIMESTAMPTZ,
     resolved_by      TEXT,
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -69,6 +69,21 @@ async function ensureComplaintSchema(pool) {
   await pool.query(`ALTER TABLE tgbot.complaint_dicts ADD COLUMN IF NOT EXISTS owner_role_id INT`);
   // Финальный вид продукта в блюде — код из справочника kind='dish_form'.
   await pool.query(`ALTER TABLE tgbot.complaints ADD COLUMN IF NOT EXISTS dish_form TEXT`);
+
+  // Решение ПРИНЯТО и решение ВЫПОЛНЕНО — разные вещи. Руководитель нажимает
+  // «заменить» — это обещание клиенту, а не привезённый товар. Раньше претензия
+  // в этот момент считалась закрытой, и в отчёте всё выглядело решённым,
+  // пока замена ехала (или не ехала вовсе).
+  // Теперь между «принято» и «закрыта» есть статус decided, а закрывает её тот,
+  // кто решение исполняет, — агент точки, одной кнопкой.
+  await pool.query(`ALTER TABLE tgbot.complaints ADD COLUMN IF NOT EXISTS done_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE tgbot.complaints ADD COLUMN IF NOT EXISTS done_by TEXT`);
+  // Старые записи закрывались одной кнопкой — для них «решено» и есть
+  // «выполнено». Проставляем им дату выполнения один раз, чтобы история не
+  // превратилась в гору «невыполненных».
+  await pool.query(
+    `UPDATE tgbot.complaints SET done_at = resolved_at, done_by = resolved_by
+      WHERE status = 'resolved' AND done_at IS NULL AND resolved_at IS NOT NULL`);
 
   // Медиа претензии. Байты лежат в public.files (Hub отдаёт через /file/:id).
   await pool.query(`CREATE TABLE IF NOT EXISTS tgbot.complaint_files (

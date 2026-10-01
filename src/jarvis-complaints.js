@@ -170,23 +170,34 @@ async function tell(complaintId, text, exceptChatId) {
 }
 
 // Решение руководителя. Кто нажал первым — тот и решил.
+//
+// ВАЖНО: решение принято — это ещё не закрытая претензия. «Заменить» означает,
+// что замену надо привезти, «скидка» — что её надо оформить. Раньше нажатие
+// кнопки сразу ставило «закрыта», и в отчёте вопрос выглядел решённым, пока
+// клиент ждал. Теперь претензия переходит в «решение принято», а закрывает её
+// тот, кто исполняет, — агент точки или человек в плитке «Претензии».
 async function resolve(chatId, complaintId, code) {
   const who = await ownerByChat(complaintId, chatId);
   if (!who) return { error: 'Это решение принимает руководитель звена.' };
   const label = ((await resolutions()).find((r) => r.code === code) || {}).label_ru || code;
   const upd = await pool.query(
-    `UPDATE tgbot.complaints SET resolution = $1, status = 'resolved', resolved_at = now(),
+    `UPDATE tgbot.complaints SET resolution = $1, status = 'decided', resolved_at = now(),
             resolved_by = $2, updated_at = now()
-      WHERE id = $3 AND status <> 'resolved' RETURNING sd_id`, [code, who.full_name, complaintId]);
+      WHERE id = $3 AND status NOT IN ('decided', 'resolved') RETURNING sd_id`, [code, who.full_name, complaintId]);
   if (!upd.rowCount) {
-    const c = (await pool.query('SELECT resolved_by FROM tgbot.complaints WHERE id = $1', [complaintId])).rows[0];
-    return { error: c ? `Уже закрыта${c.resolved_by ? ': ' + c.resolved_by : ''}.` : 'Претензия не найдена.' };
+    const c = (await pool.query('SELECT resolved_by, status FROM tgbot.complaints WHERE id = $1', [complaintId])).rows[0];
+    if (!c) return { error: 'Претензия не найдена.' };
+    return { error: (c.status === 'resolved' ? 'Уже закрыта' : 'Решение уже принято')
+      + (c.resolved_by ? ': ' + c.resolved_by : '') + '.' };
   }
-  await tell(complaintId, `✅ По претензии №${complaintId} решение принял(а) ${esc(who.full_name)}: ${esc(label)}.`, chatId);
+  await tell(complaintId, `✅ По претензии №${complaintId} решение принял(а) ${esc(who.full_name)}: ${esc(label)}.
+`
+    + 'Претензия закроется, когда решение выполнят.', chatId);
   // Агенту точки — во внешний бот: он живёт там, вместе с клиентом.
   const sdId = upd.rows[0].sd_id;
   if (sdId) {
-    await notifyAgent(sdId, `✅ Претензия №${complaintId} ({name}): ${who.full_name} принял(а) решение — ${label}. Свяжитесь с клиентом.`)
+    await notifyAgent(sdId, `✅ Претензия №${complaintId} ({name}): ${who.full_name} принял(а) решение — ${label}. `
+      + 'Свяжитесь с клиентом и отметьте, когда сделаете.')
       .catch((e) => console.warn('[ПРЕТЕНЗИИ агенту]', e.message));
   }
   return { ok: true, label, who: who.full_name };
@@ -240,7 +251,10 @@ async function notifyAgent(sdId, template) {
 function dueOwners(rows, nowMs, rules, R) {
   const out = [];
   for (const c of rows) {
-    if (c.status === 'resolved') continue;
+    // Закрыта — вопроса нет. Решение принято, но ещё не выполнено, — тоже не
+    // дёргаем руководителя: его часть сделана, дальше дело исполнителя, и за
+    // этим следит отдельное наблюдение «решили, но не сделали».
+    if (c.status === 'resolved' || c.status === 'decided') continue;
     const hours = R.workHours(R.clockStart(new Date(c.created_at).getTime(), rules), nowMs, rules);
     // Висит дольше суток — отдельный разговор (решение Шоха 01.10.2026).
     // Это не про качество разбора, а про то, что вопрос клиента стоит открытым:

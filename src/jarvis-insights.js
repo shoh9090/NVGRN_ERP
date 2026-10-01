@@ -155,6 +155,20 @@ async function clientsByManager(pool, rules) {
     .sort((a, b) => b.lines.length - a.lines.length);
 }
 
+// Решение по претензии приняли, а исполнения нет. «Заменить» — это обещание
+// клиенту: пока замену не привезли, вопрос не закрыт. Берём рабочие сутки
+// ожидания, чтобы не дёргать из-за решения, принятого час назад.
+const DONE_WAIT_H = 11;
+async function complaintsDecidedNotDone(pool) {
+  return (await pool.query(
+    `SELECT c.id, c.point_name, c.firm_name, c.resolved_by,
+            (SELECT label_ru FROM tgbot.complaint_dicts WHERE kind = 'resolution' AND code = c.resolution LIMIT 1) AS resolution,
+            ROUND(EXTRACT(EPOCH FROM (now() - c.resolved_at)) / 3600)::int AS hours
+       FROM tgbot.complaints c
+      WHERE c.status = 'decided' AND c.resolved_at < now() - ($1 || ' hours')::interval
+      ORDER BY c.resolved_at LIMIT 5`, [String(DONE_WAIT_H)])).rows;
+}
+
 // Наблюдения по плиткам: что показывать человеку с такими правами.
 // Возвращает [{ tile, icon, text }] — текст уже готов, модель не нужна.
 async function collect(pool, rules) {
@@ -186,7 +200,16 @@ async function collect(pool, rules) {
         text: `${r.name}: остаток ${bal}, расход ${num1(r.per_day)} ${r.unit || ''} в день — хватит ${left}.` });
     }
   });
+  await safe(async () => {
+    for (const r of await complaintsDecidedNotDone(pool)) {
+      const point = r.point_name || r.firm_name || 'точка не указана';
+      out.push({ tiles: ['/complaints', '/tgbot'], icon: '🔁',
+        text: `Претензия №${r.id} (${point}): решение «${r.resolution || 'принято'}»`
+          + `${r.resolved_by ? ' от ' + r.resolved_by : ''} принято ${r.hours} ч назад, `
+          + 'а выполнения нет. Клиент ждёт то, что ему пообещали.' });
+    }
+  });
   return out;
 }
 
-module.exports = { collect, clientDrops, clientsGone, stockRunningOut, silentPeople, clientsByManager, DROP_PCT, STOCK_DAYS_LEFT, SILENT_MIN_REMINDS };
+module.exports = { collect, clientDrops, clientsGone, stockRunningOut, silentPeople, clientsByManager, complaintsDecidedNotDone, DROP_PCT, STOCK_DAYS_LEFT, SILENT_MIN_REMINDS, DONE_WAIT_H };

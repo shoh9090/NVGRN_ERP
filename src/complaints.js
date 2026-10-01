@@ -63,10 +63,15 @@ function agentFilterSQL(value, startIndex, alias = 'c') {
   };
 }
 
+// Решение ПРИНЯТО и решение ВЫПОЛНЕНО — разные вещи. «Заменить» — это обещание
+// клиенту, а не привезённый товар; «скидка» — не оформленная скидка. Раньше
+// нажатие кнопки руководителем сразу закрывало претензию, и в отчёте вопрос
+// выглядел решённым, пока замена ехала или не ехала вовсе.
 const STATUS = {
   new:           'Новая',
   agent_reacted: 'Агент отреагировал',
   in_review:     'На проверке',
+  decided:       'Решение принято',
   resolved:      'Закрыта',
 };
 
@@ -260,7 +265,10 @@ router.get('/api/list', async (req, res) => {
                      c.agent_name) AS agent_name,
             c.product_name, c.product_category, c.complaint_type, c.link_code,
             c.severity, c.resolution, c.status, c.source,
-            c.resolved_by, c.resolved_at, c.agent_resolution,
+            c.resolved_by, c.resolved_at, c.agent_resolution, c.done_at, c.done_by,
+            -- Решение приняли, а исполнения нет: замену не привезли, скидку
+            -- не оформили. Это и есть разница между «решили» и «сделали».
+            (c.status = 'decided') AS waiting_done,
             NULLIF(btrim(COALESCE(c.internal_note, '')), '') IS NOT NULL AS has_note,
             -- «Ждёт руководителя звена» — та же примета, по которой бот шлёт
             -- напоминания: критичная (живность) без решения либо простая, по
@@ -287,7 +295,11 @@ router.get('/api/list', async (req, res) => {
       ${base.whereSQL ? 'AND' : 'WHERE'} c.source IN ('client_bot', 'agent') AND c.link_code IS NOT NULL
         AND c.status <> 'resolved'
         AND (c.complaint_type = 'zhivnost' OR btrim(COALESCE(c.internal_note, '')) = '')`, base.params)).rows[0].n;
-  res.json({ items: rows, total: rows.length, counts, waiting_owner: waiting });
+  // Сколько решений ждут исполнения — таблетка рядом со статусами.
+  const waitingDone = (await db.pool.query(
+    `SELECT count(*)::int AS n FROM tgbot.complaints c ${base.whereSQL}
+      ${base.whereSQL ? 'AND' : 'WHERE'} c.status = 'decided'`, base.params)).rows[0].n;
+  res.json({ items: rows, total: rows.length, counts, waiting_owner: waiting, waiting_done: waitingDone });
 });
 
 // ----- Одна претензия (карточка) -----
@@ -309,13 +321,17 @@ router.post('/api/one/:id(\\d+)', express.json(), async (req, res) => {
   if (resolution && !valid.resolution.has(resolution)) return res.status(400).json({ error: 'Неизвестное решение' });
   if (status && !STATUS[status]) return res.status(400).json({ error: 'Неизвестный статус' });
 
+  // «Закрыта» в вебе означает, что решение ВЫПОЛНЕНО: товар заменили, скидку
+  // оформили, с клиентом поговорили. Поэтому тут же ставится отметка исполнения.
   const setResolved = status === 'resolved';
   await db.pool.query(
     `UPDATE tgbot.complaints SET
        severity = $1, resolution = $2, internal_note = $3,
        status = COALESCE($4, status),
-       resolved_at = CASE WHEN $5 THEN now() ELSE resolved_at END,
-       resolved_by = CASE WHEN $5 THEN $6 ELSE resolved_by END,
+       resolved_at = CASE WHEN $5 THEN COALESCE(resolved_at, now()) ELSE resolved_at END,
+       resolved_by = CASE WHEN $5 THEN COALESCE(resolved_by, $6) ELSE resolved_by END,
+       done_at = CASE WHEN $5 THEN now() ELSE done_at END,
+       done_by = CASE WHEN $5 THEN $6 ELSE done_by END,
        updated_at = now()
      WHERE id = $7`,
     [severity || null, resolution || null, (internal_note || '').slice(0, 2000),
@@ -354,6 +370,9 @@ router.post('/api/close-before', express.json(), async (req, res) => {
   const r = await db.pool.query(
     `UPDATE tgbot.complaints
         SET status = 'resolved', resolved_at = now(), resolved_by = $1, updated_at = now(),
+            -- Массовое закрытие — это и решение, и его «исполнение» одной операцией:
+            -- иначе весь хвост повис бы в «решение принято, не выполнено».
+            done_at = now(), done_by = $1,
             internal_note = CASE WHEN COALESCE(internal_note, '') = '' THEN $2
                                  ELSE internal_note || chr(10) || $2 END
       WHERE status <> 'resolved' AND created_at < $3::date
@@ -417,6 +436,7 @@ router.get('/api/export.xlsx', async (req, res) => {
     'Видео получено': c.videos > 0 ? 'да' : 'нет',
     'Решение': labels.resolution[c.resolution] || '',
     'Статус': STATUS[c.status] || c.status,
+    'Выполнено': fmtDate(c.done_at),
     'Дата закрытия': fmtDate(c.resolved_at),
     'Комментарий клиента': c.client_comment || '',
     'примечания': c.internal_note || '',
