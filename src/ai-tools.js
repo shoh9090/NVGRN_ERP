@@ -393,7 +393,25 @@ const TOOLS = [
       if (kgTotal && !kgAllKnown) total.про_килограммы = 'Только по товарам, у которых вес указан в названии';
       if (withMoney) total.сумма = money(all.сумма);
       const partial = all.позиций > rows.length;
-      return { период: `${from} — ${to}`, выгружено_по: cov.last_day,
+      // Сверка с P&L. Это ДВЕ РАЗНЫЕ выгрузки SalesDoctor: здесь подробная
+      // копия по дням, в Кассе — месячный итог для прибыли. Они могут не
+      // сойтись (разная разбивка заказов по датам), и человек не должен
+      // получать две правды молча: называем обе и говорим, какая для денег.
+      let сверка = null;
+      if (withMoney && from.slice(8) === '01' && from.slice(0, 7) === to.slice(0, 7)) {
+        const per = from.slice(0, 7);
+        const pnl = Number(((await db.pool.query(
+          'SELECT value FROM settings WHERE key = $1', ['pnl_sales_' + per])).rows[0] || {}).value) || 0;
+        const mine = Number(all.сумма) || 0;
+        if (pnl && mine && Math.abs(pnl - mine) / pnl > 0.01) {
+          сверка = { в_pnl_кассы: money(pnl), здесь: money(mine),
+            разница: money(Math.abs(pnl - mine)),
+            что_это_значит: 'Это две разные выгрузки SalesDoctor: здесь подробная копия по дням, '
+              + 'в Кассе — месячный итог для прибыли. Для денег и P&L главная цифра из Кассы. '
+              + 'Здесь разрез по товарам: он точнее показывает, ЧТО продали, но итог может отличаться.' };
+        }
+      }
+      return { период: `${from} — ${to}`, выгружено_по: cov.last_day, сверка_с_pnl: сверка,
         данные_обновлены: cov.last_sync, источник: 'наша ночная копия SalesDoctor (обновляется в 3:00)',
         итого_за_период: total,
         показано_позиций: rows.length,
