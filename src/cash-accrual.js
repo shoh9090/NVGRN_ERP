@@ -494,11 +494,19 @@ async function profitToCash(pool, period, pnl) {
     "SELECT to_char(($1::date + INTERVAL '1 month') - INTERVAL '1 day', 'YYYY-MM-DD') AS d",
     [from])).rows[0].d;
 
-  // Деньги на начало и конец: сумма всех движений по кошелькам до даты.
-  // Переводы между своими счетами в сумме гасятся, поэтому их можно не исключать.
+  // Деньги на начало и конец — по всем кошелькам вместе.
+  // Перевод между своими счетами даёт списание и зачисление, в сумме по всем
+  // кошелькам они гасятся, поэтому обычные переводы здесь не нужны. Исключение —
+  // обнал, который ещё не подтвердили: с банка деньги ушли, в кассу не пришли,
+  // и на эту сумму денег у компании действительно меньше.
+  // Начальные остатки (source='opening') записаны как обычные in/out, поэтому
+  // попадают сюда сами — без них остаток уходил в глубокий минус.
   const bal = async (d) => num((await pool.query(
-    `SELECT COALESCE(SUM(CASE WHEN tx_type = 'in' THEN amount
-                              WHEN tx_type IN ('out', 'transfer') THEN -amount ELSE 0 END), 0) AS b
+    `SELECT COALESCE(SUM(CASE
+              WHEN tx_type = 'in' THEN amount
+              WHEN tx_type = 'out' THEN -amount
+              WHEN tx_type = 'transfer' AND needs_cash_confirm THEN -amount
+              ELSE 0 END), 0) AS b
        FROM cash_transactions WHERE tx_date <= $1`, [d])).rows[0].b);
   const opening = await bal((await pool.query(
     "SELECT to_char($1::date - INTERVAL '1 day', 'YYYY-MM-DD') AS d", [from])).rows[0].d);
