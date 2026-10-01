@@ -138,7 +138,12 @@ async function sendCard(complaintId, { critical, remind } = {}) {
   if (!card) return 0;
   const crit = critical === undefined ? CRITICAL_TYPES.has(card.c.complaint_type) : critical;
   let text = formatCard(card.c, crit);
-  if (remind) {
+  if (remind === 'open') {
+    // Отдельный повод: вопрос клиента стоит открытым дольше суток. Тут важно
+    // не «дай причину», а «закройте уже» (решение Шоха 01.10.2026).
+    text = `🕒 Претензия №${complaintId} висит незакрытой с ${sinceText(card.c.created_at)}.\n\n` + text
+      + '\n\nЗакройте вопрос с клиентом и отметьте решение — либо напишите причину, если закрывать нечем.';
+  } else if (remind) {
     text = `⏰ Напоминание: претензия №${complaintId} подана ${sinceText(card.c.created_at)}, `
       + `${crit ? 'решения' : 'причины'} от вас пока нет.\n\n` + text;
     if (!crit) text += '\n\nНапишите, в чём причина и что сделали, — кнопкой ниже.';
@@ -237,6 +242,13 @@ function dueOwners(rows, nowMs, rules, R) {
   for (const c of rows) {
     if (c.status === 'resolved') continue;
     const hours = R.workHours(R.clockStart(new Date(c.created_at).getTime(), rules), nowMs, rules);
+    // Висит дольше суток — отдельный разговор (решение Шоха 01.10.2026).
+    // Это не про качество разбора, а про то, что вопрос клиента стоит открытым:
+    // руководителю звена напоминание, РОПу и админу — сигнал. Один раз.
+    if (rules.complaint_open_h && hours >= rules.complaint_open_h) {
+      out.push({ id: c.id, stage: 'open', critical: CRITICAL_TYPES.has(c.complaint_type), escalate: true, hours, longOpen: true });
+      continue;
+    }
     if (CRITICAL_TYPES.has(c.complaint_type)) {
       if (hours >= rules.complaint_crit_esc_h) out.push({ id: c.id, stage: 'crit_esc', critical: true, escalate: true, hours });
       else if (hours >= rules.complaint_crit_h) out.push({ id: c.id, stage: 'crit', critical: true, escalate: false, hours });
@@ -257,7 +269,7 @@ async function openComplaints() {
               product_name, agent_resolution, resolution, resolved_by
          FROM tgbot.complaints
         WHERE source IN ('client_bot', 'agent') AND link_code IS NOT NULL
-          AND created_at > now() - interval '3 days'
+          AND created_at > now() - interval '7 days'
         ORDER BY id`)).rows;
   } catch (e) { return []; }
 }

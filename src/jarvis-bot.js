@@ -1268,14 +1268,17 @@ async function complaintsTick(rules, now) {
   for (const d of cx.dueOwners(rows, now, rules, R)) {
     const key = `cmprem:${d.id}:${d.stage}`;
     if (await seen(key)) continue;
-    const sent = await cx.sendCard(d.id, { critical: d.critical, remind: true });
+    const sent = await cx.sendCard(d.id, { critical: d.critical, remind: d.longOpen ? 'open' : true });
     await log('complaint_remind', null, null, `Претензия №${d.id}: напоминание (${d.stage})`, sent > 0, key);
     if (!d.escalate) continue;
     const c = rows.find((x) => x.id === d.id) || {};
     const point = c.point_name || c.firm_name || c.sd_id || '';
     for (const chat of admins) {
-      await send(chat, `⏰ Критичная претензия <b>№${d.id}</b> (${esc(point)}) подана ${cx.sinceText(c.created_at)} — `
-        + 'руководитель звена до сих пор не принял решение. Нужен ваш разбор.');
+      await send(chat, d.longOpen
+        ? `🕒 Претензия <b>№${d.id}</b> (${esc(point)}) висит незакрытой с ${cx.sinceText(c.created_at)} — `
+          + 'больше суток рабочего времени. Вопрос клиента до сих пор открыт.'
+        : `⏰ Критичная претензия <b>№${d.id}</b> (${esc(point)}) подана ${cx.sinceText(c.created_at)} — `
+          + 'руководитель звена до сих пор не принял решение. Нужен ваш разбор.');
     }
   }
 }

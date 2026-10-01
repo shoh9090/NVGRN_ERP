@@ -77,3 +77,23 @@ test('переключатель претензий выключен по умо
   assert.strictEqual(r.complaints_owners, true);
   assert.strictEqual(r.complaint_crit_esc_h, 2, 'эскалация не может быть раньше первого напоминания');
 });
+
+test('висит незакрытой больше суток — сигнал руководителю и наверх', () => {
+  // 24 рабочих часа при дне 9:00–20:00 — это чуть больше двух календарных суток.
+  const due = cx.dueOwners([claim({})], T(55), rules, R);
+  assert.strictEqual(due.length, 1);
+  assert.strictEqual(due[0].stage, 'open');
+  assert.strictEqual(due[0].escalate, true, 'о таком должны знать РОП и админ');
+  assert.strictEqual(due[0].longOpen, true);
+  // Закрытую не трогаем, даже если висела долго.
+  assert.deepStrictEqual(cx.dueOwners([claim({ status: 'resolved' })], T(55), rules, R), []);
+  // Записанная причина от долгого висения не спасает: вопрос клиента всё ещё открыт.
+  const withNote = cx.dueOwners([claim({ internal_note: 'ждём ответа поставщика' })], T(55), rules, R);
+  assert.strictEqual(withNote[0].stage, 'open');
+});
+
+test('порог «висит слишком долго» настраивается и не бывает раньше первого напоминания', () => {
+  assert.strictEqual(R.normalizeRules({}).complaint_open_h, 24);
+  assert.strictEqual(R.normalizeRules({ complaint_open_h: 0 }).complaint_open_h, 0, 'ноль — правило выключено');
+  assert.strictEqual(R.normalizeRules({ complaint_open_h: 1, complaint_simple_h: 3 }).complaint_open_h, 3);
+});

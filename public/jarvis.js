@@ -155,6 +155,7 @@
     const cmplCrit = numInp(r.complaint_crit_h, { step: '0.5' });
     const cmplCritEsc = numInp(r.complaint_crit_esc_h, { step: '0.5' });
     const cmplSimple = numInp(r.complaint_simple_h, { step: '0.5' });
+    const cmplOpen = numInp(r.complaint_open_h, { step: '1' });
 
     // Кто вносит: у дела цепочка ответственных — кто первый и кто подхватывает.
     const ownerChain = {};
@@ -230,6 +231,8 @@
             'Раньше первого напоминания не бывает.'),
           field('Простая без причины', el('div', { class: 'jv-ctl' }, ['напомнить через ', cmplSimple, ' раб. ч']),
             'Простую закрывает агент, от руководителя нужна причина.'),
+          field('Висит незакрытой', el('div', { class: 'jv-ctl' }, ['сигнал через ', cmplOpen, ' раб. ч']),
+            'Вопрос клиента открыт слишком долго: руководителю звена и наверх — РОПу и админу. 0 — выключить.'),
         ]),
         // Кто получит карточку. Пустое звено — претензия уйдёт в никуда.
         el('div', { class: 'jv-links' }, (s.links || []).map((L) => {
@@ -317,6 +320,7 @@
           complaint_crit_h: Number(cmplCrit.value),
           complaint_crit_esc_h: Number(cmplCritEsc.value),
           complaint_simple_h: Number(cmplSimple.value),
+          complaint_open_h: Number(cmplOpen.value),
           done_lists: doneExtra.value,
           owners: Object.fromEntries(Object.entries(ownerChain).map(([k, c]) => [k,
             [c.first.value ? { role: c.first.value, after_h: 0 } : null,
