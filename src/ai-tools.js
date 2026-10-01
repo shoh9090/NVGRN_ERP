@@ -201,15 +201,30 @@ const TOOLS = [
   {
     name: 'moi_kartochki_trello',
     tile: null,
-    description: 'Карточки Trello этого человека: упоминания без ответа и просроченные сроки.',
+    description: 'Карточки Trello этого человека: упоминания без ответа и просроченные сроки. '
+      + 'Отвечает на «что у меня просрочено», «что от меня ждут».',
     schema: EMPTY,
     run: async (args, ctx) => {
       if (!ctx.employee_id) return { итог: 'Человек не найден в Персонале' };
-      const open = (await db.pool.query(
-        `SELECT card_name, author_name, to_char(created_at, 'DD.MM') AS когда FROM jarvis_mentions
-          WHERE employee_id = $1 AND answered_at IS NULL ORDER BY created_at LIMIT 20`, [ctx.employee_id])).rows;
-      return { упоминания_без_ответа: open.length,
-        список: open.map((m) => ({ карточка: m.card_name, упомянул: m.author_name, когда: m.когда })) };
+      // Тот же сбор, что у кнопки «Мои карточки» (J07): раньше инструмент знал
+      // только упоминания и на вопрос «что у меня просрочено» отвечал не тем.
+      const me = (await db.pool.query(
+        'SELECT id AS employee_id, trello_member_id FROM hr_employees WHERE id = $1', [ctx.employee_id])).rows[0];
+      if (!me) return { итог: 'Человек не найден в Персонале' };
+      const d = await require('./jarvis-bot').myCardsData(me, 10);
+      const ru = (x) => new Date(new Date(x).getTime() + 5 * 3600000).toISOString().slice(0, 10);
+      return {
+        упоминаний_без_ответа: d.упоминаний_без_ответа,
+        просрочено_карточек: d.просрочено_карточек,
+        trello_сопоставлен: d.trello_сопоставлен,
+        снимок_trello: d.снимок_trello,
+        ждут_ответа: d.упоминания.map((m) => ({
+          карточка: m.card_name, ссылка: m.card_url, упомянул: m.author_name, когда: ru(m.created_at),
+          напоминать_перестали: !!m.muted_at })),
+        просрочено: d.просрочки.map((c) => ({ карточка: c.name, ссылка: c.shortUrl, срок_был: ru(c.due) })),
+        показано: `${d.упоминания.length} из ${d.упоминаний_без_ответа} упоминаний, `
+          + `${d.просрочки.length} из ${d.просрочено_карточек} просрочек`,
+      };
     },
   },
   {

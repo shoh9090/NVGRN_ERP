@@ -594,22 +594,50 @@ async function applyDue(chatId, me, target, dueIso) {
 }
 
 // «Мои карточки»: что ждёт ответа и что просрочено — из последнего чтения Trello.
-async function myCards(chatId, me) {
-  if (!me.trello_member_id) return send(chatId, 'Ваш Trello ещё не сопоставлен. Попросите администратора: плитка «Джарвис» → «Люди и Trello».', await kb(chatId));
+// Один сбор данных для кнопки «Мои карточки» и для вопроса словами (J07).
+// Раньше кнопка показывала упоминания И просрочки, а инструмент ИИ — только
+// упоминания: на один и тот же вопрос человек получал два разных ответа.
+// Счётчики здесь ПОЛНЫЕ, список — обрезанный: лимит показа не должен менять
+// цифру «просрочено».
+async function myCardsData(me, limit = 10) {
   const open = (await pool.query(
-    `SELECT id, card_id, card_name, card_url, author_name, created_at FROM jarvis_mentions
-      WHERE employee_id = $1 AND answered_at IS NULL ORDER BY created_at LIMIT 10`, [me.employee_id])).rows;
+    `SELECT id, card_id, card_name, card_url, author_name, created_at, muted_at FROM jarvis_mentions
+      WHERE employee_id = $1 AND answered_at IS NULL ORDER BY created_at`, [me.employee_id])).rows;
   const scan = await scanCached();
   const now = Date.now();
-  const overdue = scan ? scan.cards.filter((c) => c.idMembers.includes(me.trello_member_id) && isOverdue(c, scan, now)) : [];
-  if (!open.length && !overdue.length) return send(chatId, '👍 Всё чисто: упоминаний без ответа и просроченных карточек нет.', await kb(chatId));
+  const overdue = (scan && me.trello_member_id)
+    ? scan.cards.filter((c) => (c.idMembers || []).includes(me.trello_member_id) && isOverdue(c, scan, now))
+    : [];
+  return {
+    trello_сопоставлен: !!me.trello_member_id,
+    снимок_trello: scan ? new Date(scan.at).toISOString() : null,
+    упоминаний_без_ответа: open.length,
+    просрочено_карточек: overdue.length,
+    упоминания: open.slice(0, limit),
+    просрочки: overdue.slice(0, limit),
+  };
+}
+
+async function myCards(chatId, me) {
+  if (!me.trello_member_id) return send(chatId, 'Ваш Trello ещё не сопоставлен. Попросите администратора: плитка «Джарвис» → «Люди и Trello».', await kb(chatId));
+  const d = await myCardsData(me, 10);
+  const { упоминания: open, просрочки: overdue } = d;
+  if (!d.упоминаний_без_ответа && !d.просрочено_карточек) {
+    return send(chatId, '👍 Всё чисто: упоминаний без ответа и просроченных карточек нет.', await kb(chatId));
+  }
   if (open.length) {
-    await send(chatId, `<b>Ждут вашего ответа (${open.length}):</b>`);
-    for (const m of open) await send(chatId, `💬 «${esc(m.card_name)}» — упомянул(а) ${esc(m.author_name)}`, cardButtons(m.card_id, m.card_url, m.id));
+    await send(chatId, `<b>Ждут вашего ответа (${d.упоминаний_без_ответа}):</b>`
+      + (d.упоминаний_без_ответа > open.length ? `\nПоказываю первые ${open.length}.` : ''));
+    for (const m of open) {
+      await send(chatId, `💬 «${esc(m.card_name)}» — упомянул(а) ${esc(m.author_name)}`
+        + (m.muted_at ? '\n<i>напоминать перестал, но ответа так и нет</i>' : ''),
+      cardButtons(m.card_id, m.card_url, m.id));
+    }
   }
   if (overdue.length) {
-    await send(chatId, `<b>Просрочены (${overdue.length}):</b>`);
-    for (const c of overdue.slice(0, 10)) await send(chatId, `⏰ «${esc(c.name)}» — срок был ${dateRu(c.due)}`, cardButtons(c.id, c.shortUrl));
+    await send(chatId, `<b>Просрочены (${d.просрочено_карточек}):</b>`
+      + (d.просрочено_карточек > overdue.length ? `\nПоказываю первые ${overdue.length}.` : ''));
+    for (const c of overdue) await send(chatId, `⏰ «${esc(c.name)}» — срок был ${dateRu(c.due)}`, cardButtons(c.id, c.shortUrl));
   }
 }
 
@@ -1607,7 +1635,7 @@ function webhook(req, res) {
   if (pool) handleUpdate(req.body || {}).catch((e) => console.warn('[ДЖАРВИС] сообщение:', e.message));
 }
 
-module.exports = { start, webhook, tick, status, send, sendFile };
+module.exports = { start, webhook, tick, status, send, sendFile, myCardsData };
 // Холостой прогон (test/jarvis-dryrun.test.js) гоняет такт целиком на
 // поддельной базе и поддельных ответах Trello и Telegram. Так ловятся ошибки,
 // которые видны только при запуске («opts is not defined»): проверка синтаксиса
