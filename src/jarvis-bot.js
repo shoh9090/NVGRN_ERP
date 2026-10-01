@@ -44,8 +44,12 @@ async function tg(method, body) {
 // своим токеном (фото из нашей базы, видео скачивается у клиентского бота).
 async function sendFile(chatId, kind, buf, name) {
   if (!token()) return false;
-  const method = kind === 'photo' ? 'sendPhoto' : kind === 'video_note' ? 'sendVideoNote' : 'sendVideo';
-  const field = kind === 'photo' ? 'photo' : kind === 'video_note' ? 'video_note' : 'video';
+  const BY_KIND = {
+    photo: ['sendPhoto', 'photo'],
+    video_note: ['sendVideoNote', 'video_note'],
+    document: ['sendDocument', 'document'],      // отчёты в Excel
+  };
+  const [method, field] = BY_KIND[kind] || ['sendVideo', 'video'];
   try {
     const fd = new FormData();
     fd.append('chat_id', String(chatId));
@@ -409,7 +413,8 @@ async function aiAnswer(chatId, me, question, rules) {
   }
   tg('sendChatAction', { chat_id: chatId, action: 'typing' });
   const user = await erpUser(me.user_id);
-  const ctx = { user, employee_id: me.employee_id, full_name: me.full_name };
+  // chatId нужен инструментам, которые присылают файл прямо в чат.
+  const ctx = { user, employee_id: me.employee_id, full_name: me.full_name, chatId };
   const tools = await require('./ai-tools').toolsFor(user);
   const runTool = async (name, args) => {
     const t = tools.find((x) => x.name === name);

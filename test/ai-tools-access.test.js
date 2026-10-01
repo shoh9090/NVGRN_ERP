@@ -44,3 +44,23 @@ test('админу доступно всё, проверка вкладок ег
   assert.ok(names.includes('pribyl_za_mesyats'));
   assert.ok(await hasTile({ id: 1, isAdmin: true }, '/cash', 'pnl'));
 });
+
+// Сводка по команде — не личный инструмент: её видит админ и Персонал, а
+// руководитель — свой отдел. Проверяем, что отказ происходит ДО запроса в базу.
+test('отчёт «кто не отвечает» чужому человеку без Персонала не отдаётся', async () => {
+  const { TOOLS } = require('../src/ai-tools');
+  const t = TOOLS.find((x) => x.name === 'kto_ne_otvechaet');
+  assert.ok(t, 'инструмент пропал');
+  const r = await t.run({}, { user: null });
+  assert.match(String(r.итог || ''), /кто спрашивает/);
+});
+
+test('файл Excel по всей компании — только администратору и только в чат', async () => {
+  const { TOOLS } = require('../src/ai-tools');
+  const t = TOOLS.find((x) => x.name === 'otchet_excel');
+  assert.ok(t, 'инструмент пропал');
+  const notAdmin = await t.run({}, { user: { id: 1, isAdmin: false }, chatId: 5 });
+  assert.match(String(notAdmin.итог || ''), /администратору/);
+  const noChat = await t.run({}, { user: { id: 1, isAdmin: true } });
+  assert.match(String(noChat.итог || ''), /в чат/);
+});

@@ -542,6 +542,101 @@ const TOOLS = [
     },
   },
   {
+    // Сводка по КОМАНДЕ, а не по себе. Шох просил у Джарвиса отчёт «кто
+    // отвечает на карточки, а кто нет», и тот честно ответил, что видит
+    // только личные данные — инструмента на команду просто не было.
+    // Права: админ и те, кому открыт Персонал, видят всю компанию;
+    // остальные — только свой отдел. Это не зарплаты, а дисциплина ответов.
+    name: 'kto_ne_otvechaet',
+    tile: null,
+    description: 'Отчёт по сотрудникам: кто отвечает на упоминания в Trello, а кто нет. '
+      + 'Сколько упоминаний пришло и сколько осталось без ответа, сколько нарушений за период, '
+      + 'сколько дней висит самое старое. Можно по отделу. Это сводка по людям, а не по себе.',
+    schema: { type: 'object', properties: {
+      days: { type: 'number', description: 'за сколько дней считать нарушения, по умолчанию 30' },
+      department: { type: 'string', description: 'часть названия отдела, если нужен один' },
+    }, additionalProperties: false },
+    run: async (args, ctx) => {
+      const u = ctx && ctx.user;
+      if (!u) return { итог: 'Не понял, кто спрашивает' };
+      const wide = !!u.isAdmin || await hasTile(u, '/hr');
+      const days = Math.min(Math.max(parseInt(args.days, 10) || 30, 1), 180);
+      const p = [String(days)];
+      let where = '';
+      if (!wide) {
+        // Своё подразделение: человек видит тех, за кого отвечает.
+        if (!ctx.employee_id) return { итог: 'Такой отчёт доступен администратору и Персоналу' };
+        p.push(ctx.employee_id);
+        where = ` AND e.department_id = (SELECT department_id FROM hr_employees WHERE id = $${p.length})`;
+      }
+      if (String(args.department || '').trim()) {
+        p.push('%' + String(args.department).trim() + '%');
+        where += ` AND d.name ILIKE $${p.length}`;
+      }
+      const rows = (await db.pool.query(
+        `WITH m AS (
+           SELECT employee_id,
+                  COUNT(*) FILTER (WHERE created_at > now() - ($1 || ' days')::interval) AS got,
+                  COUNT(*) FILTER (WHERE created_at > now() - ($1 || ' days')::interval AND answered_at IS NOT NULL) AS answered,
+                  COUNT(*) FILTER (WHERE answered_at IS NULL) AS waiting,
+                  MIN(created_at) FILTER (WHERE answered_at IS NULL) AS oldest
+             FROM jarvis_mentions GROUP BY employee_id),
+         v AS (
+           SELECT employee_id, COUNT(*) AS n FROM jarvis_log
+            WHERE kind LIKE 'violation%' AND created_at > now() - ($1 || ' days')::interval
+            GROUP BY employee_id)
+         SELECT e.full_name AS сотрудник, COALESCE(d.name, '— без отдела —') AS отдел, e.position AS должность,
+                COALESCE(m.got, 0)::int AS упоминаний, COALESCE(m.answered, 0)::int AS ответил,
+                COALESCE(m.waiting, 0)::int AS без_ответа, COALESCE(v.n, 0)::int AS нарушений,
+                EXTRACT(DAY FROM now() - m.oldest)::int AS дней_самое_старое,
+                (u.jv_chat_id IS NOT NULL) AS в_боте
+           FROM hr_employees e
+           LEFT JOIN hr_departments d ON d.id = e.department_id
+           LEFT JOIN users u ON u.id = e.erp_user_id
+           LEFT JOIN m ON m.employee_id = e.id
+           LEFT JOIN v ON v.employee_id = e.id
+          WHERE e.status = 'active'${where}
+            AND (COALESCE(m.got, 0) > 0 OR COALESCE(m.waiting, 0) > 0 OR COALESCE(v.n, 0) > 0)
+          ORDER BY COALESCE(m.waiting, 0) DESC, COALESCE(v.n, 0) DESC`, p)).rows;
+      if (!rows.length) return { за_дней: days, итог: 'Ни одного упоминания без ответа и ни одного нарушения' };
+      const byDep = new Map();
+      for (const r of rows) {
+        const d = byDep.get(r.отдел) || { отдел: r.отдел, людей: 0, без_ответа: 0, нарушений: 0 };
+        d.людей++; d.без_ответа += r.без_ответа; d.нарушений += r.нарушений;
+        byDep.set(r.отдел, d);
+      }
+      return {
+        за_дней: days, охват: wide ? 'вся компания' : 'ваш отдел',
+        по_отделам: [...byDep.values()].sort((a, b) => b.без_ответа - a.без_ответа),
+        по_людям: rows.slice(0, 30),
+        примечание: 'в_боте = false означает, что человек не открыл Джарвиса и напоминания до него не доходят',
+      };
+    },
+  },
+  {
+    // Тот же отчёт книгой Excel, прямо в чат: «пришли это файлом».
+    name: 'otchet_excel',
+    tile: null,
+    description: 'Прислать в чат файл Excel с отчётом: нарушения за месяц по отделам и людям, '
+      + 'карточки Trello без ответа, претензии без реакции и незакрытые. Только для администратора.',
+    schema: { type: 'object', properties: {
+      month: { type: 'string', description: 'месяц в виде 2026-09, по умолчанию текущий' },
+    }, additionalProperties: false },
+    run: async (args, ctx) => {
+      const u = ctx && ctx.user;
+      if (!u || !u.isAdmin) return { итог: 'Файл с данными по всей компании отдаётся только администратору' };
+      if (!ctx.chatId) return { итог: 'Этот отчёт присылается только в чат с ботом' };
+      const per = period(args.month);
+      const from = per + '-01';
+      const to = new Date(Date.UTC(Number(per.slice(0, 4)), Number(per.slice(5, 7)), 0)).toISOString().slice(0, 10);
+      const rules = await require('./jarvis').loadRules();
+      const { buf, name } = await require('./jarvis-report').workbook({ from, to, rules });
+      const ok = await require('./jarvis-bot').sendFile(ctx.chatId, 'document', buf, name);
+      return ok ? { итог: 'Файл отправлен в чат', период: `${from} — ${to}`, файл: name }
+        : { итог: 'Не получилось отправить файл' };
+    },
+  },
+  {
     name: 'moya_zarplata',
     tile: null,
     description: 'Зарплата САМОГО спрашивающего за месяц: начислено, удержано, выплачено. Чужие зарплаты этот инструмент не показывает.',
