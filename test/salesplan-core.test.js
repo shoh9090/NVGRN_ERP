@@ -106,3 +106,25 @@ test('раскладка недельной цифры по дням не тер
   const even = core.spreadWeek(10, null);
   assert.strictEqual(even.reduce((a, b) => a + b, 0), 10);
 });
+
+test('направление товара берётся из «Направления торговли» SalesDoctor', () => {
+  const chans = [{ code: 'horeca', name: 'HoReCa', sd_trade: 'Horeca' }, { code: 'retail', name: 'Розница', sd_trade: 'Розница' }];
+  assert.strictEqual(core.channelOf('Horeca', chans), 'horeca');
+  assert.strictEqual(core.channelOf(' horeca ', chans), 'horeca');   // регистр и пробелы не мешают
+  assert.strictEqual(core.channelOf('Розница', chans), 'retail');
+  assert.strictEqual(core.channelOf('HoReCa', chans), 'horeca');     // совпадение по нашему названию
+  // Не проставлено или незнакомое — не угадываем: товар добавляется руками.
+  assert.strictEqual(core.channelOf('', chans), null);
+  assert.strictEqual(core.channelOf('Опт', chans), null);
+});
+
+test('менять план продаж может только РОП и админ', () => {
+  const { canEditPlan } = require('../src/salesplan');
+  assert.strictEqual(canEditPlan({ isAdmin: true, roles: [] }), true);
+  assert.strictEqual(canEditPlan({ isAdmin: false, roles: ['Руководитель продаж'] }), true);
+  assert.strictEqual(canEditPlan({ isAdmin: false, roles: ['роп'] }), true);
+  // Плитка у человека есть (иначе страница не открылась бы), но план — не его.
+  assert.strictEqual(canEditPlan({ isAdmin: false, roles: ['Склад'] }), false);
+  assert.strictEqual(canEditPlan({ isAdmin: false, roles: ['Торговый агент'] }), false);
+  assert.strictEqual(canEditPlan(null), false);
+});

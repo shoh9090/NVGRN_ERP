@@ -144,7 +144,18 @@ function spreadWeek(total, profile) {
   return out;
 }
 
+// Направление товара по «Направлению торговли», которое приходит из SalesDoctor.
+// Сетка строится по нему сама: отдел продаж не должен каждую неделю руками
+// набирать список товаров — он и так известен.
+function channelOf(trade, channels) {
+  const t = String(trade || '').trim().toLowerCase();
+  if (!t) return null;
+  const c = (channels || []).find((x) => String(x.sd_trade || '').trim().toLowerCase() === t
+    || String(x.name || '').trim().toLowerCase() === t);
+  return c ? c.code : null;
+}
+
 module.exports = {
   WD, weekStart, weekDays, weekShift, weekLabel, daysBetween, wdOf,
-  parseQty, rowTotal, summarize, weekdayProfile, spreadWeek,
+  parseQty, rowTotal, summarize, weekdayProfile, spreadWeek, channelOf,
 };

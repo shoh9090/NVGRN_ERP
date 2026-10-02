@@ -26,11 +26,16 @@
 .spl-tbl th, .spl-tbl td { padding: 5px 8px; white-space: nowrap; border-bottom: 1px solid var(--line-soft); }
 .spl-tbl thead th { position: sticky; top: 0; z-index: 3; background: var(--surface-2);
   font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-soft); text-align: center; }
-.spl-tbl thead th.spl-prod, .spl-tbl thead th.spl-price { text-align: left; }
+.spl-tbl thead th.spl-prod { text-align: left; }
 .spl-tbl .spl-prod { position: sticky; left: 0; z-index: 2; background: var(--surface);
-  min-width: 250px; max-width: 320px; white-space: normal; font-weight: 600; }
+  min-width: 270px; max-width: 340px; white-space: normal; font-weight: 600; }
+/* Цена, свой прайс и примечание — подписью под названием: отдельная колонка
+   съедала полэкрана, а нужна она редко (прайс задан у всего направления). */
+.spl-sub { display: block; background: none; border: none; padding: 2px 0 0; text-align: left;
+  font-family: inherit; font-size: 11.5px; font-weight: 600; color: var(--ink-faint); cursor: pointer; }
+.spl-sub:hover { color: var(--forest); text-decoration: underline; }
+.spl-sub.spl-nop { color: var(--amber); }
 .spl-tbl thead .spl-prod { z-index: 4; background: var(--surface-2); }
-.spl-tbl .spl-price { min-width: 150px; }
 .spl-tbl tbody tr:hover .spl-prod { background: var(--lime-soft); }
 .spl-tbl tbody tr:hover td { background: rgba(140, 198, 63, .06); }
 

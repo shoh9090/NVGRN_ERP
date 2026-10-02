@@ -1,14 +1,18 @@
 // salesplan.js — экран плитки «План продаж» (ГП): недельная сетка спроса.
 //
-// Главное в поведении: пустая клетка и ноль — разные вещи. Пусто значит «не
-// заполнено», 0 значит «решили ничего не планировать». Поэтому ноль не
-// подставляется сам никогда, а итог по пустой строке — тире, а не 0.
+// Сетка полная сразу, как в Excel: все товары направления уже стоят строками,
+// РОП только вбивает количества по столбцам. Строка в базе заводится сама, в
+// момент первой введённой цифры — «добавить товар» отдельным действием не нужно.
+//
+// Пустая клетка и ноль — разные вещи. Пусто значит «не заполнено», 0 значит
+// «решили ничего не планировать». Ноль не подставляется сам никогда, а итог по
+// пустой строке — тире, а не 0.
 //
 // Период — только общим компонентом HubDateRange (режим week). Своих полей
 // с датами здесь нет: этого требует единый интерфейс Hub.
 (function () {
   const $ = (s) => document.querySelector(s);
-  const canEdit = !!(window.HUB_USER && (window.HUB_USER.canEdit || window.HUB_USER.isAdmin));
+  const canEdit = !!(window.HUB_USER && window.HUB_USER.canEdit);
 
   const el = (tag, attrs = {}, children = []) => {
     const n = document.createElement(tag);
@@ -61,11 +65,13 @@
   let DATA = null;
   let drBtn = null;
 
-  const todayIso = () => new Date().toLocaleDateString('sv-SE');      // ГГГГ-ММ-ДД в местной зоне
+  const todayIso = () => new Date().toLocaleDateString('sv-SE');
   const weekOf = (d) => window.HubDateRange.weekOf(d);
   const weekShift = (d, w) => window.HubDateRange.weekShift(d, w);
+  // Строки в базе может ещё не быть: сетка показывает весь ассортимент
+  // направления, а запись заводится в момент первой введённой цифры.
+  const ref = (ch, r) => (r.id ? { row_id: r.id } : { channel: ch.code, product_id: r.product_id });
 
-  // ---------- загрузка ----------
   async function load() {
     const content = $('#spl-content');
     content.innerHTML = '<div class="spl-empty">Загружаю…</div>';
@@ -111,13 +117,14 @@
     const content = $('#spl-content');
     content.innerHTML = '';
     const days = DATA.days;
-
     const total = DATA.totals;
+
     content.appendChild(el('p', { class: 'spl-hint' }, [
       el('b', {}, 'Неделя ' + DATA.week_label + ': '),
       fmt(total.qty) + ' шт, ' + money(total.money),
-      total.noPrice ? el('span', { class: 'spl-nop' }, '  ·  без прайса: ' + total.noPrice + ' поз.') : null,
-      el('span', {}, '  ·  пусто = не заполнено, 0 = запланировали ноль'),
+      total.noPrice ? el('span', { class: 'spl-nop' }, '  ·  без цены: ' + total.noPrice + ' поз.') : null,
+      el('span', {}, canEdit ? '  ·  пусто = не заполнено, 0 = запланировали ноль'
+        : '  ·  только просмотр: менять план может руководитель отдела продаж'),
     ]));
 
     for (const ch of DATA.channels) {
@@ -126,36 +133,38 @@
         el('span', { class: 'spl-sum' }, fmt(ch.totals.qty) + ' шт'),
         el('span', { class: 'spl-note' }, money(ch.totals.money)),
         el('div', { class: 'spl-right' }, [
-          canEdit ? el('button', { class: 'pur-tbtn', onclick: () => addRowsDialog(ch.code, ch.name) }, '+ Товары') : null,
+          el('button', {
+            class: 'spl-pricebtn' + (ch.default_price_type_id ? '' : ' spl-none'),
+            title: 'Прайс-лист всего направления',
+            onclick: canEdit ? () => channelPriceDialog(ch) : null,
+          }, 'Прайс: ' + (ch.default_price_type_name || 'не выбран')),
+          canEdit ? el('button', { class: 'pur-tbtn', onclick: () => addRowsDialog(ch) }, '+ Товар') : null,
         ].filter(Boolean)),
       ]);
 
       const thead = el('thead', {}, el('tr', {}, [
         el('th', { class: 'spl-prod' }, 'Товар'),
-        el('th', { class: 'spl-price' }, 'Прайс-лист'),
       ].concat(days.map((d) => el('th', { class: 'spl-cell' + (d.wd === 'Сб' || d.wd === 'Вс' ? ' spl-we' : '') },
         [el('div', {}, d.wd), el('div', { class: 'spl-note' }, d.day.slice(8, 10) + '.' + d.day.slice(5, 7))])))
         .concat([
           el('th', { class: 'spl-tot' }, 'Итого, шт'),
           el('th', { class: 'spl-money' }, 'Итого, сум'),
-          el('th', {}, ''),
         ])));
 
       const tbody = el('tbody', {});
       if (!ch.rows.length) {
-        tbody.appendChild(el('tr', {}, el('td', { class: 'spl-empty', colspan: days.length + 5 },
-          'Товаров пока нет. ' + (canEdit ? 'Нажмите «+ Товары» или «Заполнить из факта».' : ''))));
+        tbody.appendChild(el('tr', {}, el('td', { class: 'spl-empty', colspan: days.length + 3 },
+          'Нет товаров с направлением «' + ch.name + '» в справочнике готовой продукции. '
+          + 'Направление приходит из SalesDoctor; добавить товар вручную — кнопкой «+ Товар».')));
       }
-      ch.rows.forEach((r, i) => tbody.appendChild(rowNode(r, days, ch, i)));
+      ch.rows.forEach((r) => tbody.appendChild(rowNode(r, days, ch)));
 
       const tfoot = el('tfoot', {}, el('tr', { class: 'spl-foot' }, [
         el('td', { class: 'spl-prod' }, 'Итого ' + ch.name),
-        el('td', {}, ''),
       ].concat(days.map((d) => el('td', { class: 'spl-cell', 'data-ch-day': ch.code + '|' + d.day }, fmt(ch.totals.byDay[d.day].qty))))
         .concat([
           el('td', { class: 'spl-tot', 'data-ch-tot': ch.code }, fmt(ch.totals.qty)),
           el('td', { class: 'spl-money', 'data-ch-money': ch.code }, money(ch.totals.money)),
-          el('td', {}, ''),
         ])));
 
       content.appendChild(el('div', { class: 'spl-card' }, [
@@ -165,31 +174,29 @@
   }
 
   function rowNode(r, days, ch) {
-    const tr = el('tr', { 'data-row': r.id });
-    tr.appendChild(el('td', { class: 'spl-prod' }, [
-      el('div', {}, r.product_name),
-      r.note ? el('div', { class: 'spl-note' }, r.note) : null,
-    ].filter(Boolean)));
-
-    // Прайс-лист — выбор отдела продаж: по какому прайсу пойдёт это количество.
-    const pb = el('button', {
-      class: 'spl-pricebtn' + (r.price === null ? ' spl-none' : ''),
-      title: r.price === null ? 'Цена не определена — деньги по этой строке не считаются' : 'Сменить прайс-лист',
-      onclick: canEdit ? () => priceDialog(r) : null,
-    }, r.price_type_name || 'выбрать прайс');
-    // Цена и факт — отдельной строкой под названием прайса: в одну строку они
-    // не помещались и цена обрезалась на середине («23 00» вместо «23 000»).
+    const tr = el('tr', { 'data-prod': ch.code + '|' + r.product_id });
+    // Цена и прайс — в подсказке под названием: колонка «прайс-лист» съедала
+    // половину экрана, а нужна она редко (прайс задан у всего направления).
     const sub = [];
     if (r.price !== null) sub.push(fmt(r.price) + ' сум');
-    if (r.fact_price) sub.push('факт ≈ ' + fmt(r.fact_price));
-    tr.appendChild(el('td', { class: 'spl-price' }, [pb,
-      sub.length ? el('div', { class: 'spl-note' }, sub.join(' · ')) : null].filter(Boolean)));
+    else sub.push('нет цены');
+    if (r.price_own && r.price_type_name) sub.push('прайс: ' + r.price_type_name);
+    if (r.note) sub.push(r.note);
+    const nameCell = el('td', { class: 'spl-prod' }, [
+      el('div', {}, r.product_name),
+      el('button', {
+        class: 'spl-sub' + (r.price === null ? ' spl-nop' : ''),
+        title: canEdit ? 'Прайс и примечание для этого товара' : 'Цена по прайсу направления',
+        onclick: canEdit ? () => priceDialog(r, ch) : null,
+      }, sub.join(' · ')),
+    ]);
+    tr.appendChild(nameCell);
 
     for (const d of days) {
       const v = r.cells[d.day];
       const inp = el('input', {
         class: 'spl-inp', inputmode: 'numeric', autocomplete: 'off',
-        'data-row': r.id, 'data-day': d.day,
+        'data-prod': r.product_id, 'data-day': d.day,
         value: v === undefined ? '' : String(v),
         readonly: !canEdit,
         title: r.src[d.day] ? srcLabel(r.src[d.day]) : '',
@@ -214,11 +221,8 @@
       tot.addEventListener('change', () => spreadRow(tot, r, ch));
       tot.addEventListener('keydown', (e) => { if (e.key === 'Enter') tot.blur(); });
     }
-    tr.appendChild(el('td', { class: 'spl-tot', 'data-tot': r.id }, tot));
-    tr.appendChild(el('td', { class: 'spl-money', 'data-money': r.id }, money(r.money)));
-    tr.appendChild(el('td', {}, canEdit
-      ? el('button', { class: 'spl-x', title: 'Убрать товар из сетки (цифры останутся)', onclick: () => hideRow(r, ch) }, '✕')
-      : ''));
+    tr.appendChild(el('td', { class: 'spl-tot', 'data-tot': r.product_id }, tot));
+    tr.appendChild(el('td', { class: 'spl-money', 'data-money': r.product_id }, money(r.money)));
     return tr;
   }
 
@@ -237,7 +241,8 @@
     const raw = inp.value.trim();
     inp.classList.add('spl-saving'); inp.classList.remove('spl-err');
     try {
-      const out = await jpost('/cell', { row_id: r.id, day: inp.dataset.day, qty: raw === '' ? null : raw });
+      const out = await jpost('/cell', Object.assign(ref(ch, r), { day: inp.dataset.day, qty: raw === '' ? null : raw }));
+      r.id = out.row_id;
       if (out.qty === null) { delete r.cells[inp.dataset.day]; delete r.src[inp.dataset.day]; inp.value = ''; }
       else { r.cells[inp.dataset.day] = out.qty; r.src[inp.dataset.day] = 'manual'; inp.value = String(out.qty); }
       inp.title = srcLabel(r.src[inp.dataset.day]);
@@ -255,10 +260,11 @@
     if (Number(raw) === Number(r.total)) return;        // не трогали — не переписываем дни
     inp.classList.add('spl-saving');
     try {
-      const out = await jpost('/spread', { row_id: r.id, week: state.from, total: raw });
+      const out = await jpost('/spread', Object.assign(ref(ch, r), { week: state.from, total: raw }));
+      r.id = out.row_id;
       for (const [day, qty] of Object.entries(out.days)) {
         r.cells[day] = qty; r.src[day] = 'spread';
-        const cell = document.querySelector('.spl-inp[data-row="' + r.id + '"][data-day="' + day + '"]');
+        const cell = inp.closest('tr').querySelector('.spl-inp[data-day="' + day + '"]');
         if (cell) { cell.value = String(qty); cell.title = srcLabel('spread'); paintInp(cell, qty, 'spread'); }
       }
       recalc(ch);
@@ -274,10 +280,12 @@
   // Пересчёт итогов на экране: без перезагрузки, чтобы ввод не прерывался.
   function recalc(ch) {
     const days = DATA.days.map((d) => d.day);
-    let qty = null, money_ = null;
+    const card = document.querySelector('[data-ch-tot="' + ch.code + '"]').closest('.spl-card');
+    let qty = null, money_ = null, noPrice = 0;
     const byDay = {};
     for (const d of days) byDay[d] = { qty: null, money: null };
     for (const r of ch.rows) {
+      if (r.price === null) noPrice++;
       let rq = null;
       for (const d of days) {
         const v = r.cells[d];
@@ -292,21 +300,20 @@
       }
       r.total = rq;
       r.money = rq !== null && r.price !== null ? rq * r.price : null;
-      const tot = document.querySelector('[data-tot="' + r.id + '"] .spl-inp');
+      const tot = card.querySelector('[data-tot="' + r.product_id + '"] .spl-inp');
       if (tot && document.activeElement !== tot) tot.value = rq === null ? '' : String(rq);
-      const m = document.querySelector('[data-money="' + r.id + '"]');
+      const m = card.querySelector('[data-money="' + r.product_id + '"]');
       if (m) m.textContent = money(r.money);
     }
-    ch.totals = { byDay, qty, money: money_, noPrice: ch.rows.filter((r) => r.price === null).length };
+    ch.totals = { byDay, qty, money: money_, noPrice };
     for (const d of days) {
       const c = document.querySelector('[data-ch-day="' + ch.code + '|' + d + '"]');
       if (c) c.textContent = fmt(byDay[d].qty);
     }
-    const t = document.querySelector('[data-ch-tot="' + ch.code + '"]');
-    if (t) t.textContent = fmt(qty);
-    const mm = document.querySelector('[data-ch-money="' + ch.code + '"]');
-    if (mm) mm.textContent = money(money_);
-    // Общий итог недели в подсказке сверху — считаем по всем направлениям.
+    document.querySelector('[data-ch-tot="' + ch.code + '"]').textContent = fmt(qty);
+    document.querySelector('[data-ch-money="' + ch.code + '"]').textContent = money(money_);
+    card.querySelector('.spl-sum').textContent = fmt(qty) + ' шт';
+
     let aq = null, am = null, np = 0;
     for (const c of DATA.channels) {
       if (c.totals.qty !== null) aq = (aq || 0) + c.totals.qty;
@@ -319,7 +326,7 @@
       hint.innerHTML = '';
       hint.appendChild(el('b', {}, 'Неделя ' + DATA.week_label + ': '));
       hint.appendChild(document.createTextNode(fmt(aq) + ' шт, ' + money(am)));
-      if (np) hint.appendChild(el('span', { class: 'spl-nop' }, '  ·  без прайса: ' + np + ' поз.'));
+      if (np) hint.appendChild(el('span', { class: 'spl-nop' }, '  ·  без цены: ' + np + ' поз.'));
       hint.appendChild(el('span', {}, '  ·  пусто = не заполнено, 0 = запланировали ноль'));
     }
   }
@@ -328,15 +335,13 @@
   function keyNav(e, inp) {
     const go = (dRow, dCol) => {
       const tr = inp.closest('tr');
-      const tbody = tr.parentNode;
-      const rows = [...tbody.querySelectorAll('tr')];
+      const rows = [...tr.parentNode.querySelectorAll('tr')];
       const cells = [...tr.querySelectorAll('.spl-inp[data-day]')];
       const col = cells.indexOf(inp);
       let target = null;
       if (dCol) target = cells[col + dCol];
       else {
-        const ri = rows.indexOf(tr);
-        const nr = rows[ri + dRow];
+        const nr = rows[rows.indexOf(tr) + dRow];
         if (nr) target = nr.querySelectorAll('.spl-inp[data-day]')[col];
       }
       if (target) { e.preventDefault(); target.focus(); }
@@ -348,20 +353,18 @@
   }
 
   // ---------- окна ----------
-  function priceDialog(r) {
+  function priceDialog(r, ch) {
     const body = el('div', {}, el('div', { class: 'spl-empty' }, 'Загружаю прайсы…'));
-    const m = modal('Прайс-лист: ' + r.product_name, body);
+    const m = modal('Товар: ' + r.product_name, body);
     api('/prices/' + r.product_id).then((d) => {
       body.innerHTML = '';
-      body.appendChild(el('p', { class: 'spl-hint' }, 'По какому прайсу пойдёт это количество. '
+      body.appendChild(el('p', { class: 'spl-hint' }, 'Прайс только для этого товара — у всего направления он задаётся кнопкой «Прайс» в шапке. '
         + (r.fact_price ? 'Фактическая средняя цена продажи за 4 недели ≈ ' + fmt(r.fact_price) + ' сум.' : 'Факта продаж за 4 недели нет.')));
       const list = el('div', { class: 'spl-plist' });
       for (const p of d.items) {
         list.appendChild(el('button', { class: p.id === r.price_type_id ? 'on' : '', onclick: async () => {
-          try {
-            await jpost('/row/' + r.id, { price_type_id: p.id });
-            m.close(); load();
-          } catch (e) { toast(e.message, true); }
+          try { await jpost('/row-price', Object.assign(ref(ch, r), { price_type_id: p.id })); m.close(); load(); }
+          catch (e) { toast(e.message, true); }
         } }, [
           el('span', {}, p.name),
           p.price === null ? el('span', { class: 'spl-pnone' }, 'нет цены') : el('span', { class: 'spl-pval' }, fmt(p.price) + ' сум'),
@@ -370,35 +373,53 @@
       if (!d.items.length) list.appendChild(el('div', { class: 'spl-empty' }, 'Прайс-листы из SalesDoctor ещё не загружены'));
       body.appendChild(list);
 
-      const note = el('input', { value: r.note || '', placeholder: 'Примечание к строке, например «под заказом»', style: 'width:100%;margin-top:12px' });
+      const note = el('input', { value: r.note || '', placeholder: 'Примечание, например «под заказом»', style: 'width:100%;margin-top:12px' });
       body.appendChild(note);
       body.appendChild(el('div', { class: 'imp-actions', style: 'margin-top:10px' }, [
         el('button', { class: 'pur-tbtn', onclick: async () => {
-          try { await jpost('/row/' + r.id, { note: note.value }); m.close(); load(); }
+          try { await jpost('/row-note', Object.assign(ref(ch, r), { note: note.value })); m.close(); load(); }
           catch (e) { toast(e.message, true); }
         } }, 'Сохранить примечание'),
       ]));
     }).catch((e) => { body.innerHTML = ''; body.appendChild(el('div', { class: 'spl-empty' }, e.message)); });
   }
 
-  function addRowsDialog(channel, channelName) {
-    const chan = (META.channels || []).find((c) => c.code === channel) || {};
-    const inGrid = new Set();
-    for (const ch of DATA.channels) if (ch.code === channel) for (const r of ch.rows) inGrid.add(r.product_id);
-    // Сначала товары, у которых направление торговли из SD совпало с этим
-    // направлением: обычно именно их и добавляют.
-    const sameTrade = (p) => String(p.trade_direction || '').trim().toLowerCase()
-      === String(chan.sd_trade || '').trim().toLowerCase();
-    const all = (META.products || []).filter((p) => !inGrid.has(p.id))
-      .sort((a, b) => (sameTrade(b) - sameTrade(a)) || a.name.localeCompare(b.name, 'ru'));
+  // Прайс всего направления: один выбор на весь список товаров.
+  function channelPriceDialog(ch) {
+    const body = el('div', {}, el('div', { class: 'spl-empty' }, 'Загружаю прайсы…'));
+    const m = modal('Прайс-лист направления: ' + ch.name, body);
+    const anyProduct = (ch.rows[0] && ch.rows[0].product_id) || 0;
+    api('/prices/' + anyProduct).then((d) => {
+      body.innerHTML = '';
+      body.appendChild(el('p', { class: 'spl-hint' }, 'По этому прайсу считаются деньги всего направления. '
+        + 'Цены в списке — для «' + ((ch.rows[0] && ch.rows[0].product_name) || 'товара') + '», для примера.'));
+      const list = el('div', { class: 'spl-plist' });
+      for (const p of d.items) {
+        list.appendChild(el('button', { class: p.id === ch.default_price_type_id ? 'on' : '', onclick: async () => {
+          try { await jpost('/channel-price', { channel: ch.code, price_type_id: p.id }); m.close(); load(); }
+          catch (e) { toast(e.message, true); }
+        } }, [
+          el('span', {}, p.name),
+          p.price === null ? el('span', { class: 'spl-pnone' }, 'нет цены') : el('span', { class: 'spl-pval' }, fmt(p.price) + ' сум'),
+        ]));
+      }
+      if (!d.items.length) list.appendChild(el('div', { class: 'spl-empty' }, 'Прайс-листы из SalesDoctor ещё не загружены'));
+      body.appendChild(list);
+    }).catch((e) => { body.innerHTML = ''; body.appendChild(el('div', { class: 'spl-empty' }, e.message)); });
+  }
 
+  // Товар, у которого направление в SD не проставлено или другое.
+  function addRowsDialog(ch) {
+    const inGrid = new Set(ch.rows.map((r) => r.product_id));
     const search = el('input', { placeholder: 'Поиск по названию', style: 'width:100%;margin-bottom:10px' });
     const list = el('div', { class: 'spl-pick' });
     const picked = new Set();
+    let ALL = null;
     const paint = () => {
       list.innerHTML = '';
+      if (!ALL) { list.appendChild(el('div', { class: 'spl-empty' }, 'Загружаю справочник…')); return; }
       const q = search.value.trim().toLowerCase();
-      const shown = all.filter((p) => !q || p.name.toLowerCase().includes(q));
+      const shown = ALL.filter((p) => !inGrid.has(p.id) && (!q || p.name.toLowerCase().includes(q)));
       if (!shown.length) list.appendChild(el('div', { class: 'spl-empty' }, 'Ничего не найдено'));
       for (const p of shown.slice(0, 400)) {
         const cb = el('input', { type: 'checkbox', checked: picked.has(p.id) });
@@ -409,20 +430,19 @@
     };
     search.addEventListener('input', paint);
     paint();
+    api('/goods').then((d) => { ALL = d.items; paint(); }).catch(() => { ALL = []; paint(); });
 
     const body = el('div', {}, [
-      el('p', { class: 'spl-hint' }, 'Товары берутся из справочника готовой продукции (приходит из SalesDoctor). '
-        + 'Сверху — те, у кого направление торговли в SD совпадает с «' + channelName + '».'),
+      el('p', { class: 'spl-hint' }, 'Сетка и так показывает все товары направления «' + ch.name
+        + '» из справочника. Сюда добавляют те, у кого направление в SalesDoctor не проставлено или другое.'),
       search, list,
     ]);
-    const m = modal('Добавить товары: ' + channelName, body, [
+    const m = modal('Добавить товар: ' + ch.name, body, [
       el('button', { class: 'pur-tbtn', onclick: async () => {
         if (!picked.size) return toast('Отметьте хотя бы один товар', true);
         try {
-          const out = await jpost('/rows', { channel, product_ids: [...picked] });
-          m.close();
-          toast('Добавлено строк: ' + out.added + (out.exists ? ', уже были: ' + out.exists : ''));
-          load();
+          await jpost('/rows', { channel: ch.code, product_ids: [...picked] });
+          m.close(); load();
         } catch (e) { toast(e.message, true); }
       } }, 'Добавить'),
     ]);
@@ -451,27 +471,20 @@
     const body = el('div', {}, [
       el('p', { class: 'spl-hint' }, 'Возьму фактические отгрузки недели ' + window.HubDateRange.labelWeek(src)
         + ' из SalesDoctor и положу их в план этой недели по тем же дням недели. '
-        + 'Уже заполненные клетки не трогаю. Направление определяю по «Направлению торговли» товара в SD.'),
+        + 'Уже заполненные клетки не трогаю.'),
     ]);
     const m = modal('Заполнить из факта', body, [
       el('button', { class: 'pur-tbtn', onclick: async () => {
         try {
           const out = await jpost('/fill-fact', { from: src, to: state.from });
           m.close();
-          let msg = 'Заполнено клеток: ' + out.cells + ', строк: ' + out.rows;
-          if (out.note) msg = out.note;
+          let msg = out.note || ('Заполнено клеток: ' + out.cells + ', товаров: ' + out.rows);
           if (out.skipped_total) msg += '. Не определилось направление у ' + out.skipped_total + ' товаров: ' + out.skipped.join(', ');
           toast(msg, !out.cells);
           load();
         } catch (e) { toast(e.message, true); }
       } }, 'Заполнить'),
     ]);
-  }
-
-  async function hideRow(r, ch) {
-    if (!confirm('Убрать «' + r.product_name + '» из сетки? Введённые цифры останутся в истории.')) return;
-    try { await jpost('/row/' + r.id + '/delete', {}); load(); }
-    catch (e) { toast(e.message, true); }
   }
 
   // ---------- старт ----------

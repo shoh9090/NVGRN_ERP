@@ -41,6 +41,10 @@ async function ensureSalesPlanSchema(pool) {
     sort_order INTEGER NOT NULL DEFAULT 100,
     active BOOLEAN NOT NULL DEFAULT TRUE
   )`);
+  // Прайс-лист направления: цена берётся им для всех товаров сразу. Иначе РОП
+  // выбирал бы прайс сорок раз подряд, хотя у направления он один и тот же.
+  await q('ALTER TABLE sales_plan_channels ADD COLUMN IF NOT EXISTS default_price_type_id INTEGER')
+    .catch((e) => console.error('[ПЛАН ПРОДАЖ] прайс направления:', e.message));
   for (const c of CHANNELS) {
     await q(
       `INSERT INTO sales_plan_channels (code, name, sd_trade, sort_order)

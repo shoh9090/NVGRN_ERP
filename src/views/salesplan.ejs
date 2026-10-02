@@ -23,12 +23,13 @@
   <div id="spl-modal-root"></div>
 
   <%#
-    Права на правку проверяет сервер (requireEdit в src/salesplan.js): страница
-    открывается только тем, у кого есть плитка, поэтому здесь флаг включён.
-    Если появится роль «только смотреть», она задаётся и здесь, и на сервере —
-    одной проверки на экране недостаточно, адрес можно набрать руками.
+    Менять план может только РОП и админ (решение Шоха 02.10.2026). Остальным,
+    у кого есть плитка, он виден на чтение: склад и закуп должны ЗНАТЬ план, но
+    не переписывать чужую цель. Флаг считает сервер (canEditPlan в
+    src/salesplan.js) — он же проверяет каждую запись: одной проверки на экране
+    мало, адрес можно набрать руками.
   %>
-  <script>window.HUB_USER = { isAdmin: <%= user.isAdmin ? "true" : "false" %>, canEdit: true, name: "<%= user.name %>" };</script>
+  <script>window.HUB_USER = { isAdmin: <%= user.isAdmin ? "true" : "false" %>, canEdit: <%= canEdit ? "true" : "false" %>, name: "<%= user.name %>" };</script>
   <script src="/static/conn.js?v=<%= V %>"></script>
   <script src="/static/bell.js?v=<%= V %>"></script>
   <script src="/static/daterange.js?v=<%= V %>"></script>
