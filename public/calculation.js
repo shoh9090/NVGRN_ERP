@@ -37,7 +37,9 @@
   const api = async (path, opts) => {
     const r = await fetch('/calculation/api' + path, opts);
     const data = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(data.error || 'Ошибка сервера');
+    // Тело ответа кладём в ошибку: по нему экран отличает «лист не пустой»
+    // от обычного сбоя и спрашивает подтверждение, а не просто ругается.
+    if (!r.ok) { const e = new Error(data.error || 'Ошибка сервера'); e.data = data; e.status = r.status; throw e; }
     return data;
   };
   const post = (path, body, method = 'POST') => api(path, {
@@ -100,12 +102,18 @@
   }
 
   // Листы, как внизу в Excel. Готовые открываются, остальные пока недоступны.
-  const SHEETS = [
+  // Служебные листы — они не про товары и в справочнике не живут.
+  const FIXED_SHEETS = [
     { key: 'summary', title: 'Сводка', ready: true },
     { key: 'sandbox', title: 'Песочница', ready: true },
     { key: 'production', title: 'Производство', ready: true },
     { key: 'packaging', title: 'Упаковка', ready: true },
     { key: 'recipes', title: 'Рецептуры', ready: true },
+  ];
+  // Товарные листы приходят из справочника: новый вид продукции заводится
+  // из интерфейса, без правки кода. До ответа сервера показываем то, что было
+  // всегда, — иначе при медленной сети вкладки прыгали бы.
+  let SHEETS = FIXED_SHEETS.concat([
     { key: 'retail', title: 'Рознич. тара', ready: true },
     { key: 'horeca250', title: 'Хорека 250г', ready: true },
     { key: 'horeca500', title: 'Хорека 500', ready: true },
@@ -115,7 +123,7 @@
     { key: 'cutveg', title: 'Резаные овощи', ready: true },
     { key: 'vinegar', title: 'Уксус', ready: true },
     { key: 'microgreens', title: 'Микрозелень', ready: true },
-  ];
+  ]);
   // Что за товары на листе. Устройство расчёта у всех листов ОДИНАКОВОЕ и
   // повторяет рабочий файл Шоха — различается только состав товаров.
   const SHEET_ABOUT = {
@@ -141,7 +149,21 @@
   const TABS_OK = (window.HUB_TABS === null || window.HUB_TABS === undefined)
     ? null : new Set(window.HUB_TABS);
   const tabAllowed = (key) => TABS_OK === null || TABS_OK.has(key);
-  const VISIBLE_SHEETS = SHEETS.filter((s) => tabAllowed(s.key));
+  let VISIBLE_SHEETS = SHEETS.filter((s) => tabAllowed(s.key));
+  let SKU_KEYS = null;      // какие листы товарные — из справочника
+
+  // Подтянуть справочник листов. Вызывается при запуске и после правок.
+  async function loadSheetList() {
+    let d;
+    try { d = await api('/sheets'); } catch (e) { return; }
+    const items = d.items || [];
+    if (!items.length) return;
+    SKU_KEYS = items.map((x) => x.code);
+    SHEETS = FIXED_SHEETS.concat(items.map((x) => ({ key: x.code, title: x.name, ready: true, about: x.about || '' })));
+    VISIBLE_SHEETS = SHEETS.filter((s) => tabAllowed(s.key));
+    items.forEach((x) => { if (x.about) SHEET_ABOUT[x.code] = x.about; });
+  }
+  const isSku = (key) => (SKU_KEYS ? SKU_KEYS.includes(key) : SKU_SHEETS.includes(key));
 
   // Открываем плитку на сводке: первое, что нужно увидеть, — где горит.
   // Если сводка закрыта — на первой доступной вкладке.
@@ -370,7 +392,7 @@
     if (sheet === 'sandbox') return loadSandbox();
     if (sheet === 'packaging') return loadPackaging();
     if (sheet === 'recipes') return loadRecipes();
-    if (SKU_SHEETS.includes(sheet)) return loadSku();
+    if (isSku(sheet)) return loadSku();
     let d;
     try { d = await api('/production?period=' + (DATA ? DATA.period : '')); }
     catch (e) {
@@ -410,20 +432,67 @@
       : sheet === 'sandbox' ? sandboxSheet()
         : sheet === 'packaging' ? packagingSheet()
           : sheet === 'recipes' ? recipesSheet()
-            : SKU_SHEETS.includes(sheet) ? skuSheet() : production();
+            : isSku(sheet) ? skuSheet() : production();
     main.appendChild(el('div', { class: 'calc-sheet' }, body));
   }
 
   // Вкладки листов — внизу, как в Excel
   function sheetTabs() {
-    return el('div', { class: 'calc-tabs' }, VISIBLE_SHEETS.map((s) => el('button', {
+    const tabs = VISIBLE_SHEETS.map((s) => el('button', {
       class: 'calc-tab' + (sheet === s.key ? ' on' : '') + (s.ready ? '' : ' soon'),
       title: s.ready ? s.title : 'Этот лист ещё не собран',
       onclick: () => {
         if (!s.ready) return toast('Лист «' + s.title + '» ещё не собран — идём по порядку');
         sheet = s.key; skuMode = 'approved'; load();
       },
-    }, s.title)));
+    }, s.title));
+    // Новый лист заводится здесь же: вид продукции — вопрос бизнеса, а не
+    // разработки, и ждать правки кода ради «цен за 1 кг» неправильно.
+    if (canEdit()) tabs.push(el('button', { class: 'calc-tab calc-tab-add', title: 'Новый лист расчёта', onclick: openSheetAdd }, '+ лист'));
+    return el('div', { class: 'calc-tabs' }, tabs);
+  }
+
+  function openSheetAdd() {
+    const inp = el('input', { type: 'text', class: 'calc-sb-q', placeholder: 'Например: Цены за 1 кг' });
+    const body = el('div', {}, [
+      el('div', { class: 'calc-dim', style: 'font-size:13px;margin-bottom:10px' },
+        'Новый лист считается так же, как остальные: граммаж, сырьё, упаковка, '
+        + 'производственные, ФОТ, цена. Отличается только составом товаров.'),
+      inp,
+    ]);
+    const m = calcModal('Новый лист', body, [
+      el('button', { class: 'calc-tbtn', onclick: () => m.close() }, 'Отмена'),
+      el('button', { class: 'calc-add', onclick: async () => {
+        const name = inp.value.trim();
+        if (!name) return toast('Укажите название', true);
+        try {
+          const r = await post('/sheets', { name });
+          m.close(); toast('Лист «' + r.name + '» создан');
+          await loadSheetList();
+          sheet = r.code; skuMode = 'approved'; load();
+        } catch (e) { toast(e.message, true); }
+      } }, 'Создать'),
+    ]);
+  }
+
+  // Убрать лист с глаз. Не удаление: товары, утверждённые версии и снимки
+  // остаются — иначе пропала бы история себестоимости.
+  async function archiveSheet(key, title) {
+    const go = async (force) => {
+      try {
+        await post('/sheets/' + key + '/archive', force ? { force: true } : {});
+        toast('Лист «' + title + '» убран в архив');
+        await loadSheetList();
+        sheet = 'summary'; load();
+      } catch (e) {
+        if (e && e.data && e.data.error === 'in_use') {
+          if (confirm('На листе «' + title + '» ещё ' + e.data.count + ' товаров. Они никуда не денутся, но лист пропадёт из вкладок. Убрать?')) return go(true);
+          return;
+        }
+        toast(e.message, true);
+      }
+    };
+    go(false);
   }
 
   // ---------------------------------------------------------------------------
@@ -1098,7 +1167,9 @@
     ]);
   }
 
-  load();
+  // Сначала справочник листов, потом сам лист: иначе вкладки на миг показали бы
+  // старый зашитый список и прыгнули.
+  loadSheetList().then(load, load);
 
   // «Нужно внести» из колокольчика: товары, которые продаются в SalesDoctor, но
   // пары в Калькуляции не нашли. Привязываешь к товару Калькуляции — у него
@@ -1423,7 +1494,13 @@
     box.appendChild(el('div', { class: 'calc-sheet-head' }, [
       el('div', { class: 'calc-sheet-top' }, [
         el('h1', { class: 'calc-h1' }, d.sheet_title),
-        canEdit() ? el('button', { class: 'calc-add', onclick: addProduct }, '+ товар') : null,
+        el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' }, [
+          // Убрать лист с глаз, когда вид продукции перестал быть актуальным.
+          // Товары при этом остаются — это архив, а не удаление.
+          canEdit() ? el('button', { class: 'calc-tbtn', title: 'Убрать лист в архив',
+            onclick: () => archiveSheet(sheet, d.sheet_title) }, 'в архив') : null,
+          canEdit() ? el('button', { class: 'calc-add', onclick: addProduct }, '+ товар') : null,
+        ]),
       ]),
       el('div', { class: 'calc-sub' }, SHEET_ABOUT[sheet] || ''),
     ]));

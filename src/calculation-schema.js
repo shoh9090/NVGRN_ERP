@@ -513,6 +513,38 @@ async function ensureCalculationSchema(pool) {
   // Здесь хранятся ТОЛЬКО вводимые значения. Себестоимость, наценка, прибыль,
   // налог и чистая прибыль считаются на сервере в calculation-engine и в базе
   // не лежат — иначе цифры разошлись бы с формулой при первой же правке.
+  // Листы расчёта — справочник, а не список в коде. Новый вид продукции
+  // (например, «Цены за 1 кг») заводится без разработчика: устройство расчёта
+  // у всех листов одинаковое, различается только состав товаров.
+  // Удалять нельзя — только в архив: на листе висят товары, утверждённые версии
+  // и снимки, и стереть лист значило бы потерять историю себестоимости.
+  await q(`CREATE TABLE IF NOT EXISTS calc_sheets (
+    code TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    about TEXT DEFAULT '',
+    sort INTEGER NOT NULL DEFAULT 100,
+    status TEXT NOT NULL DEFAULT 'active',      -- active | archived
+    created_by INTEGER,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  // Сид: то, что раньше было константой в коде. ON CONFLICT DO NOTHING —
+  // переименованный человеком лист не возвращается к прежнему названию.
+  for (const [code, name, sort, about] of [
+    ['retail', 'Рознич. тара', 10, 'Товары для розничных сетей. Премиум-сегмент: зелень мытая и очищенная, в потребительской упаковке.'],
+    ['horeca250', 'Хорека 250 г', 20, 'Дополнительный формат для HoReCa: зелень мытая и очищенная. Для тех, кому 500 г много.'],
+    ['horeca500', 'Хорека 500', 30, 'Крупный формат для HoReCa. Премиум-сегмент: зелень мытая и очищенная.'],
+    ['salads', 'Салаты', 40, 'Салатные смеси. Фасовка и для розницы, и для HoReCa; сюда же входят боксы.'],
+    ['bunches', 'Пучки и горшки', 50, 'Пучковая продукция и зелень в горшках. Поставляется как в упаковке, так и без неё.'],
+    ['culinary', 'Кулинарка', 60, 'Продукция второго сорта, в том числе резаная. Для приготовления блюд, где внешний вид не имеет значения.'],
+    ['cutveg', 'Резаные овощи', 70, ''],
+    ['vinegar', 'Уксус', 80, ''],
+    ['microgreens', 'Микрозелень', 90, ''],
+  ]) {
+    await q(`INSERT INTO calc_sheets (code, name, sort, about) VALUES ($1,$2,$3,$4)
+             ON CONFLICT (code) DO NOTHING`, [code, name, sort, about])
+      .catch((e) => console.error('calc_sheets сид ' + code + ':', e.message));
+  }
+
   await q(`CREATE TABLE IF NOT EXISTS calc_sheet_products (
     id SERIAL PRIMARY KEY,
     sheet TEXT NOT NULL,                        -- retail | horeca250 | horeca500 | salads | bunches

@@ -77,9 +77,12 @@ const BLOCKS = [
 // давала «Internal Server Error» на весь /calculation, включая листы, которые
 // с этой таблицей никак не связаны. Пишем ошибку в лог и работаем дальше —
 // не хватит какой-то таблицы, отвалится только её экран, а не всё сразу.
+let _sheetsRead = false;
 router.use(async (req, res, next) => {
   try { await require('./calculation-schema').ensureCalculationSchema(db.pool); }
   catch (e) { console.error('[КАЛЬКУЛЯЦИЯ] схема:', e.message); }
+  // Справочник листов читаем один раз после миграции: до неё таблицы нет.
+  if (!_sheetsRead) { _sheetsRead = true; await reloadSheets(); }
   next();
 });
 
@@ -682,7 +685,7 @@ router.delete('/api/recipes/line/:id(\\d+)', async (req, res) => {
 //   • брак, цены, ретро, НДС, налог — вручную.
 // Все производные цифры считает calculation-engine, в базе их нет.
 
-const SHEETS = {
+const SHEETS_SEED = {
   retail: 'Рознич. тара',
   horeca250: 'Хорека 250 г',
   horeca500: 'Хорека 500',
@@ -701,6 +704,23 @@ const SHEETS = {
   // у товара.
   microgreens: 'Микрозелень',
 };
+// Листы живут в справочнике `calc_sheets`, а это — запасной список на случай,
+// если справочник ещё не прочитан (первые секунды после запуска). Новый лист
+// заводится из интерфейса и подхватывается перезагрузкой справочника, без
+// правки кода — так же, как графики работы в Кадрах.
+let SHEETS = { ...SHEETS_SEED };
+let SHEET_LIST = [];                 // с названиями и описаниями, по порядку
+async function reloadSheets() {
+  try {
+    const rows = (await db.pool.query(
+      "SELECT code, name, about, sort FROM calc_sheets WHERE status = 'active' ORDER BY sort, name")).rows;
+    if (!rows.length) return;
+    SHEET_LIST = rows;
+    const next = {};
+    rows.forEach((r) => { next[r.code] = r.name; });
+    SHEETS = next;
+  } catch (e) { /* справочника ещё нет — работаем по запасному списку */ }
+}
 // Листы, где производство не общее: себестоимость собирается из ручных строк.
 const MANUAL_SHEETS = new Set(['vinegar']);
 
@@ -2108,6 +2128,69 @@ router.get('/api/sheet/:sheet/export.xlsx', async (req, res) => {
     const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, SHEETS[sheet].slice(0, 28));
     xlsxSend(res, wb, `kalkulyaciya_${sheet}_${new Date().toISOString().slice(0, 10)}.xlsx`);
   } catch (e) { res.status(400).send('Ошибка выгрузки: ' + e.message); }
+});
+
+// ---------- Листы как справочник ----------
+// Список листов для экрана: он больше не зашит в коде страницы.
+router.get('/api/sheets', async (req, res) => {
+  try {
+    await reloadSheets();
+    res.json({ items: SHEET_LIST, can_edit: canEdit(req) });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Новый лист. Код делаем сами из названия: человек не должен придумывать
+// латинский идентификатор, а в адресах и настройках он нужен.
+router.post('/api/sheets', J, async (req, res) => {
+  if (!canEdit(req)) return denyEdit(res);
+  const name = String((req.body || {}).name || '').trim();
+  if (!name) return res.status(400).json({ error: 'Укажите название листа' });
+  if (name.length > 40) return res.status(400).json({ error: 'Название длиннее 40 символов' });
+  const translit = { а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'e', ж: 'zh', з: 'z', и: 'i', й: 'y', к: 'k', л: 'l', м: 'm', н: 'n', о: 'o', п: 'p', р: 'r', с: 's', т: 't', у: 'u', ф: 'f', х: 'h', ц: 'c', ч: 'ch', ш: 'sh', щ: 'sch', ъ: '', ы: 'y', ь: '', э: 'e', ю: 'yu', я: 'ya' };
+  let code = name.toLowerCase().split('').map((c) => (translit[c] !== undefined ? translit[c] : c))
+    .join('').replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 24);
+  if (!code) code = 'list';
+  try {
+    // Код занят — добавляем номер, а не отказываем: «Цены за 1 кг» и «Цены за
+    // 1 кг (опт)» дают один и тот же код.
+    const taken = new Set((await db.pool.query('SELECT code FROM calc_sheets')).rows.map((r) => r.code));
+    if (taken.has(code)) { let i = 2; while (taken.has(code + i)) i++; code += i; }
+    const sort = (((await db.pool.query('SELECT COALESCE(MAX(sort), 0) AS m FROM calc_sheets')).rows[0] || {}).m || 0) + 10;
+    await db.pool.query(
+      'INSERT INTO calc_sheets (code, name, sort, created_by) VALUES ($1,$2,$3,$4)',
+      [code, name, sort, req.user.id]);
+    // Вкладка для прав доступа. Без неё лист был бы невидим тем, у кого
+    // отмечены конкретные вкладки: правило «не отмечено — доступно всё»
+    // работает только когда у роли нет отметок вовсе.
+    try {
+      await db.pool.query(
+        `INSERT INTO tile_tabs (tile_url, code, name, sort) VALUES ('/calculation', $1, $2, $3)
+         ON CONFLICT (tile_url, code) DO UPDATE SET name = $2`, [code, name, sort]);
+    } catch (e) { console.error('[КАЛЬКУЛЯЦИЯ] вкладка листа:', e.message); }
+    await reloadSheets();
+    await db.log(req.user.id, 'calc_sheet_add', { code, name });
+    res.json({ ok: true, code, name });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// В архив, а не удалять: на листе висят товары, утверждённые версии и снимки.
+router.post('/api/sheets/:code/archive', J, async (req, res) => {
+  if (!canEdit(req)) return denyEdit(res);
+  const code = String(req.params.code || '');
+  try {
+    const n = (await db.pool.query(
+      "SELECT COUNT(*)::int AS n FROM calc_sheet_products WHERE sheet = $1 AND status <> 'archived'", [code]))
+      .rows[0].n;
+    // Непустой лист без подтверждения не прячем: товары останутся, но человек
+    // должен знать, что убирает их с глаз вместе с листом.
+    if (n > 0 && !(req.body || {}).force) {
+      return res.status(409).json({ error: 'in_use', count: n });
+    }
+    await db.pool.query("UPDATE calc_sheets SET status = 'archived' WHERE code = $1", [code]);
+    await reloadSheets();
+    await db.log(req.user.id, 'calc_sheet_archive', { code, products: n });
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 router.post('/api/sheet/:sheet/product', J, async (req, res) => {
