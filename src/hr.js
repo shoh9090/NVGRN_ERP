@@ -196,6 +196,21 @@ async function ensureSchema() {
     UNIQUE (employee_id, work_date)
   )`);
   await q(`CREATE INDEX IF NOT EXISTS idx_hr_timesheet_date ON hr_timesheet (work_date)`);
+  // Красные дни: государственные праздники и перенесённые выходные. Работа в
+  // такой день оплачивается вдвойне — отработал 10 часов, начислено как за 20.
+  // Список ведут Кадры: он меняется каждый год и переносами внутри года,
+  // поэтому в коде ему не место.
+  await q(`CREATE TABLE IF NOT EXISTS hr_holidays (
+    day DATE PRIMARY KEY,
+    name TEXT DEFAULT '',
+    created_by INT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  // Доплата за праздничные — отдельной колонкой, а не внутри факта. Иначе в
+  // табеле «часов» показывало бы вдвое больше, чем человек отработал, и сверить
+  // с ним было бы нечего.
+  await q(`ALTER TABLE hr_payroll ADD COLUMN IF NOT EXISTS holiday_hours NUMERIC DEFAULT 0`);
+  await q(`ALTER TABLE hr_payroll ADD COLUMN IF NOT EXISTS holiday_days NUMERIC DEFAULT 0`);
   // Утверждение табеля начальником смены. До него зарплату начислять нельзя,
   // после — правит только админ.
   await q(`CREATE TABLE IF NOT EXISTS hr_timesheet_submits (
@@ -307,17 +322,28 @@ const POCHASOVOY = { has: (code) => !!(SCHEDULES.find((s) => s.code === code) ||
 // Авторасчёт оклада-начисления (accr_fact) ПО ФАКТУ. Нет факта → 0 (не начисляем).
 // Почасовые: оклад/план_часы × (факт_часы + переработка×2).
 // Окладники: дневная ставка × факт-дни = (оклад / план_дни) × факт_дни.
+// Праздничные часы и дни идут ДОПЛАТОЙ сверх обычной оплаты: день уже посчитан
+// в факте как обычный, добавка делает его вторым. Так «отработал 10 часов в
+// праздник — начислено как за 20» и получается, а факт в табеле остаётся
+// честным: 10 часов.
 function computePay(row) {
   const oklad = Number(row.base_salary) || 0;
+  const holH = Number(row.holiday_hours) || 0;
+  const holD = Number(row.holiday_days) || 0;
   if (POCHASOVOY.has(row.schedule_type)) {
     const planH = Number(row.plan_hours) || 0, factH = Number(row.fact_hours) || 0, otH = Number(row.overtime_hours) || 0;
-    if (!(planH > 0) || !((factH + otH) > 0)) return { base: 0, overtime: 0 };
+    if (!(planH > 0) || !((factH + otH) > 0)) return { base: 0, overtime: 0, holiday: 0 };
     const rate = oklad / planH;
-    return { base: Math.round(rate * (factH + otH * 2)), overtime: Math.round(rate * otH * 2) };
+    return {
+      base: Math.round(rate * (factH + otH * 2 + holH)),
+      overtime: Math.round(rate * otH * 2),
+      holiday: Math.round(rate * holH),
+    };
   }
   const planD = Number(row.plan_days) || 0, factD = Number(row.fact_days) || 0;
-  if (!(planD > 0) || !(factD > 0)) return { base: 0, overtime: 0 };
-  return { base: Math.round(oklad / planD * factD), overtime: 0 };
+  if (!(planD > 0) || !(factD > 0)) return { base: 0, overtime: 0, holiday: 0 };
+  const rateD = oklad / planD;
+  return { base: Math.round(rateD * (factD + holD)), overtime: 0, holiday: Math.round(rateD * holD) };
 }
 // Эффективный «месячный» оклад за период с учётом истории изменений (календарно-взвешенный).
 // Оклад сменился в середине месяца → доля дней до/от даты × соответствующий оклад. Ставка потом = /план.
@@ -343,7 +369,8 @@ async function effectiveOklad(empId, period, fallback) {
 // Пересчитать и сохранить accr_fact сотрудника за период. Возвращает посчитанную базу.
 async function recomputeAccrFact(empId, period) {
   const r = (await db.pool.query(
-    `SELECT e.base_salary, e.schedule_type, pr.plan_days, pr.fact_days, pr.plan_hours, pr.fact_hours, pr.overtime_hours
+    `SELECT e.base_salary, e.schedule_type, pr.plan_days, pr.fact_days, pr.plan_hours, pr.fact_hours,
+            pr.overtime_hours, pr.holiday_hours, pr.holiday_days
      FROM hr_employees e LEFT JOIN hr_payroll pr ON pr.employee_id = e.id AND pr.period = $2 WHERE e.id = $1`, [empId, period])).rows[0];
   if (!r) return 0;
   // Норма месяца задана один раз на график (hr_norms) — значит она относится и
@@ -633,6 +660,8 @@ const COMPANY_WRITES = [
   /^\/api\/employee\/\d+\/access\/(link|unlink|create)$/,
   // Графики работы — общий справочник компании, не отдельский
   /^\/api\/schedule(\/|$)/,
+  // Праздничные дни — тоже общий справочник: красный день красный для всех
+  /^\/api\/holiday(\/|$)/,
   /^\/api\/period-lock$/,
   /^\/api\/payroll\/apply-recurring$/,
   /^\/api\/payroll\/import$/,
@@ -1475,21 +1504,28 @@ function monthDays(period) {
 // ведомость не трогаем: там могут стоять цифры, введённые руками до табеля,
 // и обнулить их значило бы потерять данные.
 async function recomputeTimesheetFact(empId, period) {
+  // Праздничные считаем тем же запросом: день «красный», если он есть в
+  // hr_holidays. Доплата идёт отдельными колонками, факт остаётся честным.
   const r = (await db.pool.query(
     `SELECT COUNT(*)::int AS marks,
             COUNT(*) FILTER (WHERE mark='work')::int AS days,
             COALESCE(SUM(hours) FILTER (WHERE mark='work'), 0) AS hours,
-            COALESCE(SUM(overtime_hours) FILTER (WHERE mark='work'), 0) AS ot
-       FROM hr_timesheet
-      WHERE employee_id = $1 AND to_char(work_date, 'YYYY-MM') = $2`, [empId, period])).rows[0];
+            COALESCE(SUM(overtime_hours) FILTER (WHERE mark='work'), 0) AS ot,
+            COALESCE(SUM(hours) FILTER (WHERE mark='work' AND h.day IS NOT NULL), 0) AS hol_hours,
+            COUNT(*) FILTER (WHERE mark='work' AND h.day IS NOT NULL)::int AS hol_days
+       FROM hr_timesheet t
+       LEFT JOIN hr_holidays h ON h.day = t.work_date
+      WHERE t.employee_id = $1 AND to_char(t.work_date, 'YYYY-MM') = $2`, [empId, period])).rows[0];
   if (!r || !r.marks) return null;
   await db.pool.query(
-    `INSERT INTO hr_payroll (employee_id, period, fact_days, fact_hours, overtime_hours)
-     VALUES ($1,$2,$3,$4,$5)
+    `INSERT INTO hr_payroll (employee_id, period, fact_days, fact_hours, overtime_hours, holiday_hours, holiday_days)
+     VALUES ($1,$2,$3,$4,$5,$6,$7)
      ON CONFLICT (employee_id, period) DO UPDATE
         SET fact_days = EXCLUDED.fact_days, fact_hours = EXCLUDED.fact_hours,
-            overtime_hours = EXCLUDED.overtime_hours, updated_at = now()`,
-    [empId, period, r.days, Number(r.hours), Number(r.ot)]);
+            overtime_hours = EXCLUDED.overtime_hours,
+            holiday_hours = EXCLUDED.holiday_hours, holiday_days = EXCLUDED.holiday_days,
+            updated_at = now()`,
+    [empId, period, r.days, Number(r.hours), Number(r.ot), Number(r.hol_hours), r.hol_days]);
   // Уже начисленный месяц не пересчитываем молча — как и «Заполнить нормы».
   const accrued = (await db.pool.query(
     'SELECT accrued_at FROM hr_payroll WHERE employee_id=$1 AND period=$2', [empId, period])).rows[0];
@@ -1599,9 +1635,17 @@ router.get('/api/timesheet', async (req, res) => {
     const days = [];
     const dn = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
     const total = monthDays(period);
+    // Красные дни месяца: экран подсветит их в шапке, а расчёт удвоит оплату.
+    const hol = new Map((await db.pool.query(
+      "SELECT to_char(day,'DD') AS d, name FROM hr_holidays WHERE to_char(day,'YYYY-MM') = $1", [period]))
+      .rows.map((x) => [x.d, x.name || '']));
     for (let i = 1; i <= total; i++) {
       const dt = new Date(Date.UTC(Number(period.slice(0, 4)), Number(period.slice(5, 7)) - 1, i));
-      days.push({ d: String(i).padStart(2, '0'), n: i, dow: dn[dt.getUTCDay()], weekend: dt.getUTCDay() === 0 });
+      const dd = String(i).padStart(2, '0');
+      days.push({
+        d: dd, n: i, dow: dn[dt.getUTCDay()], weekend: dt.getUTCDay() === 0,
+        holiday: hol.has(dd), holiday_name: hol.get(dd) || '',
+      });
     }
 
     // Утверждение табеля, прогноз и лимит — по одному отделу. Показываем их,
@@ -2842,6 +2886,60 @@ router.post('/api/department/:id(\\d+)/users', J, async (req, res) => {
 // Удалять нельзя — только в архив: код графика стоит в карточках сотрудников
 // и в истории, и стереть его значило бы потерять, по какому графику человек
 // работал и как ему считали зарплату.
+// ---------- Красные дни ----------
+// Список праздников ведут Кадры: он меняется каждый год и переносами внутри
+// года. Работа в такой день оплачивается вдвойне.
+router.get('/api/holidays', async (req, res) => {
+  const period = /^\d{4}-\d{2}$/.test(req.query.period) ? req.query.period : null;
+  try {
+    const rows = (await db.pool.query(
+      period
+        ? "SELECT to_char(day,'YYYY-MM-DD') AS day, name FROM hr_holidays WHERE to_char(day,'YYYY-MM') = $1 ORDER BY day"
+        : "SELECT to_char(day,'YYYY-MM-DD') AS day, name FROM hr_holidays ORDER BY day DESC LIMIT 200",
+      period ? [period] : [])).rows;
+    res.json({ items: rows });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+router.post('/api/holiday', J, async (req, res) => {
+  const b = req.body || {};
+  const day = String(b.day || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return res.status(400).json({ error: 'Укажите дату' });
+  { const _e = await hrLockError(day.slice(0, 7)); if (_e) return res.status(423).json({ error: _e }); }
+  try {
+    await db.pool.query(
+      `INSERT INTO hr_holidays (day, name, created_by) VALUES ($1,$2,$3)
+       ON CONFLICT (day) DO UPDATE SET name = EXCLUDED.name`,
+      [day, String(b.name || '').trim().slice(0, 80), req.user.id]);
+    // Пересчитываем всех, у кого в этот день есть отметка: доплата появляется
+    // сразу, а не после следующей правки табеля. Уже начисленные месяцы
+    // recomputeAccrFact не трогает — там своя защита.
+    const period = day.slice(0, 7);
+    for (const e of (await db.pool.query(
+      'SELECT DISTINCT employee_id FROM hr_timesheet WHERE work_date = $1::date', [day])).rows) {
+      await recomputeTimesheetFact(e.employee_id, period);
+    }
+    await db.log(req.user.id, 'hr_holiday_add', `${day} ${b.name || ''}`);
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+router.post('/api/holiday/:day/delete', J, async (req, res) => {
+  const day = String(req.params.day || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return res.status(400).json({ error: 'Укажите дату' });
+  { const _e = await hrLockError(day.slice(0, 7)); if (_e) return res.status(423).json({ error: _e }); }
+  try {
+    await db.pool.query('DELETE FROM hr_holidays WHERE day = $1', [day]);
+    const period = day.slice(0, 7);
+    for (const e of (await db.pool.query(
+      'SELECT DISTINCT employee_id FROM hr_timesheet WHERE work_date = $1::date', [day])).rows) {
+      await recomputeTimesheetFact(e.employee_id, period);
+    }
+    await db.log(req.user.id, 'hr_holiday_del', day);
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 router.get('/api/schedules', async (req, res) => {
   try {
     const rows = (await db.pool.query(
@@ -3483,6 +3581,9 @@ router.post('/api/employees/bulk', J, async (req, res) => {
 });
 
 module.exports = router;
+// Открыто для тестов: формула зарплаты. Переработка и праздничные удваивают
+// оплату, и ошибка здесь — это деньги людей.
+module.exports.computePay = computePay;
 // Открыто для тестов: это правило решает, чьи зарплаты человек увидит.
 module.exports.scopeDept = scopeDept;
 // Открыто для тестов: это соответствие решает, данные какой вкладки закрывать.

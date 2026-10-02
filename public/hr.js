@@ -1401,6 +1401,17 @@
           !d.submitted, () => submitBar(d, load)));
       }
       if (foldables.childNodes.length) box.appendChild(foldables);
+      // Красные дни месяца: отметить праздник — отдельная кнопка, потому что
+      // это общий справочник компании, а не отметка конкретного сотрудника.
+      if (isAdmin) {
+        const hols = (d.days || []).filter((x) => x.holiday);
+        box.appendChild(el('div', { class: 'hr-note', style: 'margin-bottom:10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap' }, [
+          el('span', {}, hols.length
+            ? 'Красные дни месяца: ' + hols.map((x) => x.n).join(', ') + ' — работа в них оплачивается вдвойне.'
+            : 'Красных дней в этом месяце не отмечено.'),
+          el('button', { class: 'btn-ghost', onclick: () => openHolidays(d.period, load) }, '🔴 Красные дни'),
+        ]));
+      }
       if (!d.department) {
         box.appendChild(el('div', { class: 'hr-note', style: 'margin-bottom:10px' },
           'Выберите отдел — табель ведётся по отделам. Сейчас показаны все сотрудники: '
@@ -1446,6 +1457,8 @@
           : TS_LETTER[m.mark];
         const cls = ['hr-ts-c'];
         if (day.weekend) cls.push('wk');
+        // Красный день: работа в него оплачивается вдвойне.
+        if (day.holiday) cls.push('hol');
         if (isThisMonth && day.d === today) cls.push('now');
         if (m && m.mark !== 'work') cls.push('mk-' + m.mark);
         if (m && m.overtime) cls.push('ot');
@@ -1468,7 +1481,11 @@
 
       const head = el('tr', {}, [el('th', { class: 'hr-ts-name' }, 'Сотрудник')]
         .concat(d.days.map((x) => el('th', {
-          class: 'hr-ts-d' + (x.weekend ? ' wk' : '') + (isThisMonth && x.d === today ? ' now' : ''),
+          class: 'hr-ts-d' + (x.weekend ? ' wk' : '') + (x.holiday ? ' hol' : '')
+            + (isThisMonth && x.d === today ? ' now' : ''),
+          title: x.holiday
+            ? ('Праздничный' + (x.holiday_name ? ': ' + x.holiday_name : '') + ' — работа оплачивается вдвойне')
+            : null,
         }, String(x.n))))
         // Колонку «Начислено» видит только тот, кому открыты денежные вкладки
         // Кадров. Начальнику смены нужны часы, чужие зарплаты ему не нужны.
@@ -2533,6 +2550,52 @@
   // ---------- Графики работы ----------
   // Раньше список был зашит в программе: новый график мог добавить только
   // разработчик. Теперь это обычный справочник рядом с отделами.
+  // Красные дни месяца. Список общий для компании: праздник красный для всех,
+  // поэтому ведут его Кадры, а не начальник смены в своём отделе.
+  async function openHolidays(period, after) {
+    let items = [];
+    try { items = (await api('/holidays?period=' + period)).items || []; }
+    catch (e) { return toast(e.message, true); }
+
+    const box = el('div', { class: 'hrf' });
+    const draw = () => {
+      box.innerHTML = '';
+      box.appendChild(el('div', { class: 'hr-sub', style: 'margin-bottom:8px' },
+        'Работа в красный день оплачивается вдвойне: отработал 10 часов — начислено как за 20. '
+        + 'Доплата появляется сразу у всех, у кого в этот день есть отметка.'));
+      if (!items.length) box.appendChild(el('div', { class: 'hr-sub' }, 'В этом месяце красных дней нет.'));
+      items.forEach((h) => box.appendChild(el('div', { style: 'display:flex;gap:10px;align-items:center;padding:5px 0;border-bottom:1px solid var(--line-soft)' }, [
+        el('b', { style: 'min-width:92px' }, dtRu(h.day)),
+        el('span', { style: 'flex:1' }, h.name || '—'),
+        el('button', { class: 'btn-ghost', onclick: async () => {
+          try {
+            await post('/holiday/' + h.day + '/delete', {});
+            items = items.filter((x) => x.day !== h.day);
+            toast('День убран'); draw(); if (after) after();
+          } catch (e) { toast(e.message, true); }
+        } }, 'убрать'),
+      ])));
+
+      const day = finp('', { type: 'date', min: period + '-01', max: period + '-31' });
+      const name = finp('', { placeholder: 'Название, например Навруз' });
+      box.appendChild(el('div', { style: 'display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap' }, [
+        day, name,
+        el('button', { class: 'btn-primary', onclick: async () => {
+          if (!day.value) return toast('Выберите дату', true);
+          try {
+            await post('/holiday', { day: day.value, name: name.value });
+            items = (await api('/holidays?period=' + period)).items || [];
+            toast('Красный день добавлен'); draw(); if (after) after();
+          } catch (e) { toast(e.message, true); }
+        } }, '+ Добавить'),
+      ]));
+    };
+    draw();
+    modal('Красные дни — ' + monthLabel(period), box, [
+      el('button', { class: 'btn-ghost', onclick: closeModal }, 'Закрыть'),
+    ]);
+  }
+
   async function renderSchedules(c) {
     const box = el('div', { style: 'margin-top:26px' });
     c.appendChild(box);

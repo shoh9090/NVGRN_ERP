@@ -329,3 +329,8 @@
 .hr-access-card { border: 1px solid #e3e0d4; border-radius: 10px; padding: 8px 10px; margin-bottom: 8px; background: #faf8f1; }
 .hr-access-roles { display: flex; flex-wrap: wrap; gap: 6px 14px; font-weight: 400; }
 .hr-access-roles label { display: inline-flex; gap: 4px; align-items: center; cursor: pointer; text-transform: none; }
+
+/* Красный день: работа в него оплачивается вдвойне. Подсветка мягкая — это
+   пометка дня, а не ошибка, кричать не надо. */
+.hr-ts-d.hol { background: #fdecea; color: #b23c2a; }
+.hr-ts-c.hol { background: #fdf3f1; }
