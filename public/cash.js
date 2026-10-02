@@ -1516,19 +1516,41 @@
         });
       // Начисленный налог из декларации: одна цифра в месяц, и прибыль
       // перестаёт быть оценкой. Доступно тем же, кто ведёт деньги.
-      if (canFreeze() && vat.accrued_source === 'estimate') {
-        const inp = el('input', { type: 'number', class: 'cash-acc-date', style: 'width:140px', placeholder: 'из декларации' });
+      // Поле показываем ВСЕГДА, а не только пока цифра не вписана. Раньше оно
+      // исчезало сразу после сохранения, и ошибку было нечем исправить: цифру,
+      // попавшую не в тот месяц, нельзя было ни изменить, ни убрать.
+      if (canFreeze()) {
+        const isDecl = vat.accrued_source === 'declaration';
+        const inp = el('input', {
+          type: 'number', class: 'cash-acc-date', style: 'width:140px',
+          placeholder: 'из декларации',
+          value: isDecl && vat.accrued !== null && vat.accrued !== undefined ? Math.round(vat.accrued) : '',
+        });
+        const save = async (value, done) => {
+          try {
+            await post('/pnl/vat', { period: PNL_PERIOD, accrued: value });
+            toast(done);
+            renderReport('pnl');
+          } catch (e) { toast(e.message, true); }
+        };
         const btn = el('button', { class: 'btn-ghost cash-acc-ok', onclick: async () => {
           btn.disabled = true;
-          try {
-            await post('/pnl/vat', { period: PNL_PERIOD, accrued: inp.value });
-            toast('Начисленный НДС записан');
-            renderReport('pnl');
-          } catch (e) { toast(e.message, true); btn.disabled = false; }
+          await save(inp.value, 'Начисленный НДС записан');
+          btn.disabled = false;
         } }, '✓ записать');
+        // Убрать цифру — значит вернуться к расчёту по ставке. Пустое поле
+        // сервер и так понимает как «удалить», но кнопка честнее: иначе
+        // непонятно, что стирание поля что-то делает.
+        const clr = isDecl ? el('button', { class: 'btn-ghost', style: 'margin-left:6px',
+          title: 'Убрать цифру из декларации — вернётся расчёт по ставке',
+          onclick: async () => {
+            if (!confirm('Убрать начисленный НДС за этот месяц? Вернётся расчёт по ставке.')) return;
+            await save('', 'Цифра убрана — считаем по ставке');
+          } }, 'убрать') : null;
         rows.push(el('tr', { class: 'cash-pnl-r' }, [
-          el('td', {}, el('div', { class: 'cash-pnl-sub' }, '   вписать начисленный НДС из декларации')),
-          el('td', { style: 'text-align:right' }, el('div', { class: 'cash-acc-confirm' }, [inp, btn])),
+          el('td', {}, el('div', { class: 'cash-pnl-sub' },
+            isDecl ? '   изменить или убрать начисленный НДС' : '   вписать начисленный НДС из декларации')),
+          el('td', { style: 'text-align:right' }, el('div', { class: 'cash-acc-confirm' }, [inp, btn, clr])),
         ]));
       }
     }
