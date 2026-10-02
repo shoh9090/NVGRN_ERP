@@ -144,15 +144,22 @@ function spreadWeek(total, profile) {
   return out;
 }
 
-// Направление товара по «Направлению торговли», которое приходит из SalesDoctor.
-// Сетка строится по нему сама: отдел продаж не должен каждую неделю руками
-// набирать список товаров — он и так известен.
-function channelOf(trade, channels) {
-  const t = String(trade || '').trim().toLowerCase();
-  if (!t) return null;
-  const c = (channels || []).find((x) => String(x.sd_trade || '').trim().toLowerCase() === t
-    || String(x.name || '').trim().toLowerCase() === t);
-  return c ? c.code : null;
+// Направление товара по данным SalesDoctor. Сетка строится по нему сама: отдел
+// продаж не должен каждую неделю руками набирать список товаров.
+//
+// Берём КАТЕГОРИЮ товара: в SD это «Horeca» (29 поз.) и «Розница» (31 поз.).
+// Поле «Направление торговли» для этого не годится — там бренд (Novagreen,
+// NOVAGREEN VEG, Novagreen STM), проверено на живой базе 03.10.2026.
+// hints — список подсказок по убыванию доверия: категория, группа, направление.
+function channelOf(hints, channels) {
+  for (const h of [].concat(hints)) {
+    const t = String(h || '').trim().toLowerCase();
+    if (!t) continue;
+    const c = (channels || []).find((x) => String(x.sd_trade || '').trim().toLowerCase() === t
+      || String(x.name || '').trim().toLowerCase() === t);
+    if (c) return c.code;
+  }
+  return null;
 }
 
 module.exports = {

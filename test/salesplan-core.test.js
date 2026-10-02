@@ -107,15 +107,17 @@ test('раскладка недельной цифры по дням не тер
   assert.strictEqual(even.reduce((a, b) => a + b, 0), 10);
 });
 
-test('направление товара берётся из «Направления торговли» SalesDoctor', () => {
+test('направление товара берётся из категории SalesDoctor', () => {
   const chans = [{ code: 'horeca', name: 'HoReCa', sd_trade: 'Horeca' }, { code: 'retail', name: 'Розница', sd_trade: 'Розница' }];
-  assert.strictEqual(core.channelOf('Horeca', chans), 'horeca');
+  // Как в живой базе: категория говорит направление, «Направление торговли» — бренд.
+  assert.strictEqual(core.channelOf(['Horeca', 'Novagreen'], chans), 'horeca');
+  assert.strictEqual(core.channelOf(['Розница', 'NOVAGREEN VEG'], chans), 'retail');
   assert.strictEqual(core.channelOf(' horeca ', chans), 'horeca');   // регистр и пробелы не мешают
-  assert.strictEqual(core.channelOf('Розница', chans), 'retail');
   assert.strictEqual(core.channelOf('HoReCa', chans), 'horeca');     // совпадение по нашему названию
-  // Не проставлено или незнакомое — не угадываем: товар добавляется руками.
+  // Бренд сам по себе направления не даёт, и гадать мы не начинаем.
+  assert.strictEqual(core.channelOf(['', 'Novagreen'], chans), null);
+  assert.strictEqual(core.channelOf(['Немытая зелень', 'Novagreen'], chans), null);
   assert.strictEqual(core.channelOf('', chans), null);
-  assert.strictEqual(core.channelOf('Опт', chans), null);
 });
 
 test('менять план продаж может только РОП и админ', () => {

@@ -20,8 +20,9 @@
 let _ready = false;
 
 // Направления из рабочего файла. sd_trade — как это же направление называется
-// в SalesDoctor (ref_finished_goods.trade_direction приходит из поля trade):
-// по нему направление подставляется само, вручную выбирать не нужно.
+// в SalesDoctor: это КАТЕГОРИЯ товара (ref_categories), «Horeca» и «Розница».
+// Поле «Направление торговли» не подошло — там бренд (Novagreen, NOVAGREEN VEG,
+// Novagreen STM), проверено на живой базе 03.10.2026.
 const CHANNELS = [
   { code: 'horeca', name: 'HoReCa', sd_trade: 'Horeca', sort_order: 10 },
   { code: 'retail', name: 'Розница', sd_trade: 'Розница', sort_order: 20 },

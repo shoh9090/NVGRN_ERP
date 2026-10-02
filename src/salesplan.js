@@ -111,8 +111,10 @@ router.get('/api/meta', async (req, res) => {
 // Отдельным запросом, а не в /meta: список длинный, а нужен раз в сто открытий.
 router.get('/api/goods', async (req, res) => {
   const r = await db.pool.query(
-    `SELECT id, name, COALESCE(trade_direction,'') AS trade_direction
-       FROM ref_finished_goods WHERE COALESCE(status,'active') <> 'archived' ORDER BY name`);
+    `SELECT g.id, g.name, COALESCE(c.name, g.trade_direction, '') AS trade_direction
+       FROM ref_finished_goods g
+       LEFT JOIN ref_categories c ON c.id = g.category_id
+      WHERE COALESCE(g.status,'active') <> 'archived' ORDER BY g.name`);
   res.json({ items: r.rows });
 });
 
@@ -147,9 +149,11 @@ async function buildPlan(days, user) {
   // Сетка = все товары направления. Список берётся из справочника, а не
   // набирается руками: иначе каждый новый товар надо «не забыть добавить».
   const goods = (await db.pool.query(
-    `SELECT id, name, COALESCE(trade_direction,'') AS trade
-       FROM ref_finished_goods WHERE COALESCE(status,'active') <> 'archived'
-      ORDER BY name`)).rows;
+    `SELECT g.id, g.name, COALESCE(c.name,'') AS category, COALESCE(g.trade_direction,'') AS trade
+       FROM ref_finished_goods g
+       LEFT JOIN ref_categories c ON c.id = g.category_id
+      WHERE COALESCE(g.status,'active') <> 'archived'
+      ORDER BY g.name`)).rows;
   const rows = (await db.pool.query(
     `SELECT r.id, r.channel, r.product_id, r.price_type_id, r.sort_order, r.note
        FROM sales_plan_rows r WHERE r.active`)).rows;
@@ -202,7 +206,7 @@ async function buildPlan(days, user) {
       });
     };
     // Сначала товары этого направления из справочника…
-    for (const g of goods) if (!haveRow.has(g.id) && core.channelOf(g.trade, chans) === ch.code) push(g, null);
+    for (const g of goods) if (!haveRow.has(g.id) && core.channelOf([g.category, g.trade], chans) === ch.code) push(g, null);
     // …затем те, у кого строка уже заведена (в том числе добавленные руками).
     for (const r of mine) { const g = goodById.get(r.product_id); if (g) push(g, r); }
     list.sort((a, b) => a.product_name.localeCompare(b.product_name, 'ru'));
@@ -404,11 +408,12 @@ router.post('/api/fill-fact', requireEdit, express.json(), async (req, res) => {
   let fact;
   try {
     fact = (await db.pool.query(
-      `SELECT to_char(s.day,'YYYY-MM-DD') AS day, g.id AS product_id, COALESCE(g.trade_direction,'') AS trade,
-              g.name, SUM(s.qty - s.returned) AS qty
+      `SELECT to_char(s.day,'YYYY-MM-DD') AS day, g.id AS product_id, COALESCE(c.name,'') AS category,
+              COALESCE(g.trade_direction,'') AS trade, g.name, SUM(s.qty - s.returned) AS qty
          FROM sd_sales s JOIN ref_finished_goods g ON g.sd_sd_id = s.product_sd
+         LEFT JOIN ref_categories c ON c.id = g.category_id
         WHERE s.day BETWEEN $1::date AND ($1::date + 6)
-        GROUP BY 1,2,3,4 HAVING SUM(s.qty - s.returned) > 0`, [src])).rows;
+        GROUP BY 1,2,3,4,5 HAVING SUM(s.qty - s.returned) > 0`, [src])).rows;
   } catch (e) { return res.status(400).json({ error: 'Продажи из SalesDoctor ещё не выгружены — заполнять нечем' }); }
   if (!fact.length) return res.json({ ok: true, cells: 0, rows: 0, skipped: [], skipped_total: 0, note: 'За неделю-образец продаж в базе нет' });
 
@@ -418,7 +423,7 @@ router.post('/api/fill-fact', requireEdit, express.json(), async (req, res) => {
   let cells = 0;
   const skipped = new Set();
   for (const f of fact) {
-    const ch = core.channelOf(f.trade, chans);
+    const ch = core.channelOf([f.category, f.trade], chans);
     if (!ch) { skipped.add(f.name); continue; }
     const key = ch + '|' + f.product_id;
     if (!rowCache.has(key)) rowCache.set(key, await rowFor(ch, f.product_id, req.user.id));
