@@ -426,7 +426,9 @@ const TOOLS = [
   {
     name: 'dostavki_po_voditelyam',
     // Логистика живёт в плитке бота HoReCa; финансам видно всё по Кассе.
+    // Плюс роль «Логистика»: этому человеку Джарвис и так шлёт сводку доставок.
     tile: ['/tgbot', '/cash'],
+    botRole: 'logistics',
     description: 'Доставки за период из нашей копии SalesDoctor: сколько заказов увёз каждый водитель, '
       + 'сколько точек объехал, сколько заказов так и висит «Отгружен», и в какие дни недели нагрузка выше. '
       + 'Даты в виде 2026-09-15.',
@@ -979,21 +981,51 @@ const TOOLS = [
 ];
 
 // Инструменты, доступные конкретному человеку.
+// Роль в боте (logistics, head_of_sales) — вторая дверь к инструменту, кроме
+// плитки. Логист получает от Джарвиса вечернюю сводку по доставкам, но спросить
+// то же самое словами не мог: инструмент выдавался по Кассе и Боту HoReCa,
+// которых у него нет (случай Абидова, 02.10.2026). Если система уже сама шлёт
+// человеку эти данные, странно прятать их от его же вопроса.
+async function hasBotRole(user, role) {
+  if (!user) return false;
+  if (user.isAdmin) return true;
+  try {
+    const r = await db.pool.query(
+      `SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id
+        WHERE ur.user_id = $1 AND r.bot_role = $2 LIMIT 1`, [user.id, role]);
+    return r.rows.length > 0;
+  } catch (e) { return false; }
+}
+
+async function allowedTool(user, t) {
+  const tiles = t.tile ? [].concat(t.tile) : [];
+  const roles = t.botRole ? [].concat(t.botRole) : [];
+  if (!tiles.length && !roles.length) return true;
+  for (const url of tiles) if (await hasTile(user, url, t.tab && t.tab[url])) return true;
+  for (const role of roles) if (await hasBotRole(user, role)) return true;
+  return false;
+}
+
 async function toolsFor(user) {
   const out = [];
   for (const t of TOOLS) {
     // У инструмента может быть несколько плиток: продажи по клиентам нужны и
     // финансам (Касса), и РОПу (Бот HoReCa) — достаточно любой из них.
     // t.tab — вкладка, которую эта плитка требует (см. tab-access.js).
-    const tiles = t.tile ? [].concat(t.tile) : [];
-    if (tiles.length) {
-      let ok = false;
-      for (const url of tiles) if (await hasTile(user, url, t.tab && t.tab[url])) { ok = true; break; }
-      if (!ok) continue;
-    }
-    out.push(t);
+    if (await allowedTool(user, t)) out.push(t);
   }
   return out;
 }
 
-module.exports = { TOOLS, toolsFor, hasTile, pnlAnswer, companyMemory, memoryBrief, unitKg };
+// Что человеку НЕ открыто. Нужно, чтобы Джарвис не говорил «такого у меня нет»
+// про то, что в системе есть: «это умею, но вам не открыто» — другой ответ и
+// другой следующий шаг (задание J08).
+async function blockedFor(user) {
+  const out = [];
+  for (const t of TOOLS) {
+    if (!(await allowedTool(user, t))) out.push({ name: t.name, description: t.description });
+  }
+  return out;
+}
+
+module.exports = { TOOLS, toolsFor, blockedFor, hasTile, hasBotRole, pnlAnswer, companyMemory, memoryBrief, unitKg };

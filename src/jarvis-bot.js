@@ -287,6 +287,10 @@ const TOOL_HELP = {
 async function sendHelp(chatId, me) {
   const user = await erpUser(me.user_id);
   const tools = await require('./ai-tools').toolsFor(user);
+  // Что человеку закрыто правами. Без этого Джарвис отвечал «такого
+  // инструмента у меня нет вообще» про то, что в системе есть, — человек шёл
+  // к разработчикам вместо админа (случай логиста Абидова, 02.10.2026).
+  const blocked = await require('./ai-tools').blockedFor(user).catch(() => []);
   const lines = tools.map((t) => TOOL_HELP[t.name]).filter(Boolean).map(([i, s]) => `${i} ${esc(s)}`);
   return send(chatId, '🤖 Я Джарвис — помощник Novagreen на основе ИИ. Отвечаю по данным ERP, '
     + 'в пределах того, что открыто твоей роли.\n\n<b>Спроси словами, например:</b>\n' + lines.join('\n')
@@ -477,7 +481,12 @@ async function aiAnswer(chatId, me, question, rules) {
 ` + rulesBrief(rules) + `
 
 `
-        + await require('./ai-tools').memoryBrief(),
+        + await require('./ai-tools').memoryBrief()
+        + (blocked.length
+          ? '\n\nЕСТЬ В СИСТЕМЕ, НО ЭТОМУ ЧЕЛОВЕКУ НЕ ОТКРЫТО. Не говори «такого у меня нет» — '
+            + 'скажи, что это умеешь, но доступ закрыт, и предложи попросить администратора:\n'
+            + blocked.map((b) => `• ${b.description}`).join('\n')
+          : ''),
       messages: [...(await recallChat(chatId, rules)), { role: 'user', content: question.slice(0, 2000) }],
       tools, runTool,
       web: rules.web_enabled && provider === 'claude',
