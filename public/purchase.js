@@ -1207,6 +1207,17 @@
       el('div', { class: 'pur-toolbar-right' }, [
         el('button', { class: 'pur-tbtn', onclick: openColsMenu, title: 'Показать/скрыть столбцы' }, '⚙ Столбцы'),
         el('a', { class: 'pur-tbtn', href: '#', onclick: (e) => { e.preventDefault(); exportSettlements(); } }, '⬇ Excel'),
+        // Сверка с Кассой: где оплаты по поставщикам не сходятся с тем, что
+        // реально ушло со счёта. Файл для закупщика — разобраться может только
+        // человек, который помнит, кому и за что платили.
+        el('a', { class: 'pur-tbtn', href: '#', title: 'Где Закуп расходится с Кассой по оплатам поставщикам',
+          onclick: (e) => {
+            e.preventDefault();
+            const p = new URLSearchParams();
+            if (setState.from) p.set('from', setState.from);
+            if (setState.to) p.set('to', setState.to);
+            window.location = '/purchase/api/purchase-cash-check.xlsx?' + p.toString();
+          } }, '🔍 Сверка с Кассой'),
         el('button', { class: 'btn-primary', onclick: () => openPayment(null) }, '+ Оплата'),
       ]),
     ]));

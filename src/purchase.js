@@ -393,6 +393,124 @@ router.get('/api/orders-export.xlsx', async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
+// Сверка Закупа с Кассой для закупщика. Две системы знают про одни и те же
+// деньги с разных сторон: Закуп — сколько оплат отмечено по поставщикам, Касса —
+// сколько ушло с расчётного счёта по статьям «Сырьё (зелень)» и «Упаковка».
+// Сходиться они обязаны, а на деле расходятся: часть банковских платежей не
+// привязана к контрагенту, часть оплат в Закупе отмечена без движения денег.
+// Сверяем по ИНН, а не по названию: один и тот же поставщик в Закупе зовётся
+// «Boxodir», а в Кассе — именем юрлица, и сверка по имени даёт ложные нули.
+// Файл едет человеку: в системе это не правится автоматически, разобраться
+// может только тот, кто помнит, кому и за что платили.
+router.get('/api/purchase-cash-check.xlsx', async (req, res) => {
+  const XLSX = require('xlsx');
+  const d = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? v : null);
+  const from = d(req.query.from) || new Date().toISOString().slice(0, 8) + '01';
+  const to = d(req.query.to) || new Date().toISOString().slice(0, 10);
+  try {
+    const { items } = await settlementsData({ from, to });
+    const pay = (await db.pool.query(
+      `SELECT to_char(t.tx_date,'DD.MM.YYYY') AS day, t.amount, c.code AS cat_code, c.name AS cat_name,
+              t.purpose, k.name AS cp_name, NULLIF(btrim(k.inn),'') AS inn, t.counterparty_id
+         FROM cash_transactions t
+         JOIN cash_categories c ON c.id = t.category_id
+         LEFT JOIN cash_counterparties k ON k.id = t.counterparty_id
+        WHERE t.tx_type = 'out' AND c.code IN ('10','11') AND t.source <> 'opening'
+          AND t.tx_date BETWEEN $1::date AND $2::date
+        ORDER BY t.tx_date, t.id`, [from, to])).rows;
+
+    const byInn = new Map();
+    const orphan = [];                 // платёж без контрагента или без его ИНН
+    for (const p of pay) {
+      if (!p.inn) { orphan.push(p); continue; }
+      byInn.set(p.inn, (byInn.get(p.inn) || 0) + Number(p.amount || 0));
+    }
+
+    const rub = (v) => Math.round(Number(v) || 0);
+    const diff = [], noInn = [];
+    for (const s of items) {
+      const inn = String(s.inn || '').trim();
+      const inPur = Number(s.paid_period) || 0;
+      if (!inn) { if (inPur > 0) noInn.push([s.name, s.legal_name || '', rub(inPur)]); continue; }
+      const inCash = byInn.get(inn) || 0;
+      if (Math.abs(inPur - inCash) < 1) continue;
+      diff.push([
+        s.name, s.legal_name || '', inn, rub(inPur), rub(inCash), rub(inPur - inCash),
+        inCash === 0 ? 'В Кассе платежей этому ИНН нет вовсе'
+          : (inPur > inCash ? 'В Закупе отмечено больше, чем ушло с счёта'
+            : 'С счёта ушло больше, чем отмечено в Закупе'),
+        '', '',
+      ]);
+      byInn.delete(inn);
+    }
+    // Остались платежи тем ИНН, которых в Закупе за период нет совсем.
+    const extra = [...byInn.entries()].map(([inn, sum]) => {
+      const p = pay.find((x) => x.inn === inn);
+      return [p ? p.cp_name : '', inn, rub(sum), 'Платёж есть, а поставщика с этим ИНН в Закупе за период нет', ''];
+    });
+
+    const wb = XLSX.utils.book_new();
+    const add = (title, head, rows, cols) => {
+      const sh = XLSX.utils.aoa_to_sheet([head, ...rows]);
+      sh['!cols'] = cols;
+      XLSX.utils.book_append_sheet(wb, sh, title);
+    };
+
+    add('Расхождения',
+      ['Поставщик', 'Юрлицо', 'ИНН', 'Оплачено по Закупу', 'Ушло с счёта (Касса)', 'Разница',
+        'Что проверить', 'Комментарий закупщика', 'Подтверждающий документ'],
+      diff,
+      [{ wch: 22 }, { wch: 34 }, { wch: 16 }, { wch: 20 }, { wch: 21 }, { wch: 16 }, { wch: 46 }, { wch: 34 }, { wch: 28 }]);
+
+    add('Платежи без поставщика',
+      ['Дата', 'Сумма', 'Статья', 'Назначение платежа', 'Кому на самом деле', 'Комментарий'],
+      orphan.map((p) => [p.day, rub(p.amount), p.cat_code + ' ' + p.cat_name,
+        String(p.purpose || '').slice(0, 300), '', '']),
+      [{ wch: 12 }, { wch: 16 }, { wch: 20 }, { wch: 60 }, { wch: 28 }, { wch: 30 }]);
+
+    if (extra.length) {
+      add('Нет в Закупе',
+        ['Контрагент', 'ИНН', 'Ушло с счёта', 'Что это значит', 'Комментарий'],
+        extra, [{ wch: 34 }, { wch: 16 }, { wch: 16 }, { wch: 54 }, { wch: 30 }]);
+    }
+    if (noInn.length) {
+      add('Без ИНН',
+        ['Поставщик', 'Юрлицо', 'Оплачено по Закупу'],
+        noInn, [{ wch: 22 }, { wch: 34 }, { wch: 20 }]);
+    }
+
+    add('Как читать',
+      ['Пояснение'],
+      [
+        ['Период: ' + from + ' — ' + to],
+        [''],
+        ['Две системы считают одни и те же деньги с разных сторон.'],
+        ['Закуп: сколько оплат отмечено по поставщику. Касса: сколько ушло с расчётного счёта'],
+        ['по статьям «Сырьё (зелень)» и «Упаковка». Эти суммы обязаны совпадать.'],
+        [''],
+        ['Сверка идёт по ИНН, а не по названию: в Закупе поставщик записан рабочим именем,'],
+        ['а в банке — именем юрлица, и по названию сверка давала бы ложные расхождения.'],
+        [''],
+        ['Лист «Расхождения» — где суммы не сошлись. Проверить надо обе стороны:'],
+        ['оплату могли отметить в Закупе без платежа, а могли заплатить и не отметить.'],
+        [''],
+        ['Лист «Платежи без поставщика» — деньги ушли, но контрагент в Кассе не указан.'],
+        ['Впишите, кому они на самом деле, — после этого сверка станет честной.'],
+        [''],
+        ['Заполненный файл верните: исправления внесём в систему с записью, кто и когда.'],
+      ],
+      [{ wch: 96 }]);
+
+    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="sverka-zakup-kassa-${from}_${to}.xlsx"`);
+    res.send(buf);
+  } catch (e) {
+    console.error('[ЗАКУП] сверка с Кассой:', e.message);
+    res.status(400).send('Не удалось собрать сверку: ' + e.message);
+  }
+});
+
 router.get('/api/settlements-export.xlsx', async (req, res) => {
   try {
     const XLSX = require('xlsx');
