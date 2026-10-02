@@ -1771,7 +1771,20 @@ router.post('/api/pnl/vat', express.json(), async (req, res) => {
       await db.setSetting('vat_rate', String(rate));
     }
     if (b.in_price !== undefined) await db.setSetting('vat_in_price', b.in_price ? 'yes' : 'no');
-    if (b.period !== undefined) {
+    if (b.period !== undefined && b.opening !== undefined) {
+      if (!/^\d{4}-\d{2}$/.test(String(b.period))) return res.status(400).json({ error: 'Период указывается как 2026-08' });
+      const v = b.opening;
+      // Пустое — убираем сальдо, и остаётся только разница за месяц.
+      // Минус допускаем: переплатили — бюджет должен нам.
+      if (v === null || v === undefined || String(v).trim() === '') {
+        await db.pool.query('DELETE FROM settings WHERE key = $1', ['vat_opening_' + b.period]);
+      } else {
+        const n = Number(v);
+        if (!Number.isFinite(n)) return res.status(400).json({ error: 'Сальдо на начало — число' });
+        await db.setSetting('vat_opening_' + b.period, String(Math.round(n)));
+      }
+    }
+    if (b.period !== undefined && b.accrued !== undefined) {
       if (!/^\d{4}-\d{2}$/.test(String(b.period))) return res.status(400).json({ error: 'Период указывается как 2026-08' });
       const v = b.accrued;
       // Пустое значение убирает цифру из декларации — вернётся расчёт по ставке.

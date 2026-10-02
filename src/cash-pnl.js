@@ -43,6 +43,10 @@ const SKU_KEY = (period) => 'pnl_sku_' + period;
 const VAT_RATE_KEY = 'vat_rate';
 const VAT_IN_PRICE_KEY = 'vat_in_price';
 const VAT_ACCRUED_KEY = (period) => 'vat_accrued_' + period;
+// Сальдо расчётов с бюджетом на начало месяца. Вписывается руками — так же, как
+// стартовый долг поставщику: до запуска учёта история налога нигде не лежит, а
+// без неё видно только разницу за месяц, а не сколько должны бюджету всего.
+const VAT_OPENING_KEY = (period) => 'vat_opening_' + period;
 // Снимок отчёта за закрытый месяц. Пока месяц открыт, отчёт считается заново из
 // движений; при закрытии месяца в Кассе цифры сохраняются и дальше показываются
 // как есть — закрытый месяц не должен меняться от новых закупок и правок
@@ -857,7 +861,7 @@ async function buildPnl(pool, period) {
   // функцию нельзя проверить тестом, не поднимая настоящую базу.
   const st = (await pool.query('SELECT key, value FROM settings WHERE key = ANY($1)',
     [[UNITS_KEY(period), UNITS_KEY(period) + '_at', SALES_KEY(period), SKU_KEY(period),
-      VAT_RATE_KEY, VAT_IN_PRICE_KEY, VAT_ACCRUED_KEY(period)]])).rows;
+      VAT_RATE_KEY, VAT_IN_PRICE_KEY, VAT_ACCRUED_KEY(period), VAT_OPENING_KEY(period)]])).rows;
   const byKey = new Map(st.map((x) => [x.key, x.value]));
   const units = Number(byKey.get(UNITS_KEY(period))) || 0;
   const unitsAt = byKey.get(UNITS_KEY(period) + '_at') || '';
@@ -895,6 +899,14 @@ async function buildPnl(pool, period) {
   const vatInPrice = String(byKey.get(VAT_IN_PRICE_KEY) || 'yes') !== 'no';
   const vatDeclared = (() => {
     const raw = byKey.get(VAT_ACCRUED_KEY(period));
+    const v = Number(raw);
+    return (raw !== undefined && raw !== null && String(raw).trim() !== '' && Number.isFinite(v)) ? v : null;
+  })();
+
+  // Сальдо расчётов с бюджетом на начало месяца. Может быть и отрицательным:
+  // переплатили — бюджет должен нам.
+  const vatOpening = (() => {
+    const raw = byKey.get(VAT_OPENING_KEY(period));
     const v = Number(raw);
     return (raw !== undefined && raw !== null && String(raw).trim() !== '' && Number.isFinite(v)) ? v : null;
   })();
@@ -1025,6 +1037,12 @@ async function buildPnl(pool, period) {
       accrued_source: vatSource,       // declaration — из декларации, estimate — расчёт по ставке
       paid: vatPaid,
       balance: vatAccrued - vatPaid,
+      // Сальдо на начало месяца — сколько были должны бюджету до него. Вписано
+      // руками; пусто — показываем только разницу за месяц, как раньше.
+      opening: vatOpening,
+      // Сколько остались должны на конец. Считается, только когда известно начало:
+      // иначе это была бы разница за месяц, выданная за долг целиком.
+      closing: vatOpening === null ? null : vatOpening + vatAccrued - vatPaid,
       note: vatSource === 'declaration'
         ? 'Начислено — из декларации за этот месяц.'
         : (vatSource === 'estimate'

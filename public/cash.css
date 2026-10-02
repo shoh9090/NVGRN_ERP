@@ -626,3 +626,10 @@ select.cb-cell { cursor: pointer; }
 .cash-p2c-r.cash-p2c-head td { font-weight: 800; }
 .cash-p2c-r.cash-p2c-total td { font-weight: 800; background: #faf8f1; }
 .cash-p2c-r.cash-p2c-resid td { background: #fdf6ef; }
+
+/* Кнопки в таблице P&L. Глобальный .btn-ghost — белый текст без фона: на
+   светлой таблице он сливается, и действие терялось. */
+.cash-btn-warn { background: #fff; border: 1px solid #e0b4ab; color: #b23c2a; border-radius: 10px;
+  padding: 7px 13px; font-weight: 700; font-size: 13px; cursor: pointer; white-space: nowrap; }
+.cash-btn-warn:hover { background: #fdecea; border-color: #c0392b; }
+.cash-acc-confirm .btn-primary { padding: 7px 13px; font-size: 13px; }

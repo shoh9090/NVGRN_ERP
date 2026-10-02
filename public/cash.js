@@ -1533,7 +1533,9 @@
             renderReport('pnl');
           } catch (e) { toast(e.message, true); }
         };
-        const btn = el('button', { class: 'btn-ghost cash-acc-ok', onclick: async () => {
+        // Кнопки цветные: глобальный .btn-ghost — белый текст без фона, на
+        // светлой таблице его почти не видно, и действие терялось.
+        const btn = el('button', { class: 'btn-primary cash-acc-ok', onclick: async () => {
           btn.disabled = true;
           await save(inp.value, 'Начисленный НДС записан');
           btn.disabled = false;
@@ -1541,7 +1543,7 @@
         // Убрать цифру — значит вернуться к расчёту по ставке. Пустое поле
         // сервер и так понимает как «удалить», но кнопка честнее: иначе
         // непонятно, что стирание поля что-то делает.
-        const clr = isDecl ? el('button', { class: 'btn-ghost', style: 'margin-left:6px',
+        const clr = isDecl ? el('button', { class: 'cash-btn-warn', style: 'margin-left:6px',
           title: 'Убрать цифру из декларации — вернётся расчёт по ставке',
           onclick: async () => {
             if (!confirm('Убрать начисленный НДС за этот месяц? Вернётся расчёт по ставке.')) return;
@@ -1552,6 +1554,33 @@
             isDecl ? '   изменить или убрать начисленный НДС' : '   вписать начисленный НДС из декларации')),
           el('td', { style: 'text-align:right' }, el('div', { class: 'cash-acc-confirm' }, [inp, btn, clr])),
         ]));
+
+        // Сальдо на начало месяца: сколько были должны бюджету до него. Без
+        // него видно только разницу за месяц, а не долг целиком.
+        const opn = el('input', {
+          type: 'number', class: 'cash-acc-date', style: 'width:140px',
+          placeholder: 'сальдо на начало',
+          value: vat.opening === null || vat.opening === undefined ? '' : Math.round(vat.opening),
+        });
+        const opnBtn = el('button', { class: 'btn-primary cash-acc-ok', onclick: async () => {
+          opnBtn.disabled = true;
+          try {
+            await post('/pnl/vat', { period: PNL_PERIOD, opening: opn.value });
+            toast(String(opn.value).trim() === '' ? 'Сальдо убрано' : 'Сальдо на начало записано');
+            renderReport('pnl');
+          } catch (e) { toast(e.message, true); }
+          opnBtn.disabled = false;
+        } }, '✓ записать');
+        rows.push(el('tr', { class: 'cash-pnl-r' }, [
+          el('td', {}, el('div', { class: 'cash-pnl-sub' }, '   сальдо расчётов с бюджетом на начало месяца')),
+          el('td', { style: 'text-align:right' }, el('div', { class: 'cash-acc-confirm' }, [opn, opnBtn])),
+        ]));
+        if (vat.closing !== null && vat.closing !== undefined) {
+          rows.push(row('   должны бюджету на конец месяца', money(vat.closing), {
+            cls: 'cash-pnl-sub' + (vat.closing > 0 ? ' cash-pnl-bad' : ''),
+            hint: 'Сальдо на начало плюс начисленное за месяц минус уплаченное.',
+          }));
+        }
       }
     }
 
