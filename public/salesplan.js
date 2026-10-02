@@ -177,15 +177,20 @@
     const tr = el('tr', { 'data-prod': ch.code + '|' + r.product_id });
     // Цена и прайс — в подсказке под названием: колонка «прайс-лист» съедала
     // половину экрана, а нужна она редко (прайс задан у всего направления).
+    // «Нет цены» у каждого товара — шум, когда прайс направления ещё не выбран:
+    // об этом уже крупно написано в шапке. Жёлтым помечаем настоящую странность:
+    // прайс выбран, а цены именно у этого товара в нём нет.
     const sub = [];
+    const noList = !r.price_type_id;
     if (r.price !== null) sub.push(fmt(r.price) + ' сум');
-    else sub.push('нет цены');
+    else if (!noList) sub.push('нет цены');
     if (r.price_own && r.price_type_name) sub.push('прайс: ' + r.price_type_name);
     if (r.note) sub.push(r.note);
+    if (!sub.length) sub.push('прайс');
     const nameCell = el('td', { class: 'spl-prod' }, [
       el('div', {}, r.product_name),
       el('button', {
-        class: 'spl-sub' + (r.price === null ? ' spl-nop' : ''),
+        class: 'spl-sub' + (r.price === null && !noList ? ' spl-nop' : ''),
         title: canEdit ? 'Прайс и примечание для этого товара' : 'Цена по прайсу направления',
         onclick: canEdit ? () => priceDialog(r, ch) : null,
       }, sub.join(' · ')),
