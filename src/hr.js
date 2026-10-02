@@ -274,7 +274,11 @@ async function ensureSchema() {
   await reloadSchedules();
   _ready = true;
 }
-const EVENT_TYPES = ['hire', 'fire', 'vacation', 'sick', 'transfer', 'position', 'salary', 'schedule', 'other'];
+// fullmonth — признак «факт = план»: человеку не ведут табель, месяц ему
+// считается целиком (офис, мерчендайзеры). Раньше галочка стояла только в
+// карточке и менялась молча: в истории не оставалось следа, когда и почему
+// сотрудника сняли с табеля или вернули на него.
+const EVENT_TYPES = ['hire', 'fire', 'vacation', 'sick', 'transfer', 'position', 'salary', 'schedule', 'fullmonth', 'other'];
 const schedLabel = (code) => { const s = SCHEDULES.find((x) => x.code === code); return s ? s.name : (code || '—'); };
 const fmtSum = (v) => (v == null || v === '' ? '—' : Number(v).toLocaleString('ru-RU'));
 async function deptName(id) { if (!id) return '—'; const r = await db.pool.query('SELECT name FROM hr_departments WHERE id=$1', [id]); return r.rows[0] ? r.rows[0].name : '—'; }
@@ -1192,6 +1196,33 @@ router.post('/api/events', J, async (req, res) => {
     // Если за месяц уже есть строка зарплаты, пересчитываем её по новому графику.
     for (const pr of (await db.pool.query(
       'SELECT DISTINCT period FROM hr_payroll WHERE employee_id=$1 AND period >= $2', [empId, String(b.event_date).slice(0, 7)])).rows) {
+      await recomputeAccrFact(empId, pr.period);
+    }
+  }
+  // «Факт = план»: человеку не ведут табель, месяц считается целиком. Меняем
+  // галочку в карточке И оставляем запись в истории — иначе потом не выяснить,
+  // с какого месяца человек перестал отмечаться и кто это решил.
+  if (type === 'fullmonth') {
+    const want = !!b.to_full_month;
+    const cur = (await db.pool.query('SELECT full_month FROM hr_employees WHERE id=$1', [empId])).rows[0];
+    if (!cur) return res.status(404).json({ error: 'Сотрудник не найден' });
+    if (!!cur.full_month === want) {
+      return res.status(400).json({ error: want ? 'У сотрудника уже стоит «факт = план»' : 'У сотрудника и так ведётся табель' });
+    }
+    fromText = cur.full_month ? 'факт = план' : 'по табелю';
+    toText = want ? 'факт = план' : 'по табелю';
+    await db.pool.query('UPDATE hr_employees SET full_month=$1, updated_at=now() WHERE id=$2', [want, empId]);
+    // Месяцы с даты события пересчитываем: факт у них теперь берётся иначе.
+    // Уже начисленные не трогаем — их пересчитывает только снятие начисления.
+    for (const pr of (await db.pool.query(
+      `SELECT period FROM hr_payroll WHERE employee_id=$1 AND period >= $2 AND accrued_at IS NULL`,
+      [empId, String(b.event_date).slice(0, 7)])).rows) {
+      if (want) {
+        // Факт = план: подставляем норму как факт, как это делает «Заполнить нормы».
+        await db.pool.query(
+          `UPDATE hr_payroll SET fact_days = plan_days, fact_hours = plan_hours, updated_at = now()
+            WHERE employee_id=$1 AND period=$2`, [empId, pr.period]);
+      }
       await recomputeAccrFact(empId, pr.period);
     }
   }

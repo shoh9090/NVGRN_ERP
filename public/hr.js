@@ -355,7 +355,8 @@
     hire: { t: 'Приём', c: '#2e7d32' }, fire: { t: 'Увольнение', c: '#c0392b' },
     vacation: { t: 'Отпуск', c: '#0d7d8c' }, sick: { t: 'Больничный', c: '#b25b00' },
     transfer: { t: 'Перемещение', c: '#5b3da8' }, position: { t: 'Смена должности', c: '#163a28' },
-    salary: { t: 'Смена оклада', c: '#c77800' }, schedule: { t: 'Смена графика', c: '#3f6a16' }, other: { t: 'Прочее', c: '#7c8579' },
+    salary: { t: 'Смена оклада', c: '#c77800' }, schedule: { t: 'Смена графика', c: '#3f6a16' },
+    fullmonth: { t: 'Факт = план', c: '#0d7d8c' }, other: { t: 'Прочее', c: '#7c8579' },
   };
   const evState = { employee: '', department: '', type: '', from: '', to: '', q: '' };
   function evDetail(x) {
@@ -415,7 +416,7 @@
     try { emps = (await api('/employees?status=')).items || []; } catch (e) { return toast(e.message, true); }
     const active = emps.filter((e) => e.status !== 'archived');
     const empSel = fsel(active.map((e) => ({ v: e.id, t: e.full_name })), presetEmpId || (active[0] && active[0].id) || '');
-    const typeSel = fsel([['transfer', 'Перемещение'], ['schedule', 'Смена графика'], ['salary', 'Изменение оклада'], ['vacation', 'Отпуск'], ['sick', 'Больничный'], ['other', 'Прочее'], ['hire', 'Приём'], ['fire', 'Увольнение']].map(([v, t]) => ({ v, t })), 'transfer');
+    const typeSel = fsel([['transfer', 'Перемещение'], ['schedule', 'Смена графика'], ['fullmonth', 'Факт = план (табель)'], ['salary', 'Изменение оклада'], ['vacation', 'Отпуск'], ['sick', 'Больничный'], ['other', 'Прочее'], ['hire', 'Приём'], ['fire', 'Увольнение']].map(([v, t]) => ({ v, t })), 'transfer');
     const dFrom = finp(new Date().toISOString().slice(0, 10), { type: 'date' });
     const dTo = finp('', { type: 'date' });
     const dToRow = frow('По (для отпуска/больничного)', dTo);
@@ -429,6 +430,11 @@
     const schedRow = frow('График (новый)', schedSel);
     const salInp = minp(curEmp().base_salary || '', { placeholder: 'новый оклад' });
     const salRow = frow('Новый оклад', salInp);
+    // «Факт = план»: человеку не ведут табель, месяц считается целиком — так
+    // работают офис и мерчендайзеры. Раньше галочка жила только в карточке и
+    // менялась молча, без следа в истории.
+    const fmSel = fsel([{ v: '1', t: 'Факт = план — табель не ведём' }, { v: '0', t: 'По табелю — отмечаем дни' }], '1');
+    const fmRow = frow('Как считать месяц', fmSel);
     empSel.onchange = () => { posInp.value = curEmp().position || ''; schedSel.value = curEmp().schedule_type || ''; salInp.value = curEmp().base_salary ? Number(curEmp().base_salary).toLocaleString('ru-RU') : ''; };
     const comment = finp('', { placeholder: 'Комментарий' });
     const applyType = () => {
@@ -438,6 +444,10 @@
       // График нужен и в перемещении, и отдельным событием «Смена графика».
       schedRow.style.display = (typeSel.value === 'transfer' || typeSel.value === 'schedule') ? '' : 'none';
       salRow.style.display = (typeSel.value === 'salary') ? '' : 'none';
+      fmRow.style.display = (typeSel.value === 'fullmonth') ? '' : 'none';
+      // Подставляем обратное тому, что стоит сейчас: событие заводят, чтобы
+      // ПОМЕНЯТЬ признак, а не подтвердить его.
+      if (typeSel.value === 'fullmonth') fmSel.value = curEmp().full_month ? '0' : '1';
     };
     typeSel.onchange = applyType; applyType();
     const save = el('button', { class: 'btn-primary', onclick: async () => {
@@ -446,7 +456,7 @@
       if (typeSel.value === 'schedule' && !schedSel.value) return toast('Выберите график', true);
       if (typeSel.value === 'salary' && !(Number(mval(salInp)) > 0)) return toast('Укажите новый оклад', true);
       try {
-        const rr = await post('/events', { employee_id: empSel.value, event_type: typeSel.value, event_date: dFrom.value, date_to: (dToRow.style.display !== 'none' ? dTo.value : null) || null, to_department_id: (typeSel.value === 'transfer' ? deptSel.value : null), to_position: (typeSel.value === 'transfer' ? posInp.value : null), to_schedule: (typeSel.value === 'transfer' || typeSel.value === 'schedule' ? schedSel.value : null), new_salary: (typeSel.value === 'salary' ? mval(salInp) : null), comment: comment.value });
+        const rr = await post('/events', { employee_id: empSel.value, event_type: typeSel.value, event_date: dFrom.value, date_to: (dToRow.style.display !== 'none' ? dTo.value : null) || null, to_department_id: (typeSel.value === 'transfer' ? deptSel.value : null), to_position: (typeSel.value === 'transfer' ? posInp.value : null), to_schedule: (typeSel.value === 'transfer' || typeSel.value === 'schedule' ? schedSel.value : null), new_salary: (typeSel.value === 'salary' ? mval(salInp) : null), to_full_month: (typeSel.value === 'fullmonth' ? fmSel.value === '1' : null), comment: comment.value });
         toast(typeSel.value === 'transfer' ? 'Сотрудник переведён ✅' : (typeSel.value === 'salary' ? 'Оклад изменён ✅' : (typeSel.value === 'schedule' ? 'График изменён ✅' : 'Событие добавлено')));
         // Увольнение/приём меняют и карточку — говорим об этом вслух, чтобы не
         // пришлось идти проверять вкладку «Сотрудники».
@@ -458,7 +468,7 @@
         closeModal(); if (TAB === 'events') loadEv();
       } catch (e) { toast(e.message, true); }
     } }, 'Добавить');
-    modal('Кадровое событие', el('div', { class: 'hrf' }, [frow('Сотрудник', empSel), frow('Тип', typeSel), deptRow, posRow, schedRow, salRow, frow('Дата (с)', dFrom), dToRow, frow('Комментарий', comment)]), [save]);
+    modal('Кадровое событие', el('div', { class: 'hrf' }, [frow('Сотрудник', empSel), frow('Тип', typeSel), deptRow, posRow, schedRow, salRow, fmRow, frow('Дата (с)', dFrom), dToRow, frow('Комментарий', comment)]), [save]);
   }
 
   // ================= ДАШБОРД =================
