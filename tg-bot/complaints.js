@@ -38,6 +38,11 @@ const sessions = new Map();
 const agentComment = new Map();
 // Типы жалоб, которые агент НЕ закрывает сам — только эскалация Шоху/РОПу.
 const CRITICAL_TYPES = new Set(["zhivnost"]);
+// Претензию принимаем только по свежей отгрузке: ультрафреш живёт три дня,
+// по товару недельной давности разбирать уже нечего. Цифра одна и для отбора
+// заказов, и для текста отказа — иначе человек прочитает один срок, а бот
+// применит другой.
+const FRESH_DAYS = 3;
 
 // Кнопки нижнего меню заказа: при нажатии посреди мастера — выходим из претензии.
 const EXIT_TEXTS = new Set(["🛒 Заказать", "🛒 Buyurtma berish", "📦 Мой заказ", "📦 Buyurtmam"]);
@@ -63,9 +68,15 @@ const STR = {
   pick_type:   { ru: "Что не так с товаром?", uz: "Mahsulotda nima muammo?" },
   pick_usage:  { ru: "Для чего используете этот продукт?", uz: "Bu mahsulotni nima uchun ishlatasiz?" },
   pick_dish:   { ru: "Каким был финальный вид продукта в блюде?", uz: "Mahsulot taomda qanday ko‘rinishda bo‘ldi?" },
-  no_orders:   { ru: "Не нашёл недавних заказов по этой точке. Обратитесь к вашему агенту Novagreen.", uz: "Bu nuqta bo‘yicha yaqin buyurtmalar topilmadi. Novagreen agentingizga murojaat qiling." },
-  // Агенту то же самое надо сказать иначе: он и есть агент, отправлять его «к агенту» бессмысленно.
-  no_orders_agent: { ru: "По этой точке нет отгрузок за последние 3 дня. Претензию принимаем только по свежей отгрузке — проверьте дату в SalesDoctor.", uz: "Bu nuqta bo‘yicha oxirgi 3 kunda yetkazib berish yo‘q. Shikoyat faqat yangi yetkazib berish bo‘yicha qabul qilinadi — sanani SalesDoctorda tekshiring." },
+  // Отказ объясняем цифрами: когда была последняя отгрузка и какой срок у претензий.
+  // Иначе «не нашёл недавних заказов» читается как поломка бота.
+  no_orders_head:  { ru: "Претензию по этой точке подать нельзя.", uz: "Bu nuqta bo‘yicha shikoyat berib bo‘lmaydi." },
+  no_orders_last:  { ru: (d, n) => `Последняя отгрузка: ${d} (${n} дн. назад).`, uz: (d, n) => `Oxirgi yetkazib berish: ${d} (${n} kun oldin).` },
+  // Без числа дней: окно истории заказов настраивается РОПом, и зашитая цифра соврёт.
+  no_orders_none:  { ru: "Отгрузок по этой точке не нашёл.", uz: "Bu nuqta bo‘yicha yetkazib berish topilmadi." },
+  no_orders_rule:  { ru: (f) => `Претензию принимаем только по отгрузке не старше ${f} дн.: зелень не хранится, по старой партии разбирать уже нечего.`, uz: (f) => `Shikoyat faqat ${f} kundan oshmagan yetkazib berish bo‘yicha qabul qilinadi: ko‘kat saqlanmaydi.` },
+  no_orders_client:{ ru: "Если вопрос срочный — свяжитесь с вашим агентом Novagreen.", uz: "Shoshilinch bo‘lsa — Novagreen agentingizga murojaat qiling." },
+  no_orders_agent: { ru: "Дату отгрузки можно проверить в SalesDoctor.", uz: "Yetkazib berish sanasini SalesDoctorda tekshirish mumkin." },
   menu_for_clients: { ru: "Эта кнопка для клиентов. Ваше меню — ниже.", uz: "Bu tugma mijozlar uchun. Sizning menyungiz — pastda." },
   no_products: { ru: "В этом заказе нет позиций. Выберите другой заказ через «📩 Претензия».", uz: "Bu buyurtmada mahsulot yo‘q. «📩 Shikoyat» orqali boshqa buyurtmani tanlang." },
   send_media:  { ru: "Пришлите фото или видео проблемы (до 5). Когда закончите — нажмите «Готово».", uz: "Muammoning rasm yoki videosini yuboring (5 tagacha). Tugagach «Tayyor» tugmasini bosing." },
@@ -142,6 +153,22 @@ async function getResolutions() {
 // ---------- Клавиатуры/хелперы ----------
 const cancelRow = (lang) => [{ text: t(lang, "btn_cancel"), callback_data: "cmpl:cancel" }];
 const doneKb = (lang) => ({ reply_markup: { inline_keyboard: [[{ text: t(lang, "btn_done"), callback_data: "cmpl:done" }], cancelRow(lang)] } });
+// Почему претензию принять нельзя: последняя отгрузка (если была) и срок.
+// Чистая функция — проверяется тестом, без обращений к Telegram и базе.
+function noOrdersText(lang, { byAgent, last, now = Date.now() }) {
+  const lines = [t(lang, "no_orders_head")];
+  if (last) {
+    const days = Math.max(0, Math.round((Date.parse(now2date(now)) - Date.parse(last)) / 86400000));
+    lines.push(t(lang, "no_orders_last", fmtD(last), days));
+  } else {
+    lines.push(t(lang, "no_orders_none"));
+  }
+  lines.push(t(lang, "no_orders_rule", FRESH_DAYS));
+  lines.push(byAgent ? t(lang, "no_orders_agent") : t(lang, "no_orders_client"));
+  return lines.join("\n");
+}
+const now2date = (ms) => new Date(ms + 5 * 3600000).toISOString().slice(0, 10);   // Ташкент
+
 function fmtD(d) { const s = String(d || "").slice(0, 10); const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/); return m ? `${m[3]}.${m[2]}` : (s || "—"); }
 function extractMedia(msg) {
   if (msg.photo && msg.photo.length) return { kind: "photo", fileId: msg.photo[msg.photo.length - 1].file_id };
@@ -215,13 +242,12 @@ async function askOrder(chatId, s, lang) {
   try { orders = (await H.getOrders14()).filter((o) => o.client && o.client.SD_id === s.point.sd_id); }
   catch (e) { console.warn("[ПРЕТЕНЗИЯ orders]", e.message); }
   orders.sort((a, b) => String(b.dateCreate || "").localeCompare(String(a.dateCreate || "")));
-  // Ультрафреш: счёт-фактуры (заказы) доступны только за последние 3 дня, максимум 3.
-  const cutoff = new Date(Date.now() - 3 * 86400000).toISOString().slice(0, 10);
+  // Ультрафреш: претензия принимается только по отгрузке за последние FRESH_DAYS дней.
+  const cutoff = new Date(Date.now() - FRESH_DAYS * 86400000).toISOString().slice(0, 10);
   const top = orders.filter((o) => String(o.dateShipment || o.dateCreate || "").slice(0, 10) >= cutoff).slice(0, 3);
   if (!top.length) {
-    // Агенту объясняем ограничение, клиента отправляем к агенту: «обратитесь к
-    // агенту» самому агенту звучит как издёвка.
-    await bot.sendMessage(chatId, t(lang, s.byAgent ? "no_orders_agent" : "no_orders"), await H.menuFor(s.tgId, lang));
+    const last = orders[0] && String(orders[0].dateShipment || orders[0].dateCreate || "").slice(0, 10);
+    await bot.sendMessage(chatId, noOrdersText(lang, { byAgent: !!s.byAgent, last }), await H.menuFor(s.tgId, lang));
     sessions.delete(chatId); return;
   }
   s.orders = top; s.stage = "order";
@@ -686,3 +712,5 @@ async function onCallback(q) {
 }
 
 module.exports = { init, onMessage, onCallback, menuText, startForAgent, reminderTick, isActive: (chatId) => sessions.has(chatId) };
+module.exports.noOrdersText = noOrdersText;
+module.exports.FRESH_DAYS = FRESH_DAYS;

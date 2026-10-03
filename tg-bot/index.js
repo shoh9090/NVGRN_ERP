@@ -1724,7 +1724,24 @@ async function main() {
     bot.sendMessage(chatId, lang === "uz" ? "Menyudan foydalaning yoki /start." : "Воспользуйтесь меню внизу или /start.", mainMenu(lang));
   });
 
-  bot.on("polling_error", (err) => console.error("[Telegram] Ошибка опроса:", err.message));
+  // Два экземпляра бота с одним токеном «воюют» за обновления: Telegram отвечает
+  // 409 Conflict, а люди видят каждое сообщение дважды (так было 03.10.2026 у
+  // агента в мастере претензий). Логи Railway никто не читает — говорим админу
+  // сами, но не чаще раза в час, чтобы не превратить это в спам.
+  let dupWarnAt = 0;
+  bot.on("polling_error", (err) => {
+    const m = (err && (err.message || err.code)) ? String(err.message || err.code) : String(err);
+    console.error("[Telegram] Ошибка опроса:", m);
+    if (!/409|conflict/i.test(m)) return;
+    if (!ADMIN_TG_ID || Date.now() - dupWarnAt < 3600000) return;
+    dupWarnAt = Date.now();
+    bot.sendMessage(ADMIN_TG_ID,
+      "⚠️ Похоже, запущено два экземпляра бота.\n"
+      + "Telegram отдаёт обновления обоим (ошибка 409 Conflict) — люди получают каждое сообщение дважды.\n\n"
+      + "Проверьте в Railway: сервис бота → Deployments. Активным (Active) должен быть ровно один деплой; "
+      + "старый остановите кнопкой Remove. Если сервисов с ботом два — лишний нужно удалить."
+    ).catch(() => {});
+  });
 }
 
 main().catch((e) => { console.error("[СТАРТ] Критическая ошибка запуска:", e.message); process.exit(1); });

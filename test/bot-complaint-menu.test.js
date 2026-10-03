@@ -61,3 +61,32 @@ test('мастер не возвращает клиентскую клавиат
   const src = require('fs').readFileSync(require('path').join(__dirname, '../tg-bot/complaints.js'), 'utf8');
   assert.equal(/H\.mainMenu\s*\(/.test(src.replace(/\/\/.*$/gm, '')), false);
 });
+
+// ---- Почему претензию принять нельзя (отказ объясняет себя) ----
+const NOW = Date.parse('2026-10-03T12:00:00+05:00');
+
+test('агенту называем дату последней отгрузки и срок', () => {
+  const txt = complaints.noOrdersText('ru', { byAgent: true, last: '2026-09-28', now: NOW });
+  assert.match(txt, /Последняя отгрузка: 28\.09 \(5 дн\. назад\)/);
+  assert.match(txt, new RegExp(`не старше ${complaints.FRESH_DAYS} дн`));
+  assert.match(txt, /SalesDoctor/);                       // агенту — где проверить
+  assert.doesNotMatch(txt, /Обратитесь к вашему агенту/);  // агент и есть агент
+});
+
+test('клиенту — тот же разбор, но с выходом на агента', () => {
+  const txt = complaints.noOrdersText('ru', { byAgent: false, last: '2026-09-28', now: NOW });
+  assert.match(txt, /свяжитесь с вашим агентом/i);
+  assert.doesNotMatch(txt, /SalesDoctor/);
+});
+
+test('отгрузок вообще не нашлось — говорим прямо, без выдуманных дат', () => {
+  const txt = complaints.noOrdersText('ru', { byAgent: true, last: null, now: NOW });
+  assert.match(txt, /Отгрузок по этой точке не нашёл/);
+  assert.doesNotMatch(txt, /\d{2}\.\d{2}/);               // даты нет — и выдумывать нечего
+});
+
+test('узбекский вариант тоже объясняет причину', () => {
+  const txt = complaints.noOrdersText('uz', { byAgent: true, last: '2026-09-28', now: NOW });
+  assert.match(txt, /Oxirgi yetkazib berish: 28\.09/);
+  assert.match(txt, /shikoyat berib bo‘lmaydi/i);
+});
