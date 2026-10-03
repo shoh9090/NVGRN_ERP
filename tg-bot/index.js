@@ -309,6 +309,15 @@ async function setLang(chatId, lang) { await db.query(`INSERT INTO user_prefs (c
 const askContact = (lang) => ({ reply_markup: { keyboard: [[{ text: t(lang, "share_btn"), request_contact: true }]], resize_keyboard: true, one_time_keyboard: true } });
 const mainMenu = (lang) => ({ reply_markup: { keyboard: [[{ text: t(lang, "menu_order") }], [{ text: t(lang, "menu_myorder") }], [{ text: complaints.menuText(lang) }]], resize_keyboard: true } });
 const statusName = (s, lang) => (STR.status_names[lang] || STR.status_names.ru)[s] || s;
+// Клавиатура по человеку: сотруднику — меню его роли, клиенту — клиентское.
+// Мастер претензий раньше в любом исходе ставил клиентское меню, и агент после
+// «Претензии за клиента» оставался с кнопками «Заказать / Мой заказ», на которые
+// бот отвечал «вы не привязаны как клиент» (разбор 03.10.2026). Выглядело это
+// как отобранный доступ, хотя роль у человека была на месте.
+async function menuFor(tgId, lang) {
+  const stf = await getStaff(tgId).catch(() => null);
+  return stf ? staffMenu(stf.role) : mainMenu(lang);
+}
 
 // ---------- Онбординг (Вариант Б): запоминаем номер, точки выводим на лету ----------
 async function onboard(chatId, from, phone9, rawPhone, lang) {
@@ -621,7 +630,7 @@ async function main() {
   }
 
   // Мастер претензий: отдаём ему нужные помощники бота (логику заказов он не трогает).
-  complaints.init({ bot, db, getLang, pointsOfUser, phone9OfUser, pointsOfAgent, getOrders14, mainMenu, notifyClientAgent, notifyAgentReact, notifyAgentDone, notifyManagers });
+  complaints.init({ bot, db, getLang, pointsOfUser, phone9OfUser, pointsOfAgent, getOrders14, menuFor, staffOf: getStaff, notifyClientAgent, notifyAgentReact, notifyAgentDone, notifyManagers });
 
   // Прогрев кэша: каталог/остатки и история всегда «горячие», чтобы «Добавить» открывалось мгновенно.
   const warmStock = async () => { try { _cache.delete("stock"); await getStockData(); } catch (e) { console.warn("[ПРОГРЕВ stock]", e.message); } };

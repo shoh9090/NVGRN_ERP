@@ -5,7 +5,10 @@
 
 let bot = null;
 let db = null;
-let H = {}; // helpers из index.js: getLang, pointsOfUser, phone9OfUser, getOrders14, mainMenu, notifyClientAgent
+let H = {}; // helpers из index.js: getLang, pointsOfUser, phone9OfUser, getOrders14, menuFor, staffOf, notifyClientAgent
+// Клавиатуру в конце мастера даёт H.menuFor — она смотрит, кто перед ботом.
+// Своего «клиентского меню» здесь быть не должно: агент, оформлявший претензию
+// за клиента, оставался с кнопками клиента и терял своё меню (03.10.2026).
 // Руководители звеньев (роль ERP звена, см. link-owners.js): получают претензию лично.
 const linkOwnersMod = require("./link-owners");
 let LO = null;
@@ -61,6 +64,9 @@ const STR = {
   pick_usage:  { ru: "Для чего используете этот продукт?", uz: "Bu mahsulotni nima uchun ishlatasiz?" },
   pick_dish:   { ru: "Каким был финальный вид продукта в блюде?", uz: "Mahsulot taomda qanday ko‘rinishda bo‘ldi?" },
   no_orders:   { ru: "Не нашёл недавних заказов по этой точке. Обратитесь к вашему агенту Novagreen.", uz: "Bu nuqta bo‘yicha yaqin buyurtmalar topilmadi. Novagreen agentingizga murojaat qiling." },
+  // Агенту то же самое надо сказать иначе: он и есть агент, отправлять его «к агенту» бессмысленно.
+  no_orders_agent: { ru: "По этой точке нет отгрузок за последние 3 дня. Претензию принимаем только по свежей отгрузке — проверьте дату в SalesDoctor.", uz: "Bu nuqta bo‘yicha oxirgi 3 kunda yetkazib berish yo‘q. Shikoyat faqat yangi yetkazib berish bo‘yicha qabul qilinadi — sanani SalesDoctorda tekshiring." },
+  menu_for_clients: { ru: "Эта кнопка для клиентов. Ваше меню — ниже.", uz: "Bu tugma mijozlar uchun. Sizning menyungiz — pastda." },
   no_products: { ru: "В этом заказе нет позиций. Выберите другой заказ через «📩 Претензия».", uz: "Bu buyurtmada mahsulot yo‘q. «📩 Shikoyat» orqali boshqa buyurtmani tanlang." },
   send_media:  { ru: "Пришлите фото или видео проблемы (до 5). Когда закончите — нажмите «Готово».", uz: "Muammoning rasm yoki videosini yuboring (5 tagacha). Tugagach «Tayyor» tugmasini bosing." },
   media_got:   { ru: (n) => `📎 Принято: ${n}/5`, uz: (n) => `📎 Qabul qilindi: ${n}/5` },
@@ -212,7 +218,12 @@ async function askOrder(chatId, s, lang) {
   // Ультрафреш: счёт-фактуры (заказы) доступны только за последние 3 дня, максимум 3.
   const cutoff = new Date(Date.now() - 3 * 86400000).toISOString().slice(0, 10);
   const top = orders.filter((o) => String(o.dateShipment || o.dateCreate || "").slice(0, 10) >= cutoff).slice(0, 3);
-  if (!top.length) { await bot.sendMessage(chatId, t(lang, "no_orders"), H.mainMenu(lang)); sessions.delete(chatId); return; }
+  if (!top.length) {
+    // Агенту объясняем ограничение, клиента отправляем к агенту: «обратитесь к
+    // агенту» самому агенту звучит как издёвка.
+    await bot.sendMessage(chatId, t(lang, s.byAgent ? "no_orders_agent" : "no_orders"), await H.menuFor(s.tgId, lang));
+    sessions.delete(chatId); return;
+  }
   s.orders = top; s.stage = "order";
   const rows = top.map((o, i) => [{ text: `📅 ${fmtD(o.dateShipment || o.dateCreate)} · ${(o.orderProducts || []).filter((x) => x.product).length} поз.`, callback_data: `cmpl:o:${i}` }]);
   rows.push(cancelRow(lang));
@@ -221,7 +232,7 @@ async function askOrder(chatId, s, lang) {
 
 async function askProduct(chatId, s, lang) {
   const prods = (s.order.orderProducts || []).filter((op) => op.product && op.product.SD_id && Number(op.quantity) > 0);
-  if (!prods.length) { await bot.sendMessage(chatId, t(lang, "no_products"), H.mainMenu(lang)); sessions.delete(chatId); return; }
+  if (!prods.length) { await bot.sendMessage(chatId, t(lang, "no_products"), await H.menuFor(s.tgId, lang)); sessions.delete(chatId); return; }
   s.products = prods; s.stage = "product";
   const rows = prods.map((op, i) => [{ text: `${op.product.name || op.product.SD_id} · ${Number(op.quantity)}`, callback_data: `cmpl:p:${i}` }]);
   rows.push(cancelRow(lang));
@@ -346,7 +357,7 @@ async function finalize(chatId, s, lang) {
     }
     await db.logEvent("complaint_created", chatId, { id, type: s.type.code, sd_id: s.point.sd_id });
     sessions.delete(chatId);
-    await bot.sendMessage(chatId, t(lang, "thanks", id), H.mainMenu(lang));
+    await bot.sendMessage(chatId, t(lang, "thanks", id), await H.menuFor(s.tgId, lang));
     // Уведомляем агента точки с кнопкой «Принял в работу». Нет агента — уйдёт РОПу/админу.
     const note = `📩 Новая претензия №${id}\nКлиент: {name}\nТовар: ${s.product.name}\nТип: ${s.type.label}`
       + (s.client_comment ? `\nКомментарий: ${s.client_comment}` : "");
@@ -360,7 +371,7 @@ async function finalize(chatId, s, lang) {
   } catch (e) {
     console.error("[ПРЕТЕНЗИЯ save]", e.message);
     sessions.delete(chatId);
-    await bot.sendMessage(chatId, t(lang, "save_err"), H.mainMenu(lang));
+    await bot.sendMessage(chatId, t(lang, "save_err"), await H.menuFor(s.tgId, lang));
   }
 }
 
@@ -427,7 +438,7 @@ async function agentDone(q, id, lang) {
   }
   await bot.answerCallbackQuery(q.id, { text: "Записано" });
   await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: q.message.message_id }).catch(() => {});
-  await bot.sendMessage(chatId, t(lang, "res_closed", id), H.mainMenu(lang));
+  await bot.sendMessage(chatId, t(lang, "res_closed", id), await H.menuFor(q.from.id, lang));
   if (!(await jarvisOwners())) LO.tell(id, `✅ Претензия №${id}: решение выполнено, претензия закрыта.`).catch(() => {});
   return true;
 }
@@ -575,7 +586,16 @@ async function onMessage(msg) {
     sessions.delete(chatId);
     return false;
   }
-  if (isMenu) { await start(chatId, msg.from.id, lang); return true; }
+  if (isMenu) {
+    // Сотруднику клиентский мастер не подходит: агент подаёт претензию ЗА
+    // клиента, по своей точке. Раньше кнопка отвечала ему «вы не привязаны как
+    // клиент» — человек читал это как потерю доступа (разбор 03.10.2026).
+    const stf = H.staffOf ? await H.staffOf(msg.from.id).catch(() => null) : null;
+    if (stf && stf.role === "agent") { await startForAgent(chatId, msg.from.id, lang, stf.crm_agent_id); return true; }
+    if (stf) { await bot.sendMessage(chatId, t(lang, "menu_for_clients"), await H.menuFor(msg.from.id, lang)); return true; }
+    await start(chatId, msg.from.id, lang);
+    return true;
+  }
 
   const s = sessions.get(chatId);
   if (!s) return false;
@@ -617,7 +637,7 @@ async function onCallback(q) {
   const s = sessions.get(chatId);
   try {
     if (step === "noop") { await bot.answerCallbackQuery(q.id); return true; }
-    if (step === "cancel") { sessions.delete(chatId); await bot.answerCallbackQuery(q.id); await bot.sendMessage(chatId, t(lang, "cancelled"), H.mainMenu(lang)); return true; }
+    if (step === "cancel") { sessions.delete(chatId); await bot.answerCallbackQuery(q.id); await bot.sendMessage(chatId, t(lang, "cancelled"), await H.menuFor(q.from.id, lang)); return true; }
     // Реакция агента — не зависит от клиентской сессии (работает по complaintId из колбэка).
     if (step === "react") return agentReact(q, arg, lang);
     if (step === "ares")  return agentResolve(q, arg, parts[3], lang);
