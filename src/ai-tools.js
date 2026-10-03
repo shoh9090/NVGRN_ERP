@@ -744,6 +744,83 @@ const TOOLS = [
     },
   },
   {
+    // План продаж (решение Шоха 03.10.2026). Плитка уже была, а спросить план
+    // словами было нельзя — производство и закуп планировали на глаз.
+    // Пусто ≠ ноль: нет записи на день — значит «не заполнено», и выдавать
+    // такое за «решили не продавать» нельзя (правило плитки).
+    name: 'plan_prodazh',
+    tile: ['/salesplan', '/cash', '/purchase', '/stock'],
+    description: 'План продаж готовой продукции на неделю: сколько штук планируют продать по товарам '
+      + 'и направлениям, и как это соотносится с фактом. Спрашивают: «план на неделю», '
+      + '«что по плану на айсберг», «план и факт».',
+    schema: { type: 'object', properties: {
+      from: { type: 'string', description: 'любой день нужной недели, 2026-10-05' },
+      product: { type: 'string', description: 'часть названия товара, если нужен один' },
+      channel: { type: 'string', description: 'направление: horeca или retail' },
+      fact: { type: 'boolean', description: 'сравнить с фактическими продажами за те же дни' },
+    }, additionalProperties: false },
+    run: async (args) => {
+      const core = require('./salesplan-core');
+      const week = core.weekDays(day(args.from, today()));
+      const from = week[0].day, to = week[week.length - 1].day;
+      const p = [from, to];
+      let w = '';
+      if (String(args.product || '').trim()) { p.push('%' + String(args.product).trim() + '%'); w += ` AND g.name ILIKE $${p.length}`; }
+      if (String(args.channel || '').trim()) { p.push(String(args.channel).trim()); w += ` AND r.channel = $${p.length}`; }
+      const rows = (await db.pool.query(
+        `SELECT r.id, r.channel, g.name AS товар,
+                COALESCE(SUM(c.qty), 0)::numeric AS план,
+                COUNT(c.qty)::int AS дней_заполнено
+           FROM sales_plan_rows r
+           JOIN ref_finished_goods g ON g.id = r.product_id
+           LEFT JOIN sales_plan_cells c ON c.row_id = r.id AND c.day BETWEEN $1 AND $2
+          WHERE r.active${w}
+          GROUP BY r.id, r.channel, g.name
+         HAVING COUNT(c.qty) > 0
+          ORDER BY 4 DESC`, p)).rows;
+      if (!rows.length) {
+        return { неделя: `${from} — ${to}`,
+          итог: 'На эту неделю план не заполнен. Пустой план — это «ещё не планировали», а не ноль продаж' };
+      }
+      const names = { horeca: 'HoReCa', retail: 'Розница' };
+      const byCh = new Map();
+      for (const r of rows) {
+        const k = names[r.channel] || r.channel;
+        byCh.set(k, (byCh.get(k) || 0) + Number(r.план));
+      }
+      const out = {
+        неделя: `${from} — ${to}`,
+        всего_штук_по_плану: Math.round(rows.reduce((a, r) => a + Number(r.план), 0)),
+        по_направлениям: [...byCh.entries()].map(([k, v]) => ({ направление: k, штук: Math.round(v) })),
+        позиций_в_плане: rows.length,
+        товары: rows.slice(0, 20).map((r) => ({ товар: r.товар, направление: names[r.channel] || r.channel,
+          план_штук: Math.round(Number(r.план)), дней_заполнено: r.дней_заполнено })),
+        примечание: 'Пустая клетка — «не заполнено», а не ноль. «Дней заполнено» показывает, '
+          + 'насколько план по строке полный: в неделе 7 дней.',
+      };
+      // План против факта: факт берём из нашей копии продаж за те же дни.
+      if (args.fact) {
+        const fact = (await db.pool.query(
+          `SELECT product_name AS товар, SUM(qty)::numeric AS штук
+             FROM sd_sales WHERE day BETWEEN $1 AND $2 GROUP BY 1`, [from, to])).rows;
+        const byName = new Map(fact.map((f) => [String(f.товар).toLowerCase(), Number(f.штук)]));
+        const cov = await require('./sd-sales').coverage();
+        out.план_и_факт = rows.slice(0, 20).map((r) => {
+          const f = byName.get(String(r.товар).toLowerCase());
+          const plan = Math.round(Number(r.план));
+          // Товара нет в продажах — это «нет данных», а не ноль: названия в
+          // плане и в SalesDoctor могут не совпасть, и ноль был бы враньём.
+          return { товар: r.товар, план: plan,
+            факт: f === undefined ? null : Math.round(f),
+            выполнение: f === undefined || !plan ? null : Math.round((f / plan) * 100) + '%' };
+        });
+        out.про_факт = `Факт из копии SalesDoctor, выгружена по ${cov.last_day}. `
+          + 'Товар, не найденный в продажах, показан как «нет данных», а не как ноль.';
+      }
+      return out;
+    },
+  },
+  {
     // Сценарий закупщика (задание J09): за минуту понять, что с товаром —
     // остаток, сколько продали, что едет. Три блока из трёх разных мест,
     // но без фальшивой связи между ними: килограммы сырья и пачки готовой
