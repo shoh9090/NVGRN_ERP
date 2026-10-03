@@ -533,9 +533,19 @@ async function profitToCash(pool, period, pnl) {
   const rawPaid = num((pnl.cogs_parts && pnl.cogs_parts.raw_paid) || 0);
   const rawReceived = (pnl.cogs_parts && pnl.cogs_parts.raw_source === 'purchase')
     ? num(pnl.cogs_parts.raw) : null;
-  const shipped = pnl.revenue.source === 'shipped' ? num(pnl.revenue.total) : null;
+  // Отгрузку сравниваем с деньгами НА ОДНОЙ БАЗЕ — с НДС внутри. Клиент платит
+  // цену с налогом, поэтому и отгрузка здесь берётся с налогом (revenue.gross).
+  // После 02.10.2026 revenue.total стала БЕЗ НДС, а деньги остались с ним — и
+  // сравнение двух разных баз давало ложную разницу (проверка 03.10.2026).
+  const shipped = pnl.revenue.source === 'shipped'
+    ? num(pnl.revenue.gross !== undefined ? pnl.revenue.gross : pnl.revenue.total) : null;
   const cashForGoods = pnl.revenue.cash_in_sales === undefined
     ? num(pnl.revenue.cash_in) : num(pnl.revenue.cash_in_sales);
+  // НДС: в прибыли начисленный налог уже вычтен из выручки, а из кассы ушло
+  // только то, что уплачено в бюджет (статья 66). Разница — это налог, который
+  // собран с клиентов, но ещё не отдан: деньги пока у нас.
+  const vatAccrued = num(pnl.vat && pnl.vat.accrued);
+  const vatPaid = num(pnl.vat && pnl.vat.paid);
   const net = pnl.net_profit === undefined || pnl.net_profit === null ? null : num(pnl.net_profit);
 
   const steps = [];
@@ -544,8 +554,18 @@ async function profitToCash(pool, period, pnl) {
   if (shipped !== null) {
     add('ar', 'Продали в долг: отгрузили больше, чем получили деньгами',
       -(shipped - cashForGoods),
-      `Отгружено ${mln(shipped)}, деньгами за товар пришло ${mln(cashForGoods)}. `
-      + 'Разница осталась у клиентов. Это главная причина, по которой прибыль есть, а денег нет.');
+      `Отгружено ${mln(shipped)} (с НДС, как платит клиент), деньгами за товар пришло ${mln(cashForGoods)}. `
+      + 'Это разница потоков месяца, а не долг клиентов: в поступлениях есть оплаты прошлых '
+      + 'отгрузок и авансы.');
+  }
+  if (pnl.vat && (vatAccrued || vatPaid)) {
+    add('vat', 'НДС: начислили в цене, а в бюджет отдали другую сумму',
+      vatAccrued - vatPaid,
+      `В прибыли налог вычтен из выручки — ${mln(vatAccrued)}`
+      + (pnl.vat.accrued_source === 'estimate' ? ' (расчётно по ставке)' : '')
+      + `, а в бюджет за месяц уплачено ${mln(vatPaid)}. `
+      + 'Плюс — налог собран с клиентов, но ещё не отдан. Это движение за месяц, '
+      + 'а не весь долг перед бюджетом: для долга нужен остаток на начало.');
   }
   if (rawReceived !== null) {
     add('ap', 'Купили в долг: приняли сырья больше, чем оплатили',

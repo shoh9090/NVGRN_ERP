@@ -85,3 +85,32 @@ test('капекса и займов не было — лишних строк �
   assert.ok(r.steps.some((x) => x.key === 'ar'));
   assert.ok(r.steps.some((x) => x.key === 'ap'));
 });
+
+// Проверка 03.10.2026: после того как выручку в прибыли стали считать без НДС,
+// переход сравнивал отгрузку БЕЗ налога с деньгами С налогом — две разные базы.
+// Плюс налог, уже вычтенный из выручки, нигде не возвращался, и переход не
+// сходился на сумму НДС.
+test('отгрузка и деньги сравниваются на одной базе — с НДС, а налог — отдельным шагом', async () => {
+  const pnl = {
+    period: '2026-09',
+    revenue: { total: 1000, gross: 1120, source: 'shipped', cash_in_sales: 1000 },
+    cogs_parts: { raw: 0, raw_paid: 0, raw_source: 'purchase', packaging: 0 },
+    opex: { total: 0, groups: [] }, interest: { total: 0 }, profit_tax: { total: 0 },
+    vat: { accrued: 120, paid: 30, accrued_source: 'estimate' },
+    net_profit: 1000,                 // выручка без НДС, расходов нет
+    excluded: { capex: { total: 0 } },
+  };
+  // Деньги: пришло 1000 от клиентов, в бюджет ушло 30 → изменение 970.
+  const r = await profitToCash(pool({ opening: 0, closing: 970, codes: [] }), '2026-09', pnl);
+
+  const ar = r.steps.find((x) => x.key === 'ar');
+  assert.strictEqual(ar.amount, -(1120 - 1000), 'отгрузка должна браться с НДС, как платит клиент');
+  const vat = r.steps.find((x) => x.key === 'vat');
+  assert.strictEqual(vat.amount, 120 - 30, 'налог в цене минус уплаченный в бюджет');
+  // 1000 − 120 + 90 = 970 — ровно фактическое изменение денег.
+  assert.strictEqual(r.expected, 970);
+  assert.strictEqual(r.residual, 0, 'переход должен сходиться без «необъяснённого»');
+  // И разница отгрузки и денег не называется долгом клиентов.
+  assert.match(ar.why, /не долг клиентов/);
+  assert.match(vat.why, /не весь долг перед бюджетом/);
+});
