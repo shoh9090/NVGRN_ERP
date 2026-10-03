@@ -1005,6 +1005,48 @@ async function main() {
     } catch (e) { bot.sendMessage(msg.chat.id, "Ошибка: " + e.message); }
   });
 
+  // Диагностика «почему бот не видит заказы точки» (разбор 03.10.2026: агент
+  // не мог подать претензию по Sezam_garden, хотя в SalesDoctor заказы были).
+  // Показывает рядом три вещи: точку в базе бота, заказы, которые бот берёт в
+  // работу, и ВСЕ заказы SD с похожим названием клиента. Если SD_id в базе и
+  // в заказах разные — это сразу видно, и гадать не нужно.
+  bot.onText(/\/diag (.+)/, async (msg, m) => {
+    if (!isAdmin(msg.chat.id)) { bot.sendMessage(msg.chat.id, "Только админ."); return; }
+    const qstr = String((m && m[1]) || "").trim().toLowerCase();
+    if (!qstr) { bot.sendMessage(msg.chat.id, "Укажите часть названия точки: /diag sezam"); return; }
+    bot.sendChatAction(msg.chat.id, "typing");
+    try {
+      const pts = (await db.query(
+        `SELECT sd_id, point_name, firm_name, agent_sd_id, active FROM point_contacts
+          WHERE lower(coalesce(point_name,'') || ' ' || coalesce(firm_name,'')) LIKE $1 LIMIT 10`, ["%" + qstr + "%"])).rows;
+      const ptLines = pts.length
+        ? pts.map((p) => `• ${p.point_name || p.firm_name} — SD_id ${p.sd_id} · агент ${p.agent_sd_id || "—"} · активна ${p.active || "Y"}`)
+        : ["— в базе бота таких точек нет (не прошла синхронизация из SD) —"];
+      await bot.sendMessage(msg.chat.id, `🔎 Точки в базе бота (${pts.length}):\n` + ptLines.join("\n"));
+
+      // Что бот держит в работе: окно напоминаний и претензий (статусы 1–4).
+      const win = await getOrders14();
+      const ids = new Set(pts.map((p) => String(p.sd_id)));
+      const mine = win.filter((o) => o.client && ids.has(String(o.client.SD_id)));
+      await bot.sendMessage(msg.chat.id,
+        `📦 В рабочем окне бота (${botCfg.window} дн., статусы 1–4): всего заказов ${win.length}, по этим точкам ${mine.length}\n`
+        + (mine.slice(0, 5).map((o) => `• ${String(o.dateShipment || o.dateCreate || "").slice(0, 10)} · статус ${o.status} · ${o.code_1C || o.SD_id}`).join("\n") || "—"));
+
+      // И что лежит в SD на самом деле: 30 дней, все статусы, поиск по названию клиента.
+      const from = tzDateAgo(30), to = tzTomorrow();
+      const all = await sd.fetchAll("getOrder", { filter: { period: { date: { from, to } }, status: [1, 2, 3, 4, 5] } });
+      const hits = all.filter((o) => o.client && String(o.client.clientName || o.client.clientLegalName || "").toLowerCase().includes(qstr));
+      const hitLines = hits.slice(0, 10).map((o) =>
+        `• ${String(o.dateShipment || o.dateCreate || "").slice(0, 10)} · статус ${o.status} · клиент «${o.client.clientName || "?"}» · SD_id ${o.client.SD_id} · ${o.code_1C || ""}`);
+      const otherIds = [...new Set(hits.map((o) => String(o.client.SD_id)))].filter((id) => !ids.has(id));
+      await bot.sendMessage(msg.chat.id,
+        `🗂 В SalesDoctor за 30 дн. (все статусы): заказов с таким названием ${hits.length}\n`
+        + (hitLines.join("\n") || "—")
+        + (otherIds.length ? `\n\n⚠️ Эти заказы идут на другие SD_id: ${otherIds.join(", ")}. В базе бота точка записана под другим номером — поэтому бот её заказов и не видит.` : "")
+        + (hits.length && !otherIds.length && !mine.length ? "\n\n⚠️ Номера совпадают, но в рабочее окно заказы не попали: проверьте даты и статусы выше." : ""));
+    } catch (e) { bot.sendMessage(msg.chat.id, "Ошибка: " + e.message); }
+  });
+
   bot.onText(/\/remindnow/, async (msg) => {
     if (!isAdmin(msg.chat.id)) { bot.sendMessage(msg.chat.id, "Только админ."); return; }
     bot.sendMessage(msg.chat.id, "Запускаю рассылку напоминаний…");
