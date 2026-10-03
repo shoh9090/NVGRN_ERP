@@ -914,3 +914,35 @@ test('«250гр» из SalesDoctor и «250г» из Калькуляции — 
   assert.notStrictEqual(matchKey('Кинза 250г'), matchKey('Кинза 40г'));
   assert.notStrictEqual(matchKey('Айсберг 500г'), matchKey('Айсберг 300г'));
 });
+
+// --- Честные названия и статусы (проверка 03.10.2026) ----------------------
+test('светофор не обещает «прибыли можно верить» — он проверяет только полноту', async () => {
+  const { monthReadiness } = require('../src/cash-pnl');
+  const full = await buildPnl(makePool({
+    cash: [{ code: '200', name: 'Выручка', group_name: 'Доходы и поступления', flow_type: 'operating', inc: 1000000, exp: 0, cnt: 1 },
+      { code: '20', name: 'ЗП производство', group_name: '2. Производственные затраты', flow_type: 'operating', inc: 0, exp: 100000, cnt: 1 }],
+    settings: [{ key: 'pnl_sales_2026-08', value: '900000' }],
+    received: [{ m: '2026-08', orders: 2, total: 100000 }],
+  }), '2026-08');
+  const m = monthReadiness(full);
+  assert.ok(!/можно верить/.test(m.verdict_text), 'зелёный светофор не должен обещать достоверность');
+  if (m.verdict === 'ok') assert.match(m.verdict_text, /предварительный, не проверен/);
+});
+
+test('ноль отходов — «не зарегистрированы», а не «потерь нет»', async () => {
+  const { monthReadiness } = require('../src/cash-pnl');
+  const r = await buildPnl(makePool({
+    cash: CASH, received: [{ m: '2026-08', orders: 12, total: 35000000 }],
+    used: [{ item_kind: 'raw', item_id: 1, qty: 1000 }],
+    prices: [{ item_kind: 'raw', item_id: 1, avg_price: 30000 }],
+  }), '2026-08');
+  const stock = monthReadiness(r).checks.find((c) => c.key === 'stock');
+  assert.match(stock.note, /отход: не зарегистрированы/);
+  assert.match(stock.note, /потери: не зарегистрированы/);
+});
+
+test('журнал прибыли показывает правки НДС', () => {
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'src', 'cash.js'), 'utf8');
+  const i = src.indexOf("router.get('/api/pnl/audit'");
+  assert.ok(src.slice(i, i + 1500).includes("'pnl_vat_setup'"), 'правки НДС меняют выручку — их должно быть видно в журнале');
+});

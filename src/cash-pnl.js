@@ -826,7 +826,12 @@ function monthReadiness(r) {
   if (sc.received > 0) {
     const covered = (sc.issued_raw || 0) + (sc.waste || 0) + (sc.writeoff || 0);
     const share = Math.round((covered / sc.received) * 100);
-    add('stock', 'Склад: отмечено из принятого', 'info', `${share}% (выдано ${mln(sc.issued_raw)}, отход ${mln(sc.waste)}, потери ${mln(sc.writeoff)})`);
+    // Ноль отходов и потерь — это «не зарегистрированы», а не «их не было»:
+    // зелень без обрези не бывает. Иначе неоформленные потери выглядят
+    // эффективностью (проверка 03.10.2026).
+    const z = (v, word) => (Number(v) > 0 ? `${word} ${mln(v)}` : `${word}: не зарегистрированы`);
+    add('stock', 'Склад: отмечено из принятого', 'info',
+      `${share}% (выдано ${mln(sc.issued_raw)}, ${z(sc.waste, 'отход')}, ${z(sc.writeoff, 'потери')})`);
   } else add('stock', 'Склад: отмечено из принятого', 'info', 'приёмок в Закупе нет');
 
   const bad = checks.filter((c) => c.level === 'bad').length;
@@ -835,8 +840,13 @@ function monthReadiness(r) {
   return {
     period: r.period,
     verdict,
-    verdict_text: verdict === 'ok' ? 'данные полные — прибыли можно верить'
-      : (verdict === 'warn' ? 'данные неполные — прибыль приблизительная' : 'данных не хватает — прибыли верить нельзя'),
+    // Светофор проверяет ПОЛНОТУ данных, а не правильность прибыли. Поэтому
+    // даже зелёный не обещает «можно верить» (проверка 03.10.2026): данные
+    // заведены, но черновики ведомостей, нормы упаковки, НДС по ставке и
+    // оплата вместо начисления сюда не входят — это оценка, а не проверка.
+    // Проверка — отдельное действие человека, не результат светофора.
+    verdict_text: verdict === 'ok' ? 'основные данные заведены — результат предварительный, не проверен'
+      : (verdict === 'warn' ? 'данные неполные — результат приблизительный' : 'существенных данных нет — результату верить нельзя'),
     revenue: r.revenue.total,
     net_profit: r.net_profit === undefined ? null : r.net_profit,
     margin_pct: r.net_margin_pct === undefined ? null : r.net_margin_pct,

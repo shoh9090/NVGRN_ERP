@@ -217,8 +217,9 @@
       const summary = months.map((m) => dot[m.verdict] + ' ' + monthLabelRu(m.period).replace(/\s*\d{4}$/, '')).join('  ');
       wrap.appendChild(pnlFold('ready', 'cash-ready', [el('b', {}, 'Готовность данных: '), el('span', { class: 'cash-ready-n' }, summary)], [
         el('div', { class: 'cash-ready-sub' },
-          'Формула прибыли одна для всех месяцев. Разница — в полноте данных: 🟢 всё заведено, '
-          + '🟡 прибыль приблизительная, 🔴 прибыли верить нельзя, ⚪ контроль — на прибыль не влияет. '
+          'Формула одна для всех месяцев; светофор показывает ПОЛНОТУ данных, а не проверку прибыли. '
+          + '🟢 основные данные заведены (результат всё равно предварительный), 🟡 данные неполные — '
+          + 'результат приблизительный, 🔴 существенных данных нет, ⚪ контроль — на результат не влияет. '
           + 'Нажмите на месяц, чтобы открыть его.'),
         el('div', { class: 'cash-ready-scroll' },
           el('table', { class: 'cash-ready-t' }, [el('thead', {}, head), el('tbody', {}, [verdictRow, ...rows])])),
@@ -957,70 +958,80 @@
     return money(v);
   };
 
-  // Склонение: 21 копейка, 43 копейки, 15 копеек. Без этого получалось
-  // «43 копеек», и текст читался как машинный.
-  const kopeek = (n) => {
-    const a = Math.abs(n) % 100, b = a % 10;
-    if (a > 10 && a < 20) return n + ' копеек';
-    if (b === 1) return n + ' копейка';
-    if (b >= 2 && b <= 4) return n + ' копейки';
-    return n + ' копеек';
+  // Названия показателей — одни и те же на дашборде, в таблице и в выгрузке.
+  // Проверка 03.10.2026: карточка «Осталось прибыли» показывала операционную
+  // прибыль (77,8 млн), а таблица заканчивалась итогом после процентов (75,2) —
+  // и это читалось как противоречие. Теперь карточки называют ровно то, что
+  // показывают, а последняя карточка = последняя строка таблицы.
+  //
+  // Итог пока называется «Результат по учтённым данным», а не «чистая прибыль»:
+  // в нём нет амортизации, налог на прибыль взят по оплате, а не за период, и
+  // часть расходов отнесена по дате платежа. Назвать его чистой прибылью можно
+  // будет, когда состав станет полным.
+  const PNL_NAMES = {
+    revenue: 'Выручка без НДС',
+    materials: 'Остаток после материалов',
+    operating: 'Операционная прибыль',
+    net: 'Результат по учтённым данным',
   };
+  const pctTxt = (part, base) => (part === null || part === undefined || !(base > 0)) ? null
+    : (Math.round((part / base) * 10000) / 100).toFixed(2).replace('.', ',') + '% выручки';
 
   function humanSummary(d) {
     const rev = d.revenue.total;
-    // Себестоимость целиком (материалы + отход + потери) считает сервер — не собираем свою.
-    const cogs = d.cogs_total === undefined ? null : d.cogs_total;
-    const opex = d.opex.total;
-    const profit = d.operating_profit;
+    const operating = d.operating_profit === undefined ? null : d.operating_profit;
+    const net = d.net_profit === undefined ? null : d.net_profit;
+    const vat = d.vat || null;
 
     const card = (title, value, note, cls) => el('div', { class: 'cash-sum-card' + (cls ? ' ' + cls : '') }, [
       el('div', { class: 'cash-sum-title' }, title),
-      el('div', { class: 'cash-sum-val' }, mlrd(value)),
+      el('div', { class: 'cash-sum-val' }, value === null ? '—' : mlrd(value)),
       note ? el('div', { class: 'cash-sum-note' }, note) : null,
     ]);
 
-    const cards = el('div', { class: 'cash-sum-cards' }, [
-      card('Отгрузили на', d.revenue.total,
-        d.revenue.source === 'shipped'
-          ? 'реализация по SalesDoctor'
-          : 'по поступлению денег — реализация не подтянута'),
-      card('Товар обошёлся в', cogs, d.cogs_source === 'paid' ? 'сырьё по оплатам поставщикам + упаковка' : 'сырьё из Закупа + упаковка'),
-      card('Работа компании', opex, 'зарплата, аренда, логистика, налоги'),
-      card('Осталось прибыли', profit,
-        profit === null ? 'не хватает данных'
-          : (d.operating_margin_pct === null ? null
-            : (kopeek(Math.round(d.operating_margin_pct)) + ' с каждого сума выручки')),
-        profit === null ? '' : (profit >= 0 ? 'good' : 'bad')),
+    // При минусе главная карточка говорит «убыток», а не «отрицательная прибыль».
+    const netTitle = net !== null && net < 0 ? PNL_NAMES.net + ' — убыток' : PNL_NAMES.net;
+    const cards = el('div', { class: 'cash-sum-cards cash-sum-cards-3' }, [
+      card(PNL_NAMES.revenue, rev,
+        d.revenue.source !== 'shipped'
+          ? 'реализация из SalesDoctor не подтянута — взяты поступления денег'
+          : (vat && vat.accrued
+            ? 'реализация SalesDoctor ' + mlrd(d.revenue.gross) + ' минус НДС ' + mlrd(vat.accrued)
+              + (vat.accrued_source === 'estimate' ? ' (расчётно)' : '')
+            : 'реализация по SalesDoctor')),
+      card(PNL_NAMES.operating, operating,
+        operating === null ? 'не хватает данных' : pctTxt(operating, rev),
+        operating === null ? '' : (operating >= 0 ? 'good' : 'bad')),
+      card(netTitle, net,
+        net === null ? 'не хватает данных'
+          : [pctTxt(net, rev), 'после процентов и уплаченного налога на прибыль · предварительный'].filter(Boolean).join(' · '),
+        net === null ? '' : (net >= 0 ? 'good' : 'bad')),
     ]);
 
-    // Одна фраза прозой — то, что человек пересказал бы вслух
+    // Методика — словами, на первом экране: без неё цифру не прочитать.
+    const method = el('div', { class: 'cash-sum-method' },
+      'Методика: текущая смешанная — выручка по реализации SalesDoctor без НДС, сырьё по приёмкам Закупа, '
+      + 'упаковка, зарплата и прочие расходы — по оплатам месяца. Амортизации нет; налог на прибыль — уплаченный, '
+      + 'а не начисленный за период.');
+
+    // Одна фраза прозой — те же цифры, те же названия.
     let phrase;
-    if (profit === null) {
-      phrase = 'Прибыль за ' + monthLabelRu(d.period) + ' посчитать пока не из чего: '
-        + 'нужны либо выдачи сырья в Складе, либо количество отгрузок (кнопка внизу).';
+    if (net === null) {
+      phrase = 'Результат за ' + monthLabelRu(d.period) + ' посчитать пока не из чего: '
+        + 'не хватает реализации из SalesDoctor или приёмок сырья.';
     } else {
-      const kop = d.operating_margin_pct === null ? null : Math.round(d.operating_margin_pct);
-      // В фразе та же цифра, что на плашке: выручка ОТ ПРОДАЖ. Прочие доходы
-      // называем отдельно — иначе фраза и плашка показывают разное, и человек
-      // справедливо перестаёт верить обеим.
-      phrase = 'За ' + monthLabelRu(d.period) + ' отгрузили на ' + mlrd(d.revenue.total)
-        + (d.revenue.receivable > 0
-          ? (', денег за товар пришло ' + mlrd(cashForGoods(d))
-            + ' — остальное ещё в пути')
-          : '')
-        + ', товар обошёлся в ' + mlrd(cogs)
-        + ', на работу компании ушло ' + mlrd(opex) + '. '
-        + (profit >= 0
-          ? ('Осталось ' + mlrd(profit) + ' прибыли')
-          : ('Не хватило ' + mlrd(Math.abs(profit)) + ' — месяц в убытке'))
-        + (kop === null ? '.' : (profit >= 0
-          ? (' — это ' + kopeek(kop) + ' с каждого сума выручки.')
-          : '.'));
+      const cogs = d.cogs_total === undefined ? null : d.cogs_total;
+      phrase = 'За ' + monthLabelRu(d.period) + ': выручка без НДС ' + mlrd(rev)
+        + ', сырьё и упаковка ' + mlrd(cogs)
+        + ', операционные расходы ' + mlrd(d.opex.total)
+        + '. ' + PNL_NAMES.operating + ' ' + mlrd(operating)
+        + '; после процентов и уплаченного налога — ' + (net >= 0 ? 'результат ' : 'убыток ') + mlrd(Math.abs(net))
+        + (pctTxt(net, rev) ? ' (' + pctTxt(net, rev) + ')' : '') + '. Результат предварительный.';
     }
 
     return el('div', { class: 'cash-sum' }, [
       cards,
+      method,
       el('div', { class: 'cash-sum-phrase' }, phrase),
     ]);
   }
@@ -1477,12 +1488,16 @@
     });
 
     gap();
-    row('Валовая прибыль', pnlMoney(d.gross_profit), {
+    // Не «валовая прибыль»: зарплата производства и общезаводские расходы ниже,
+    // в операционных. Валовой прибылью это станет, когда себестоимость будет
+    // полной — до того сравнивать её с валовой прибылью других нельзя.
+    row(PNL_NAMES.materials, pnlMoney(d.gross_profit), {
       cls: 'cash-pnl-total',
-      hint: d.cogs_source === 'paid' ? 'Сырьё взято по оплатам поставщикам — приёмок в Закупе за месяц нет.'
-        : (d.cogs_source === 'purchase' ? 'Выручка минус сырьё из Закупа и упаковка.' : null),
+      hint: 'Выручка без НДС минус сырьё и упаковка. Это НЕ валовая прибыль: зарплата производства '
+        + 'и общезаводские расходы вычитаются ниже, в операционных.'
+        + (d.cogs_source === 'paid' ? ' Сырьё взято по оплатам поставщикам — приёмок в Закупе за месяц нет.' : ''),
     });
-    row('Валовая маржа', pnlPct(d.gross_margin_pct), { cls: 'cash-pnl-sub' });
+    row('   доля остатка в выручке', pnlPct(d.gross_margin_pct), { cls: 'cash-pnl-sub' });
 
     gap();
     row('Операционные расходы', money(d.opex.total), {
@@ -1493,7 +1508,7 @@
       .forEach((g) => row('   ' + g.group_name, money(g.amount), { cls: 'cash-pnl-sub' }));
 
     gap();
-    row('Операционная прибыль', pnlMoney(d.operating_profit), { cls: 'cash-pnl-total' });
+    row(PNL_NAMES.operating, pnlMoney(d.operating_profit), { cls: 'cash-pnl-total' });
     row('Рентабельность', pnlPct(d.operating_margin_pct), { cls: 'cash-pnl-sub' });
 
     // Расчёты с бюджетом по НДС — не прибыль и не расход, но знать надо: по этой
@@ -1505,17 +1520,22 @@
         hint: 'Налог собран с клиента в цене и уже вынут из выручки. Уплата в бюджет — погашение долга '
           + 'перед ним, а не расход компании: вычитать её второй раз нельзя.',
       });
-      row('   начислено за месяц', money(vat.accrued), {
-        cls: 'cash-pnl-sub', hint: vat.note || '',
+      row('   НДС с реализации, начислено за месяц', money(vat.accrued), {
+        cls: 'cash-pnl-sub',
+        hint: (vat.note || '') + ' Это налог с ПРОДАЖ (строка начисления в декларации), а не итог '
+          + 'к уплате после вычетов: подставлять сюда сумму к уплате нельзя — выручка исказится.',
       });
       row('   уплачено в бюджет (статья 66)', money(vat.paid), { cls: 'cash-pnl-sub' });
-      row(vat.balance >= 0 ? '   осталось отдать бюджету' : '   переплата бюджету',
-        money(Math.abs(vat.balance)), {
-          cls: 'cash-pnl-sub' + (vat.balance > 0 ? ' cash-pnl-bad' : ''),
-          hint: vat.balance > 0
-            ? 'Начислили больше, чем отдали. Это долг перед бюджетом — в обязательствах Кассы он пока не ведётся.'
-            : 'Отдали больше, чем начислили за месяц: закрывали долг прошлых периодов или переплата.',
-        });
+      // Это движение ЗА МЕСЯЦ, а не весь долг: без сальдо на начало разница
+      // «начислили минус отдали» не говорит, сколько мы должны бюджету
+      // (проверка 03.10.2026). Долг на конец — отдельной строкой ниже, и только
+      // когда сальдо на начало вписано.
+      row('   изменение расчётов с бюджетом за месяц', (vat.balance > 0 ? '+' : '') + money(vat.balance), {
+        cls: 'cash-pnl-sub',
+        hint: vat.balance > 0
+          ? 'Начислили больше, чем отдали за месяц. Долг ли это — видно только с сальдо на начало.'
+          : 'Отдали больше, чем начислили за месяц — например, гасили прошлые периоды.',
+      });
       // Начисленный налог из декларации: одна цифра в месяц, и прибыль
       // перестаёт быть оценкой. Доступно тем же, кто ведёт деньги.
       // Поле показываем ВСЕГДА, а не только пока цифра не вписана. Раньше оно
@@ -1525,7 +1545,7 @@
         const isDecl = vat.accrued_source === 'declaration';
         const inp = el('input', {
           type: 'number', class: 'cash-acc-date', style: 'width:140px',
-          placeholder: 'из декларации',
+          placeholder: 'НДС с реализации',
           value: isDecl && vat.accrued !== null && vat.accrued !== undefined ? Math.round(vat.accrued) : '',
         });
         const save = async (value, done) => {
@@ -1593,11 +1613,13 @@
     });
     row('Налог на прибыль', money((d.profit_tax && d.profit_tax.total) || 0), {
       cls: 'cash-pnl-sub',
-      hint: 'По дате оплаты (статья 67). Платится не каждый месяц, поэтому чистая прибыль по месяцам скачет.',
+      hint: 'По дате оплаты (статья 67). Это уплаченный налог, а не налог за период: ноль здесь '
+        + 'не значит, что налога за месяц нет.',
     });
-    row('Чистая прибыль', pnlMoney(d.net_profit === undefined ? null : d.net_profit), {
+    row(PNL_NAMES.net + ' — предварительный', pnlMoney(d.net_profit === undefined ? null : d.net_profit), {
       cls: 'cash-pnl-total',
-      hint: 'Операционная прибыль минус проценты по кредитам и налог на прибыль.',
+      hint: 'Операционная прибыль минус проценты по кредитам и уплаченный налог на прибыль. Не «чистая '
+        + 'прибыль»: в нём нет амортизации, налог взят по оплате, часть расходов — по дате платежа.',
     });
 
     box.appendChild(el('table', { class: 'cash-pnl-t' }, el('tbody', {}, rows)));
@@ -1619,8 +1641,10 @@
         'Приход по расходным статьям: например, поставщик вернул деньги. В выручку не идёт; расход месяца не уменьшает.');
       recRow('− возвраты покупателям', money(rc.refunds || 0), 'Расход по доходной статье. Уменьшает выручку.');
       recRow('− приходы без статьи', money(rc.unclassified_in), 'Пока не разнесены по статьям.');
-      recRow('= Выручка в этом отчёте', money(rc.revenue), null, 'cash-pnl-total');
-      box.appendChild(el('div', { class: 'cash-h3' }, 'Сверка с Кэш-флоу — почему выручка меньше прихода'));
+      recRow('= Поступления денег по доходным статьям', money(rc.revenue),
+        'Это ДЕНЬГИ, а не выручка P&L: выручка выше считается по отгрузке и без НДС. '
+        + 'Здесь — сверка с Кэш-флоу, на прибыль она не влияет.', 'cash-pnl-total');
+      box.appendChild(el('div', { class: 'cash-h3' }, 'Сверка поступлений с Кэш-флоу (это деньги, не выручка)'));
       box.appendChild(el('table', { class: 'cash-pnl-t' }, el('tbody', {}, recRows)));
     }
 
@@ -1659,8 +1683,9 @@
 
     box.appendChild(unitsBlock(d));
     box.appendChild(el('div', { class: 'cash-sub cash-pnl-note' },
-      'Это управленческая картина, а не бухгалтерский ОПиУ. Расходы попадают по дате оплаты, '
-      + 'амортизации нет, выручка считается по поступлению денег. Движение реальных денег — на вкладке «Кэш-флоу».'));
+      'Управленческий P&L, не бухгалтерская отчётность. Выручка — по реализации SalesDoctor без НДС; '
+      + 'сырьё — по приёмкам; упаковка, зарплата и прочие расходы — по дате оплаты; амортизации нет. '
+      + 'Движение денег — на вкладке «Кэш-флоу».'));
   }
 
 
@@ -1704,7 +1729,7 @@
 
     if (d.vat && d.vat.accrued) {
       line('   реализация с НДС (как в SalesDoctor)',
-        'Цена в SalesDoctor с налогом внутри — решение Шоха 02.10.2026', d.revenue.gross);
+        'Суммы реализации SalesDoctor включают НДС', d.revenue.gross);
       line('   − НДС в цене',
         d.vat.accrued_source === 'declaration'
           ? 'Из декларации за месяц. Налог собран с клиента и принадлежит бюджету'
@@ -1751,7 +1776,7 @@
     }
 
     // --- 3. Валовая прибыль ---
-    head('3. Валовая прибыль');
+    head('3. ' + PNL_NAMES.materials);
     line('Выручка − себестоимость', 'Строка «Выручка» минус строка «Себестоимость в расчёте»', d.gross_profit, 'cash-src-total');
 
     // --- 4. Операционные расходы: каждая статья поимённо ---
@@ -1767,13 +1792,13 @@
       + 'налог на прибыль — ниже, после прибыли', d.opex.total, 'cash-src-total');
 
     // --- 5. Итог ---
-    head('5. Операционная прибыль');
+    head('5. ' + PNL_NAMES.operating + ' и итог');
     line(d.operating_profit !== null && d.operating_profit < 0 ? 'Убыток' : 'Прибыль',
       'Валовая прибыль минус операционные расходы', d.operating_profit, 'cash-src-total');
     line('Проценты по кредитам', 'Касса → статья 60, по дате оплаты. Тело кредита (61) сюда не входит — это возврат своих денег',
       (d.interest && d.interest.total) || 0);
     line('Налог на прибыль', 'Касса → статья 67, по дате оплаты', (d.profit_tax && d.profit_tax.total) || 0);
-    line('Чистая прибыль', 'Операционная прибыль минус проценты по кредитам и налог на прибыль',
+    line(PNL_NAMES.net, 'Операционная прибыль минус проценты по кредитам и уплаченный налог на прибыль. Предварительный: нет амортизации, налог — по оплате',
       d.net_profit === undefined ? null : d.net_profit, 'cash-src-total');
 
     // Если месяц в минусе — прямо говорим, что именно съело прибыль

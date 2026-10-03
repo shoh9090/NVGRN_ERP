@@ -1814,8 +1814,11 @@ router.get('/api/pnl/audit', async (req, res) => {
     const rows = (await db.pool.query(
       `SELECT a.id, a.action, a.details, a.created_at, u.full_name AS who
          FROM audit_log a LEFT JOIN users u ON u.id = a.user_id
+        -- pnl_vat_setup — правки НДС (ставка, начислено из декларации, сальдо):
+        -- они меняют выручку месяца, и без них в журнале не видно одной из
+        -- причин, по которой результат изменился (проверка 03.10.2026).
         WHERE a.action IN ('pnl_units_refresh', 'pnl_freeze_norms', 'cash_period_lock', 'cash_period_unlock',
-                           'purchase_receive', 'purchase_delivery_date')
+                           'purchase_receive', 'purchase_delivery_date', 'pnl_vat_setup')
           AND ($1::text IS NULL OR a.details::text LIKE '%' || $1 || '%')
         ORDER BY a.id DESC LIMIT 200`, [period])).rows;
     res.json({ period, items: rows });
