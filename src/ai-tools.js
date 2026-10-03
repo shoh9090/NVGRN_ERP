@@ -498,6 +498,60 @@ const TOOLS = [
     },
   },
   {
+    // Логисту — что развозить завтра. Берём напрямую из SalesDoctor: заказы
+    // будущего дня ещё не отгружены (статус 1), а наша ночная копия хранит
+    // только отгруженное. Несколько секунд ожидания тут честнее, чем молчать.
+    name: 'zakazy_na_zavtra',
+    tile: ['/tgbot', '/cash'],
+    botRole: 'logistics',
+    description: 'Что развозить: заказы на завтра или на сегодня — сколько заказов, сколько точек, '
+      + 'по водителям и сколько ещё не отгружено. Спрашивают: «что завтра по доставке», '
+      + '«сколько точек завтра», «заказы на сегодня».',
+    schema: { type: 'object', properties: {
+      day: { type: 'string', description: 'дата 2026-10-04; по умолчанию завтра' },
+    }, additionalProperties: false },
+    run: async (args) => {
+      const lg = require('./jarvis-logistics');
+      const want = day(args.day, new Date(Date.now() + 5 * 3600000 + 86400000).toISOString().slice(0, 10));
+      let orders = [];
+      try { orders = await lg.fetchOrders(want); }
+      catch (e) { return { итог: 'SalesDoctor не ответил: ' + e.message + '. Это не значит, что заказов нет' }; }
+      const mine = orders.filter((o) => lg.deliveryDate(o) === want);
+      if (!mine.length) {
+        return { день: want, итог: 'На этот день заказов в SalesDoctor пока нет. '
+          + 'Если день будущий, их ещё могут завести' };
+      }
+      const names = await lg.driverNames();
+      const byExp = new Map();
+      const points = new Set();
+      let notShipped = 0, amount = 0;
+      for (const o of mine) {
+        const ex = (o.expeditor && o.expeditor.SD_id) || '';
+        const key = ex ? (names[ex] || ex) : '— водитель не назначен —';
+        const d = byExp.get(key) || { водитель: key, заказов: 0, точек: new Set(), не_отгружено: 0 };
+        d.заказов++;
+        const client = (o.client && (o.client.SD_id || o.client.clientName)) || '';
+        if (client) { d.точек.add(client); points.add(client); }
+        if (Number(o.status) === 1) { d.не_отгружено++; notShipped++; }
+        amount += Number(o.summa) || 0;
+        byExp.set(key, d);
+      }
+      return {
+        день: want,
+        всего_заказов: mine.length,
+        точек: points.size,
+        ещё_не_отгружено: notShipped,
+        // Водитель на будущий день часто ещё не назначен — это рабочая ситуация,
+        // а не ошибка: логист как раз и расставляет машины.
+        по_водителям: [...byExp.values()].sort((a, b) => b.заказов - a.заказов)
+          .map((d) => ({ водитель: d.водитель, заказов: d.заказов, точек: d.точек.size,
+            не_отгружено: d.не_отгружено })),
+        источник: 'SalesDoctor, прямо сейчас (не ночная копия)',
+        примечание: '«Водитель не назначен» — заказ есть, машина ещё не выбрана.',
+      };
+    },
+  },
+  {
     name: 'prodazhi_po_klientam',
     tile: ['/cash', '/tgbot'],
     tab: { '/cash': 'pnl' },
@@ -638,24 +692,41 @@ const TOOLS = [
   },
   {
     name: 'pretenzii',
+    // Плитка «Претензии» открывает все; руководителю звена — его звено;
+    // РОПу — все, претензии приходят на его клиентов.
     tile: '/complaints',
     tab: { '/complaints': ['list', 'dash'] },
+    botRole: 'head_of_sales',
+    ownLinks: true,
     description: 'Претензии клиентов за период: сколько всего, сколько не закрыто, по каким товарам и типам, топ точек. Даты в виде 2026-09-01.',
     schema: { type: 'object', properties: {
       from: { type: 'string', description: 'с какой даты, 2026-09-01' },
       to: { type: 'string', description: 'по какую дату, 2026-09-30' },
     }, additionalProperties: false },
-    run: async (args) => {
+    run: async (args, ctx) => {
       const d = (v, def) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : def);
       const to = d(args.to, new Date(Date.now() + 5 * 3600000).toISOString().slice(0, 10));
       const from = d(args.from, to.slice(0, 8) + '01');
+      // Кому видно всё, а кому только своё звено.
+      const u = ctx && ctx.user;
+      let links = null, scopeLabel = 'все претензии';
+      if (u && !u.isAdmin && !(await hasTile(u, '/complaints', ['list', 'dash']))
+          && !(await hasBotRole(u, 'head_of_sales'))) {
+        const own = await complaintLinks(u);
+        if (!own.length) return { итог: 'Претензии вам не открыты' };
+        links = own.map((x) => x.code);
+        scopeLabel = 'ваше звено: ' + own.map((x) => x.label_ru).join(', ');
+      }
+      const p = [from, to];
+      let w = '';
+      if (links) { p.push(links); w = ` AND c.link_code = ANY($${p.length}::text[])`; }
       const rows = (await db.pool.query(
         `SELECT c.complaint_type, c.product_name, c.point_name, c.status, c.link_code,
                 COALESCE(t.label_ru, c.complaint_type) AS тип
            FROM tgbot.complaints c
            LEFT JOIN tgbot.complaint_dicts t ON t.kind = 'type' AND t.code = c.complaint_type
-          WHERE c.created_at::date BETWEEN $1 AND $2`, [from, to])).rows;
-      if (!rows.length) return { период: `${from} — ${to}`, итог: 'Претензий за этот период нет' };
+          WHERE c.created_at::date BETWEEN $1 AND $2${w}`, p)).rows;
+      if (!rows.length) return { период: `${from} — ${to}`, охват: scopeLabel, итог: 'Претензий за этот период нет' };
       const top = (field) => {
         const m = new Map();
         rows.forEach((r) => { const k = r[field] || '—'; m.set(k, (m.get(k) || 0) + 1); });
@@ -663,6 +734,7 @@ const TOOLS = [
       };
       return {
         период: `${from} — ${to}`,
+        охват: scopeLabel,
         всего: rows.length,
         не_закрыто: rows.filter((r) => r.status !== 'resolved').length,
         по_типам: top('тип'),
@@ -991,6 +1063,22 @@ const TOOLS = [
 ];
 
 // Инструменты, доступные конкретному человеку.
+// За какие звенья претензий человек отвечает. Руководителю производства
+// карточки его звена Джарвис шлёт сам, но спросить «сколько у меня за месяц»
+// он не мог: инструмент требовал плитку «Претензии» (решение Шоха 03.10.2026 —
+// открыть каждому свою часть, а не всё подряд).
+async function complaintLinks(user) {
+  if (!user) return [];
+  try {
+    const r = await db.pool.query(
+      `SELECT DISTINCT d.code, d.label_ru
+         FROM tgbot.complaint_dicts d
+         JOIN user_roles ur ON ur.role_id = d.owner_role_id
+        WHERE d.kind = 'link' AND d.active AND ur.user_id = $1`, [user.id]);
+    return r.rows;
+  } catch (e) { return []; }
+}
+
 // Роль в боте (logistics, head_of_sales) — вторая дверь к инструменту, кроме
 // плитки. Логист получает от Джарвиса вечернюю сводку по доставкам, но спросить
 // то же самое словами не мог: инструмент выдавался по Кассе и Боту HoReCa,
@@ -1010,9 +1098,12 @@ async function hasBotRole(user, role) {
 async function allowedTool(user, t) {
   const tiles = t.tile ? [].concat(t.tile) : [];
   const roles = t.botRole ? [].concat(t.botRole) : [];
-  if (!tiles.length && !roles.length) return true;
+  if (!tiles.length && !roles.length && !t.ownLinks) return true;
   for (const url of tiles) if (await hasTile(user, url, t.tab && t.tab[url])) return true;
   for (const role of roles) if (await hasBotRole(user, role)) return true;
+  // ownLinks: инструмент открыт и тому, кто отвечает за звено претензий —
+  // он увидит только своё (фильтр внутри инструмента).
+  if (t.ownLinks && (await complaintLinks(user)).length) return true;
   return false;
 }
 
