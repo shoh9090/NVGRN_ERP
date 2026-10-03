@@ -1067,6 +1067,37 @@ async function main() {
     } catch (e) { bot.sendMessage(msg.chat.id, "Ошибка: " + e.message); }
   });
 
+  // Что SalesDoctor реально отдаёт боту по заказам. Нужна, когда «заказы в CRM
+  // есть, а бот их не видит»: показывает один и тот же запрос с разными
+  // параметрами и крайние даты в каждой выборке — сразу видно, обрезает ли API
+  // свежие заказы и по какому полю даты он фильтрует (03.10.2026).
+  bot.onText(/\/sdcheck/, async (msg) => {
+    if (!isAdmin(msg.chat.id)) { bot.sendMessage(msg.chat.id, "Только админ."); return; }
+    bot.sendChatAction(msg.chat.id, "typing");
+    const span = (arr) => {
+      const ds = arr.map((o) => String(o.dateShipment || o.dateCreate || "").slice(0, 10)).filter(Boolean).sort();
+      return ds.length ? `${ds[0]} … ${ds[ds.length - 1]}` : "дат нет";
+    };
+    const lines = [];
+    try {
+      const to = tzToday(), fromWin = tzDateAgo(botCfg.window), from30 = tzDateAgo(30);
+      const a = await sd.fetchAll("getOrder", { filter: { period: { date: { from: fromWin, to } }, status: [1, 2, 3, 4] } });
+      lines.push(`1) окно бота ${fromWin}…${to}, статусы 1–4: ${a.length} (${span(a)})`);
+      const b = await sd.fetchAll("getOrder", { filter: { period: { date: { from: fromWin, to } } } });
+      lines.push(`2) те же даты, без фильтра статусов: ${b.length} (${span(b)})`);
+      const c = await sd.fetchAll("getOrder", { filter: { period: { date: { from: from30, to: tzTomorrow() } }, status: [1, 2, 3, 4, 5] } });
+      lines.push(`3) 30 дней, все статусы: ${c.length} (${span(c)})`);
+      const d = sd.listFrom(await sd.call("getOrder", { limit: 50, page: 1 }));
+      lines.push(`4) вообще без фильтра, первая страница: ${d.length} (${span(d)})`);
+      const f = c[0] || d[0] || {};
+      lines.push("", "Поля первой записи (по какому полю фильтрует SD):",
+        ["dateCreate", "dateDocument", "dateShipment", "consigDate"].map((k) => `  ${k} = ${f[k] || "—"}`).join("\n"));
+      await bot.sendMessage(msg.chat.id, "🧪 Что отдаёт SalesDoctor боту\n" + lines.join("\n"));
+    } catch (e) {
+      await bot.sendMessage(msg.chat.id, "🧪 Проверка прервалась: " + e.message + (lines.length ? "\n\nУспели:\n" + lines.join("\n") : ""));
+    }
+  });
+
   bot.onText(/\/remindnow/, async (msg) => {
     if (!isAdmin(msg.chat.id)) { bot.sendMessage(msg.chat.id, "Только админ."); return; }
     bot.sendMessage(msg.chat.id, "Запускаю рассылку напоминаний…");
