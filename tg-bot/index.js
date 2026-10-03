@@ -629,6 +629,26 @@ async function main() {
     return true;
   }
 
+  // SalesDoctor не пустил бота — это полная слепота: ни заказов, ни остатков,
+  // ни каталога. Раньше это было видно только в логах Railway, а людям бот
+  // отвечал «заказов нет» (03.10.2026: месяц молчания из-за смены пароля).
+  // Теперь админ узнаёт сразу. Пароль в сообщение не попадает (sd.safeError).
+  let sdWarnAt = 0;
+  sd.onAuthError((why, from) => {
+    console.error("[SD] вход не удался:", why);
+    if (!ADMIN_TG_ID || Date.now() - sdWarnAt < 3600000) return;
+    sdWarnAt = Date.now();
+    bot.sendMessage(ADMIN_TG_ID,
+      "⛔ Бот не может войти в SalesDoctor: " + why + "\n\n"
+      + "Пока это так, бот слеп: не видит заказы и остатки. Клиенты не получат напоминания, "
+      + "заказ через бота не оформить, претензию подать нельзя.\n\n"
+      + (from === "hub"
+        ? "Сейчас бот использует доступы Hub (Интеграции → SalesDoctor) — проверьте их там."
+        : "Проверьте переменные SD_LOGIN и SD_PASSWORD у сервиса бота в Railway: "
+          + "скорее всего, в SalesDoctor сменили пароль пользователю бота.")
+    ).catch(() => {});
+  });
+
   // Мастер претензий: отдаём ему нужные помощники бота (логику заказов он не трогает).
   complaints.init({ bot, db, getLang, pointsOfUser, phone9OfUser, pointsOfAgent, getOrders14, menuFor, staffOf: getStaff, notifyClientAgent, notifyAgentReact, notifyAgentDone, notifyManagers });
 

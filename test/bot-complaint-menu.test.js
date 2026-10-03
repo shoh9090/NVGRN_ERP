@@ -90,3 +90,34 @@ test('узбекский вариант тоже объясняет причин
   assert.match(txt, /Oxirgi yetkazib berish: 28\.09/);
   assert.match(txt, /shikoyat berib bo‘lmaydi/i);
 });
+
+// ---- Сбой CRM не должен выглядеть как «заказов нет» ----
+const sd = require('../tg-bot/salesdoctor');
+
+test('ответ SalesDoctor об отказе входа не выносит наружу логин и пароль', () => {
+  // SD эхом возвращает присланные креды — в лог и в Telegram они попасть не должны.
+  const json = { status: false, result: { login: 'tgbot_sales', password: 'СЕКРЕТНЫЙ' },
+    error: { code: 401, message: 'Invalid login/password' } };
+  const txt = sd.safeError(json);
+  assert.match(txt, /401/);
+  assert.match(txt, /Invalid login\/password/);
+  assert.doesNotMatch(txt, /СЕКРЕТНЫЙ/);
+  assert.doesNotMatch(txt, /tgbot_sales/);
+});
+
+test('CRM не ответила — мастер так и говорит, а не «отгрузок нет»', async () => {
+  const bot = fakeBot();
+  complaints.init({
+    bot, db: { query: async () => ({ rows: [] }) },
+    getLang: async () => 'ru',
+    staffOf: async () => null,
+    menuFor: async () => CLIENT_KB,
+    pointsOfUser: async () => [{ sd_id: 'd5_1883', point_name: 'Sezam_ garden' }],
+    phone9OfUser: async () => '901234567',
+    getOrders14: async () => { throw new Error('SalesDoctor не пустил бота (код 401)'); },
+  });
+  await complaints.onMessage(msg('📩 Претензия'));
+  const last = bot.sent[bot.sent.length - 1];
+  assert.match(last.text, /связаться с CRM/i);
+  assert.doesNotMatch(last.text, /подать нельзя/);
+});

@@ -70,6 +70,7 @@ const STR = {
   pick_dish:   { ru: "Каким был финальный вид продукта в блюде?", uz: "Mahsulot taomda qanday ko‘rinishda bo‘ldi?" },
   // Отказ объясняем цифрами: когда была последняя отгрузка и какой срок у претензий.
   // Иначе «не нашёл недавних заказов» читается как поломка бота.
+  crm_down:        { ru: "Не получается связаться с CRM — сейчас принять претензию не могу. Попробуйте позже, администратору я уже сообщил.", uz: "CRM bilan bog‘lanib bo‘lmayapti — hozir shikoyatni qabul qila olmayman. Keyinroq urinib ko‘ring, administratorga xabar berdim." },
   no_orders_head:  { ru: "Претензию по этой точке подать нельзя.", uz: "Bu nuqta bo‘yicha shikoyat berib bo‘lmaydi." },
   no_orders_last:  { ru: (d, n) => `Последняя отгрузка: ${d} (${n} дн. назад).`, uz: (d, n) => `Oxirgi yetkazib berish: ${d} (${n} kun oldin).` },
   // Без числа дней: окно истории заказов настраивается РОПом, и зашитая цифра соврёт.
@@ -240,7 +241,16 @@ async function askPoint(chatId, s, lang) {
 async function askOrder(chatId, s, lang) {
   let orders = [];
   try { orders = (await H.getOrders14()).filter((o) => o.client && o.client.SD_id === s.point.sd_id); }
-  catch (e) { console.warn("[ПРЕТЕНЗИЯ orders]", e.message); }
+  catch (e) {
+    // CRM не ответила — это НЕ «отгрузок нет». Сказать человеку, что заказов не
+    // было, когда мы просто не смогли их получить, значит соврать: 03.10.2026
+    // так и вышло, бот месяц не мог войти в SalesDoctor, а выглядело это как
+    // пустая история точки.
+    console.warn("[ПРЕТЕНЗИЯ orders]", e.message);
+    await bot.sendMessage(chatId, t(lang, "crm_down"), await H.menuFor(s.tgId, lang));
+    sessions.delete(chatId);
+    return;
+  }
   orders.sort((a, b) => String(b.dateCreate || "").localeCompare(String(a.dateCreate || "")));
   // Ультрафреш: претензия принимается только по отгрузке за последние FRESH_DAYS дней.
   const cutoff = new Date(Date.now() - FRESH_DAYS * 86400000).toISOString().slice(0, 10);
