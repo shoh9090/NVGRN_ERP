@@ -1431,9 +1431,25 @@ router.post('/api/orders/:id(\\d+)/reconcile', express.json({ limit: '2mb' }), a
   try {
     if (!(await canEditOrders(req))) return res.status(403).json({ error: 'Правка заявок сейчас выключена. Включите доступ (только администратор).' });
     const oid = parseInt(req.params.id, 10);
-    const o = (await db.pool.query('SELECT id, status FROM purchase_orders WHERE id=$1', [oid])).rows[0];
+    const o = (await db.pool.query(
+      'SELECT id, status, received_at, delivery_date FROM purchase_orders WHERE id=$1', [oid])).rows[0];
     if (!o) return res.status(404).json({ error: 'Заявка не найдена' });
     const rcvd = o.status === 'received';
+    // Закрытый месяц не трогаем. Правка принятой заявки меняет долг поставщику
+    // и себестоимость того месяца — а он уже сведён и закрыт. Касса этот замок
+    // проверяла у себя и в Кадрах, Закуп мимо него ходил (решение Шоха
+    // 03.10.2026: система отражает факт, задним числом не переписываем).
+    const lockDate = (o.received_at && String(o.received_at).slice(0, 10)) || o.delivery_date;
+    const lockErr = await require('./cash-lock').cashLockError(db.pool, lockDate);
+    if (lockErr) return res.status(409).json({ error: lockErr });
+    // Что было до правки — чтобы в журнале остался след, а не «правил кто-то что-то».
+    const before = (await db.pool.query(
+      `SELECT i.id, i.qty, i.price, COALESCE(rm.name, pk.name) AS name
+         FROM purchase_order_items i
+         LEFT JOIN ref_raw_materials rm ON i.item_kind = 'raw' AND rm.id = i.item_id
+         LEFT JOIN ref_packaging pk ON i.item_kind = 'packaging' AND pk.id = i.item_id
+        WHERE i.order_id = $1`, [oid])).rows;
+    const wasById = new Map(before.map((x) => [x.id, x]));
     const supplierId = parseInt(req.body.supplier_id, 10);
     if (supplierId) await db.pool.query('UPDATE purchase_orders SET supplier_id=$1 WHERE id=$2', [supplierId, oid]);
     // Правка существующих позиций (кол-во/цена).
@@ -1455,7 +1471,28 @@ router.post('/api/orders/:id(\\d+)/reconcile', express.json({ limit: '2mb' }), a
         'INSERT INTO purchase_order_items (order_id, item_kind, item_id, qty, price, fact_qty) VALUES ($1,$2,$3,$4,$5,$6)',
         [oid, kind, iid, qty, price, rcvd ? qty : null]);
     }
-    await db.log(req.user.id, 'purchase_order_reconcile', `${oid} del=${delIds.length} add=${(Array.isArray(req.body.add_items) ? req.body.add_items.length : 0)}`);
+    // След: что именно поменялось. «del=2 add=1» не отвечает на вопрос, из-за
+    // чего поехал долг поставщику, а этот вопрос рано или поздно задают.
+    const changes = [];
+    for (const it of (Array.isArray(req.body.items) ? req.body.items : [])) {
+      const was = wasById.get(parseInt(it.id, 10));
+      if (!was) continue;
+      const qty = Number(it.qty), price = Number(it.price);
+      if (!(qty > 0) || !(price > 0)) continue;
+      if (Number(was.qty) !== qty || Number(was.price) !== price) {
+        changes.push(`${was.name || '—'}: ${was.qty}×${was.price} → ${qty}×${price}`);
+      }
+    }
+    for (const id of delIds) {
+      const was = wasById.get(id);
+      if (was) changes.push(`удалено ${was.name || '—'} (${was.qty}×${was.price})`);
+    }
+    const addN = Array.isArray(req.body.add_items) ? req.body.add_items.length : 0;
+    if (addN) changes.push(`добавлено позиций: ${addN}`);
+    const why = String(req.body.reason || '').trim().slice(0, 300);
+    await db.log(req.user.id, 'purchase_order_reconcile',
+      `заявка ${oid}${rcvd ? ' (принятая)' : ''}: ${changes.join('; ') || 'без изменений в позициях'}`
+      + (why ? ` · причина: ${why}` : ''));
     res.json({ ok: true });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
