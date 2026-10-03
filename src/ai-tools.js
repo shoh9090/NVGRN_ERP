@@ -376,8 +376,10 @@ const TOOLS = [
       const out = rows.map((r) => {
         const kg = unitKg(r.товар);
         if (kg === null) kgKnown = false; else kgAll += kg * Number(r.штук);
-        const line = { товар: r.товар, штук: Math.round(Number(r.штук)) };
-        if (kg !== null) line.кг = Math.round(kg * Number(r.штук) * 10) / 10;
+        // Вес не распознан — пишем null, а не прячем поле: пропущенное поле
+        // читается как «такой возможности нет» (урок 03.10.2026).
+        const line = { товар: r.товар, штук: Math.round(Number(r.штук)),
+          кг: kg === null ? null : Math.round(kg * Number(r.штук) * 10) / 10 };
         if (withMoney) line.сумма = money(r.сумма);
         return line;
       });
@@ -388,8 +390,8 @@ const TOOLS = [
         const kg = unitKg(r.товар);
         if (kg === null) kgAllKnown = false; else kgTotal += kg * Number(r.штук);
       }
-      const total = { позиций: all.позиций, штук: Math.round(Number(all.штук)) };
-      if (kgTotal) total.кг = Math.round(kgTotal * 10) / 10;
+      const total = { позиций: all.позиций, штук: Math.round(Number(all.штук)),
+        кг: kgTotal ? Math.round(kgTotal * 10) / 10 : null };
       if (kgTotal && !kgAllKnown) total.про_килограммы = 'Только по товарам, у которых вес указан в названии';
       if (withMoney) total.сумма = money(all.сумма);
       const partial = all.позиций > rows.length;
@@ -474,16 +476,24 @@ const TOOLS = [
       const nagruzka = {};
       for (const r of byDow) nagruzka[DOW[r.dow]] = Math.round((r.n / Math.max(r.dney, 1)) * 10) / 10;
       const total = rows.reduce((a, r) => a + r.доставок, 0);
+      const hang = rows.reduce((a, r) => a + r.висит_отгружен, 0);
       return {
         период: `${from} — ${to}`, выгружено_по: cov.last_day, всего_доставок: total,
+        всего_висит_отгружен: hang,
+        // Поле «висит_отгружен» отдаём ВСЕГДА, даже когда ноль. Раньше при нуле
+        // его просто не было в ответе, и Джарвис честно говорил логисту, что
+        // такой разбивки по водителям не бывает (случай 03.10.2026). Пустое
+        // поле и отсутствующее поле — для читающего разные вещи.
         водители: rows.map((r) => {
-          const line = { водитель: r.водитель, доставок: r.доставок, точек: r.точек };
-          if (r.висит_отгружен) line.висит_отгружен = r.висит_отгружен;
+          const line = { водитель: r.водитель, доставок: r.доставок, точек: r.точек,
+            висит_отгружен: r.висит_отгружен };
           if (withMoney) line.сумма = money(r.сумма);
           return line;
         }),
         доставок_в_день_по_дням_недели: nagruzka,
-        примечание: 'Доставка считается по дате документа заказа, как в напоминаниях водителям',
+        примечание: 'Доставка считается по дате документа заказа, как в напоминаниях водителям. '
+          + '«Висит отгружен» = водитель не отметил «Доставлен». Ноль значит, что отметили всё, '
+          + 'а не что данных нет.',
       };
     },
   },
@@ -703,9 +713,9 @@ const TOOLS = [
       const sales = sold.map((r) => {
         const kg = unitKg(r.товар);
         if (kg === null) kgKnown = false; else soldKg += kg * Number(r.штук);
-        const line = { товар: r.товар, штук: Math.round(Number(r.штук)) };
-        if (kg !== null) line.кг = Math.round(kg * Number(r.штук) * 10) / 10;
-        return line;
+        // Вес не распознан — null, а не пропуск поля (урок 03.10.2026).
+        return { товар: r.товар, штук: Math.round(Number(r.штук)),
+          кг: kg === null ? null : Math.round(kg * Number(r.штук) * 10) / 10 };
       });
 
       // 3. Что заказано и ещё не принято.
