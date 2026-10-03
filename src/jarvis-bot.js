@@ -287,10 +287,6 @@ const TOOL_HELP = {
 async function sendHelp(chatId, me) {
   const user = await erpUser(me.user_id);
   const tools = await require('./ai-tools').toolsFor(user);
-  // Что человеку закрыто правами. Без этого Джарвис отвечал «такого
-  // инструмента у меня нет вообще» про то, что в системе есть, — человек шёл
-  // к разработчикам вместо админа (случай логиста Абидова, 02.10.2026).
-  const blocked = await require('./ai-tools').blockedFor(user).catch(() => []);
   const lines = tools.map((t) => TOOL_HELP[t.name]).filter(Boolean).map(([i, s]) => `${i} ${esc(s)}`);
   return send(chatId, '🤖 Я Джарвис — помощник Novagreen на основе ИИ. Отвечаю по данным ERP, '
     + 'в пределах того, что открыто твоей роли.\n\n<b>Спроси словами, например:</b>\n' + lines.join('\n')
@@ -466,6 +462,9 @@ async function aiAnswer(chatId, me, question, rules) {
   // chatId нужен инструментам, которые присылают файл прямо в чат.
   const ctx = { user, employee_id: me.employee_id, full_name: me.full_name, chatId };
   const tools = await require('./ai-tools').toolsFor(user);
+  // Что человеку закрыто правами: Джарвис должен сказать «умею, но вам не
+  // открыто», а не «такого у меня нет» (случай логиста Абидова, 02.10.2026).
+  const blocked = await require('./ai-tools').blockedFor(user).catch(() => []);
   const runTool = async (name, args) => {
     const t = tools.find((x) => x.name === name);
     if (!t) return { ошибка: 'Нет такого инструмента или нет прав' };
@@ -1699,6 +1698,10 @@ function webhook(req, res) {
 }
 
 module.exports = { start, webhook, tick, status, send, sendFile, myCardsData };
+// Холостой прогон разговора (test/jarvis-dryrun.test.js): «blocked is not
+// defined» прошло все проверки и легло в прод — ответы бота падали целиком,
+// а человек видел «Не получилось ответить». Теперь путь ответа прогоняется.
+module.exports.__handleUpdate = (u) => handleUpdate(u);
 // Холостой прогон (test/jarvis-dryrun.test.js) гоняет такт целиком на
 // поддельной базе и поддельных ответах Trello и Telegram. Так ловятся ошибки,
 // которые видны только при запуске («opts is not defined»): проверка синтаксиса

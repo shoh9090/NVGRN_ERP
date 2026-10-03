@@ -156,3 +156,71 @@ test('холостой прогон: ответ модели с инструме
     if (realKey === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = realKey;
   }
 });
+
+// Холостой прогон РАЗГОВОРА. Проверка синтаксиса не ловит «blocked is not
+// defined»: переменная объявлена в другой функции, файл при этом валиден.
+// Такая ошибка роняет каждый ответ бота, поэтому путь прогоняется целиком.
+test('холостой прогон: ответ на вопрос доходит до человека', async () => {
+  const realFetch = global.fetch;
+  const realToken = process.env.INTERNAL_BOT_TOKEN;
+  const realKey = process.env.ANTHROPIC_API_KEY;
+  const realWarn = console.warn;
+  const warnings = [];
+  const sent = [];
+  try {
+    process.env.INTERNAL_BOT_TOKEN = '123:test';
+    process.env.ANTHROPIC_API_KEY = 'test';
+    console.warn = (...a) => warnings.push(a.join(' '));
+    global.fetch = async (url, init) => {
+      const u = String(url);
+      const json = (data) => ({ ok: true, status: 200, json: async () => data });
+      if (u.includes('api.telegram.org')) {
+        const body = JSON.parse(init.body || '{}');
+        if (body.text) sent.push(body.text);
+        return json({ ok: true, result: { message_id: 1 } });
+      }
+      if (u.includes('api.anthropic.com')) {
+        return json({ content: [{ type: 'text', text: 'За неделю 14 доставок.' }], stop_reason: 'end_turn', usage: {} });
+      }
+      return json({});
+    };
+    const bot = require('../src/jarvis-bot');
+    const db = require('../src/db');
+    const realDbQuery = db.pool.query;
+    const RULES = JSON.stringify({ workspace_id: 'ws1', reminders_enabled: true, ai_enabled: true,
+      work_from: 0, work_to: 24, work_days: [1, 2, 3, 4, 5, 6, 7] });
+    const person = { id: 1, user_id: 1, employee_id: 1, full_name: 'Абидов Баходир',
+      trello_member_id: 'm1', jv_chat_id: 555, is_admin: false, is_finance: false };
+    // Инструменты ходят в базу через src/db, а не через пул бота — подменяем оба,
+    // иначе прогон упирается в живой Postgres и проверяет не то.
+    const fakeQuery = async (sql) => {
+        const q = String(sql);
+        if (/FROM settings/.test(q)) return { rows: [{ value: RULES }] };
+        // Бот узнаёт человека по чату, потом собирает его права.
+        if (/JOIN hr_employees e ON e\.erp_user_id/.test(q)) return { rows: [person] };
+        if (/BOOL_OR\(COALESCE\(ro\.is_admin/.test(q)) return { rows: [{ id: 1, is_admin: false, is_finance: false }] };
+        if (/FROM tiles/.test(q)) return { rows: [] };            // плиток нет — часть инструментов закрыта
+        if (/bot_role = \$2/.test(q)) return { rows: [{ ok: 1 }] }; // зато роль логистики есть
+        if (/FROM hr_employees/.test(q)) return { rows: [person] };
+        if (/FROM jarvis_chat/.test(q)) return { rows: [] };
+        if (/INTO jarvis_log/.test(q)) return { rows: [{ id: 1 }] };
+        return { rows: [] };
+    };
+    db.pool.query = fakeQuery;
+    bot.__setPool({ query: fakeQuery,
+      connect: async () => ({ query: async () => ({ rows: [{ ok: true }] }), release() {} }) });
+    // chat.type обязателен: бот отвечает только в личке.
+    await bot.__handleUpdate({ message: { chat: { id: 555, type: 'private' }, from: { id: 555 },
+      text: 'сколько доставок за неделю' } });
+    const bad = warnings.filter((w) => /is not defined|is not a function|Cannot read|before initialization/.test(w));
+    assert.deepStrictEqual(bad, [], 'ошибка во время ответа: ' + bad.join(' | '));
+    assert.ok(sent.length, 'человеку ничего не ушло');
+    assert.ok(!sent.some((t) => /Не получилось ответить/.test(t)), 'бот ответил ошибкой вместо ответа: ' + sent.join(' | '));
+  } finally {
+    global.fetch = realFetch;
+    console.warn = realWarn;
+    try { require('../src/db').pool.query = realDbQuery; } catch (e) { /* не подменяли */ }
+    process.env.INTERNAL_BOT_TOKEN = realToken || '';
+    if (realKey === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = realKey;
+  }
+});
