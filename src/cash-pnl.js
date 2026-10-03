@@ -1129,122 +1129,41 @@ async function pnlFor(pool, period) {
 // ---------------------------------------------------------------------------
 // Динамика по месяцам — для графика на дашборде
 // ---------------------------------------------------------------------------
-// Считаем те же величины, что и месячный отчёт, но сразу за несколько месяцев
-// и одним набором запросов: дёргать buildPnl двенадцать раз означало бы
-// полсотни запросов к базе на каждое открытие вкладки.
+// Каждая точка графика — это ТОТ ЖЕ отчёт месяца, что в таблице: pnlFor(),
+// закрытый месяц из снимка, открытый — полным расчётом.
 //
-// Классификация статей — ровно та же функция, что и в месячном отчёте
-// (classifyRows). Если развести их на две копии, график и таблица начнут
-// показывать разное, и доверие к отчёту закончится.
+// Раньше у графика был свой упрощённый путь «ради скорости», и он трижды
+// расходился с карточкой: сначала не вычитал налог на прибыль, потом не брал
+// снимки закрытых месяцев, потом не вынимал НДС из выручки (проверка
+// 03.10.2026). Каждый раз чинили следствие. Теперь причины нет: график не
+// умеет считать прибыль сам — он только складывает уже готовые отчёты.
+//
+// Цена — время: двенадцать полных расчётов вместо одного общего запроса.
+// График грузится отдельно и экран отчёта не задерживает, а одинаковая цифра
+// в таблице и на графике важнее пары секунд.
 async function buildTrend(pool, endPeriod, months) {
   const n = Math.max(2, Math.min(24, Number(months) || 12));
-  const bounds = (await pool.query(
-    `SELECT to_char(($1::date - ($2 || ' months')::interval), 'YYYY-MM-DD') AS f,
-            to_char((($1::date + INTERVAL '1 month') - INTERVAL '1 day'), 'YYYY-MM-DD') AS t`,
-    [endPeriod + '-01', n - 1])).rows[0];
-
-  // Деньги по месяцам и статьям
-  const cashRows = (await pool.query(
-    `SELECT to_char(t.tx_date, 'YYYY-MM') AS m,
-            c.code, c.name, c.group_name, c.flow_type,
-            COALESCE(SUM(t.amount) FILTER (WHERE t.tx_type = 'in'), 0)  AS inc,
-            COALESCE(SUM(t.amount) FILTER (WHERE t.tx_type = 'out'), 0) AS exp,
-            COUNT(*) AS cnt
-       FROM cash_transactions t
-       JOIN cash_categories c ON c.id = t.category_id
-      WHERE t.tx_date BETWEEN $1 AND $2
-        AND t.tx_type IN ('in', 'out')
-        AND t.source <> 'opening'
-        AND (c.direction_hint IS DISTINCT FROM 'transfer')
-      GROUP BY 1, c.code, c.name, c.group_name, c.flow_type`, [bounds.f, bounds.t])).rows;
-
-  // Списания со склада по месяцам, оценённые средней ценой прихода
-  const usedRows = (await pool.query(
-    `SELECT to_char(moved_at, 'YYYY-MM') AS m, item_kind, item_id, SUM(-qty) AS qty
-       FROM stock_movements
-      WHERE reason = 'production' AND moved_at BETWEEN $1 AND $2
-      GROUP BY 1, item_kind, item_id
-     HAVING SUM(-qty) > 0`, [bounds.f, bounds.t])).rows;
-  // Цены — по месяцу списания, ровно как в карточке месяца.
-  const firstMonth = bounds.f.slice(0, 7);
-  const priceMaps = await monthlyPriceMaps(pool, firstMonth, endPeriod);
-
-  // Раскладываем по месяцам
-  const byMonth = new Map();
-  const monthOf = (m) => {
-    if (!byMonth.has(m)) byMonth.set(m, { period: m, rows: [], cogs: 0, cogs_known: false });
-    return byMonth.get(m);
-  };
-  // Реализация по месяцам — та же, что в месячном отчёте: подтянутая кнопкой
-  // и сохранённая. Где её нет, на графике честно берём поступления денег.
-  const salesRows = (await pool.query(
-    "SELECT key, value FROM settings WHERE key LIKE 'pnl_sales_%'")).rows;
-  const shippedOf = new Map(salesRows.filter((x) => salesLoaded(x.value)).map((x) => [String(x.key).replace('pnl_sales_', ''), Number(x.value)]));
-  cashRows.forEach((r) => monthOf(r.m).rows.push(r));
-  usedRows.forEach((u) => {
-    const slot = monthOf(u.m);
-    const price = (priceMaps.get(u.m) || new Map()).get(u.item_kind + '#' + u.item_id);
-    if (price === undefined) return;          // без цены прихода не оцениваем
-    slot.cogs += (Number(u.qty) || 0) * price;
-    slot.cogs_known = true;
-  });
-
-  // Сырьё из Закупа по месяцам — та же себестоимость, что в карточке месяца.
-  const receivedOf = await rawReceivedByMonth(pool, bounds.f, bounds.t);
-
-  // Закрытые месяцы берём из снимка — ровно как карточка. Иначе график жил бы
-  // своей жизнью: закрыли август, а линия продолжала бы шевелиться от новых
-  // приёмок и правок задним числом.
-  const lock = await cashLockedUntil(pool).catch(() => null);
-  const snapOf = new Map();
-  for (const r of (await pool.query("SELECT key, value FROM settings WHERE key LIKE 'pnl_snapshot_%'")).rows) {
-    const per = String(r.key).replace('pnl_snapshot_', '');
-    if (!lock || per + '-01' > lock) continue;
-    try { snapOf.set(per, JSON.parse(r.value)); } catch (e) { /* испорченный снимок — считаем месяц заново */ }
-  }
-
-  // Идём по всем месяцам подряд, включая пустые: провал в данных должен быть
-  // виден дырой на графике, а не «съеденным» месяцем.
-  const out = [];
   const [ey, em] = endPeriod.split('-').map(Number);
+  const out = [];
   for (let i = n - 1; i >= 0; i--) {
-    const d = new Date(Date.UTC(ey, em - 1 - i, 1));
-    const key = d.toISOString().slice(0, 7);
-    const snap = snapOf.get(key);
-    if (snap) {
-      out.push({
-        period: key,
-        revenue: num(snap.revenue && snap.revenue.total),
-        revenue_source: (snap.revenue && snap.revenue.source) || 'shipped',
-        cogs: snap.cogs_total === undefined ? null : snap.cogs_total,
-        opex: num(snap.opex && snap.opex.total),
-        operating: snap.operating_profit === undefined ? null : snap.operating_profit,
-        profit: snap.net_profit === undefined ? null : snap.net_profit,
-        closed: true,
-      });
-      continue;
-    }
-    const slot = byMonth.get(key);
-    if (!slot) { out.push({ period: key, revenue: 0, cogs: null, opex: 0, operating: null, profit: null }); continue; }
-    const c = classifyRows(slot.rows);
-    const cogs = materialsCost(receivedOf.get(key), c.materials).total;
-    const shippedLoadedM = shippedOf.has(key);
-    const rev = shippedLoadedM ? shippedOf.get(key) : c.revenueTotal;
-    // Прибыль на графике — ТА ЖЕ чистая прибыль, что в карточке месяца:
-    // минус проценты по кредитам и налог на прибыль. Раньше график показывал
-    // операционную, и в месяц с уплаченным налогом линия и карточка расходились.
-    const operating = cogs === null ? null : rev - cogs - c.opexTotal;
+    const key = new Date(Date.UTC(ey, em - 1 - i, 1)).toISOString().slice(0, 7);
+    let r;
+    try { r = await pnlFor(pool, key); } catch (e) { r = null; }
+    if (!r) { out.push({ period: key, revenue: null, cogs: null, opex: null, operating: null, profit: null, error: true }); continue; }
     out.push({
       period: key,
-      revenue: rev,
-      revenue_source: shippedLoadedM ? 'shipped' : 'cash',
-      cogs,
-      opex: c.opexTotal,
-      operating,
-      profit: operating === null ? null : operating - c.interestTotal - c.profitTaxTotal,
+      // Выручка — та же, что в таблице: без НДС.
+      revenue: num(r.revenue && r.revenue.total),
+      revenue_source: (r.revenue && r.revenue.source) || null,
+      cogs: r.cogs_total === undefined ? null : r.cogs_total,
+      opex: num(r.opex && r.opex.total),
+      operating: r.operating_profit === undefined ? null : r.operating_profit,
+      profit: r.net_profit === undefined ? null : r.net_profit,
+      closed: !!r.snapshot_at,
     });
   }
-  return { months: n, from: bounds.f, to: bounds.t, points: out };
+  const first = out[0] && out[0].period;
+  return { months: n, from: first ? first + '-01' : null, to: endPeriod, points: out };
 }
 
 module.exports = { buildPnl, pnlFor, buildTrend, UNITS_KEY, SALES_KEY, SKU_KEY, SNAP_KEY, planCogs, saveSnapshot, loadSnapshot, linkProducts, matchKey, selfCheck, monthReadiness, materialsCost };

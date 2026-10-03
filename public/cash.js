@@ -765,7 +765,8 @@
 
     const W = 720, H = 210, padL = 8, padR = 8, padT = 14, padB = 26;
     const vals = [];
-    pts.forEach((p) => { vals.push(p.revenue); if (p.profit !== null) vals.push(p.profit); });
+    // Месяц, который посчитать не удалось, — дыра на графике, а не ноль.
+    pts.forEach((p) => { if (p.revenue !== null) vals.push(p.revenue); if (p.profit !== null) vals.push(p.profit); });
     const maxV = Math.max(1, ...vals);
     const minV = Math.min(0, ...vals);
     const x = (i) => padL + (i * (W - padL - padR)) / Math.max(1, pts.length - 1);
