@@ -10,6 +10,7 @@ const hubStaffMod = require("./hub-staff"); // сотрудники из ERP, у
 const hubStaff = hubStaffMod(db);
 const logisticsDigest = require("./logistics-digest"); // сводка по доставке руководителю логистики
 const adminMenu = require("./admin-menu"); // у админа кнопки всех ролей — для проверки
+const { conflictWatch } = require("./polling-guard"); // когда «409 Conflict» значит два бота, а когда это выкладка
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const ADMIN_TG_ID = process.env.ADMIN_TG_ID;
@@ -1818,16 +1819,18 @@ async function main() {
   });
 
   // Два экземпляра бота с одним токеном «воюют» за обновления: Telegram отвечает
-  // 409 Conflict, а люди видят каждое сообщение дважды (так было 03.10.2026 у
-  // агента в мастере претензий). Логи Railway никто не читает — говорим админу
-  // сами, но не чаще раза в час, чтобы не превратить это в спам.
-  let dupWarnAt = 0;
+  // 409 Conflict, а люди видят каждое сообщение дважды. Логи Railway никто не
+  // читает — говорим админу сами.
+  // НО: при каждой выкладке 409 бывает законно. Railway поднимает новый
+  // контейнер, пока старый ещё держит связь с Telegram, и секунд десять их
+  // правда двое. Тревога на это приучает не читать тревоги, поэтому молчим
+  // первые минуты после старта и на одиночных ошибках (разбор 03.10.2026:
+  // в логах был ровно один 409 через 8 секунд после деплоя).
+  const dupWarn = conflictWatch();
   bot.on("polling_error", (err) => {
     const m = (err && (err.message || err.code)) ? String(err.message || err.code) : String(err);
     console.error("[Telegram] Ошибка опроса:", m);
-    if (!/409|conflict/i.test(m)) return;
-    if (!ADMIN_TG_ID || Date.now() - dupWarnAt < 3600000) return;
-    dupWarnAt = Date.now();
+    if (!ADMIN_TG_ID || !dupWarn(m, Date.now())) return;
     bot.sendMessage(ADMIN_TG_ID,
       "⚠️ Похоже, запущено два экземпляра бота.\n"
       + "Telegram отдаёт обновления обоим (ошибка 409 Conflict) — люди получают каждое сообщение дважды.\n\n"
