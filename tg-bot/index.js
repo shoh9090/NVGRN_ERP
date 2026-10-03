@@ -72,14 +72,9 @@ function inQuietHours(cfg) {
 }
 
 // ---------- Кэш ----------
-const _cache = new Map();
-async function cached(key, ttlMs, fn) {
-  const hit = _cache.get(key);
-  if (hit && Date.now() - hit.at < ttlMs) return hit.val;
-  const val = await fn();
-  _cache.set(key, { at: Date.now(), val });
-  return val;
-}
+// Пустой ответ CRM живёт минуту, а не полный срок — см. tg-bot/cache.js.
+const cached = require("./cache").createCache();
+const _cache = { delete: (k) => cached.forget(k) };
 const getHorecaProdCat = () => cached("prodcat_horeca", 3600000, async () => {
   const cats = await sd.fetchAll("getProductCategory", {});
   const h = cats.find((c) => String(c.name || "").trim().toLowerCase() === "horeca");
@@ -145,6 +140,13 @@ async function undeliveredShipped() {
   const orders = await getOrders14();
   return orders.filter((o) => Number(o.status) === 2 && String(o.dateDocument || o.dateShipment || "").slice(0, 10) <= today);
 }
+// Дата отгрузки заказа — одно определение на весь бот. В выгрузке SalesDoctor
+// dateShipment ПУСТОЙ (проверено /sdcheck 03.10.2026), дата отгрузки приходит в
+// dateDocument, а dateCreate — это дата заявки. Пока сводка агента смотрела
+// только в dateShipment, она честно показывала «заказали: 0» при полном дне
+// отгрузок.
+const shipDate = (o) => String((o && (o.dateDocument || o.dateShipment || o.dateCreate)) || "").slice(0, 10);
+
 const ordLine = (o, i) => `${i + 1}. ${o.code_1C || o.SD_id} — ${(o.client && (o.client.clientName || o.client.SD_id)) || "?"}`;
 async function reloadCfg() {
   try {
@@ -651,7 +653,7 @@ async function main() {
   });
 
   // Мастер претензий: отдаём ему нужные помощники бота (логику заказов он не трогает).
-  complaints.init({ bot, db, getLang, pointsOfUser, phone9OfUser, pointsOfAgent, getOrders14, menuFor, staffOf: getStaff, notifyClientAgent, notifyAgentReact, notifyAgentDone, notifyManagers });
+  complaints.init({ bot, db, getLang, pointsOfUser, phone9OfUser, pointsOfAgent, getOrders14, shipDate, menuFor, staffOf: getStaff, notifyClientAgent, notifyAgentReact, notifyAgentDone, notifyManagers });
 
   // Прогрев кэша: каталог/остатки и история всегда «горячие», чтобы «Добавить» открывалось мгновенно.
   const warmStock = async () => { try { _cache.delete("stock"); await getStockData(); } catch (e) { console.warn("[ПРОГРЕВ stock]", e.message); } };
@@ -1058,7 +1060,7 @@ async function main() {
       const all = await sd.fetchAll("getOrder", { filter: { period: { date: { from, to } }, status: [1, 2, 3, 4, 5] } });
       const hits = all.filter((o) => o.client && String(o.client.clientName || o.client.clientLegalName || "").toLowerCase().includes(qstr));
       const hitLines = hits.slice(0, 10).map((o) =>
-        `• ${String(o.dateShipment || o.dateCreate || "").slice(0, 10)} · статус ${o.status} · клиент «${o.client.clientName || "?"}» · SD_id ${o.client.SD_id} · ${o.code_1C || ""}`);
+        `• ${shipDate(o)} · статус ${o.status} · клиент «${o.client.clientName || "?"}» · SD_id ${o.client.SD_id} · ${o.code_1C || ""}`);
       const otherIds = [...new Set(hits.map((o) => String(o.client.SD_id)))].filter((id) => !ids.has(id));
       await bot.sendMessage(msg.chat.id,
         `🗂 В SalesDoctor за 30 дн. (все статусы): заказов с таким названием ${hits.length}\n`
@@ -1076,7 +1078,7 @@ async function main() {
     if (!isAdmin(msg.chat.id)) { bot.sendMessage(msg.chat.id, "Только админ."); return; }
     bot.sendChatAction(msg.chat.id, "typing");
     const span = (arr) => {
-      const ds = arr.map((o) => String(o.dateShipment || o.dateCreate || "").slice(0, 10)).filter(Boolean).sort();
+      const ds = arr.map(shipDate).filter(Boolean).sort();
       return ds.length ? `${ds[0]} … ${ds[ds.length - 1]}` : "дат нет";
     };
     const lines = [];
@@ -1329,7 +1331,7 @@ async function main() {
     const pts = await pointsOfAgent(crmAgentId);
     if (!pts.length) return null;
     const today = tzToday();
-    const deliv = (await getOrders14()).filter((o) => String(o.dateShipment || "").slice(0, 10) === today && o.status !== 5);
+    const deliv = (await getOrders14()).filter((o) => shipDate(o) === today && o.status !== 5);
     const ptSet = new Set(pts.map((p) => p.sd_id));
     const agentOrders = deliv.filter((o) => o.client && ptSet.has(o.client.SD_id));
     const orderedSet = new Set(agentOrders.map((o) => o.client.SD_id));

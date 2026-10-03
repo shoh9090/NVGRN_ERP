@@ -170,6 +170,11 @@ function noOrdersText(lang, { byAgent, last, now = Date.now() }) {
 }
 const now2date = (ms) => new Date(ms + 5 * 3600000).toISOString().slice(0, 10);   // Ташкент
 
+// Дата отгрузки заказа — то же определение, что у остального бота (index.js).
+// Своей пары полей здесь быть не должно: у выгрузки SalesDoctor dateShipment
+// пустой, и мастер считал бы свежей отгрузку по дате заявки.
+const sd = (o) => (H.shipDate ? H.shipDate(o) : String((o && (o.dateDocument || o.dateShipment || o.dateCreate)) || "").slice(0, 10));
+
 function fmtD(d) { const s = String(d || "").slice(0, 10); const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/); return m ? `${m[3]}.${m[2]}` : (s || "—"); }
 function extractMedia(msg) {
   if (msg.photo && msg.photo.length) return { kind: "photo", fileId: msg.photo[msg.photo.length - 1].file_id };
@@ -254,14 +259,14 @@ async function askOrder(chatId, s, lang) {
   orders.sort((a, b) => String(b.dateCreate || "").localeCompare(String(a.dateCreate || "")));
   // Ультрафреш: претензия принимается только по отгрузке за последние FRESH_DAYS дней.
   const cutoff = new Date(Date.now() - FRESH_DAYS * 86400000).toISOString().slice(0, 10);
-  const top = orders.filter((o) => String(o.dateShipment || o.dateCreate || "").slice(0, 10) >= cutoff).slice(0, 3);
+  const top = orders.filter((o) => sd(o) >= cutoff).slice(0, 3);
   if (!top.length) {
-    const last = orders[0] && String(orders[0].dateShipment || orders[0].dateCreate || "").slice(0, 10);
+    const last = orders[0] && sd(orders[0]);
     await bot.sendMessage(chatId, noOrdersText(lang, { byAgent: !!s.byAgent, last }), await H.menuFor(s.tgId, lang));
     sessions.delete(chatId); return;
   }
   s.orders = top; s.stage = "order";
-  const rows = top.map((o, i) => [{ text: `📅 ${fmtD(o.dateShipment || o.dateCreate)} · ${(o.orderProducts || []).filter((x) => x.product).length} поз.`, callback_data: `cmpl:o:${i}` }]);
+  const rows = top.map((o, i) => [{ text: `📅 ${fmtD(sd(o))} · ${(o.orderProducts || []).filter((x) => x.product).length} поз.`, callback_data: `cmpl:o:${i}` }]);
   rows.push(cancelRow(lang));
   await bot.sendMessage(chatId, t(lang, "pick_order"), { reply_markup: { inline_keyboard: rows } });
 }
@@ -366,7 +371,7 @@ async function finalize(chatId, s, lang) {
       const a = (await db.query("SELECT telegram_first_name, telegram_last_name FROM telegram_staff WHERE crm_agent_id=$1 ORDER BY (status='confirmed') DESC, id DESC LIMIT 1", [pc.agent_sd_id])).rows[0];
       if (a) agentName = [a.telegram_first_name, a.telegram_last_name].filter(Boolean).join(" ") || null;
     }
-    const ship = s.order && s.order.dateShipment ? String(s.order.dateShipment).slice(0, 10) : null;
+    const ship = (s.order && sd(s.order)) || null;
     const ins = await db.query(
       `INSERT INTO tgbot.complaints
          (source, sd_id, point_name, firm_name, agent_sd_id, agent_name, reporter_tg_id, reporter_phone,
