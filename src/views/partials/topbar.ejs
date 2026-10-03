@@ -7,7 +7,9 @@
 
   Параметры (все необязательные, кроме title):
     title    — иконка и название плитки, например '🛒 Закуп'
-    icon     — вместо эмодзи своя картинка (путь), например '/static/icons/jarvis.webp'
+    icon     — вместо эмодзи своя картинка (путь), например '/static/icons/jarvis.webp'.
+               Без него картинка берётся из плитки (tiles.icon), если она там картинка:
+               поменяли иконку в админ-панели — поменялась и на главной, и в шапке.
     home     — главная Hub: без кнопки возврата, у админа — «Админ-панель»
     backHref — куда ведёт кнопка слева (по умолчанию '/')
     backText — подпись кнопки (по умолчанию 'На главную')
@@ -19,7 +21,9 @@
     <% if (!isHome) { %><a class="btn-ghost topbar-back" href="<%= typeof backHref !== 'undefined' ? backHref : '/' %>">← <%= typeof backText !== 'undefined' ? backText : 'На главную' %></a><% } %>
     <a class="topbar-brand" href="/" title="На главную Hub">
       <% if (settings && settings.logo_file_id) { %><img class="topbar-logo" src="/file/<%= settings.logo_file_id %>" alt=""><% } %>
-      <% if (typeof icon !== 'undefined' && icon) { %><img class="topbar-tile-icon" src="<%= icon %>" alt=""><% } %>
+      <%# Картинка плитки: своя (параметр icon) или из tiles.icon — см. server.js %>
+      <% const tileImg = (typeof icon !== 'undefined' && icon) ? icon : (typeof tileIcon !== 'undefined' ? tileIcon : null); %>
+      <% if (tileImg) { %><img class="topbar-tile-icon" src="<%= tileImg %>" alt=""><% } %>
       <span class="company"><%= title %></span>
     </a>
   </div>

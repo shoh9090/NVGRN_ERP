@@ -78,6 +78,34 @@ function requireAdmin(req, res, next) {
 
 app.use(loadUser);
 
+// Иконка плитки в шапке страницы — из той же записи, что и на главной.
+// Раньше каждая страница писала свой эмодзи в заголовке: сменили картинку
+// плитки — на главной новая, а в шапке плитки оставался старый значок
+// (так вышло с ботом 03.10.2026). Теперь одно место: tiles.icon.
+// Подставляем только картинку (путь с «/»); у плиток с эмодзи ничего не
+// меняется — их значок по-прежнему в заголовке страницы.
+let _tileIcons = { at: 0, rows: [] };
+async function tileIcons() {
+  if (Date.now() - _tileIcons.at < 60000) return _tileIcons.rows;
+  const r = await db.pool.query("SELECT url, icon FROM tiles WHERE icon LIKE '/%'");
+  _tileIcons = { at: Date.now(), rows: r.rows };
+  return _tileIcons.rows;
+}
+app.use(async (req, res, next) => {
+  // Сбой запроса не должен ронять страницу: шапка просто будет без картинки.
+  try {
+    if (req.user && req.method === 'GET') {
+      let best = null;
+      for (const t of await tileIcons()) {
+        if (t.url === '/' || !(req.path === t.url || req.path.startsWith(t.url + '/'))) continue;
+        if (!best || t.url.length > best.url.length) best = t;
+      }
+      if (best) res.locals.tileIcon = best.icon;
+    }
+  } catch (e) { /* без картинки, но страница открывается */ }
+  next();
+});
+
 app.get('/login', async (req, res) => {
   if (req.user) return res.redirect('/');
   const settings = await db.getSettings();
