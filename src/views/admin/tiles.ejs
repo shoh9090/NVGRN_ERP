@@ -7,7 +7,9 @@
   <form method="POST" action="/admin/tiles" class="form-row">
     <input name="title" placeholder="Название (Счета-фактуры)" required>
     <input name="description" placeholder="Короткое описание">
-    <input name="icon" placeholder="Иконка-эмодзи, напр. 🧾" maxlength="8" style="max-width:140px">
+    <%# Иконкой может быть и картинка: /static/icons/jarvis.webp. Лимит в 8
+        символов обрезал такой путь при сохранении, и плитка теряла иконку. %>
+    <input name="icon" placeholder="Эмодзи 🧾 или путь /static/icons/…" maxlength="120" style="max-width:240px">
     <input name="url" placeholder="https://адрес-модуля" required>
     <input name="section" placeholder="Раздел (HoReCa, Склад и закуп...)" style="max-width:220px">
     <input name="sort_order" type="number" placeholder="Порядок (10, 20...)" style="max-width:160px">
@@ -21,7 +23,7 @@
     <form method="POST" action="/admin/tiles/<%= t.id %>" class="form-row">
       <input name="title" value="<%= t.title %>" required>
       <input name="description" value="<%= t.description %>">
-      <input name="icon" value="<%= t.icon %>" maxlength="8" style="max-width:140px">
+      <input name="icon" value="<%= t.icon %>" maxlength="120" style="max-width:240px">
       <input name="url" value="<%= t.url %>" required>
       <input name="section" value="<%= t.section || '' %>" placeholder="Раздел" style="max-width:220px">
       <input name="sort_order" type="number" value="<%= t.sort_order %>" style="max-width:160px">

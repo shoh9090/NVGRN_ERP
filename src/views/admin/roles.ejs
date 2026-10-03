@@ -29,7 +29,12 @@
           <% var checked = roleTiles.some(function(x){ return x.role_id === r.id && x.tile_id === t.id; }); %>
           <label class="check">
             <input type="checkbox" name="tile_ids" value="<%= t.id %>" <%= checked ? 'checked' : '' %>>
-            <%= t.icon %> <%= t.title %>
+            <%# Иконка плитки бывает эмодзи, а бывает картинкой (как у Джарвиса):
+                путь нельзя печатать текстом — так в списке и висело «/static/icons/…». %>
+            <% if (/^(https?:\/\/|\/)|\.(svg|png|jpe?g|webp)$/i.test(t.icon || '')) { %>
+              <img src="<%= t.icon %>" alt="" style="width:18px;height:18px;border-radius:4px;vertical-align:-3px">
+            <% } else { %><%= t.icon %><% } %>
+            <%= t.title %>
           </label>
         <% }) %>
         <button type="submit">Сохранить доступ</button>

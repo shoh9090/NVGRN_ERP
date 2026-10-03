@@ -357,6 +357,7 @@ const BOT_ROLES = [
   { code: '', label: '— нет —' },
   { code: 'head_of_sales', label: 'Руководитель продаж' },
   { code: 'logistics', label: 'Логистика' },
+  { code: 'production', label: 'Производство' },
   { code: 'marketing', label: 'Маркетинг' },
   { code: 'admin', label: 'Админ' },
 ];
