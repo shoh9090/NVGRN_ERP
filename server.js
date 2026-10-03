@@ -1141,6 +1141,9 @@ process.on('uncaughtException', (e) => {
     app.listen(PORT, () => console.log(`Hub запущен на порту ${PORT}`));
     // Бот сам ловит свои ошибки: его сбой не должен ронять ERP.
     jarvisBot.start(db.pool).catch((e) => console.warn('[ДЖАРВИС] запуск:', e.message));
+    // Недельный список «кого обзвонить» агентам (пятница и понедельник).
+    // Считает Hub, отправляет клиентский бот — см. src/agent-weekly.js.
+    try { require('./src/agent-weekly').start(db.pool); } catch (e) { console.warn('[ОБЗВОН] запуск:', e.message); }
   } catch (e) {
     console.error('Ошибка запуска:', e);
     process.exit(1);

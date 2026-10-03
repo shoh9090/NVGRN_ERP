@@ -145,6 +145,9 @@
             <label class="tgm-remrow"><span>Сигнал 2: окно сравнения (дней)</span><input type="number" name="signal2_window" min="3" max="30" value="<%= botSettings.signal2_window||7 %>"></label>
           </div>
           <div class="tgm-fields" style="margin-top:14px">
+            <label class="tgm-check"><input type="checkbox" name="weekly_calls_enabled" <%= botSettings.weekly_calls_enabled!==false?'checked':'' %>> Слать агенту список «кого обзвонить» (пятница и понедельник)</label>
+          </div>
+          <div class="tgm-fields" style="margin-top:14px">
             <label class="tgm-check"><input type="checkbox" name="order_alerts_enabled" <%= botSettings.order_alerts_enabled!==false?'checked':'' %>> Оповещать об изменениях заказов на складе (упущения/правки)</label>
             <label class="tgm-remrow"><span>Тихий час: не слать с</span><input type="time" name="quiet_from" value="<%= botSettings.quiet_from||'22:00' %>"></label>
             <label class="tgm-remrow"><span>Тихий час: до</span><input type="time" name="quiet_to" value="<%= botSettings.quiet_to||'08:00' %>"></label>
@@ -157,7 +160,7 @@
             </label>
           </div>
         </form>
-        <div class="tgm-note" style="margin-top:12px">Сводка приходит каждому агенту в указанное время по его клиентам. Сигналы — не чаще раза в день на клиента. В тихий час оповещения об изменениях заказов не отправляются (данные всё равно копятся для дашборда).</div>
+        <div class="tgm-note" style="margin-top:12px">Список «кого обзвонить» уходит агенту в пятницу и понедельник в то же время: его клиенты, которые за неделю взяли меньше обычного (четырёх недель) или не взяли совсем. Отстала выгрузка продаж из SalesDoctor — список не отправляется. Сводка приходит каждому агенту в указанное время по его клиентам. Сигналы — не чаще раза в день на клиента. В тихий час оповещения об изменениях заказов не отправляются (данные всё равно копятся для дашборда).</div>
         <button class="tgm-btn tgm-green" type="submit" form="agentForm" style="margin-top:12px">Сохранить</button>
         </div>
 

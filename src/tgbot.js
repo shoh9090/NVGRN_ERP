@@ -74,6 +74,8 @@ async function ensureTables() {
   await db.pool.query(`ALTER TABLE tgbot.bot_settings ADD COLUMN IF NOT EXISTS lost_summary_freq TEXT NOT NULL DEFAULT 'weekly'`);
   await db.pool.query(`ALTER TABLE tgbot.bot_settings ADD COLUMN IF NOT EXISTS delivery_remind_times TEXT NOT NULL DEFAULT '21:00,22:00'`);
   await db.pool.query(`ALTER TABLE tgbot.bot_settings ADD COLUMN IF NOT EXISTS delivery_remind_enabled BOOLEAN NOT NULL DEFAULT true`);
+  // Недельный список «кого обзвонить» агенту (пятница и понедельник) — см. src/agent-weekly.js.
+  await db.pool.query(`ALTER TABLE tgbot.bot_settings ADD COLUMN IF NOT EXISTS weekly_calls_enabled BOOLEAN NOT NULL DEFAULT true`);
   // Подписки на оповещения: какая роль получает какой тип. Наличие строки = подписан.
   await db.pool.query(`CREATE TABLE IF NOT EXISTS tgbot.notif_subs (kind TEXT NOT NULL, role TEXT NOT NULL, PRIMARY KEY (kind, role))`);
   const subsExist = (await db.pool.query('SELECT 1 FROM tgbot.notif_subs LIMIT 1')).rows.length;
@@ -129,6 +131,14 @@ async function ensureTables() {
   )`);
   await db.pool.query(`CREATE INDEX IF NOT EXISTS idx_lost_sales_detected ON tgbot.lost_sales (detected_at)`);
 
+  // Журнал уведомлений бота: по нему же работает дедупликация рассылок из Hub
+  // (список «кого обзвонить» агенту — src/agent-weekly.js). Схему держим и
+  // здесь: Hub поднимается впереди бота, и рассылка не должна ждать его старта.
+  await db.pool.query(`CREATE TABLE IF NOT EXISTS tgbot.notification_log (
+    id SERIAL PRIMARY KEY, kind TEXT, dedup_key TEXT UNIQUE, target_chat_id BIGINT,
+    target_role TEXT, sd_id TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+
   // Претензии: схема и справочник вынесены в общий модуль (единый источник).
   await require('./complaints-schema').ensureComplaintSchema(db.pool);
 
@@ -138,7 +148,7 @@ async function ensureTables() {
 function normPhone9(v) { const d = String(v || '').replace(/\D/g, ''); return d.length > 9 ? d.slice(-9) : d; }
 const ROLES = ['agent', 'head_of_sales', 'logistics', 'expeditor', 'marketing', 'admin'];
 
-const DEFAULT_BOT_SETTINGS = { reminder_times: '18:00,21:00,23:00', deadline: '00:00', avg_window_days: 14, enabled: true, digest_time: '08:30', digest_enabled: true, signals_enabled: true, signal1_days: 3, signal2_pct: 40, signal2_window: 7, order_alerts_enabled: true, quiet_from: '22:00', quiet_to: '08:00', lost_summary_freq: 'weekly', delivery_remind_times: '21:00,22:00', delivery_remind_enabled: true };
+const DEFAULT_BOT_SETTINGS = { reminder_times: '18:00,21:00,23:00', deadline: '00:00', avg_window_days: 14, enabled: true, digest_time: '08:30', digest_enabled: true, signals_enabled: true, signal1_days: 3, signal2_pct: 40, signal2_window: 7, order_alerts_enabled: true, quiet_from: '22:00', quiet_to: '08:00', lost_summary_freq: 'weekly', delivery_remind_times: '21:00,22:00', delivery_remind_enabled: true, weekly_calls_enabled: true };
 async function getBotSettings() {
   await ensureTables();
   const r = await db.pool.query('SELECT * FROM tgbot.bot_settings WHERE id=1');
@@ -449,11 +459,12 @@ router.post('/settings/agent', async (req, res) => {
     const qf = normTimes(req.body.quiet_from)[0] || '22:00';
     const qt = normTimes(req.body.quiet_to)[0] || '08:00';
     const lf = ['off', 'daily', 'weekly'].includes(String(req.body.lost_summary_freq)) ? req.body.lost_summary_freq : 'weekly';
+    const wc = ['on', 'true', '1'].includes(String(req.body.weekly_calls_enabled));
     await db.pool.query(
       `UPDATE tgbot.bot_settings SET digest_time=$1, digest_enabled=$2, signals_enabled=$3, signal1_days=$4, signal2_pct=$5, signal2_window=$6,
-         order_alerts_enabled=$7, quiet_from=$8, quiet_to=$9, lost_summary_freq=$10, updated_at=now(), updated_by=$11 WHERE id=1`,
-      [dt, de, se, s1, s2, s2w, oae, qf, qt, lf, String(req.user.id)]);
-    await db.log(req.user.id, 'tgbot_agent_settings', `digest=${dt} de=${de} se=${se} alerts=${oae} quiet=${qf}-${qt} lost=${lf}`);
+         order_alerts_enabled=$7, quiet_from=$8, quiet_to=$9, lost_summary_freq=$10, weekly_calls_enabled=$12, updated_at=now(), updated_by=$11 WHERE id=1`,
+      [dt, de, se, s1, s2, s2w, oae, qf, qt, lf, String(req.user.id), wc]);
+    await db.log(req.user.id, 'tgbot_agent_settings', `digest=${dt} de=${de} se=${se} alerts=${oae} quiet=${qf}-${qt} lost=${lf} calls=${wc}`);
     const botSettings = await getBotSettings();
     await render(res, req, settings, { botSettings, settingsSaved: true, openAgent: true });
   } catch (e) {
@@ -607,3 +618,6 @@ if (process.env.NODE_ENV !== 'test') {
 }
 
 module.exports = router;
+// Схему бота заводит Hub (schema-first), поэтому её создание нужно и другим
+// модулям ERP — например, рассылке «кого обзвонить» (src/agent-weekly.js).
+module.exports.ensureTables = ensureTables;
