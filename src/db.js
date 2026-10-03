@@ -788,16 +788,24 @@ async function seed() {
   if (bt.rows.length === 0) {
     await pool.query(
       `INSERT INTO tiles (title, description, icon, url, open_new_tab, sort_order)
-       VALUES ('Телеграм-бот: ассистент продаж', 'Заказы, претензии, напоминания и отчёты для отдела продаж', '🤖', '/tgbot', FALSE, 80)`
+       VALUES ('Телеграм-бот: ассистент продаж', 'Заказы, претензии, напоминания и отчёты для отдела продаж', '/static/icons/tgbot.jpg', '/tgbot', FALSE, 80)`
     );
   }
-  // Переименование старой плитки «Бот HoReCa» → новое имя, классический значок.
+  // Переименование старой плитки «Бот HoReCa» → новое имя. Иконку здесь не
+  // трогаем: её ставит блок ниже (логотип бота), иначе две строки спорили бы.
   await pool.query(
     `UPDATE tiles SET title='Телеграм-бот: ассистент продаж',
-        description='Заказы, претензии, напоминания и отчёты для отдела продаж',
-        icon='🤖'
+        description='Заказы, претензии, напоминания и отчёты для отдела продаж'
      WHERE url='/tgbot' AND (title='Бот HoReCa' OR icon='/static/img/tgbot-icon.svg')`
   );
+
+  // Плитка бота: логотип самого бота вместо эмодзи-робота (логотип Шоха, 03.10.2026).
+  // Ставим один раз: сменит админ иконку руками — мы её не перетрём.
+  const btIcon = await pool.query("SELECT 1 FROM settings WHERE key = 'tgbot_tile_icon_v1'");
+  if (btIcon.rows.length === 0) {
+    await pool.query("UPDATE tiles SET icon = '/static/icons/tgbot.jpg' WHERE url = '/tgbot'").catch(() => {});
+    await pool.query("INSERT INTO settings (key, value) VALUES ('tgbot_tile_icon_v1', '1') ON CONFLICT (key) DO NOTHING");
+  }
 
   // Плитка «Закуп» — модуль ядра
   const pt = await pool.query("SELECT id FROM tiles WHERE url = '/purchase' LIMIT 1");
