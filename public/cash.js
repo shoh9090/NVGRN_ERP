@@ -1332,8 +1332,9 @@
     if (a.packaging && a.packaging.no_norm && a.packaging.no_norm.length) {
       gaps.push('Нет нормы упаковки у ' + a.packaging.no_norm.length + ' карточек Калькуляции.');
     }
-    gaps.push('Остальные расходы, проценты и налог берутся по дате оплаты — периода начисления у них в системе нет.');
-    gaps.push('НДС из выручки не исключён, ретро сетям не вычтено — ждёт ответа бухгалтерии.');
+    // Тот же текст про НДС, что в статусе отчёта: он строится из способа
+    // расчёта на сервере, а не пишется здесь своей фразой.
+    (a.status.open_questions || []).forEach((q) => gaps.push(q));
     box.appendChild(pnlFold('accgaps', 'cash-audit', '📋 Что нужно восстановить, чтобы цифра стала подтверждённой (' + gaps.length + ')',
       gaps.map((g) => el('div', { class: 'cash-audit-row' }, el('div', { class: 'cash-audit-txt' }, g)))));
 

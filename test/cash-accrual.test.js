@@ -389,3 +389,22 @@ test('продаж по товарам нет — упаковку по норм
   assert.strictEqual(r.total, null);
   assert.match(r.reason, /не подтянуты/);
 });
+
+// Проверка 03.10.2026: вкладка писала «НДС не исключён», когда выручка уже была
+// без налога. Финансист мог вычесть его второй раз. Текст обязан идти от того,
+// как налог посчитан на самом деле.
+test('текст про НДС строится из способа расчёта, а не зашитой фразой', () => {
+  const { vatStatus, openQuestions } = require('../src/cash-accrual');
+
+  const est = vatStatus({ accrued_source: 'estimate', rate: 12, accrued: 183934980 });
+  assert.match(est.text, /исключён из выручки РАСЧЁТНО/);
+  assert.ok(!/не исключён/.test(est.text), 'выручка уже без налога — нельзя писать «не исключён»');
+  assert.strictEqual(est.open, true);                        // пока расчётно — вопрос открыт
+
+  const decl = vatStatus({ accrued_source: 'declaration', rate: 12, accrued: 150000000 });
+  assert.match(decl.text, /по декларации/);
+  assert.strictEqual(decl.open, false);                      // по декларации — вопрос закрыт
+  // И из списка открытых вопросов НДС тогда уходит.
+  assert.ok(!openQuestions({ accrued_source: 'declaration', accrued: 1 }).some((q) => /^НДС/.test(q)));
+  assert.ok(openQuestions({ accrued_source: 'estimate', rate: 12, accrued: 1 }).some((q) => /^НДС/.test(q)));
+});

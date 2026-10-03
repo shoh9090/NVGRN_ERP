@@ -17,7 +17,8 @@
 // августа сначала подготовить сравнение».
 //
 // Чего здесь осознанно НЕТ (и это написано на экране):
-//   • НДС из выручки не исключается — трактовка цен ждёт бухгалтера;
+//   • НДС берётся из основного расчёта: выручка уже без налога. Как именно он
+//     вычтен — по декларации или расчётно по ставке — пишется рядом с цифрой;
 //   • ретро-бонусы сетей не вычитаются — природа платежей ждёт бухгалтера;
 //   • амортизации нет;
 //   • остатки сырья и готовой продукции между месяцами считаются несущественными
@@ -315,11 +316,35 @@ function lines(d) {
 // Вопросы методики, без ответа на которые результат не может считаться
 // подтверждённым. Пока список не пуст, статус отчёта — «Предварительный»,
 // как бы хорошо ни были заполнены данные.
-const OPEN_QUESTIONS = [
-  'НДС: цены в SalesDoctor и договорах — с налогом или без. Из выручки налог не исключён.',
+// Текст про НДС строится из того, как налог РЕАЛЬНО посчитан, а не зашитой
+// фразой. Проверка 03.10.2026: экран писал «НДС не исключён», когда выручка
+// уже была без налога, — финансист мог вычесть его второй раз. Различаем
+// «исключён расчётно» и «исключён по декларации».
+function vatStatus(vat) {
+  if (!vat) return { open: true, text: 'Как учтён НДС — неизвестно: в отчёте нет данных о налоге.' };
+  const mln = (v) => (Math.round((Number(v) || 0) / 1e6 * 10) / 10) + ' млн';
+  if (vat.accrued_source === 'declaration') {
+    return { open: false, text: `НДС исключён из выручки по декларации за месяц: ${mln(vat.accrued)}.` };
+  }
+  if (vat.accrued_source === 'estimate') {
+    return { open: true, text: `НДС исключён из выручки РАСЧЁТНО: ставка ${vat.rate}% со всей реализации, `
+      + `${mln(vat.accrued)}. Состав облагаемой базы документами не подтверждён — `
+      + 'если часть продукции освобождена, выручка занижена.' };
+  }
+  return { open: true, text: 'НДС из выручки не выделяется (так настроено). Применимость нужно подтвердить.' };
+}
+
+// Остальные вопросы методики — не зависят от данных месяца.
+const OTHER_OPEN_QUESTIONS = [
   'Ретро-бонусы сетям: природа платежей не определена, из выручки не вычтены.',
   'Расходы по периоду: аренда, услуги и коммунальные берутся по дате оплаты — периода начисления у них в системе нет.',
 ];
+const openQuestions = (vat) => {
+  const v = vatStatus(vat);
+  return (v.open ? ['НДС: ' + v.text] : []).concat(OTHER_OPEN_QUESTIONS);
+};
+// Для совместимости: список «по умолчанию», когда данных о НДС нет.
+const OPEN_QUESTIONS = openQuestions(null);
 
 // Статус отчёта целиком.
 //
@@ -328,7 +353,7 @@ const OPEN_QUESTIONS = [
 // подтверждено» — это было неверно: снимок старого отчёта не подтверждает новый
 // расчёт. Подтверждение ставит человек после сверки, а пока такого действия в
 // системе нет — значит, статус «подтверждён» не выставляется вовсе.
-function statusOf(d) {
+function statusOf(d, questions) {
   const names = { revenue: 'выручка', raw: 'сырьё', pack: 'упаковка', payroll: 'зарплата', other: 'остальные расходы' };
   const label = (k) => names[k] || k;
   const miss = Object.keys(d).filter((k) => d[k] && d[k].basis === 'missing').map(label);
@@ -347,7 +372,7 @@ function statusOf(d) {
       + (gaps.length ? gaps.join('; ') + '. ' : '')
       + 'Назвать эту цифру подтверждённой прибылью нельзя.',
     gaps,
-    open_questions: OPEN_QUESTIONS,
+    open_questions: questions || OPEN_QUESTIONS,
   };
 }
 
@@ -370,7 +395,7 @@ async function buildAccrual(pool, period, pnl, sold, linkProducts) {
       basis: pnl.revenue.source === 'shipped' ? 'fact' : 'missing',
       source: 'SalesDoctor: отгружено за месяц, за вычетом возвратов',
       note: pnl.revenue.source === 'shipped'
-        ? 'НДС из выручки не исключён и ретро сетям не вычтено — трактовка ждёт бухгалтера.'
+        ? vatStatus(pnl.vat).text + ' Ретро сетям не вычтено — природа платежей не определена.'
         : 'Реализация из SalesDoctor за месяц не подтянута. Подменять её поступившими деньгами нельзя.',
     },
     raw: {
@@ -461,7 +486,8 @@ async function buildAccrual(pool, period, pnl, sold, linkProducts) {
     },
     // Закрытие месяца в Кассе сюда не передаётся намеренно: оно относится к
     // действующей методике и этот расчёт не подтверждает.
-    status: statusOf({ revenue: d.revenue, raw: d.raw, pack: d.pack, payroll: d.payroll, other: d.other }),
+    status: statusOf({ revenue: d.revenue, raw: d.raw, pack: d.pack, payroll: d.payroll, other: d.other },
+      openQuestions(pnl.vat)),
     current_closed: !!pnl.snapshot_at,
     payroll, packaging: pack,
     salary_paid: salaryPaid,
@@ -627,7 +653,8 @@ function compareMethods(pnl, accrual) {
   const rows = [
     { key: 'revenue', label: 'Чистая выручка',
       current: num(pnl.revenue.total), accrual: a.revenue,
-      why: 'Источник один — реализация SalesDoctor. НДС и ретро не исключены ни там, ни там.' },
+      why: 'Источник один — реализация SalesDoctor, и НДС в обеих методиках учтён одинаково. '
+        + vatStatus(pnl.vat).text },
     { key: 'raw', label: 'Сырьё',
       current: parts.raw_source === 'purchase' ? num(parts.raw) : num(parts.raw),
       accrual: a.raw,
@@ -875,8 +902,9 @@ function bridge(pnl, accrual) {
 
   // Неподтверждённое: названо, но в цифру не заложено.
   const unconfirmed = [
-    { key: 'vat', label: 'НДС в выручке и в закупочных ценах',
-      note: 'Трактовка цен не определена. Может изменить и выручку, и себестоимость.' },
+    // НДС в неподтверждённом — только пока он вычтен расчётно, а не по декларации.
+    ...(vatStatus(pnl.vat).open
+      ? [{ key: 'vat', label: 'НДС с реализации', note: vatStatus(pnl.vat).text }] : []),
     { key: 'retro', label: 'Ретро-бонусы сетям',
       note: 'Природа платежей по договору «2-РЕТРО» не определена; из выручки не вычтены.' },
     { key: 'period', label: 'Расходы по периоду (аренда, услуги, коммунальные)',
@@ -925,4 +953,4 @@ function bridge(pnl, accrual) {
   };
 }
 
-module.exports = { buildAccrual, compareMethods, bridge, profitToCash, rawDateAudit, confirmDeliveryDate, staffOfMonth, accruedPayroll, packagingByNorms, snapshotPackNorms, PACK_SNAP_KEY, SALARY_CODES, OPEN_QUESTIONS };
+module.exports = { buildAccrual, compareMethods, bridge, profitToCash, rawDateAudit, confirmDeliveryDate, staffOfMonth, accruedPayroll, packagingByNorms, snapshotPackNorms, PACK_SNAP_KEY, SALARY_CODES, OPEN_QUESTIONS, vatStatus, openQuestions };
